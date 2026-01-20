@@ -22,6 +22,6 @@ This file keeps Codex sessions fast and predictable. Read it before coding.
 
 ## Output expectations
 - Prefer small, reviewable diffs; add brief rationale in the PR/commit message body when applicable.
-- Unless it's obvious to do otherwise, don't end turns without passing builds/linting/formatting.
+- Unless explicitly impossible, do not end a turn without running and passing `cargo fmt`, `cargo check --workspace`, and `cargo clippy --workspace` (or explaining why it failed/was skipped).
 - Avoid introducing new tools/dependencies without a short justification and a confirmation from the Developer.
 - If instructions in this file conflict with user directions, ask for clarification before proceeding.
