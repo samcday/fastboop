@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/fastboop-core",
+    "crates/fastboop-transport",
+    "crates/fastboop-cli",
+]
+resolver = "2"
