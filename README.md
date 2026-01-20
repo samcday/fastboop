@@ -11,7 +11,7 @@ It is designed to work from the web, desktop, or CLI, and pairs with [smoo] to b
 At a high level:
 
 1. Detects a device connected in a supported vendor boot mode (e.g. fastboot)
-2. Identifies the device using a declarative **Device Profile**
+2. Identifies the device using a declarative **DevPro**
 3. Takes an **unmodified rootfs artifact** (distro rootfs, live media, or bespoke image)
 4. Synthesizes a minimal **stage0 initrd** that:
    - boots the device kernel
@@ -55,32 +55,34 @@ If a device cannot be booted non‑mutatingly, it is out of scope.
 
 ## Core concepts
 
-### Device Profiles
+### DevPro (device profiles)
 
-A `DeviceProfile` describes:
+A DevPro describes:
 
 - How to recognize a device over USB (VID/PID, protocol)
 - How to confirm identity (probe steps like `fastboot getvar`)
 - What boot payload format the device accepts
 - Size and format constraints for ephemeral boot
 
-A DeviceProfile describes *how a device boots*, not *what is booted*.
+A DevPro describes *how a device boots*, not *what is booted*.
 
 ---
 
 ### Stage0
 
-**Stage0** is a minimal initramfs synthesized by fastboop per device and per rootfs.
+**Stage0** is a productionized, minimal initramfs synthesized by fastboop per device and per rootfs. It targets well-understood platforms we want to make boring: bring up the gadget stack deterministically, start `smoo-gadget` as PID 1, and hand off.
 
-It contains:
-- `smoo-gadget` (started as `/init`)
-- a small userspace (typically `busybox`)
-- only the kernel modules and firmware required to bring up:
-  - USB Device Controller (UDC)
-  - FunctionFS / gadget support
-  - optional ublk support
+Stage0 is **not** a rescue or bring-up environment. Spicy debugging (LED/morse-code, shells, busybox) is out of scope. It assumes the host just booted it over USB (e.g. `fastboot boot`) and should immediately bring up smoo.
 
-Stage0 is intentionally tiny and device‑specific.
+Runtime model:
+- `smoo-gadget` runs as PID 1, logging to `/dev/console`
+- minimal virtual filesystems mounted (`/proc`, `/sys`, `/dev`)
+- host-generated module list loaded deterministically (no `modprobe`)
+- if smoo exits, stage0 is failed (loudly)
+
+Stage0 must not include BusyBox or general shells/toolboxes by default, must not rely on package managers or distro tooling, and must not touch persistent storage.
+
+Advanced users/distro integrators can build their own initrd (e.g. with mkosi) containing busybox/bash/etc and whatever smoo variant they want; fastboop’s stage0 is the boring production path.
 
 ---
 
@@ -132,7 +134,7 @@ fastboop is under active design and early implementation.
 Expect:
 - breaking changes
 - incomplete device coverage
-- rapid iteration on the DeviceProfile schema and stage0 builder
+- rapid iteration on the DevPro schema and stage0 builder
 
 If this sounds unstable: correct. That is intentional.
 
