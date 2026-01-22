@@ -12,27 +12,28 @@ This is the box. Stay inside it.
 Target shape for a single fastboot-boot DevPro:
 
 ```yaml
-id: "acme-phone-1"
-display_name: "Acme Phone 1"
+id: oneplus-fajita
+display_name: OnePlus 6T
+devicetree_name: qcom/sdm845-oneplus-fajita
 
 match:
-  protocol: fastboot
-  usb:
-    vendor_id: 0x18d1
-    product_ids: [0x0d02]
+  - fastboot:
+      vid: 0x18d1
+      pid: 0xd00d
 
 probe:
   - fastboot.getvar: product
-    equals: "acme1"
-  - fastboot.getvar: secure
+    equals: sdm845
+  - fastboot.getvar: partition-type:aging:raw
     exists:
 
 boot:
-  fastboot-boot:
-    bootimg:
+  fastboot_boot:
+    android_bootimg:
       header_version: 2
       page_size: 4096
       base: 0x00000000
+      kernel_offset: 0x00008000
 
     limits:
       max_kernel_bytes: 16777216
@@ -46,6 +47,10 @@ boot:
         append_dtb: true
 
     cmdline_append: "console=ttyMSM0,115200n8"
+
+stage0:
+  # extra kernel modules that are needed for UDC to come up
+  kernel_modules: [dwc3, phy-qcom-qusb2, nvmem_qfprom]
 ```
 
 This is descriptive: it states what the vendor bootloader accepts and how to prove identity. It does not add logic beyond match → probe → fastboot RAM boot.
@@ -114,7 +119,6 @@ A DevPro must **not** include:
 - rootfs selection logic
 - distro‑specific behavior
 - package names
-- kernel module lists
 - stage0 construction rules
 - user choices (desktop environment, locale, etc.)
 
@@ -153,33 +157,6 @@ For v0, this is assumed to always be an **Android boot image**.
 
 Inner details (kernel encoding, compression) are nested *under* the container,
 because they describe how the kernel is placed *inside* the boot image.
-
-Conceptual shape:
-
-```yaml
-boot:
-  method: fastboot-boot
-
-  payload:
-    android_bootimg:
-      header_version: 2
-      page_size: 4096
-      base: 0x00008000        # only if relevant
-
-      limits:
-        max_kernel_bytes: ...
-        max_initrd_bytes: ...
-        max_total_bytes: ...
-
-      kernel:
-        encoding:
-          type: image+dtb
-          compress: gzip
-          append_dtb: true
-
-      initrd:
-        compress: gzip
-```
 
 This schema describes **what the device accepts**, not how fastboop builds it.
 
