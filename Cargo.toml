@@ -3,5 +3,6 @@ members = [
     "crates/fastboop-core",
     "crates/fastboop-transport",
     "crates/fastboop-cli",
+    "crates/fastboop-stage0",
 ]
 resolver = "2"
