@@ -1,8 +1,9 @@
 [workspace]
 members = [
     "crates/fastboop-core",
-    "crates/fastboop-transport",
     "crates/fastboop-cli",
     "crates/fastboop-stage0",
+    "crates/fastboop-transport-fastboot-rusb",
+    "crates/fastboop-transport-fastboot-webusb",
 ]
 resolver = "2"

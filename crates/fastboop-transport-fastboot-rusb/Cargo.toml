@@ -1,0 +1,12 @@
+[package]
+name = "fastboop-transport-fastboot-rusb"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fastboop-core = { path = "../fastboop-core" }
+rusb = "0.9.4"
+tracing = "0.1.41"
+
+[features]
+default = []

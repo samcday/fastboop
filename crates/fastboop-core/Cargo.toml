@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 serde = { version = "1.0.217", default-features = false, features = ["derive", "alloc"] }
 schemars = { version = "0.8.21", optional = true, features = ["preserve_order"] }
+tracing = { version = "0.1.44", default-features = false }
 
 [features]
 default = []

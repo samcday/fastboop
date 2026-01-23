@@ -1,0 +1,14 @@
+[package]
+name = "fastboop-transport-fastboot-webusb"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fastboop-core = { path = "../fastboop-core" }
+tracing = "0.1.41"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.99"
+wasm-bindgen-futures = "0.4.49"
+js-sys = "0.3.76"
+web-sys = { version = "0.3.76", features = ["Usb", "UsbDevice", "UsbInTransferResult", "UsbOutTransferResult", "UsbTransferStatus"] }

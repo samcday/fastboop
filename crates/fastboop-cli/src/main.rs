@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -6,8 +6,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use fastboop_core::fastboot::{
+    FastbootProtocolError, ProbeError, probe_profile_with_cache, profile_matches_vid_pid,
+};
 use fastboop_core::{DeviceProfile, RootfsProvider};
 use fastboop_stage0::{Stage0Options, build_stage0};
+use fastboop_transport_fastboot_rusb::FastbootRusb;
+use rusb::{Context as UsbContext, UsbContext as _};
+use tracing::debug;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(author, version, about = "fastboop CLI utilities")]
@@ -18,6 +25,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Detect connected fastboot devices that match a DevPro.
+    Detect,
     /// Synthesize a stage0 initrd from a rootfs and device profile; writes cpio to stdout.
     Stage0(Stage0Args),
 }
@@ -54,10 +63,123 @@ struct Stage0Args {
 }
 
 fn main() -> Result<()> {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
     let cli = Cli::parse();
     match cli.command {
+        Commands::Detect => run_detect(),
         Commands::Stage0(args) => run_stage0(args),
     }
+}
+
+fn run_detect() -> Result<()> {
+    let devpro_dirs = resolve_devpro_dirs()?;
+    let profiles = load_device_profiles(&devpro_dirs)?;
+    if profiles.is_empty() {
+        eprintln!("No device profiles found in {:?}", devpro_dirs);
+        return Ok(());
+    }
+
+    let profiles = dedup_profiles(&profiles);
+    let context = UsbContext::new().context("creating USB context")?;
+    let devices = context.devices().context("enumerating USB devices")?;
+    let mut found = false;
+    for device in devices.iter() {
+        let desc = match device.device_descriptor() {
+            Ok(desc) => desc,
+            Err(err) => {
+                eprintln!("Skipping USB device: unable to read descriptor: {err}");
+                continue;
+            }
+        };
+        let vid = desc.vendor_id();
+        let pid = desc.product_id();
+        let matching: Vec<_> = profiles
+            .iter()
+            .filter(|profile| profile_matches_vid_pid(profile, vid, pid))
+            .collect();
+        if matching.is_empty() {
+            continue;
+        }
+
+        let mut fastboot = match FastbootRusb::open(&device) {
+            Ok(fastboot) => fastboot,
+            Err(err) => {
+                eprintln!(
+                    "Skipping {:04x}:{:04x} bus={} addr={}: open failed: {err}",
+                    vid,
+                    pid,
+                    device.bus_number(),
+                    device.address()
+                );
+                continue;
+            }
+        };
+
+        let mut cache = std::collections::BTreeMap::new();
+        for profile in matching {
+            match pollster::block_on(probe_profile_with_cache(&mut fastboot, profile, &mut cache)) {
+                Ok(()) => {
+                    found = true;
+                    print_detected(&device, profile, vid, pid);
+                }
+                Err(err) => {
+                    debug!(
+                        profile_id = %profile.id,
+                        vid = %format!("{:04x}", vid),
+                        pid = %format!("{:04x}", pid),
+                        bus = device.bus_number(),
+                        addr = device.address(),
+                        error = %format_probe_error(err),
+                        "fastboot probe failed"
+                    );
+                }
+            }
+        }
+    }
+
+    if !found {
+        eprintln!("No matching fastboot devices detected.");
+    }
+    Ok(())
+}
+
+fn print_detected(device: &rusb::Device<UsbContext>, profile: &DeviceProfile, vid: u16, pid: u16) {
+    let name = profile.display_name.as_deref().unwrap_or("unknown");
+    println!(
+        "{:04x}:{:04x} bus={} addr={} profile={} name=\"{}\"",
+        vid,
+        pid,
+        device.bus_number(),
+        device.address(),
+        profile.id,
+        name
+    );
+}
+
+fn format_probe_error(
+    err: ProbeError<FastbootProtocolError<fastboop_transport_fastboot_rusb::FastbootRusbError>>,
+) -> String {
+    match err {
+        ProbeError::Transport(err) => err.to_string(),
+        ProbeError::MissingVar(name) => format!("missing getvar {name}"),
+        ProbeError::Mismatch {
+            name,
+            expected,
+            actual,
+        } => format!("getvar {name} mismatch: expected '{expected}', got '{actual}'"),
+    }
+}
+
+fn dedup_profiles(profiles: &HashMap<String, DeviceProfile>) -> Vec<&DeviceProfile> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+    for profile in profiles.values() {
+        if seen.insert(profile.id.clone()) {
+            unique.push(profile);
+        }
+    }
+    unique
 }
 
 fn run_stage0(args: Stage0Args) -> Result<()> {

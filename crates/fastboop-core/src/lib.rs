@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+pub mod fastboot;
+
 use alloc::{string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 
