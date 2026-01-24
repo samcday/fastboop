@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use fastboop_core::fastboot::{FastbootWire, Response};
 use rusb::{Context, Device, DeviceHandle, Direction, TransferType};
-use tracing::{debug, trace};
+use tracing::trace;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const RESPONSE_BUFFER_LEN: usize = 4096;

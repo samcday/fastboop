@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod bootimg;
 pub mod fastboot;
 
 use alloc::{string::String, vec::Vec};

@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::fastboot::{
-    FastbootProtocolError, ProbeError, probe_profile_with_cache, profile_matches_vid_pid,
+    FastbootProtocolError, ProbeError, boot, download, probe_profile_with_cache,
+    profile_matches_vid_pid,
 };
 use fastboop_core::{DeviceProfile, RootfsProvider};
 use fastboop_stage0::{Stage0Options, build_stage0};
@@ -25,10 +27,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Boot a device by synthesizing stage0 and issuing fastboot download+boot.
+    Boot(BootArgs),
     /// Detect connected fastboot devices that match a DevPro.
     Detect,
     /// Synthesize a stage0 initrd from a rootfs and device profile; writes cpio to stdout.
     Stage0(Stage0Args),
+}
+
+#[derive(Args)]
+struct BootArgs {
+    #[command(flatten)]
+    stage0: Stage0Args,
 }
 
 #[derive(Args)]
@@ -58,7 +68,7 @@ struct Stage0Args {
     #[arg(long = "require-module")]
     require_modules: Vec<String>,
     /// Extra kernel cmdline to append after the smoo.modules= argument.
-    #[arg(long)]
+    #[arg(long, alias = "cmdline")]
     cmdline_append: Option<String>,
 }
 
@@ -67,6 +77,7 @@ fn main() -> Result<()> {
     let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
     let cli = Cli::parse();
     match cli.command {
+        Commands::Boot(args) => run_boot(args),
         Commands::Detect => run_detect(),
         Commands::Stage0(args) => run_stage0(args),
     }
@@ -144,6 +155,133 @@ fn run_detect() -> Result<()> {
     Ok(())
 }
 
+fn run_boot(args: BootArgs) -> Result<()> {
+    let devpro_dirs = resolve_devpro_dirs()?;
+    let profiles = load_device_profiles(&devpro_dirs)?;
+    let profile = profiles
+        .get(&args.stage0.device_profile)
+        .or_else(|| profiles.get(&format!("file:{}", args.stage0.device_profile)));
+    let profile = profile.with_context(|| {
+        let mut ids: Vec<_> = profiles
+            .keys()
+            .filter(|k| !k.starts_with("file:"))
+            .cloned()
+            .collect();
+        ids.sort();
+        format!(
+            "device profile '{}' not found in {:?}; available ids: {:?}",
+            args.stage0.device_profile, devpro_dirs, ids
+        )
+    })?;
+
+    let context = UsbContext::new().context("creating USB context")?;
+    let devices = context.devices().context("enumerating USB devices")?;
+    let mut matched = Vec::new();
+
+    for device in devices.iter() {
+        let desc = match device.device_descriptor() {
+            Ok(desc) => desc,
+            Err(err) => {
+                eprintln!("Skipping USB device: unable to read descriptor: {err}");
+                continue;
+            }
+        };
+        let vid = desc.vendor_id();
+        let pid = desc.product_id();
+        if !profile_matches_vid_pid(profile, vid, pid) {
+            continue;
+        }
+
+        let mut fastboot = match FastbootRusb::open(&device) {
+            Ok(fastboot) => fastboot,
+            Err(err) => {
+                eprintln!(
+                    "Skipping {:04x}:{:04x} bus={} addr={}: open failed: {err}",
+                    vid,
+                    pid,
+                    device.bus_number(),
+                    device.address()
+                );
+                continue;
+            }
+        };
+
+        let mut cache = std::collections::BTreeMap::new();
+        match pollster::block_on(probe_profile_with_cache(&mut fastboot, profile, &mut cache)) {
+            Ok(()) => matched.push(fastboot),
+            Err(err) => {
+                debug!(
+                    profile_id = %profile.id,
+                    vid = %format!("{:04x}", vid),
+                    pid = %format!("{:04x}", pid),
+                    bus = device.bus_number(),
+                    addr = device.address(),
+                    error = %format_probe_error(err),
+                    "fastboot probe failed"
+                );
+            }
+        }
+    }
+
+    let mut fastboot = match matched.len() {
+        0 => bail!(
+            "no matching fastboot device found for profile {}",
+            profile.id
+        ),
+        1 => matched.remove(0),
+        _ => bail!(
+            "multiple fastboot devices matched profile {}; please connect only one",
+            profile.id
+        ),
+    };
+
+    let provider = DirectoryRootfs {
+        root: args.stage0.rootfs,
+        smoo: args.stage0.smoo,
+    };
+
+    let opts = Stage0Options {
+        extra_modules: args.stage0.require_modules,
+        dtb_override: args.stage0.dtb,
+        include_dtb_firmware: !args.stage0.skip_dtb_firmware,
+        allow_missing_firmware: args.stage0.allow_missing_firmware,
+    };
+
+    let existing = if let Some(path) = args.stage0.augment {
+        Some(fs::read(&path).with_context(|| format!("reading initrd {}", path.display()))?)
+    } else {
+        None
+    };
+
+    let build = build_stage0(
+        profile,
+        &provider,
+        &opts,
+        args.stage0.cmdline_append.as_deref(),
+        existing.as_deref(),
+    )
+    .map_err(|e| anyhow::anyhow!("stage0 build failed: {:?}", e))?;
+
+    let cmdline = join_cmdline(
+        profile
+            .boot
+            .fastboot_boot
+            .android_bootimg
+            .cmdline_append
+            .as_deref(),
+        Some(build.kernel_cmdline_append.as_str()),
+    );
+
+    let bootimg = build_android_bootimg(profile, &build.kernel_image, &build.initrd, &cmdline)
+        .map_err(|e| anyhow::anyhow!("bootimg build failed: {e}"))?;
+
+    pollster::block_on(download(&mut fastboot, &bootimg))
+        .map_err(|e| anyhow::anyhow!("fastboot download failed: {e}"))?;
+    pollster::block_on(boot(&mut fastboot))
+        .map_err(|e| anyhow::anyhow!("fastboot boot failed: {e}"))?;
+    Ok(())
+}
+
 fn print_detected(device: &rusb::Device<UsbContext>, profile: &DeviceProfile, vid: u16, pid: u16) {
     let name = profile.display_name.as_deref().unwrap_or("unknown");
     println!(
@@ -169,6 +307,23 @@ fn format_probe_error(
             actual,
         } => format!("getvar {name} mismatch: expected '{expected}', got '{actual}'"),
     }
+}
+
+fn join_cmdline(left: Option<&str>, right: Option<&str>) -> String {
+    let mut out = String::new();
+    if let Some(left) = left {
+        out.push_str(left.trim());
+    }
+    if let Some(right) = right {
+        let right = right.trim();
+        if !right.is_empty() {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(right);
+        }
+    }
+    out
 }
 
 fn dedup_profiles(profiles: &HashMap<String, DeviceProfile>) -> Vec<&DeviceProfile> {
