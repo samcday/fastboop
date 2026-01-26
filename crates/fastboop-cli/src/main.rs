@@ -15,7 +15,7 @@ use fastboop_core::{DeviceProfile, RootfsProvider};
 use fastboop_stage0::{Stage0Options, build_stage0};
 use fastboop_transport_fastboot_rusb::FastbootRusb;
 use rusb::{Context as UsbContext, UsbContext as _};
-use tracing::debug;
+use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -39,6 +39,9 @@ enum Commands {
 struct BootArgs {
     #[command(flatten)]
     stage0: Stage0Args,
+    /// Write boot image to a file and skip device detection/boot.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -47,17 +50,23 @@ struct Stage0Args {
     #[arg(value_name = "ROOTFS")]
     rootfs: PathBuf,
     /// Path to smoo-gadget binary to embed as /init (must be self-contained/static for now).
-    #[arg(long, required = true)]
-    smoo: PathBuf,
+    #[arg(long)]
+    smoo: Option<PathBuf>,
     /// Device profile id to use (must be present in loaded DevPros).
     #[arg(long, required = true)]
     device_profile: String,
-    /// Override DTB path (inside rootfs).
+    /// Override DTB path (host path).
     #[arg(long)]
-    dtb: Option<String>,
+    dtb: Option<PathBuf>,
     /// Existing initrd (cpio newc) to augment.
     #[arg(long)]
     augment: Option<PathBuf>,
+    /// Scan DTB/profiles to include matching kernel modules.
+    #[arg(long)]
+    scan_modules: bool,
+    /// Scan for firmware references (firmware.list + DTB firmware-name).
+    #[arg(long)]
+    scan_firmware: bool,
     /// Skip including firmware derived from DTB firmware-name properties.
     #[arg(long)]
     skip_dtb_firmware: bool,
@@ -174,83 +183,93 @@ fn run_boot(args: BootArgs) -> Result<()> {
         )
     })?;
 
-    let context = UsbContext::new().context("creating USB context")?;
-    let devices = context.devices().context("enumerating USB devices")?;
-    let mut matched = Vec::new();
+    let mut fastboot = if args.output.is_none() {
+        let context = UsbContext::new().context("creating USB context")?;
+        let devices = context.devices().context("enumerating USB devices")?;
+        let mut matched = Vec::new();
 
-    for device in devices.iter() {
-        let desc = match device.device_descriptor() {
-            Ok(desc) => desc,
-            Err(err) => {
-                eprintln!("Skipping USB device: unable to read descriptor: {err}");
+        for device in devices.iter() {
+            let desc = match device.device_descriptor() {
+                Ok(desc) => desc,
+                Err(err) => {
+                    eprintln!("Skipping USB device: unable to read descriptor: {err}");
+                    continue;
+                }
+            };
+            let vid = desc.vendor_id();
+            let pid = desc.product_id();
+            if !profile_matches_vid_pid(profile, vid, pid) {
                 continue;
             }
-        };
-        let vid = desc.vendor_id();
-        let pid = desc.product_id();
-        if !profile_matches_vid_pid(profile, vid, pid) {
-            continue;
-        }
 
-        let mut fastboot = match FastbootRusb::open(&device) {
-            Ok(fastboot) => fastboot,
-            Err(err) => {
-                eprintln!(
-                    "Skipping {:04x}:{:04x} bus={} addr={}: open failed: {err}",
-                    vid,
-                    pid,
-                    device.bus_number(),
-                    device.address()
-                );
-                continue;
-            }
-        };
+            let mut fastboot = match FastbootRusb::open(&device) {
+                Ok(fastboot) => fastboot,
+                Err(err) => {
+                    eprintln!(
+                        "Skipping {:04x}:{:04x} bus={} addr={}: open failed: {err}",
+                        vid,
+                        pid,
+                        device.bus_number(),
+                        device.address()
+                    );
+                    continue;
+                }
+            };
 
-        let mut cache = std::collections::BTreeMap::new();
-        match pollster::block_on(probe_profile_with_cache(&mut fastboot, profile, &mut cache)) {
-            Ok(()) => matched.push(fastboot),
-            Err(err) => {
-                debug!(
-                    profile_id = %profile.id,
-                    vid = %format!("{:04x}", vid),
-                    pid = %format!("{:04x}", pid),
-                    bus = device.bus_number(),
-                    addr = device.address(),
-                    error = %format_probe_error(err),
-                    "fastboot probe failed"
-                );
+            let mut cache = std::collections::BTreeMap::new();
+            match pollster::block_on(probe_profile_with_cache(&mut fastboot, profile, &mut cache)) {
+                Ok(()) => matched.push(fastboot),
+                Err(err) => {
+                    debug!(
+                        profile_id = %profile.id,
+                        vid = %format!("{:04x}", vid),
+                        pid = %format!("{:04x}", pid),
+                        bus = device.bus_number(),
+                        addr = device.address(),
+                        error = %format_probe_error(err),
+                        "fastboot probe failed"
+                    );
+                }
             }
         }
-    }
 
-    let mut fastboot = match matched.len() {
-        0 => bail!(
-            "no matching fastboot device found for profile {}",
-            profile.id
-        ),
-        1 => matched.remove(0),
-        _ => bail!(
-            "multiple fastboot devices matched profile {}; please connect only one",
-            profile.id
-        ),
+        Some(match matched.len() {
+            0 => bail!(
+                "no matching fastboot device found for profile {}",
+                profile.id
+            ),
+            1 => matched.remove(0),
+            _ => bail!(
+                "multiple fastboot devices matched profile {}; please connect only one",
+                profile.id
+            ),
+        })
+    } else {
+        None
     };
 
-    let provider = DirectoryRootfs {
-        root: args.stage0.rootfs,
-        smoo: args.stage0.smoo,
+    let dtb_override = match &args.stage0.dtb {
+        Some(path) => {
+            Some(fs::read(path).with_context(|| format!("reading dtb {}", path.display()))?)
+        }
+        None => None,
     };
 
     let opts = Stage0Options {
         extra_modules: args.stage0.require_modules,
-        dtb_override: args.stage0.dtb,
-        include_dtb_firmware: !args.stage0.skip_dtb_firmware,
+        dtb_override,
+        scan_modules: args.stage0.scan_modules,
+        scan_firmware: args.stage0.scan_firmware,
+        include_dtb_firmware: args.stage0.scan_firmware && !args.stage0.skip_dtb_firmware,
         allow_missing_firmware: args.stage0.allow_missing_firmware,
     };
 
-    let existing = if let Some(path) = args.stage0.augment {
-        Some(fs::read(&path).with_context(|| format!("reading initrd {}", path.display()))?)
-    } else {
-        None
+    let existing = read_existing_initrd(&args.stage0.augment)?;
+    ensure_smoo_source(&args.stage0.smoo, &existing)?;
+
+    let provider = DirectoryRootfs {
+        root: args.stage0.rootfs,
+        smoo: args.stage0.smoo,
     };
 
     let build = build_stage0(
@@ -272,8 +291,41 @@ fn run_boot(args: BootArgs) -> Result<()> {
         Some(build.kernel_cmdline_append.as_str()),
     );
 
-    let bootimg = build_android_bootimg(profile, &build.kernel_image, &build.initrd, &cmdline)
+    let mut kernel_image = build.kernel_image;
+    let mut profile = profile.clone();
+    if profile
+        .boot
+        .fastboot_boot
+        .android_bootimg
+        .kernel
+        .encoding
+        .append_dtb()
+    {
+        kernel_image.extend_from_slice(&build.dtb);
+        let header_version = profile.boot.fastboot_boot.android_bootimg.header_version;
+        if header_version >= 2 {
+            debug!(
+                from = header_version,
+                to = 0,
+                "downgrading android boot header for appended dtb"
+            );
+            profile.boot.fastboot_boot.android_bootimg.header_version = 0;
+        }
+    }
+
+    let bootimg = build_android_bootimg(&profile, &kernel_image, &build.initrd, &cmdline)
         .map_err(|e| anyhow::anyhow!("bootimg build failed: {e}"))?;
+
+    if let Some(path) = args.output {
+        fs::write(&path, &bootimg)
+            .with_context(|| format!("writing bootimg to {}", path.display()))?;
+        eprintln!("Wrote boot image to {}", path.display());
+        return Ok(());
+    }
+
+    let mut fastboot = fastboot
+        .take()
+        .expect("fastboot device probed when no --output");
 
     pollster::block_on(download(&mut fastboot, &bootimg))
         .map_err(|e| anyhow::anyhow!("fastboot download failed: {e}"))?;
@@ -356,22 +408,28 @@ fn run_stage0(args: Stage0Args) -> Result<()> {
         )
     })?;
 
-    let provider = DirectoryRootfs {
-        root: args.rootfs,
-        smoo: args.smoo,
+    let dtb_override = match &args.dtb {
+        Some(path) => {
+            Some(fs::read(path).with_context(|| format!("reading dtb {}", path.display()))?)
+        }
+        None => None,
     };
 
     let opts = Stage0Options {
         extra_modules: args.require_modules,
-        dtb_override: args.dtb,
-        include_dtb_firmware: !args.skip_dtb_firmware,
+        dtb_override,
+        scan_modules: args.scan_modules,
+        scan_firmware: args.scan_firmware,
+        include_dtb_firmware: args.scan_firmware && !args.skip_dtb_firmware,
         allow_missing_firmware: args.allow_missing_firmware,
     };
 
-    let existing = if let Some(path) = args.augment {
-        Some(fs::read(&path).with_context(|| format!("reading initrd {}", path.display()))?)
-    } else {
-        None
+    let existing = read_existing_initrd(&args.augment)?;
+    ensure_smoo_source(&args.smoo, &existing)?;
+
+    let provider = DirectoryRootfs {
+        root: args.rootfs,
+        smoo: args.smoo,
     };
 
     let build = build_stage0(
@@ -400,7 +458,7 @@ fn run_stage0(args: Stage0Args) -> Result<()> {
 #[derive(Clone)]
 struct DirectoryRootfs {
     root: PathBuf,
-    smoo: PathBuf,
+    smoo: Option<PathBuf>,
 }
 
 impl RootfsProvider for DirectoryRootfs {
@@ -408,8 +466,9 @@ impl RootfsProvider for DirectoryRootfs {
 
     fn read_all(&self, path: &str) -> Result<Vec<u8>> {
         if path == "smoo-gadget" {
-            return fs::read(&self.smoo)
-                .with_context(|| format!("reading smoo binary {}", self.smoo.display()));
+            let smoo = self.smoo.as_ref().context("smoo-gadget not provided")?;
+            return fs::read(smoo)
+                .with_context(|| format!("reading smoo binary {}", smoo.display()));
         }
         let path = resolve_rooted(&self.root, path)?;
         fs::read(&path).with_context(|| format!("reading {}", path.display()))
@@ -457,6 +516,30 @@ fn resolve_rooted(root: &Path, path: &str) -> Result<PathBuf> {
     Ok(root.join(trimmed))
 }
 
+fn read_existing_initrd(path: &Option<PathBuf>) -> Result<Option<Vec<u8>>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    Ok(Some(fs::read(path).with_context(|| {
+        format!("reading initrd {}", path.display())
+    })?))
+}
+
+fn ensure_smoo_source(smoo: &Option<PathBuf>, existing: &Option<Vec<u8>>) -> Result<()> {
+    if smoo.is_some() {
+        return Ok(());
+    }
+    let Some(data) = existing else {
+        bail!("--smoo is required unless --augment contains /usr/bin/smoo-gadget");
+    };
+    let has_smoo = fastboop_stage0::cpio_contains_path(data, "usr/bin/smoo-gadget")
+        .map_err(|e| anyhow::anyhow!("invalid initrd: {:?}", e))?;
+    if !has_smoo {
+        bail!("--smoo is required unless --augment contains /usr/bin/smoo-gadget");
+    }
+    Ok(())
+}
+
 fn resolve_devpro_dirs() -> Result<Vec<PathBuf>> {
     let mut dirs = Vec::new();
     if let Ok(env_paths) = env::var("FASTBOOP_SCHEMA_PATH") {
@@ -501,8 +584,17 @@ fn load_device_profiles(dirs: &[PathBuf]) -> Result<HashMap<String, DeviceProfil
             }
             let text = fs::read_to_string(&path)
                 .with_context(|| format!("reading device profile {}", path.display()))?;
-            let profile: DeviceProfile = serde_yaml::from_str(&text)
-                .with_context(|| format!("parsing {}", path.display()))?;
+            let profile: DeviceProfile = match serde_yaml::from_str(&text) {
+                Ok(profile) => profile,
+                Err(err) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "Skipping invalid device profile"
+                    );
+                    continue;
+                }
+            };
             if profiles.contains_key(&profile.id) {
                 bail!(
                     "duplicate device profile id '{}' found in {}",

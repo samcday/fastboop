@@ -41,10 +41,7 @@ boot:
       max_total_bytes: 83886080
 
     kernel:
-      encoding:
-        type: image+dtb
-        compress: gzip
-        append_dtb: true
+      encoding: image.gz+dtb
 
     cmdline_append: "console=ttyMSM0,115200n8"
 
@@ -155,8 +152,8 @@ A DevPro describes the **outer container format** accepted by the device.
 
 For v0, this is assumed to always be an **Android boot image**.
 
-Inner details (kernel encoding, compression) are nested *under* the container,
-because they describe how the kernel is placed *inside* the boot image.
+Kernel encoding is specified as a single string (e.g. `image.gz+dtb`) because it
+defines how the kernel is placed *inside* the boot image.
 
 This schema describes **what the device accepts**, not how fastboop builds it.
 

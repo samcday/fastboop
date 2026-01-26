@@ -121,21 +121,45 @@ pub struct AndroidKernel {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
-pub struct KernelEncoding {
-    #[serde(rename = "type")]
-    pub kind: KernelEncodingKind,
-    #[serde(default)]
-    pub compress: Option<Compression>,
-    #[serde(default)]
-    pub append_dtb: bool,
+#[serde(rename_all = "kebab-case")]
+pub enum KernelEncoding {
+    #[serde(rename = "image")]
+    Image,
+    #[serde(rename = "image+dtb")]
+    ImageDtb,
+    #[serde(rename = "image.gz")]
+    ImageGzip,
+    #[serde(rename = "image.gz+dtb")]
+    ImageGzipDtb,
+    #[serde(rename = "image.lz4")]
+    ImageLz4,
+    #[serde(rename = "image.lz4+dtb")]
+    ImageLz4Dtb,
+    #[serde(rename = "image.zst")]
+    ImageZstd,
+    #[serde(rename = "image.zst+dtb")]
+    ImageZstdDtb,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(rename_all = "kebab-case")]
-pub enum KernelEncodingKind {
-    Image,
-    ImageDtb,
+impl KernelEncoding {
+    pub fn compression(&self) -> Compression {
+        match self {
+            KernelEncoding::Image | KernelEncoding::ImageDtb => Compression::None,
+            KernelEncoding::ImageGzip | KernelEncoding::ImageGzipDtb => Compression::Gzip,
+            KernelEncoding::ImageLz4 | KernelEncoding::ImageLz4Dtb => Compression::Lz4,
+            KernelEncoding::ImageZstd | KernelEncoding::ImageZstdDtb => Compression::Zstd,
+        }
+    }
+
+    pub fn append_dtb(&self) -> bool {
+        matches!(
+            self,
+            KernelEncoding::ImageDtb
+                | KernelEncoding::ImageGzipDtb
+                | KernelEncoding::ImageLz4Dtb
+                | KernelEncoding::ImageZstdDtb
+        )
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

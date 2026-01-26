@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+mod kernel;
+
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -14,7 +16,13 @@ const MODULES_LOAD_PATH: &str = "etc/modules-load.d/fastboop-stage0.conf";
 const MODULES_ROOT: &str = "lib/modules";
 const FIRMWARE_ROOT: &str = "lib/firmware";
 const SMOO_BIN_PATH: &str = "usr/bin/smoo-gadget";
-const BASE_REQUIRED_MODULES: &[&str] = &["configfs", "libcomposite", "usb_f_fs", "ublk_drv"];
+const BASE_REQUIRED_MODULES: &[&str] = &[
+    "configfs",
+    "libcomposite",
+    "usb_f_fs",
+    "ublk_drv",
+    "overlay",
+];
 const MODULE_INDEX_FILES: &[&str] = &[
     "modules.dep",
     "modules.alias",
@@ -29,12 +37,16 @@ pub enum Stage0Error {
     Oversized(u64),
     ParseError(&'static str),
     InvalidCpio(&'static str),
+    KernelFormat(&'static str),
+    KernelDecode(&'static str),
 }
 
 #[derive(Default)]
 pub struct Stage0Options {
     pub extra_modules: Vec<String>,
-    pub dtb_override: Option<String>,
+    pub dtb_override: Option<Vec<u8>>,
+    pub scan_modules: bool,
+    pub scan_firmware: bool,
     pub include_dtb_firmware: bool,
     pub allow_missing_firmware: bool,
 }
@@ -45,7 +57,13 @@ pub struct Stage0Build {
     pub kernel_path: String,
     pub smoo_path: String,
     pub initrd: Vec<u8>,
+    pub dtb: Vec<u8>,
     pub kernel_cmdline_append: String,
+}
+
+pub fn cpio_contains_path(data: &[u8], path: &str) -> Result<bool, Stage0Error> {
+    let entries = parse_cpio_newc(data)?;
+    Ok(entries.iter().any(|e| e.path == path))
 }
 
 #[derive(Clone, Debug)]
@@ -67,19 +85,36 @@ pub fn build_stage0<P: RootfsProvider>(
         .read_all(&kernel_path)
         .map_err(|_| Stage0Error::MissingFile(kernel_path.clone()))?;
 
-    let smoo_init = rootfs
-        .read_all("smoo-gadget")
-        .map_err(|_| Stage0Error::MissingFile("smoo-gadget".into()))?;
     let smoo_path = SMOO_BIN_PATH.to_string();
 
-    let modules_dir = detect_modules_dir(rootfs)?;
-    let (modules_map, modules_dep, module_paths, modules_builtin) =
-        load_modules_metadata(rootfs, &modules_dir)?;
+    let mut modules_dir = None;
+    let mut modules_map = ModulesMap::new();
+    let mut modules_dep = ModulesDep::new();
+    let mut module_paths = ModulePaths::new();
+    let mut modules_builtin = BTreeSet::new();
+    let needs_modules = opts.scan_modules
+        || !opts.extra_modules.is_empty()
+        || !profile.stage0.kernel_modules.is_empty();
+    if needs_modules {
+        let dir = detect_modules_dir(rootfs)?;
+        let (map, dep, paths, builtin) = load_modules_metadata(rootfs, &dir)?;
+        modules_dir = Some(dir);
+        modules_map = map;
+        modules_dep = dep;
+        module_paths = paths;
+        modules_builtin = builtin;
+    }
 
-    let dtb_path = select_dtb(profile, rootfs, opts)?;
-    let dtb_bytes = rootfs
-        .read_all(&dtb_path)
-        .map_err(|_| Stage0Error::MissingFile(dtb_path.clone()))?;
+    let dtb_bytes = if let Some(override_bytes) = &opts.dtb_override {
+        override_bytes.clone()
+    } else {
+        let dtb_path = select_dtb(profile, rootfs)?;
+        rootfs
+            .read_all(&dtb_path)
+            .map_err(|_| Stage0Error::MissingFile(dtb_path.clone()))?
+    };
+
+    let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
     let dtb = Fdt::new(&dtb_bytes).map_err(|_| Stage0Error::ParseError("dtb"))?;
 
     let required_modules = collect_required_modules(
@@ -92,19 +127,24 @@ pub fn build_stage0<P: RootfsProvider>(
         &modules_builtin,
     );
 
-    let firmware_files = load_firmware_list(rootfs)?;
-    let dtb_firmware = if opts.include_dtb_firmware {
-        firmware_from_dtb(&dtb)?
+    let firmware_files = if opts.scan_firmware {
+        let firmware_files = load_firmware_list(rootfs)?;
+        let dtb_firmware = if opts.include_dtb_firmware {
+            firmware_from_dtb(&dtb)?
+        } else {
+            Vec::new()
+        };
+        merge_firmware_lists(firmware_files, dtb_firmware)
     } else {
         Vec::new()
     };
-    let firmware_files = merge_firmware_lists(firmware_files, dtb_firmware);
 
     let mut image = if let Some(data) = existing_cpio {
         CpioImage::from_bytes(data)?
     } else {
         CpioImage::new()
     };
+    let has_smoo = image.has_path(SMOO_BIN_PATH);
 
     image.ensure_dir("dev")?;
     image.ensure_dir("proc")?;
@@ -119,21 +159,30 @@ pub fn build_stage0<P: RootfsProvider>(
     image.ensure_dir("usr")?;
     image.ensure_dir("usr/bin")?;
 
-    image.ensure_file(SMOO_BIN_PATH, 0o100755, &smoo_init)?;
+    if !has_smoo {
+        let smoo_init = rootfs
+            .read_all("smoo-gadget")
+            .map_err(|_| Stage0Error::MissingFile("smoo-gadget".into()))?;
+        image.ensure_file(SMOO_BIN_PATH, 0o100755, &smoo_init)?;
+    }
     image.ensure_symlink("init", SMOO_BIN_PATH)?;
 
-    copy_module_indexes(rootfs, &modules_dir, &mut image)?;
+    if !required_modules.is_empty() {
+        let modules_dir = modules_dir
+            .ok_or_else(|| Stage0Error::MissingFile("/lib/modules (modules directory)".into()))?;
+        copy_module_indexes(rootfs, &modules_dir, &mut image)?;
 
-    for module in &required_modules {
-        if modules_builtin.contains(module) {
-            continue;
+        for module in &required_modules {
+            if modules_builtin.contains(module) {
+                continue;
+            }
+            let (rel, path) = module_path_for(module, &module_paths, &modules_dir)?;
+            let data = rootfs
+                .read_all(&path)
+                .map_err(|_| Stage0Error::MissingFile(path.clone()))?;
+            let cpio_path = format!("{MODULES_ROOT}/{rel}");
+            image.ensure_file(cpio_path.as_str(), 0o100644, &data)?;
         }
-        let (rel, path) = module_path_for(module, &module_paths, &modules_dir)?;
-        let data = rootfs
-            .read_all(&path)
-            .map_err(|_| Stage0Error::MissingFile(path.clone()))?;
-        let cpio_path = format!("{MODULES_ROOT}/{rel}");
-        image.ensure_file(cpio_path.as_str(), 0o100644, &data)?;
     }
 
     for firmware_rel in firmware_files {
@@ -171,11 +220,19 @@ pub fn build_stage0<P: RootfsProvider>(
         kernel_path,
         smoo_path,
         initrd: image.finish()?,
+        dtb: dtb_bytes,
         kernel_cmdline_append: cmdline,
     })
 }
 
 fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Error> {
+    if let Some(found) = find_kernel_in_modules(rootfs, "/lib/modules")? {
+        return Ok(found);
+    }
+    if let Some(found) = find_kernel_in_modules(rootfs, "/usr/lib/modules")? {
+        return Ok(found);
+    }
+
     const CANDIDATES: &[&str] = &["/boot/vmlinuz", "/boot/Image", "/boot/Image.gz"];
     for cand in CANDIDATES {
         if rootfs.exists(cand).unwrap_or(false) {
@@ -186,6 +243,27 @@ fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Error> {
         return Ok(found);
     }
     Err(Stage0Error::MissingFile("kernel image".into()))
+}
+
+fn find_kernel_in_modules<P: RootfsProvider>(
+    rootfs: &P,
+    base: &str,
+) -> Result<Option<String>, Stage0Error> {
+    let mut entries = match rootfs.read_dir(base) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(None),
+    };
+    entries.sort();
+    for entry in entries {
+        if entry.contains("rescue") {
+            continue;
+        }
+        let candidate = format!("{}/{}/vmlinuz", base, entry);
+        if rootfs.exists(&candidate).unwrap_or(false) {
+            return Ok(Some(candidate.trim_start_matches('/').to_string()));
+        }
+    }
+    Ok(None)
 }
 
 fn detect_modules_dir<P: RootfsProvider>(rootfs: &P) -> Result<ModulesDir, Stage0Error> {
@@ -283,11 +361,7 @@ fn copy_module_indexes<P: RootfsProvider>(
 fn select_dtb<P: RootfsProvider>(
     profile: &DeviceProfile,
     rootfs: &P,
-    opts: &Stage0Options,
 ) -> Result<String, Stage0Error> {
-    if let Some(over) = &opts.dtb_override {
-        return Ok(over.trim_start_matches('/').to_string());
-    }
     let name = profile.devicetree_name.trim_start_matches('/');
     let mut candidates = Vec::new();
     candidates.extend_from_slice(&[
@@ -330,22 +404,25 @@ fn collect_required_modules(
     module_paths: &ModulePaths,
     modules_builtin: &BTreeSet<String>,
 ) -> Vec<String> {
-    let mut required: BTreeSet<String> = BTreeSet::new();
+    let mut required = Vec::new();
+    let mut required_set = BTreeSet::new();
     for m in BASE_REQUIRED_MODULES {
-        required.insert((*m).to_string());
+        push_module_unique(&mut required, &mut required_set, m);
     }
     for m in &profile.stage0.kernel_modules {
-        required.insert(m.clone());
+        push_module_unique(&mut required, &mut required_set, m);
     }
     for m in &opts.extra_modules {
-        required.insert(m.clone());
+        push_module_unique(&mut required, &mut required_set, m);
     }
-    let compatibles = dtb_compatibles(dtb);
-    for compat in compatibles {
-        if let Some(module) = modules_map.get(&compat)
-            && (module_paths.contains_key(module) || modules_builtin.contains(module))
-        {
-            required.insert(module.clone());
+    if opts.scan_modules {
+        let compatibles = dtb_compatibles(dtb);
+        for compat in compatibles {
+            if let Some(module) = modules_map.get(&compat)
+                && (module_paths.contains_key(module) || modules_builtin.contains(module))
+            {
+                push_module_unique(&mut required, &mut required_set, module);
+            }
         }
     }
 
@@ -355,6 +432,12 @@ fn collect_required_modules(
         collect_with_deps(&m, modules_dep, &mut visited, &mut ordered);
     }
     ordered
+}
+
+fn push_module_unique(out: &mut Vec<String>, seen: &mut BTreeSet<String>, module: &str) {
+    if seen.insert(module.to_string()) {
+        out.push(module.to_string());
+    }
 }
 
 fn collect_with_deps(
@@ -629,6 +712,10 @@ impl CpioImage {
         Ok(())
     }
 
+    fn has_path(&self, path: &str) -> bool {
+        self.index.contains(path)
+    }
+
     fn ensure_file(&mut self, path: &str, mode: u32, data: &[u8]) -> Result<(), Stage0Error> {
         if self.index.contains(path) {
             return Ok(());
@@ -654,8 +741,38 @@ impl CpioImage {
     }
 
     fn finish(self) -> Result<Vec<u8>, Stage0Error> {
+        let mut entries = self.entries;
+        let mut index = self.index;
+
+        let mut missing_dirs = BTreeSet::new();
+        for entry in &entries {
+            for parent in parent_paths(entry.path.as_str()) {
+                if !index.contains(parent) {
+                    missing_dirs.insert(parent.to_string());
+                }
+            }
+        }
+        for path in missing_dirs {
+            index.insert(path.clone());
+            entries.push(CpioEntry {
+                path,
+                mode: 0o040755,
+                data: Vec::new(),
+            });
+        }
+
+        entries.sort_by(|a, b| {
+            let a_dir = is_dir_mode(a.mode);
+            let b_dir = is_dir_mode(b.mode);
+            match (a_dir, b_dir) {
+                (true, false) => core::cmp::Ordering::Less,
+                (false, true) => core::cmp::Ordering::Greater,
+                _ => a.path.cmp(&b.path),
+            }
+        });
+
         let mut builder = CpioBuilder::new();
-        for entry in self.entries {
+        for entry in entries {
             builder.entry(entry.path.as_str(), entry.mode, &entry.data)?;
         }
         builder.finish()
@@ -711,6 +828,23 @@ fn parse_cpio_newc(data: &[u8]) -> Result<Vec<CpioEntry>, Stage0Error> {
         });
     }
     Ok(out)
+}
+
+fn is_dir_mode(mode: u32) -> bool {
+    (mode & 0o170000) == 0o040000
+}
+
+fn parent_paths(path: &str) -> impl Iterator<Item = &str> {
+    let mut end = path.rfind('/');
+    core::iter::from_fn(move || {
+        let idx = end?;
+        let parent = &path[..idx];
+        end = parent.rfind('/');
+        if parent.is_empty() {
+            return None;
+        }
+        Some(parent)
+    })
 }
 
 fn hex_u32(bytes: &[u8]) -> Result<u32, Stage0Error> {

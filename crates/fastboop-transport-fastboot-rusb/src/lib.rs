@@ -31,6 +31,7 @@ pub enum FastbootRusbError {
     Fail(String),
     DownloadTooLarge(usize),
     UnexpectedStatus(String),
+    ShortWrite,
     Utf8(std::string::FromUtf8Error),
 }
 
@@ -43,6 +44,7 @@ impl fmt::Display for FastbootRusbError {
             Self::Fail(msg) => write!(f, "fastboot failure: {msg}"),
             Self::DownloadTooLarge(size) => write!(f, "download too large: {size} bytes"),
             Self::UnexpectedStatus(status) => write!(f, "unexpected status: {status}"),
+            Self::ShortWrite => write!(f, "short write while sending data"),
             Self::Utf8(err) => write!(f, "utf8 error: {err}"),
         }
     }
@@ -150,7 +152,16 @@ impl FastbootWire for FastbootRusb {
 
     fn send_data<'a>(&'a mut self, data: &'a [u8]) -> Self::SendDataFuture<'a> {
         Box::pin(async move {
-            self.handle.write_bulk(self.ep_out, data, self.timeout)?;
+            let mut remaining = data;
+            while !remaining.is_empty() {
+                let written = self
+                    .handle
+                    .write_bulk(self.ep_out, remaining, self.timeout)?;
+                if written == 0 {
+                    return Err(FastbootRusbError::ShortWrite);
+                }
+                remaining = &remaining[written..];
+            }
             Ok(())
         })
     }

@@ -24,6 +24,7 @@ const DEFAULT_TAGS_OFFSET: u64 = 0x00000100;
 
 struct HeaderParams {
     header_version: u32,
+    header_size: u32,
     kernel_size: u32,
     kernel_addr: u32,
     ramdisk_size: u32,
@@ -81,7 +82,7 @@ pub fn build_android_bootimg(
         return Err(BootImageError::InvalidPageSize(page_size));
     }
 
-    if let Some(limit) = boot.limits.max_kernel_bytes
+    if let Some(limit) = boot.limits.max_kernel_bytes.filter(|limit| *limit > 0)
         && kernel.len() as u64 > limit
     {
         return Err(BootImageError::ExceedsKernelLimit {
@@ -89,7 +90,7 @@ pub fn build_android_bootimg(
             limit,
         });
     }
-    if let Some(limit) = boot.limits.max_initrd_bytes
+    if let Some(limit) = boot.limits.max_initrd_bytes.filter(|limit| *limit > 0)
         && ramdisk.len() as u64 > limit
     {
         return Err(BootImageError::ExceedsInitrdLimit {
@@ -101,9 +102,16 @@ pub fn build_android_bootimg(
     let (cmdline_main, cmdline_extra) = split_cmdline(cmdline)?;
     let (kernel_addr, ramdisk_addr, second_addr, tags_addr) =
         compute_addrs(boot.base, boot.kernel_offset)?;
+    let header_size = match header_version {
+        0 => HEADER_V0_SIZE as u32,
+        1 => HEADER_V1_SIZE as u32,
+        2 => HEADER_V2_SIZE as u32,
+        _ => return Err(BootImageError::UnsupportedHeaderVersion(header_version)),
+    };
 
     let params = HeaderParams {
         header_version,
+        header_size,
         kernel_size: kernel.len() as u32,
         kernel_addr,
         ramdisk_size: ramdisk.len() as u32,
@@ -129,7 +137,7 @@ pub fn build_android_bootimg(
     push_section(&mut image, kernel, page_size);
     push_section(&mut image, ramdisk, page_size);
 
-    if let Some(limit) = boot.limits.max_total_bytes
+    if let Some(limit) = boot.limits.max_total_bytes.filter(|limit| *limit > 0)
         && image.len() as u64 > limit
     {
         return Err(BootImageError::ExceedsTotalLimit {
@@ -196,7 +204,7 @@ fn write_header_v1(out: &mut Vec<u8>, params: &HeaderParams) {
     write_header_v0(out, params);
     write_u32(out, 0);
     write_u64(out, 0);
-    write_u32(out, HEADER_V1_SIZE as u32);
+    write_u32(out, params.header_size);
     debug_assert_eq!(out.len(), HEADER_V1_SIZE);
 }
 

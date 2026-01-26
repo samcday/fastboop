@@ -72,6 +72,8 @@ impl<E: fmt::Display> fmt::Display for FastbootProtocolError<E> {
     }
 }
 
+const DEFAULT_DOWNLOAD_CHUNK_BYTES: usize = 1024 * 1024;
+
 pub async fn getvar<F: FastbootWire>(
     fastboot: &mut F,
     name: &str,
@@ -109,10 +111,12 @@ pub async fn download<F: FastbootWire>(
     if response.status != "DATA" {
         return Err(FastbootProtocolError::UnexpectedStatus(response.status));
     }
-    fastboot
-        .send_data(data)
-        .await
-        .map_err(FastbootProtocolError::Transport)?;
+    for chunk in data.chunks(DEFAULT_DOWNLOAD_CHUNK_BYTES) {
+        fastboot
+            .send_data(chunk)
+            .await
+            .map_err(FastbootProtocolError::Transport)?;
+    }
     let response = fastboot
         .read_response()
         .await
