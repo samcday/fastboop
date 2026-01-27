@@ -550,6 +550,9 @@ fn resolve_devpro_dirs() -> Result<Vec<PathBuf>> {
             dirs.push(PathBuf::from(part));
         }
     }
+    if let Some(devprofiles) = devprofiles_dir_for_cargo_run() {
+        dirs.push(devprofiles);
+    }
     if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
         dirs.push(PathBuf::from(xdg).join("fastboop/devpro"));
     } else if let Ok(home) = env::var("HOME") {
@@ -559,6 +562,23 @@ fn resolve_devpro_dirs() -> Result<Vec<PathBuf>> {
     let mut seen = HashMap::new();
     dirs.retain(|p| seen.insert(p.clone(), ()).is_none());
     Ok(dirs)
+}
+
+fn devprofiles_dir_for_cargo_run() -> Option<PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let running_under_cargo = env::var_os("CARGO").is_some()
+        || env::var_os("CARGO_MANIFEST_DIR").is_some()
+        || env::var_os("CARGO_PKG_NAME").is_some();
+    if !running_under_cargo {
+        return None;
+    }
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let workspace_root = manifest_dir.parent().and_then(|p| p.parent())?;
+    Some(workspace_root.join("devprofiles.d"))
 }
 
 fn load_device_profiles(dirs: &[PathBuf]) -> Result<HashMap<String, DeviceProfile>> {

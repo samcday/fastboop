@@ -1,0 +1,47 @@
+id: db410c
+display_name: Arrow Dragonboard 410c
+devicetree_name: qcom/apq8016-sbc
+
+match:
+  - fastboot:
+      vid: 0x18d1
+      pid: 0xd00d
+
+probe:
+  - fastboot.getvar: product
+    equals: MSM8916
+  - fastboot.getvar: variant
+    equals: SBC eMMC
+
+boot:
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 2048
+      base: 0x80000000
+
+      limits:
+        max_kernel_bytes: 0
+        max_initrd_bytes: 0 
+        max_total_bytes: 0
+
+      kernel:
+        encoding: image.gz+dtb
+    cmdline_append: "console=ttyMSM0,115200n8"
+
+stage0:
+  # these drivers are needed for UDC to come up
+  kernel_modules:
+    - qcom-apcs-ipc-mailbox
+    - qcom_hwspinlock
+    - smem
+    - qcom_smd
+    - smd-rpm
+    - rpm-proc
+    - qcom-spmi-pmic
+    - qcom_spmi-regulator
+    - qcom_smd-regulator
+    - ulpi
+    - phy-qcom-usb-hs
+    - extcon-usb-gpio
+    - ci_hdrc_msm

@@ -24,7 +24,7 @@ match:
 probe:
   - fastboot.getvar: product
     equals: sdm845
-  - fastboot.getvar: partition-type:aging:raw
+  - fastboot.getvar: partition-type:aging
     exists:
 
 boot:
