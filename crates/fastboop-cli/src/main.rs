@@ -313,8 +313,14 @@ fn run_boot(args: BootArgs) -> Result<()> {
         }
     }
 
-    let bootimg = build_android_bootimg(&profile, &kernel_image, &build.initrd, &cmdline)
-        .map_err(|e| anyhow::anyhow!("bootimg build failed: {e}"))?;
+    let bootimg = build_android_bootimg(
+        &profile,
+        &kernel_image,
+        &build.initrd,
+        Some(&build.dtb),
+        &cmdline,
+    )
+    .map_err(|e| anyhow::anyhow!("bootimg build failed: {e}"))?;
 
     if let Some(path) = args.output {
         fs::write(&path, &bootimg)

@@ -21,6 +21,7 @@ const DEFAULT_KERNEL_OFFSET: u64 = 0x00008000;
 const DEFAULT_RAMDISK_OFFSET: u64 = 0x01000000;
 const DEFAULT_SECOND_OFFSET: u64 = 0x00F00000;
 const DEFAULT_TAGS_OFFSET: u64 = 0x00000100;
+const DEFAULT_DTB_OFFSET: u64 = 0x01F00000;
 
 struct HeaderParams {
     header_version: u32,
@@ -34,6 +35,8 @@ struct HeaderParams {
     page_size: u32,
     cmdline_main: String,
     cmdline_extra: String,
+    dtb_size: u32,
+    dtb_addr: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +76,7 @@ pub fn build_android_bootimg(
     profile: &DeviceProfile,
     kernel: &[u8],
     ramdisk: &[u8],
+    dtb: Option<&[u8]>,
     cmdline: &str,
 ) -> Result<Vec<u8>, BootImageError> {
     let boot = &profile.boot.fastboot_boot.android_bootimg;
@@ -102,6 +106,18 @@ pub fn build_android_bootimg(
     let (cmdline_main, cmdline_extra) = split_cmdline(cmdline)?;
     let (kernel_addr, ramdisk_addr, second_addr, tags_addr) =
         compute_addrs(boot.base, boot.kernel_offset)?;
+    let dtb = if header_version >= 2 && !boot.kernel.encoding.append_dtb() {
+        dtb
+    } else {
+        None
+    };
+    let (dtb_size, dtb_addr) = match dtb {
+        Some(dtb) => (
+            dtb.len() as u32,
+            compute_dtb_addr(boot.base, boot.dtb_offset)?,
+        ),
+        None => (0, 0),
+    };
     let header_size = match header_version {
         0 => HEADER_V0_SIZE as u32,
         1 => HEADER_V1_SIZE as u32,
@@ -121,6 +137,8 @@ pub fn build_android_bootimg(
         page_size,
         cmdline_main,
         cmdline_extra,
+        dtb_size,
+        dtb_addr,
     };
 
     let mut header = Vec::new();
@@ -136,6 +154,9 @@ pub fn build_android_bootimg(
     let mut image = header;
     push_section(&mut image, kernel, page_size);
     push_section(&mut image, ramdisk, page_size);
+    if let Some(dtb) = dtb {
+        push_section(&mut image, dtb, page_size);
+    }
 
     if let Some(limit) = boot.limits.max_total_bytes.filter(|limit| *limit > 0)
         && image.len() as u64 > limit
@@ -166,6 +187,13 @@ fn compute_addrs(
         u32::try_from(second_addr).map_err(|_| BootImageError::AddressOverflow("second"))?,
         u32::try_from(tags_addr).map_err(|_| BootImageError::AddressOverflow("tags"))?,
     ))
+}
+
+fn compute_dtb_addr(base: Option<u64>, dtb_offset: Option<u64>) -> Result<u64, BootImageError> {
+    let base = base.unwrap_or(0);
+    let dtb_offset = dtb_offset.unwrap_or(DEFAULT_DTB_OFFSET);
+    base.checked_add(dtb_offset)
+        .ok_or(BootImageError::AddressOverflow("dtb"))
 }
 
 fn split_cmdline(cmdline: &str) -> Result<(String, String), BootImageError> {
@@ -210,8 +238,8 @@ fn write_header_v1(out: &mut Vec<u8>, params: &HeaderParams) {
 
 fn write_header_v2(out: &mut Vec<u8>, params: &HeaderParams) {
     write_header_v1(out, params);
-    write_u32(out, 0);
-    write_u64(out, 0);
+    write_u32(out, params.dtb_size);
+    write_u64(out, params.dtb_addr);
     debug_assert_eq!(out.len(), HEADER_V2_SIZE);
 }
 

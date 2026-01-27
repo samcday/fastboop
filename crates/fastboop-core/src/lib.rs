@@ -97,6 +97,8 @@ pub struct AndroidBootImage {
     pub base: Option<u64>,
     #[serde(default)]
     pub kernel_offset: Option<u64>,
+    #[serde(default)]
+    pub dtb_offset: Option<u64>,
     pub limits: BootLimits,
     pub kernel: AndroidKernel,
     #[serde(default)]
