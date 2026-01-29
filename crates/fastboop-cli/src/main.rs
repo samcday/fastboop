@@ -79,6 +79,9 @@ struct Stage0Args {
     /// Extra kernel cmdline to append after the smoo.modules= argument.
     #[arg(long, alias = "cmdline")]
     cmdline_append: Option<String>,
+    /// Enable CDC-ACM gadget (smoo.acm=1) and include usb_f_acm.
+    #[arg(long)]
+    serial: bool,
 }
 
 fn main() -> Result<()> {
@@ -262,6 +265,7 @@ fn run_boot(args: BootArgs) -> Result<()> {
         scan_firmware: args.stage0.scan_firmware,
         include_dtb_firmware: args.stage0.scan_firmware && !args.stage0.skip_dtb_firmware,
         allow_missing_firmware: args.stage0.allow_missing_firmware,
+        enable_serial: args.stage0.serial,
     };
 
     let existing = read_existing_initrd(&args.stage0.augment)?;
@@ -428,6 +432,7 @@ fn run_stage0(args: Stage0Args) -> Result<()> {
         scan_firmware: args.scan_firmware,
         include_dtb_firmware: args.scan_firmware && !args.skip_dtb_firmware,
         allow_missing_firmware: args.allow_missing_firmware,
+        enable_serial: args.serial,
     };
 
     let existing = read_existing_initrd(&args.augment)?;

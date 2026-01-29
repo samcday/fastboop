@@ -49,6 +49,7 @@ pub struct Stage0Options {
     pub scan_firmware: bool,
     pub include_dtb_firmware: bool,
     pub allow_missing_firmware: bool,
+    pub enable_serial: bool,
 }
 
 /// Resulting artifacts and recommended kernel cmdline additions.
@@ -207,13 +208,23 @@ pub fn build_stage0<P: RootfsProvider>(
     let module_load_bytes = serialize_module_load(&module_load_list);
     image.ensure_file(MODULES_LOAD_PATH, 0o100644, &module_load_bytes)?;
 
-    let mut cmdline = String::new();
-    if let Some(extra) = extra_cmdline
-        && !extra.is_empty()
-    {
-        cmdline.push(' ');
-        cmdline.push_str(extra);
+    let mut cmdline_parts = Vec::new();
+    if opts.enable_serial {
+        cmdline_parts.push("smoo.acm=1");
+        cmdline_parts.push("console=ttyGS0");
+        cmdline_parts.push("console=tty0");
     }
+    if let Some(extra) = extra_cmdline {
+        let extra = extra.trim();
+        if !extra.is_empty() {
+            cmdline_parts.push(extra);
+        }
+    }
+    let cmdline = if cmdline_parts.is_empty() {
+        String::new()
+    } else {
+        cmdline_parts.join(" ")
+    };
 
     Ok(Stage0Build {
         kernel_image,
@@ -414,6 +425,9 @@ fn collect_required_modules(
     }
     for m in &opts.extra_modules {
         push_module_unique(&mut required, &mut required_set, m);
+    }
+    if opts.enable_serial {
+        push_module_unique(&mut required, &mut required_set, "usb_f_acm");
     }
     if opts.scan_modules {
         let compatibles = dtb_compatibles(dtb);
