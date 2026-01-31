@@ -86,7 +86,10 @@ pub fn build_android_bootimg(
         return Err(BootImageError::InvalidPageSize(page_size));
     }
 
-    if let Some(limit) = boot.limits.max_kernel_bytes.filter(|limit| *limit > 0)
+    let limits = boot.limits.as_ref();
+    if let Some(limit) = limits
+        .and_then(|limits| limits.max_kernel_bytes)
+        .filter(|limit| *limit > 0)
         && kernel.len() as u64 > limit
     {
         return Err(BootImageError::ExceedsKernelLimit {
@@ -94,7 +97,9 @@ pub fn build_android_bootimg(
             limit,
         });
     }
-    if let Some(limit) = boot.limits.max_initrd_bytes.filter(|limit| *limit > 0)
+    if let Some(limit) = limits
+        .and_then(|limits| limits.max_initrd_bytes)
+        .filter(|limit| *limit > 0)
         && ramdisk.len() as u64 > limit
     {
         return Err(BootImageError::ExceedsInitrdLimit {
@@ -158,7 +163,9 @@ pub fn build_android_bootimg(
         push_section(&mut image, dtb, page_size);
     }
 
-    if let Some(limit) = boot.limits.max_total_bytes.filter(|limit| *limit > 0)
+    if let Some(limit) = limits
+        .and_then(|limits| limits.max_total_bytes)
+        .filter(|limit| *limit > 0)
         && image.len() as u64 > limit
     {
         return Err(BootImageError::ExceedsTotalLimit {

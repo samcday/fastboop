@@ -20,11 +20,6 @@ boot:
       page_size: 4096
       kernel_offset: 0x00008000
 
-      limits:
-        max_kernel_bytes: 0
-        max_initrd_bytes: 0 
-        max_total_bytes: 0
-
       kernel:
         encoding: image.gz
 
