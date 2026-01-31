@@ -1,0 +1,30 @@
+id: google-sargo
+display_name: Google Pixel 3a
+devicetree_name: qcom/sdm670-google-sargo
+
+match:
+  - fastboot:
+      vid: 0x18d1
+      pid: 0x4ee0
+
+probe:
+  - fastboot.getvar: product
+    equals: sargo
+
+boot:
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 4096
+      kernel_offset: 0x00008000
+
+      limits:
+        max_kernel_bytes: 0
+        max_initrd_bytes: 0 
+        max_total_bytes: 0
+
+      kernel:
+        encoding: image.gz+dtb
+
+stage0:
+  kernel_modules: []
