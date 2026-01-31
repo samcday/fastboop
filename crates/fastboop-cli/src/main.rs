@@ -46,6 +46,9 @@ struct BootArgs {
     /// Append host time to cmdline as systemd.clock_usec=... (use --system-time=false to disable).
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     system_time: bool,
+    /// Append systemd-firstboot credentials (use --systemd-firstboot=false to disable).
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    systemd_firstboot: bool,
 }
 
 #[derive(Args)]
@@ -270,7 +273,7 @@ fn run_boot(args: BootArgs) -> Result<()> {
         include_dtb_firmware: args.stage0.scan_firmware && !args.stage0.skip_dtb_firmware,
         allow_missing_firmware: args.stage0.allow_missing_firmware,
         enable_serial: args.stage0.serial,
-        personalization: Some(personalization_from_host()),
+        personalization: args.systemd_firstboot.then(personalization_from_host),
     };
 
     let existing = read_existing_initrd(&args.stage0.augment)?;
