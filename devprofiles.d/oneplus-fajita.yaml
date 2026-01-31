@@ -26,7 +26,7 @@ boot:
         max_total_bytes: 0
 
       kernel:
-        encoding: image
+        encoding: image.gz
 
 stage0:
   kernel_modules:
