@@ -5,7 +5,7 @@ extern crate alloc;
 pub mod bootimg;
 pub mod fastboot;
 
-use alloc::{string::String, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "schema")]
@@ -86,6 +86,39 @@ pub struct BootPayload {
 pub struct Stage0 {
     #[serde(default)]
     pub kernel_modules: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Personalization {
+    pub locale: Option<String>,
+    pub locale_messages: Option<String>,
+    pub keymap: Option<String>,
+    pub timezone: Option<String>,
+}
+
+impl Personalization {
+    pub fn cmdline_append(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        push_credential(&mut parts, "firstboot.locale", self.locale.as_deref());
+        push_credential(
+            &mut parts,
+            "firstboot.locale-messages",
+            self.locale_messages.as_deref(),
+        );
+        push_credential(&mut parts, "firstboot.keymap", self.keymap.as_deref());
+        push_credential(&mut parts, "firstboot.timezone", self.timezone.as_deref());
+        parts.join(" ")
+    }
+}
+
+fn push_credential(out: &mut Vec<String>, name: &str, value: Option<&str>) {
+    let Some(value) = value.map(str::trim) else {
+        return;
+    };
+    if value.is_empty() {
+        return;
+    }
+    out.push(format!("systemd.set_credential={name}:{value}"));
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

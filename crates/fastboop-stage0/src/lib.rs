@@ -8,7 +8,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use fastboop_core::{DeviceProfile, RootfsProvider};
+use fastboop_core::{DeviceProfile, Personalization, RootfsProvider};
 use fdt::Fdt;
 
 const FIRMWARE_LIST_PATH: &str = "etc/smoo/firmware.list";
@@ -50,6 +50,7 @@ pub struct Stage0Options {
     pub include_dtb_firmware: bool,
     pub allow_missing_firmware: bool,
     pub enable_serial: bool,
+    pub personalization: Option<Personalization>,
 }
 
 /// Resulting artifacts and recommended kernel cmdline additions.
@@ -208,16 +209,22 @@ pub fn build_stage0<P: RootfsProvider>(
     let module_load_bytes = serialize_module_load(&module_load_list);
     image.ensure_file(MODULES_LOAD_PATH, 0o100644, &module_load_bytes)?;
 
-    let mut cmdline_parts = Vec::new();
+    let mut cmdline_parts: Vec<String> = Vec::new();
     if opts.enable_serial {
-        cmdline_parts.push("smoo.acm=1");
-        cmdline_parts.push("console=ttyGS0");
-        cmdline_parts.push("console=tty0");
+        cmdline_parts.push("smoo.acm=1".to_string());
+        cmdline_parts.push("console=ttyGS0".to_string());
+        cmdline_parts.push("console=tty0".to_string());
+    }
+    if let Some(personalization) = &opts.personalization {
+        let personalization = personalization.cmdline_append();
+        if !personalization.is_empty() {
+            cmdline_parts.push(personalization);
+        }
     }
     if let Some(extra) = extra_cmdline {
         let extra = extra.trim();
         if !extra.is_empty() {
-            cmdline_parts.push(extra);
+            cmdline_parts.push(extra.to_string());
         }
     }
     let cmdline = if cmdline_parts.is_empty() {

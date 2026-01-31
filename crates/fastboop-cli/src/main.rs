@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -11,7 +12,7 @@ use fastboop_core::fastboot::{
     FastbootProtocolError, ProbeError, boot, download, probe_profile_with_cache,
     profile_matches_vid_pid,
 };
-use fastboop_core::{DeviceProfile, RootfsProvider};
+use fastboop_core::{DeviceProfile, Personalization, RootfsProvider};
 use fastboop_stage0::{Stage0Options, build_stage0};
 use fastboop_transport_fastboot_rusb::FastbootRusb;
 use rusb::{Context as UsbContext, UsbContext as _};
@@ -42,6 +43,9 @@ struct BootArgs {
     /// Write boot image to a file and skip device detection/boot.
     #[arg(short, long)]
     output: Option<PathBuf>,
+    /// Append host time to cmdline as systemd.clock_usec=... (use --system-time=false to disable).
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    system_time: bool,
 }
 
 #[derive(Args)]
@@ -266,6 +270,7 @@ fn run_boot(args: BootArgs) -> Result<()> {
         include_dtb_firmware: args.stage0.scan_firmware && !args.stage0.skip_dtb_firmware,
         allow_missing_firmware: args.stage0.allow_missing_firmware,
         enable_serial: args.stage0.serial,
+        personalization: Some(personalization_from_host()),
     };
 
     let existing = read_existing_initrd(&args.stage0.augment)?;
@@ -276,11 +281,30 @@ fn run_boot(args: BootArgs) -> Result<()> {
         smoo: args.stage0.smoo,
     };
 
+    let mut extra_parts = Vec::new();
+    if let Some(cmdline) = args
+        .stage0
+        .cmdline_append
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        extra_parts.push(cmdline.to_string());
+    }
+    if args.system_time {
+        extra_parts.push(system_time_cmdline()?);
+    }
+    let extra_cmdline = if extra_parts.is_empty() {
+        None
+    } else {
+        Some(extra_parts.join(" "))
+    };
+
     let build = build_stage0(
         profile,
         &provider,
         &opts,
-        args.stage0.cmdline_append.as_deref(),
+        extra_cmdline.as_deref(),
         existing.as_deref(),
     )
     .map_err(|e| anyhow::anyhow!("stage0 build failed: {:?}", e))?;
@@ -388,6 +412,112 @@ fn join_cmdline(left: Option<&str>, right: Option<&str>) -> String {
     out
 }
 
+fn system_time_cmdline() -> Result<String> {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system time before UNIX_EPOCH")?;
+    let usec: u64 = since_epoch
+        .as_micros()
+        .try_into()
+        .context("system time exceeds u64 microseconds")?;
+    Ok(format!("systemd.clock_usec={usec}"))
+}
+
+fn personalization_from_host() -> Personalization {
+    let locale = detect_locale().unwrap_or_else(|| "en_US.UTF-8".to_string());
+    let locale_messages = detect_locale_messages().unwrap_or_else(|| locale.clone());
+    let keymap = detect_keymap().unwrap_or_else(|| "us".to_string());
+    let timezone = detect_timezone().unwrap_or_else(|| "UTC".to_string());
+    Personalization {
+        locale: Some(locale),
+        locale_messages: Some(locale_messages),
+        keymap: Some(keymap),
+        timezone: Some(timezone),
+    }
+}
+
+fn detect_locale() -> Option<String> {
+    locale_from_env_or_file("LC_ALL").or_else(|| locale_from_env_or_file("LANG"))
+}
+
+fn detect_locale_messages() -> Option<String> {
+    locale_from_env_or_file("LC_MESSAGES")
+        .or_else(|| locale_from_env_or_file("LC_ALL"))
+        .or_else(|| locale_from_env_or_file("LANG"))
+}
+
+fn locale_from_env_or_file(key: &str) -> Option<String> {
+    env::var(key)
+        .ok()
+        .and_then(nonempty)
+        .or_else(|| read_key_from_file(Path::new("/etc/locale.conf"), key))
+}
+
+fn detect_keymap() -> Option<String> {
+    read_key_from_file(Path::new("/etc/vconsole.conf"), "KEYMAP")
+        .or_else(|| read_key_from_file(Path::new("/etc/default/keyboard"), "XKBLAYOUT"))
+        .map(|s| s.split(',').next().unwrap_or(&s).trim().to_string())
+        .and_then(nonempty)
+}
+
+fn detect_timezone() -> Option<String> {
+    if let Some(tz) = read_timezone_from_localtime() {
+        return Some(tz);
+    }
+    if let Ok(tz) = fs::read_to_string("/etc/timezone")
+        && let Some(tz) = nonempty(tz)
+    {
+        return Some(tz);
+    }
+    env::var("TZ").ok().and_then(nonempty)
+}
+
+fn read_timezone_from_localtime() -> Option<String> {
+    let target = fs::read_link("/etc/localtime").ok()?;
+    let target = if target.is_absolute() {
+        target
+    } else {
+        Path::new("/etc").join(target)
+    };
+    let target = target.to_string_lossy();
+    let marker = "zoneinfo/";
+    let idx = target.find(marker)? + marker.len();
+    let tz = target[idx..].trim();
+    if tz.is_empty() {
+        None
+    } else {
+        Some(tz.to_string())
+    }
+}
+
+fn read_key_from_file(path: &Path, key: &str) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (k, v) = line.split_once('=')?;
+        if k.trim() != key {
+            continue;
+        }
+        let v = v.trim().trim_matches('"').trim_matches('\'');
+        if let Some(v) = nonempty(v.to_string()) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn nonempty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn dedup_profiles(profiles: &HashMap<String, DeviceProfile>) -> Vec<&DeviceProfile> {
     let mut seen = HashSet::new();
     let mut unique = Vec::new();
@@ -433,6 +563,7 @@ fn run_stage0(args: Stage0Args) -> Result<()> {
         include_dtb_firmware: args.scan_firmware && !args.skip_dtb_firmware,
         allow_missing_firmware: args.allow_missing_firmware,
         enable_serial: args.serial,
+        personalization: None,
     };
 
     let existing = read_existing_initrd(&args.augment)?;
