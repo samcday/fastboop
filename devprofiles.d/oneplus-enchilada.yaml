@@ -1,0 +1,41 @@
+id: oneplus-enchilada
+display_name: OnePlus 6
+devicetree_name: qcom/sdm845-oneplus-enchilada
+
+match:
+  - fastboot:
+      vid: 0x18d1
+      pid: 0xd00d
+
+probe:
+  - fastboot.getvar: product
+    equals: sdm845
+  - fastboot.getvar: partition-type:boot_aging
+    exists:
+
+boot:
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 4096
+      kernel_offset: 0x00008000
+
+      limits:
+        max_kernel_bytes: 0
+        max_initrd_bytes: 0 
+        max_total_bytes: 0
+
+      kernel:
+        encoding: image
+
+stage0:
+  kernel_modules:
+    - dwc3
+    - dwc3-qcom
+    - dwc3-qcom-legacy
+    - phy-qcom-qusb2
+    - nvmem_qfprom
+    - i2c-qcom-geni
+    - pinctrl-sdm845
+    - gcc-sdm845
+    - qnoc-sdm845
