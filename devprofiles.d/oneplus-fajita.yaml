@@ -24,6 +24,9 @@ boot:
         encoding: image.gz
 
 stage0:
+  inject_mac:
+    bluetooth: qcom,wcn3990-bt
+    wifi: qcom,wcn3990-wifi
   kernel_modules:
     # This is the core set for a working UDC.
     - dwc3

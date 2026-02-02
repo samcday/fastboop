@@ -86,6 +86,17 @@ pub struct BootPayload {
 pub struct Stage0 {
     #[serde(default)]
     pub kernel_modules: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inject_mac: Option<InjectMac>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct InjectMac {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wifi: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bluetooth: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]

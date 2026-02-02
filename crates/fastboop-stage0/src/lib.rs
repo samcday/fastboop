@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use dtoolkit::fdt::Fdt;
 use dtoolkit::model::{DeviceTree, DeviceTreeNode, DeviceTreeProperty};
 use dtoolkit::{Node, Property};
-use fastboop_core::{DeviceProfile, Personalization, RootfsProvider};
+use fastboop_core::{DeviceProfile, InjectMac, Personalization, RootfsProvider};
 
 const MODULES_LOAD_PATH: &str = "etc/modules-load.d/fastboop-stage0.conf";
 const MODULES_ROOT: &str = "lib/modules";
@@ -107,6 +107,7 @@ pub fn build_stage0<P: RootfsProvider>(
 
     let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
     let dtb_bytes = apply_dtbo_overlays(&dtb_bytes, &opts.dtbo_overlays)?;
+    let dtb_bytes = apply_mac_injection(&dtb_bytes, &profile.stage0.inject_mac)?;
     let _dtb = Fdt::new(&dtb_bytes).map_err(|_| Stage0Error::ParseError("dtb"))?;
 
     let required_modules = collect_required_modules(profile, opts, &modules_dep);
@@ -622,6 +623,89 @@ fn parse_fixup_offsets(bytes: &[u8]) -> Result<Vec<u32>, Stage0Error> {
     Ok(out)
 }
 
+fn apply_mac_injection(dtb: &[u8], inject: &Option<InjectMac>) -> Result<Vec<u8>, Stage0Error> {
+    let Some(inject) = inject else {
+        return Ok(dtb.to_vec());
+    };
+    if inject.wifi.is_none() && inject.bluetooth.is_none() {
+        return Ok(dtb.to_vec());
+    }
+
+    let fdt = Fdt::new(dtb).map_err(|_| Stage0Error::ParseError("dtb"))?;
+    let mut tree = DeviceTree::from_fdt(&fdt).map_err(|_| Stage0Error::ParseError("dtb"))?;
+    let seed = 0u64;
+
+    if let Some(compat) = inject.wifi.as_deref() {
+        let mac = mac_from_seed(seed, "wifi", compat);
+        let node = find_node_by_compatible_mut(&mut tree.root, compat).ok_or_else(|| {
+            Stage0Error::Overlay(format!("inject_mac wifi compatible not found: {compat}"))
+        })?;
+        node.add_property(DeviceTreeProperty::new("local-mac-address", mac.to_vec()));
+    }
+
+    if let Some(compat) = inject.bluetooth.as_deref() {
+        let mac = mac_from_seed(seed, "bluetooth", compat);
+        let mut lsb = mac;
+        lsb.reverse();
+        let node = find_node_by_compatible_mut(&mut tree.root, compat).ok_or_else(|| {
+            Stage0Error::Overlay(format!(
+                "inject_mac bluetooth compatible not found: {compat}"
+            ))
+        })?;
+        node.add_property(DeviceTreeProperty::new("local-bd-address", lsb.to_vec()));
+    }
+
+    Ok(tree.to_dtb())
+}
+
+fn mac_from_seed(seed: u64, kind: &str, compat: &str) -> [u8; 6] {
+    let mut hash = fnv1a64(seed.to_le_bytes().iter().copied());
+    hash = fnv1a64_with_seed(hash, kind.as_bytes().iter().copied());
+    hash = fnv1a64_with_seed(hash, compat.as_bytes().iter().copied());
+    let mut mac = [0u8; 6];
+    for (idx, b) in mac.iter_mut().enumerate() {
+        *b = (hash >> (idx * 8)) as u8;
+    }
+    mac[0] &= 0xfe;
+    mac[0] |= 0x02;
+    mac
+}
+
+fn fnv1a64<I: IntoIterator<Item = u8>>(bytes: I) -> u64 {
+    fnv1a64_with_seed(0xcbf29ce484222325, bytes)
+}
+
+fn fnv1a64_with_seed<I: IntoIterator<Item = u8>>(seed: u64, bytes: I) -> u64 {
+    let mut hash = seed;
+    for b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn find_node_by_compatible_mut<'a>(
+    node: &'a mut DeviceTreeNode,
+    compat: &str,
+) -> Option<&'a mut DeviceTreeNode> {
+    if node_has_compatible(node, compat) {
+        return Some(node);
+    }
+    for child in node.children_mut() {
+        if let Some(found) = find_node_by_compatible_mut(child, compat) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn node_has_compatible(node: &DeviceTreeNode, compat: &str) -> bool {
+    let Some(prop) = node.property("compatible") else {
+        return false;
+    };
+    prop.as_str_list().any(|entry| entry == compat)
+}
+
 fn node_phandle(node: &DeviceTreeNode) -> Option<u32> {
     if let Some(prop) = node.property("phandle") {
         prop.as_u32().ok()
@@ -644,6 +728,72 @@ fn find_node<'a>(root: &'a DeviceTreeNode, path: &str) -> Option<&'a DeviceTreeN
         current = current.child(component)?;
     }
     Some(current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dtoolkit::fdt::Fdt;
+    use dtoolkit::model::{DeviceTree, DeviceTreeNode};
+    use dtoolkit::{Node, Property};
+
+    #[test]
+    fn mac_from_seed_sets_local_admin() {
+        let mac = mac_from_seed(0, "wifi", "qcom,wcn3990-wifi");
+        assert_eq!(mac[0] & 0x01, 0);
+        assert_eq!(mac[0] & 0x02, 0x02);
+    }
+
+    #[test]
+    fn inject_mac_updates_dtb() {
+        let mut tree = DeviceTree::new();
+        let bt_path = "/soc@0/geniqup@8c0000/serial@898000/bluetooth";
+        let wifi_path = "/soc@0/wifi@18800000";
+        ensure_path(&mut tree.root, bt_path);
+        ensure_path(&mut tree.root, wifi_path);
+        add_compatible(&mut tree, bt_path, "qcom,wcn3990-bt");
+        add_compatible(&mut tree, wifi_path, "qcom,wcn3990-wifi");
+
+        let dtb = tree.to_dtb();
+        let inject = InjectMac {
+            wifi: Some("qcom,wcn3990-wifi".to_string()),
+            bluetooth: Some("qcom,wcn3990-bt".to_string()),
+        };
+        let out = apply_mac_injection(&dtb, &Some(inject)).unwrap();
+        let fdt = Fdt::new(&out).unwrap();
+
+        let wifi_node = fdt.find_node(wifi_path).unwrap();
+        let wifi_prop = wifi_node.property("local-mac-address").unwrap();
+        let expected_wifi = mac_from_seed(0, "wifi", "qcom,wcn3990-wifi");
+        assert_eq!(wifi_prop.value(), expected_wifi);
+
+        let bt_node = fdt.find_node(bt_path).unwrap();
+        let bt_prop = bt_node.property("local-bd-address").unwrap();
+        let mut expected_bt = mac_from_seed(0, "bluetooth", "qcom,wcn3990-bt");
+        expected_bt.reverse();
+        assert_eq!(bt_prop.value(), expected_bt);
+    }
+
+    fn add_compatible(tree: &mut DeviceTree, path: &str, compat: &str) {
+        let node = tree
+            .find_node_mut(path)
+            .expect("node should exist for compat");
+        let mut value = Vec::new();
+        value.extend_from_slice(compat.as_bytes());
+        value.push(0);
+        node.add_property(DeviceTreeProperty::new("compatible", value));
+    }
+
+    fn ensure_path(root: &mut DeviceTreeNode, path: &str) {
+        let mut current = root;
+        for part in path.trim_start_matches('/').split('/') {
+            let has_child = current.child_mut(part).is_some();
+            if !has_child {
+                current.add_child(DeviceTreeNode::new(part));
+            }
+            current = current.child_mut(part).expect("child should exist");
+        }
+    }
 }
 
 fn collect_required_modules(

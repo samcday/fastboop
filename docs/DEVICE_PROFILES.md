@@ -48,6 +48,9 @@ boot:
 stage0:
   # extra kernel modules that are needed for UDC to come up
   kernel_modules: [dwc3, phy-qcom-qusb2, nvmem_qfprom]
+  inject_mac:
+    wifi: qcom,wcn3990-wifi
+    bluetooth: qcom,wcn3990-bt
 ```
 
 This is descriptive: it states what the vendor bootloader accepts and how to prove identity. It does not add logic beyond match → probe → fastboot RAM boot.
@@ -120,6 +123,18 @@ A DevPro must **not** include:
 - user choices (desktop environment, locale, etc.)
 
 Those belong elsewhere.
+
+---
+
+## Stage0 MAC injection
+
+Optional `stage0.inject_mac` entries identify target nodes by `compatible` string and inject
+deterministic addresses into the DTB used by stage0:
+
+- `wifi` writes `local-mac-address` using MSB order
+- `bluetooth` writes `local-bd-address` using LSB order
+
+Both fields are optional; omit `stage0.inject_mac` entirely if no injection is needed.
 
 ---
 
