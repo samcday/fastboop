@@ -8,8 +8,10 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use dtoolkit::fdt::Fdt;
+use dtoolkit::standard::NodeStandard;
+use dtoolkit::{Node, Property};
 use fastboop_core::{DeviceProfile, Personalization, RootfsProvider};
-use fdt::Fdt;
 
 const FIRMWARE_LIST_PATH: &str = "etc/smoo/firmware.list";
 const MODULES_LOAD_PATH: &str = "etc/modules-load.d/fastboop-stage0.conf";
@@ -480,24 +482,29 @@ fn collect_with_deps(
 
 fn firmware_from_dtb(dtb: &Fdt<'_>) -> Result<Vec<String>, Stage0Error> {
     let mut out = Vec::new();
-    for node in dtb.all_nodes() {
+    let mut stack = Vec::new();
+    stack.push(dtb.root());
+    while let Some(node) = stack.pop() {
         if let Some(prop) = node.property("firmware-name") {
-            if let Some(s) = prop.as_str() {
+            if let Ok(s) = prop.as_str() {
                 out.push(s.to_string());
-                continue;
-            }
-            let bytes = prop.value;
-            let mut start = 0;
-            for (idx, b) in bytes.iter().enumerate() {
-                if *b == 0 {
-                    if let Ok(s) = core::str::from_utf8(&bytes[start..idx])
-                        && !s.is_empty()
-                    {
-                        out.push(s.to_string());
+            } else {
+                let bytes = prop.value();
+                let mut start = 0;
+                for (idx, b) in bytes.iter().enumerate() {
+                    if *b == 0 {
+                        if let Ok(s) = core::str::from_utf8(&bytes[start..idx])
+                            && !s.is_empty()
+                        {
+                            out.push(s.to_string());
+                        }
+                        start = idx + 1;
                     }
-                    start = idx + 1;
                 }
             }
+        }
+        for child in node.children() {
+            stack.push(child);
         }
     }
     Ok(out)
@@ -516,11 +523,16 @@ fn merge_firmware_lists(mut a: Vec<String>, b: Vec<String>) -> Vec<String> {
 
 fn dtb_compatibles(dtb: &Fdt<'_>) -> Vec<String> {
     let mut out = Vec::new();
-    for node in dtb.all_nodes() {
+    let mut stack = Vec::new();
+    stack.push(dtb.root());
+    while let Some(node) = stack.pop() {
         if let Some(compats) = node.compatible() {
-            for c in compats.all() {
+            for c in compats {
                 out.push(c.to_string());
             }
+        }
+        for child in node.children() {
+            stack.push(child);
         }
     }
     out
