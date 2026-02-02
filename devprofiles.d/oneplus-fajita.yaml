@@ -25,6 +25,7 @@ boot:
 
 stage0:
   kernel_modules:
+    # This is the core set for a working UDC.
     - dwc3
     - dwc3-qcom
     - dwc3-qcom-legacy
@@ -34,3 +35,7 @@ stage0:
     - pinctrl-sdm845
     - gcc-sdm845
     - qnoc-sdm845
+
+    # This isn't required for UDC, but needs to load
+    # early to avoid deferred-probe timeouts on arm-smmu.
+    - gpucc-sdm845
