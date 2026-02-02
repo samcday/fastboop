@@ -65,6 +65,9 @@ struct Stage0Args {
     /// Override DTB path (host path).
     #[arg(long)]
     dtb: Option<PathBuf>,
+    /// DTBO overlay to apply (repeatable).
+    #[arg(long)]
+    dtbo: Vec<PathBuf>,
     /// Existing initrd (cpio newc) to augment.
     #[arg(long)]
     augment: Option<PathBuf>,
@@ -253,9 +256,11 @@ fn run_boot(args: BootArgs) -> Result<()> {
         None => None,
     };
 
+    let dtbo_overlays = read_dtbo_overlays(&args.stage0.dtbo)?;
     let opts = Stage0Options {
         extra_modules: args.stage0.require_modules,
         dtb_override,
+        dtbo_overlays,
 
         enable_serial: args.stage0.serial,
         personalization: args.systemd_firstboot.then(personalization_from_host),
@@ -543,9 +548,11 @@ fn run_stage0(args: Stage0Args) -> Result<()> {
         None => None,
     };
 
+    let dtbo_overlays = read_dtbo_overlays(&args.dtbo)?;
     let opts = Stage0Options {
         extra_modules: args.require_modules,
         dtb_override,
+        dtbo_overlays,
 
         enable_serial: args.serial,
         personalization: None,
@@ -650,6 +657,15 @@ fn read_existing_initrd(path: &Option<PathBuf>) -> Result<Option<Vec<u8>>> {
     Ok(Some(fs::read(path).with_context(|| {
         format!("reading initrd {}", path.display())
     })?))
+}
+
+fn read_dtbo_overlays(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>> {
+    let mut out = Vec::new();
+    for path in paths {
+        let data = fs::read(path).with_context(|| format!("reading dtbo {}", path.display()))?;
+        out.push(data);
+    }
+    Ok(out)
 }
 
 fn ensure_smoo_source(smoo: &Option<PathBuf>, existing: &Option<Vec<u8>>) -> Result<()> {

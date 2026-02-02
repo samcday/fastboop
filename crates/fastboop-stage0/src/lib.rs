@@ -9,6 +9,8 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use dtoolkit::fdt::Fdt;
+use dtoolkit::model::{DeviceTree, DeviceTreeNode, DeviceTreeProperty};
+use dtoolkit::{Node, Property};
 use fastboop_core::{DeviceProfile, Personalization, RootfsProvider};
 
 const MODULES_LOAD_PATH: &str = "etc/modules-load.d/fastboop-stage0.conf";
@@ -29,6 +31,7 @@ pub enum Stage0Error {
     EmptyPath,
     Oversized(u64),
     ParseError(&'static str),
+    Overlay(String),
     InvalidCpio(&'static str),
     KernelFormat(&'static str),
     KernelDecode(&'static str),
@@ -38,6 +41,7 @@ pub enum Stage0Error {
 pub struct Stage0Options {
     pub extra_modules: Vec<String>,
     pub dtb_override: Option<Vec<u8>>,
+    pub dtbo_overlays: Vec<Vec<u8>>,
     pub enable_serial: bool,
     pub personalization: Option<Personalization>,
 }
@@ -102,6 +106,7 @@ pub fn build_stage0<P: RootfsProvider>(
     };
 
     let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
+    let dtb_bytes = apply_dtbo_overlays(&dtb_bytes, &opts.dtbo_overlays)?;
     let _dtb = Fdt::new(&dtb_bytes).map_err(|_| Stage0Error::ParseError("dtb"))?;
 
     let required_modules = collect_required_modules(profile, opts, &modules_dep);
@@ -354,6 +359,291 @@ fn select_dtb<P: RootfsProvider>(
         "dtb for {}",
         profile.devicetree_name
     )))
+}
+
+fn apply_dtbo_overlays(base: &[u8], overlays: &[Vec<u8>]) -> Result<Vec<u8>, Stage0Error> {
+    if overlays.is_empty() {
+        return Ok(base.to_vec());
+    }
+    let base_fdt = Fdt::new(base).map_err(|_| Stage0Error::ParseError("dtb"))?;
+    let mut tree = DeviceTree::from_fdt(&base_fdt).map_err(|_| Stage0Error::ParseError("dtb"))?;
+    for overlay in overlays {
+        let overlay_fdt = Fdt::new(overlay).map_err(|_| Stage0Error::ParseError("dtbo"))?;
+        let mut overlay_tree =
+            DeviceTree::from_fdt(&overlay_fdt).map_err(|_| Stage0Error::ParseError("dtbo"))?;
+        normalize_overlay_phandles(&tree, &mut overlay_tree)?;
+        apply_overlay_tree(&mut tree, &overlay_tree)?;
+    }
+    Ok(tree.to_dtb())
+}
+
+fn apply_overlay_tree(base: &mut DeviceTree, overlay: &DeviceTree) -> Result<(), Stage0Error> {
+    for fragment in (&overlay.root).children() {
+        let name = fragment.name();
+        if !name.starts_with("fragment") {
+            continue;
+        }
+        let target_path = match fragment.property("target-path") {
+            Some(prop) => prop
+                .as_str()
+                .map_err(|_| Stage0Error::Overlay("invalid target-path".into()))?,
+            None => {
+                return Err(Stage0Error::Overlay(
+                    "overlay fragment missing target-path".into(),
+                ));
+            }
+        };
+        if fragment.property("target").is_some() {
+            return Err(Stage0Error::Overlay(
+                "dtbo target phandles not supported".into(),
+            ));
+        }
+        if !target_path.starts_with('/') {
+            return Err(Stage0Error::Overlay(
+                "overlay target-path must be absolute".into(),
+            ));
+        }
+        let overlay_node = fragment
+            .child("__overlay__")
+            .ok_or_else(|| Stage0Error::Overlay("overlay fragment missing __overlay__".into()))?;
+        let target_node = base.find_node_mut(target_path).ok_or_else(|| {
+            Stage0Error::Overlay(format!("overlay target not found: {target_path}"))
+        })?;
+        merge_overlay_node(target_node, overlay_node);
+    }
+    Ok(())
+}
+
+fn merge_overlay_node(target: &mut DeviceTreeNode, overlay: &DeviceTreeNode) {
+    for prop in overlay.properties() {
+        if let Some(existing) = target.property_mut(prop.name()) {
+            existing.set_value(prop.value());
+        } else {
+            target.add_property(DeviceTreeProperty::new(prop.name(), prop.value()));
+        }
+    }
+    for child in overlay.children() {
+        if let Some(target_child) = target.child_mut(child.name()) {
+            merge_overlay_node(target_child, child);
+        } else {
+            target.add_child(child.clone());
+        }
+    }
+}
+
+fn normalize_overlay_phandles(
+    base: &DeviceTree,
+    overlay: &mut DeviceTree,
+) -> Result<(), Stage0Error> {
+    let used = collect_used_phandles(&base.root);
+    let mut overlay_phandles = BTreeMap::new();
+    let mut overlay_nodes = Vec::new();
+    collect_overlay_phandles(
+        &overlay.root,
+        "/",
+        &mut overlay_phandles,
+        &mut overlay_nodes,
+    )?;
+
+    if overlay_phandles.is_empty() {
+        return Ok(());
+    }
+
+    let fixups = find_node(&overlay.root, "/__local_fixups__").cloned();
+    let mut next_phandle = used.iter().copied().max().unwrap_or(0).saturating_add(1);
+    let mut mapping = BTreeMap::new();
+    let mut used_all = used;
+
+    for &old in overlay_phandles.keys() {
+        let needs_remap = used_all.contains(&old) || mapping.contains_key(&old);
+        if needs_remap {
+            if fixups.is_none() {
+                return Err(Stage0Error::Overlay(
+                    "overlay phandle collision without __local_fixups__".into(),
+                ));
+            }
+            while used_all.contains(&next_phandle) {
+                next_phandle = next_phandle.saturating_add(1);
+            }
+            mapping.insert(old, next_phandle);
+            used_all.insert(next_phandle);
+            next_phandle = next_phandle.saturating_add(1);
+        }
+    }
+
+    if !mapping.is_empty() {
+        for (path, prop_names, old) in overlay_nodes {
+            if let Some(new) = mapping.get(&old) {
+                let node = overlay.find_node_mut(&path).ok_or_else(|| {
+                    Stage0Error::Overlay(format!("phandle node not found: {path}"))
+                })?;
+                for prop_name in prop_names {
+                    let prop = node.property_mut(&prop_name).ok_or_else(|| {
+                        Stage0Error::Overlay(format!(
+                            "phandle property not found: {path}:{prop_name}"
+                        ))
+                    })?;
+                    prop.set_value(new.to_be_bytes());
+                }
+            }
+        }
+
+        if let Some(fixups_node) = fixups.as_ref() {
+            apply_local_fixups(fixups_node, overlay, &mapping, "/")?;
+        } else {
+            return Err(Stage0Error::Overlay(
+                "missing __local_fixups__ for phandle remap".into(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_used_phandles(node: &DeviceTreeNode) -> BTreeSet<u32> {
+    let mut out = BTreeSet::new();
+    collect_used_phandles_recursive(node, &mut out);
+    out
+}
+
+fn collect_used_phandles_recursive(node: &DeviceTreeNode, out: &mut BTreeSet<u32>) {
+    if let Some(phandle) = node_phandle(node) {
+        out.insert(phandle);
+    }
+    for child in node.children() {
+        collect_used_phandles_recursive(child, out);
+    }
+}
+
+fn collect_overlay_phandles(
+    node: &DeviceTreeNode,
+    path: &str,
+    seen: &mut BTreeMap<u32, String>,
+    nodes: &mut Vec<(String, Vec<String>, u32)>,
+) -> Result<(), Stage0Error> {
+    let mut props = Vec::new();
+    let mut phandle_val = None;
+    if let Some(prop) = node.property("phandle") {
+        phandle_val = Some(
+            prop.as_u32()
+                .map_err(|_| Stage0Error::Overlay("invalid phandle value".into()))?,
+        );
+        props.push("phandle".to_string());
+    }
+    if let Some(prop) = node.property("linux,phandle") {
+        let val = prop
+            .as_u32()
+            .map_err(|_| Stage0Error::Overlay("invalid linux,phandle value".into()))?;
+        if let Some(existing) = phandle_val {
+            if existing != val {
+                return Err(Stage0Error::Overlay(
+                    "phandle/linux,phandle mismatch".into(),
+                ));
+            }
+        } else {
+            phandle_val = Some(val);
+        }
+        props.push("linux,phandle".to_string());
+    }
+    if let Some(val) = phandle_val {
+        if let Some(existing) = seen.get(&val) {
+            return Err(Stage0Error::Overlay(format!(
+                "duplicate overlay phandle {val} at {path} (seen at {existing})"
+            )));
+        }
+        seen.insert(val, path.to_string());
+        nodes.push((path.to_string(), props, val));
+    }
+    for child in node.children() {
+        let child_path = if path == "/" {
+            format!("/{0}", child.name())
+        } else {
+            format!("{path}/{0}", child.name())
+        };
+        collect_overlay_phandles(child, &child_path, seen, nodes)?;
+    }
+    Ok(())
+}
+
+fn apply_local_fixups(
+    fixups_node: &DeviceTreeNode,
+    overlay: &mut DeviceTree,
+    mapping: &BTreeMap<u32, u32>,
+    path: &str,
+) -> Result<(), Stage0Error> {
+    for prop in fixups_node.properties() {
+        let target = overlay
+            .find_node_mut(path)
+            .ok_or_else(|| Stage0Error::Overlay(format!("fixup target not found: {path}")))?;
+        let target_prop = target.property_mut(prop.name()).ok_or_else(|| {
+            Stage0Error::Overlay(format!(
+                "fixup property not found: {path}:{prop_name}",
+                prop_name = prop.name()
+            ))
+        })?;
+        let mut value = (&*target_prop).value().to_vec();
+        for offset in parse_fixup_offsets(prop.value())? {
+            let offset = usize::try_from(offset)
+                .map_err(|_| Stage0Error::Overlay("fixup offset overflow".into()))?;
+            let end = offset
+                .checked_add(4)
+                .ok_or_else(|| Stage0Error::Overlay("fixup offset overflow".into()))?;
+            if end > value.len() {
+                return Err(Stage0Error::Overlay("fixup offset out of bounds".into()));
+            }
+            let old = u32::from_be_bytes(value[offset..end].try_into().unwrap());
+            if let Some(new) = mapping.get(&old) {
+                value[offset..end].copy_from_slice(&new.to_be_bytes());
+            }
+        }
+        target_prop.set_value(value);
+    }
+
+    for child in fixups_node.children() {
+        let child_path = if path == "/" {
+            format!("/{0}", child.name())
+        } else {
+            format!("{path}/{0}", child.name())
+        };
+        apply_local_fixups(child, overlay, mapping, &child_path)?;
+    }
+    Ok(())
+}
+
+fn parse_fixup_offsets(bytes: &[u8]) -> Result<Vec<u32>, Stage0Error> {
+    if !bytes.len().is_multiple_of(4) {
+        return Err(Stage0Error::Overlay("invalid fixup offsets".into()));
+    }
+    let mut out = Vec::new();
+    for chunk in bytes.chunks_exact(4) {
+        let val = u32::from_be_bytes(chunk.try_into().unwrap());
+        out.push(val);
+    }
+    Ok(out)
+}
+
+fn node_phandle(node: &DeviceTreeNode) -> Option<u32> {
+    if let Some(prop) = node.property("phandle") {
+        prop.as_u32().ok()
+    } else if let Some(prop) = node.property("linux,phandle") {
+        prop.as_u32().ok()
+    } else {
+        None
+    }
+}
+
+fn find_node<'a>(root: &'a DeviceTreeNode, path: &str) -> Option<&'a DeviceTreeNode> {
+    if !path.starts_with('/') {
+        return None;
+    }
+    if path == "/" {
+        return Some(root);
+    }
+    let mut current = root;
+    for component in path.split('/').filter(|s| !s.is_empty()) {
+        current = current.child(component)?;
+    }
+    Some(current)
 }
 
 fn collect_required_modules(
