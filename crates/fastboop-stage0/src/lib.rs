@@ -9,14 +9,10 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use dtoolkit::fdt::Fdt;
-use dtoolkit::standard::NodeStandard;
-use dtoolkit::{Node, Property};
 use fastboop_core::{DeviceProfile, Personalization, RootfsProvider};
 
-const FIRMWARE_LIST_PATH: &str = "etc/smoo/firmware.list";
 const MODULES_LOAD_PATH: &str = "etc/modules-load.d/fastboop-stage0.conf";
 const MODULES_ROOT: &str = "lib/modules";
-const FIRMWARE_ROOT: &str = "lib/firmware";
 const SMOO_BIN_PATH: &str = "usr/bin/smoo-gadget";
 const BASE_REQUIRED_MODULES: &[&str] = &[
     "configfs",
@@ -25,12 +21,7 @@ const BASE_REQUIRED_MODULES: &[&str] = &[
     "ublk_drv",
     "overlay",
 ];
-const MODULE_INDEX_FILES: &[&str] = &[
-    "modules.dep",
-    "modules.alias",
-    "modules.builtin",
-    "modules.order",
-];
+const MODULE_INDEX_FILES: &[&str] = &["modules.dep", "modules.builtin", "modules.order"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage0Error {
@@ -47,10 +38,6 @@ pub enum Stage0Error {
 pub struct Stage0Options {
     pub extra_modules: Vec<String>,
     pub dtb_override: Option<Vec<u8>>,
-    pub scan_modules: bool,
-    pub scan_firmware: bool,
-    pub include_dtb_firmware: bool,
-    pub allow_missing_firmware: bool,
     pub enable_serial: bool,
     pub personalization: Option<Personalization>,
 }
@@ -76,7 +63,7 @@ struct ModulesDir {
     source_root: String,
 }
 
-/// Build a minimal stage0 initrd containing smoo as PID1 plus modules/firmware.
+/// Build a minimal stage0 initrd containing smoo as PID1 plus modules.
 pub fn build_stage0<P: RootfsProvider>(
     profile: &DeviceProfile,
     rootfs: &P,
@@ -92,18 +79,14 @@ pub fn build_stage0<P: RootfsProvider>(
     let smoo_path = SMOO_BIN_PATH.to_string();
 
     let mut modules_dir = None;
-    let mut modules_map = ModulesMap::new();
     let mut modules_dep = ModulesDep::new();
     let mut module_paths = ModulePaths::new();
     let mut modules_builtin = BTreeSet::new();
-    let needs_modules = opts.scan_modules
-        || !opts.extra_modules.is_empty()
-        || !profile.stage0.kernel_modules.is_empty();
+    let needs_modules = !opts.extra_modules.is_empty() || !profile.stage0.kernel_modules.is_empty();
     if needs_modules {
         let dir = detect_modules_dir(rootfs)?;
-        let (map, dep, paths, builtin) = load_modules_metadata(rootfs, &dir)?;
+        let (dep, paths, builtin) = load_modules_metadata(rootfs, &dir)?;
         modules_dir = Some(dir);
-        modules_map = map;
         modules_dep = dep;
         module_paths = paths;
         modules_builtin = builtin;
@@ -119,29 +102,9 @@ pub fn build_stage0<P: RootfsProvider>(
     };
 
     let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
-    let dtb = Fdt::new(&dtb_bytes).map_err(|_| Stage0Error::ParseError("dtb"))?;
+    let _dtb = Fdt::new(&dtb_bytes).map_err(|_| Stage0Error::ParseError("dtb"))?;
 
-    let required_modules = collect_required_modules(
-        profile,
-        opts,
-        &dtb,
-        &modules_map,
-        &modules_dep,
-        &module_paths,
-        &modules_builtin,
-    );
-
-    let firmware_files = if opts.scan_firmware {
-        let firmware_files = load_firmware_list(rootfs)?;
-        let dtb_firmware = if opts.include_dtb_firmware {
-            firmware_from_dtb(&dtb)?
-        } else {
-            Vec::new()
-        };
-        merge_firmware_lists(firmware_files, dtb_firmware)
-    } else {
-        Vec::new()
-    };
+    let required_modules = collect_required_modules(profile, opts, &modules_dep);
 
     let mut image = if let Some(data) = existing_cpio {
         CpioImage::from_bytes(data)?
@@ -154,11 +117,9 @@ pub fn build_stage0<P: RootfsProvider>(
     image.ensure_dir("proc")?;
     image.ensure_dir("sys")?;
     image.ensure_dir("etc")?;
-    image.ensure_dir("etc/smoo")?;
     image.ensure_dir("etc/modules-load.d")?;
     image.ensure_dir("lib")?;
     image.ensure_dir("lib/modules")?;
-    image.ensure_dir("lib/firmware")?;
     image.ensure_dir("sbin")?;
     image.ensure_dir("usr")?;
     image.ensure_dir("usr/bin")?;
@@ -187,20 +148,6 @@ pub fn build_stage0<P: RootfsProvider>(
             let cpio_path = format!("{MODULES_ROOT}/{rel}");
             image.ensure_file(cpio_path.as_str(), 0o100644, &data)?;
         }
-    }
-
-    for firmware_rel in firmware_files {
-        let rel = trim_leading_slash(&firmware_rel)?;
-        let path = join_paths("/lib/firmware", rel)?;
-        let data = match rootfs.read_all(&path) {
-            Ok(d) => d,
-            Err(_) if opts.allow_missing_firmware => {
-                continue;
-            }
-            Err(_) => return Err(Stage0Error::MissingFile(path.clone())),
-        };
-        let cpio_path = format!("{FIRMWARE_ROOT}/{rel}");
-        image.ensure_file(cpio_path.as_str(), 0o100644, &data)?;
     }
 
     let module_load_list: Vec<String> = required_modules
@@ -338,13 +285,7 @@ fn is_kernel_name(name: &str) -> bool {
 fn load_modules_metadata<P: RootfsProvider>(
     rootfs: &P,
     modules_dir: &ModulesDir,
-) -> Result<(ModulesMap, ModulesDep, ModulePaths, BTreeSet<String>), Stage0Error> {
-    let alias_path = format!("{}/modules.alias", modules_dir.source_root);
-    let alias_data = rootfs
-        .read_all(&alias_path)
-        .map_err(|_| Stage0Error::MissingFile(alias_path.clone()))?;
-    let modules_map = parse_modules_alias(&alias_data);
-
+) -> Result<(ModulesDep, ModulePaths, BTreeSet<String>), Stage0Error> {
     let dep_path = format!("{}/modules.dep", modules_dir.source_root);
     let dep_data = rootfs
         .read_all(&dep_path)
@@ -355,7 +296,7 @@ fn load_modules_metadata<P: RootfsProvider>(
     let builtin_data = rootfs.read_all(&builtin_path).unwrap_or_default();
     let modules_builtin = parse_modules_builtin(&builtin_data);
 
-    Ok((modules_map, modules_dep, module_paths, modules_builtin))
+    Ok((modules_dep, module_paths, modules_builtin))
 }
 
 fn copy_module_indexes<P: RootfsProvider>(
@@ -418,11 +359,7 @@ fn select_dtb<P: RootfsProvider>(
 fn collect_required_modules(
     profile: &DeviceProfile,
     opts: &Stage0Options,
-    dtb: &Fdt<'_>,
-    modules_map: &ModulesMap,
     modules_dep: &ModulesDep,
-    module_paths: &ModulePaths,
-    modules_builtin: &BTreeSet<String>,
 ) -> Vec<String> {
     let mut required = Vec::new();
     let mut required_set = BTreeSet::new();
@@ -438,17 +375,6 @@ fn collect_required_modules(
     if opts.enable_serial {
         push_module_unique(&mut required, &mut required_set, "usb_f_acm");
     }
-    if opts.scan_modules {
-        let compatibles = dtb_compatibles(dtb);
-        for compat in compatibles {
-            if let Some(module) = modules_map.get(&compat)
-                && (module_paths.contains_key(module) || modules_builtin.contains(module))
-            {
-                push_module_unique(&mut required, &mut required_set, module);
-            }
-        }
-    }
-
     let mut ordered = Vec::new();
     let mut visited = BTreeSet::new();
     for m in required {
@@ -480,92 +406,8 @@ fn collect_with_deps(
     out.push(module.to_string());
 }
 
-fn firmware_from_dtb(dtb: &Fdt<'_>) -> Result<Vec<String>, Stage0Error> {
-    let mut out = Vec::new();
-    let mut stack = Vec::new();
-    stack.push(dtb.root());
-    while let Some(node) = stack.pop() {
-        if let Some(prop) = node.property("firmware-name") {
-            if let Ok(s) = prop.as_str() {
-                out.push(s.to_string());
-            } else {
-                let bytes = prop.value();
-                let mut start = 0;
-                for (idx, b) in bytes.iter().enumerate() {
-                    if *b == 0 {
-                        if let Ok(s) = core::str::from_utf8(&bytes[start..idx])
-                            && !s.is_empty()
-                        {
-                            out.push(s.to_string());
-                        }
-                        start = idx + 1;
-                    }
-                }
-            }
-        }
-        for child in node.children() {
-            stack.push(child);
-        }
-    }
-    Ok(out)
-}
-
-fn merge_firmware_lists(mut a: Vec<String>, b: Vec<String>) -> Vec<String> {
-    let mut set = BTreeSet::new();
-    let mut out = Vec::new();
-    for f in a.drain(..).chain(b.into_iter()) {
-        if set.insert(f.clone()) {
-            out.push(f);
-        }
-    }
-    out
-}
-
-fn dtb_compatibles(dtb: &Fdt<'_>) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut stack = Vec::new();
-    stack.push(dtb.root());
-    while let Some(node) = stack.pop() {
-        if let Some(compats) = node.compatible() {
-            for c in compats {
-                out.push(c.to_string());
-            }
-        }
-        for child in node.children() {
-            stack.push(child);
-        }
-    }
-    out
-}
-
-type ModulesMap = BTreeMap<String, String>;
 type ModulesDep = BTreeMap<String, Vec<String>>;
 type ModulePaths = BTreeMap<String, String>;
-
-fn parse_modules_alias(data: &[u8]) -> ModulesMap {
-    let mut map = ModulesMap::new();
-    for line in data.split(|b| *b == b'\n') {
-        if !line.starts_with(b"alias ") {
-            continue;
-        }
-        let line_str = match core::str::from_utf8(line) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let mut parts = line_str.split_whitespace();
-        let _alias = parts.next();
-        let alias_val = parts.next().unwrap_or_default();
-        let module = parts.next().unwrap_or_default();
-        let alias_val = match alias_val.strip_prefix("of:") {
-            Some(a) => a,
-            None => continue,
-        };
-        if let Some((_, compat)) = alias_val.split_once('C') {
-            map.insert(compat.to_string(), module.to_string());
-        }
-    }
-    map
-}
 
 fn parse_modules_dep(data: &[u8]) -> (ModulesDep, ModulePaths) {
     let mut map = ModulesDep::new();
@@ -642,57 +484,12 @@ fn module_path_for(
     Ok((rel, source))
 }
 
-fn load_firmware_list<P: RootfsProvider>(rootfs: &P) -> Result<Vec<String>, Stage0Error> {
-    if !rootfs.exists(FIRMWARE_LIST_PATH).unwrap_or(false) {
-        return Ok(Vec::new());
-    }
-    let data = rootfs
-        .read_all(FIRMWARE_LIST_PATH)
-        .map_err(|_| Stage0Error::MissingFile(FIRMWARE_LIST_PATH.into()))?;
-    parse_lines(&data)
-}
-
-fn parse_lines(data: &[u8]) -> Result<Vec<String>, Stage0Error> {
-    let mut out = Vec::new();
-    for line in data.split(|b| *b == b'\n') {
-        let trimmed = trim_ascii(line);
-        if trimmed.is_empty() || trimmed.starts_with(b"#") {
-            continue;
-        }
-        let s = String::from_utf8(trimmed.to_vec()).map_err(|_| Stage0Error::EmptyPath)?;
-        out.push(s);
-    }
-    Ok(out)
-}
-
-fn trim_ascii(bytes: &[u8]) -> &[u8] {
-    let mut start = 0;
-    let mut end = bytes.len();
-    while start < end && bytes[start].is_ascii_whitespace() {
-        start += 1;
-    }
-    while end > start && bytes[end - 1].is_ascii_whitespace() {
-        end -= 1;
-    }
-    &bytes[start..end]
-}
-
 fn trim_leading_slash(path: &str) -> Result<&str, Stage0Error> {
     let trimmed = path.trim_start_matches('/');
     if trimmed.is_empty() {
         return Err(Stage0Error::EmptyPath);
     }
     Ok(trimmed)
-}
-
-fn join_paths(root: &str, rel: &str) -> Result<String, Stage0Error> {
-    let rel = trim_leading_slash(rel)?;
-    let mut s = String::from(root);
-    if !s.is_empty() && !s.ends_with('/') {
-        s.push('/');
-    }
-    s.push_str(rel);
-    Ok(s)
 }
 
 fn serialize_module_load(entries: &[String]) -> Vec<u8> {

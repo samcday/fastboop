@@ -53,7 +53,7 @@ struct BootArgs {
 
 #[derive(Args)]
 struct Stage0Args {
-    /// Path to rootfs (directory or mount) containing kernel/modules/firmware.
+    /// Path to rootfs (directory or mount) containing kernel/modules.
     #[arg(value_name = "ROOTFS")]
     rootfs: PathBuf,
     /// Path to smoo-gadget binary to embed as /init (must be self-contained/static for now).
@@ -68,18 +68,6 @@ struct Stage0Args {
     /// Existing initrd (cpio newc) to augment.
     #[arg(long)]
     augment: Option<PathBuf>,
-    /// Scan DTB/profiles to include matching kernel modules.
-    #[arg(long)]
-    scan_modules: bool,
-    /// Scan for firmware references (firmware.list + DTB firmware-name).
-    #[arg(long)]
-    scan_firmware: bool,
-    /// Skip including firmware derived from DTB firmware-name properties.
-    #[arg(long)]
-    skip_dtb_firmware: bool,
-    /// Allow firmware references to be missing without failing stage0 build.
-    #[arg(long)]
-    allow_missing_firmware: bool,
     /// Extra required modules (repeatable).
     #[arg(long = "require-module")]
     require_modules: Vec<String>,
@@ -268,10 +256,7 @@ fn run_boot(args: BootArgs) -> Result<()> {
     let opts = Stage0Options {
         extra_modules: args.stage0.require_modules,
         dtb_override,
-        scan_modules: args.stage0.scan_modules,
-        scan_firmware: args.stage0.scan_firmware,
-        include_dtb_firmware: args.stage0.scan_firmware && !args.stage0.skip_dtb_firmware,
-        allow_missing_firmware: args.stage0.allow_missing_firmware,
+
         enable_serial: args.stage0.serial,
         personalization: args.systemd_firstboot.then(personalization_from_host),
     };
@@ -561,10 +546,7 @@ fn run_stage0(args: Stage0Args) -> Result<()> {
     let opts = Stage0Options {
         extra_modules: args.require_modules,
         dtb_override,
-        scan_modules: args.scan_modules,
-        scan_firmware: args.scan_firmware,
-        include_dtb_firmware: args.scan_firmware && !args.skip_dtb_firmware,
-        allow_missing_firmware: args.allow_missing_firmware,
+
         enable_serial: args.serial,
         personalization: None,
     };

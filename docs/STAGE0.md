@@ -62,13 +62,11 @@ fastboop provides stage0 generation with:
 
 1. **DevPro-derived requirements**
    - Which kernel modules must be present for this device
-   - Optional firmware hints
    - Kernel command line additions
 
 2. **Rootfs artifact**
    - Source of the kernel image
    - Source of kernel modules (`/usr/lib/modules/<kver>` or equivalent)
-   - Source of firmware blobs (if present)
 
 3. **Boot constraints**
    - Maximum payload sizes
@@ -122,14 +120,8 @@ If a required module is missing from the rootfs, stage0 generation must fail exp
 
 ## Firmware handling
 
-Firmware inclusion is conservative:
-
-- Firmware is included only if explicitly referenced by selected modules
-- Missing firmware may be treated as:
-  - fatal (for known-critical firmware), or
-  - warning (for optional firmware)
-
-The policy decision is made by fastboop, not stage0 runtime logic.
+Stage0 does not include firmware. Any firmware needed beyond the minimal UDC
+path must be provided in an `--augment` cpio or in the main rootfs.
 
 ---
 
