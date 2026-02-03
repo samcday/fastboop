@@ -6,11 +6,13 @@ pub mod bootimg;
 pub mod devpro;
 pub mod fastboot;
 pub mod personalization;
+pub mod prober;
 
 use alloc::{string::String, vec::Vec};
 
 pub use devpro::*;
 pub use personalization::*;
+pub use prober::*;
 
 /// Newline-separated list of modules to load, in deterministic order.
 pub type ModuleLoadList = Vec<String>;

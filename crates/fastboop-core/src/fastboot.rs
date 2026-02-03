@@ -36,6 +36,64 @@ pub trait FastbootWire {
     fn read_response<'a>(&'a mut self) -> Self::ReadResponseFuture<'a>;
 }
 
+/// Convenience wrapper around a fastboot transport with cached facts.
+pub struct FastbootSession<'a, F: FastbootWire> {
+    fastboot: &'a mut F,
+    cache: BTreeMap<String, String>,
+}
+
+impl<'a, F: FastbootWire> FastbootSession<'a, F> {
+    pub fn new(fastboot: &'a mut F) -> Self {
+        Self {
+            fastboot,
+            cache: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_cache(fastboot: &'a mut F, cache: BTreeMap<String, String>) -> Self {
+        Self { fastboot, cache }
+    }
+
+    pub fn cache(&self) -> &BTreeMap<String, String> {
+        &self.cache
+    }
+
+    pub fn cache_mut(&mut self) -> &mut BTreeMap<String, String> {
+        &mut self.cache
+    }
+
+    pub fn into_cache(self) -> BTreeMap<String, String> {
+        self.cache
+    }
+
+    pub async fn getvar_cached(
+        &mut self,
+        name: &str,
+    ) -> Result<String, FastbootProtocolError<F::Error>> {
+        if let Some(value) = self.cache.get(name) {
+            return Ok(value.clone());
+        }
+        let value = getvar(self.fastboot, name).await?;
+        self.cache.insert(String::from(name), value.clone());
+        Ok(value)
+    }
+
+    pub async fn probe_profile(
+        &mut self,
+        profile: &DeviceProfile,
+    ) -> Result<(), ProbeError<FastbootProtocolError<F::Error>>> {
+        probe_profile_with_cache(self.fastboot, profile, &mut self.cache).await
+    }
+
+    pub async fn download(&mut self, data: &[u8]) -> Result<(), FastbootProtocolError<F::Error>> {
+        download(self.fastboot, data).await
+    }
+
+    pub async fn boot(&mut self) -> Result<(), FastbootProtocolError<F::Error>> {
+        boot(self.fastboot).await
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeError<E> {
     Transport(E),

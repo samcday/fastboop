@@ -1,4 +1,5 @@
 use fastboop_core::fastboot::{FastbootWire, Response};
+use fastboop_core::prober::FastbootCandidate;
 use js_sys::Uint8Array;
 use tracing::trace;
 use wasm_bindgen::{JsCast, JsValue};
@@ -13,6 +14,16 @@ pub struct FastbootWebUsb {
     interface: u8,
     ep_in: u8,
     ep_out: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct FastbootWebUsbCandidate {
+    device: UsbDevice,
+    interface: u8,
+    ep_in: u8,
+    ep_out: u8,
+    vid: u16,
+    pid: u16,
 }
 
 #[derive(Debug)]
@@ -96,6 +107,48 @@ impl FastbootWebUsb {
             "fastboot recv"
         );
         Ok(Response { status, payload })
+    }
+}
+
+impl FastbootWebUsbCandidate {
+    pub fn new(device: UsbDevice, interface: u8, ep_in: u8, ep_out: u8) -> Self {
+        let vid = device.vendor_id();
+        let pid = device.product_id();
+        Self {
+            device,
+            interface,
+            ep_in,
+            ep_out,
+            vid,
+            pid,
+        }
+    }
+
+    pub fn device(&self) -> &UsbDevice {
+        &self.device
+    }
+}
+
+impl FastbootCandidate for FastbootWebUsbCandidate {
+    type Wire = FastbootWebUsb;
+    type Error = FastbootWebUsbError;
+    type OpenFuture<'a> =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Wire, Self::Error>> + 'a>>;
+
+    fn vid(&self) -> u16 {
+        self.vid
+    }
+
+    fn pid(&self) -> u16 {
+        self.pid
+    }
+
+    fn open<'a>(&'a self) -> Self::OpenFuture<'a> {
+        let device = self.device.clone();
+        let interface = self.interface;
+        let ep_in = self.ep_in;
+        let ep_out = self.ep_out;
+        Box::pin(async move { Ok(FastbootWebUsb::new(device, interface, ep_in, ep_out)) })
     }
 }
 

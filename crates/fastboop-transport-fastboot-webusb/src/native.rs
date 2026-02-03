@@ -1,9 +1,13 @@
 use std::fmt;
 
 use fastboop_core::fastboot::{FastbootWire, Response};
+use fastboop_core::prober::FastbootCandidate;
 
 #[derive(Debug)]
 pub struct FastbootWebUsb;
+
+#[derive(Debug, Clone, Copy)]
+pub struct FastbootWebUsbCandidate;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FastbootWebUsbError;
@@ -19,6 +23,18 @@ impl std::error::Error for FastbootWebUsbError {}
 impl FastbootWebUsb {
     pub fn new() -> Self {
         Self
+    }
+}
+
+impl FastbootWebUsbCandidate {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for FastbootWebUsbCandidate {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -46,6 +62,25 @@ impl FastbootWire for FastbootWebUsb {
     }
 
     fn read_response<'a>(&'a mut self) -> Self::ReadResponseFuture<'a> {
+        Box::pin(async { Err(FastbootWebUsbError) })
+    }
+}
+
+impl FastbootCandidate for FastbootWebUsbCandidate {
+    type Wire = FastbootWebUsb;
+    type Error = FastbootWebUsbError;
+    type OpenFuture<'a> =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Wire, Self::Error>> + 'a>>;
+
+    fn vid(&self) -> u16 {
+        0
+    }
+
+    fn pid(&self) -> u16 {
+        0
+    }
+
+    fn open<'a>(&'a self) -> Self::OpenFuture<'a> {
         Box::pin(async { Err(FastbootWebUsbError) })
     }
 }

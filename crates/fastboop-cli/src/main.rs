@@ -8,10 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use fastboop_core::bootimg::build_android_bootimg;
-use fastboop_core::fastboot::{
-    FastbootProtocolError, ProbeError, boot, download, probe_profile_with_cache,
-    profile_matches_vid_pid,
-};
+use fastboop_core::fastboot::{FastbootProtocolError, ProbeError, boot, download};
+use fastboop_core::prober::{FastbootCandidate, probe_candidates};
 use fastboop_core::{DeviceProfile, Personalization, RootfsProvider};
 use fastboop_stage0::{Stage0Options, build_stage0};
 use fastboop_transport_fastboot_rusb::FastbootRusb;
@@ -102,8 +100,14 @@ fn run_detect() -> Result<()> {
     }
 
     let profiles = dedup_profiles(&profiles);
+    let profiles: Vec<DeviceProfile> = profiles.into_iter().cloned().collect();
+    let mut profiles_by_id = HashMap::new();
+    for profile in &profiles {
+        profiles_by_id.insert(profile.id.clone(), profile);
+    }
     let context = UsbContext::new().context("creating USB context")?;
     let devices = context.devices().context("enumerating USB devices")?;
+    let mut candidates = Vec::new();
     let mut found = false;
     for device in devices.iter() {
         let desc = match device.device_descriptor() {
@@ -113,36 +117,37 @@ fn run_detect() -> Result<()> {
                 continue;
             }
         };
-        let vid = desc.vendor_id();
-        let pid = desc.product_id();
-        let matching: Vec<_> = profiles
-            .iter()
-            .filter(|profile| profile_matches_vid_pid(profile, vid, pid))
-            .collect();
-        if matching.is_empty() {
+        candidates.push(RusbCandidate::new(
+            device,
+            desc.vendor_id(),
+            desc.product_id(),
+        ));
+    }
+
+    let reports = pollster::block_on(probe_candidates(&profiles, &candidates));
+    for report in reports {
+        let candidate = &candidates[report.candidate_index];
+        let device = candidate.device();
+        let vid = report.vid;
+        let pid = report.pid;
+        if let Some(err) = report.open_error {
+            eprintln!(
+                "Skipping {:04x}:{:04x} bus={} addr={}: open failed: {err}",
+                vid,
+                pid,
+                device.bus_number(),
+                device.address()
+            );
             continue;
         }
-
-        let mut fastboot = match FastbootRusb::open(&device) {
-            Ok(fastboot) => fastboot,
-            Err(err) => {
-                eprintln!(
-                    "Skipping {:04x}:{:04x} bus={} addr={}: open failed: {err}",
-                    vid,
-                    pid,
-                    device.bus_number(),
-                    device.address()
-                );
+        for attempt in report.attempts {
+            let Some(profile) = profiles_by_id.get(&attempt.profile_id) else {
                 continue;
-            }
-        };
-
-        let mut cache = std::collections::BTreeMap::new();
-        for profile in matching {
-            match pollster::block_on(probe_profile_with_cache(&mut fastboot, profile, &mut cache)) {
+            };
+            match attempt.result {
                 Ok(()) => {
                     found = true;
-                    print_detected(&device, profile, vid, pid);
+                    print_detected(device, profile, vid, pid);
                 }
                 Err(err) => {
                     debug!(
@@ -187,8 +192,7 @@ fn run_boot(args: BootArgs) -> Result<()> {
     let mut fastboot = if args.output.is_none() {
         let context = UsbContext::new().context("creating USB context")?;
         let devices = context.devices().context("enumerating USB devices")?;
-        let mut matched = Vec::new();
-
+        let mut candidates = Vec::new();
         for device in devices.iter() {
             let desc = match device.device_descriptor() {
                 Ok(desc) => desc,
@@ -197,54 +201,73 @@ fn run_boot(args: BootArgs) -> Result<()> {
                     continue;
                 }
             };
-            let vid = desc.vendor_id();
-            let pid = desc.product_id();
-            if !profile_matches_vid_pid(profile, vid, pid) {
+            candidates.push(RusbCandidate::new(
+                device,
+                desc.vendor_id(),
+                desc.product_id(),
+            ));
+        }
+
+        let profiles = vec![profile.clone()];
+        let reports = pollster::block_on(probe_candidates(&profiles, &candidates));
+        let mut matched_indices = Vec::new();
+        for report in reports {
+            let candidate = &candidates[report.candidate_index];
+            let device = candidate.device();
+            let vid = report.vid;
+            let pid = report.pid;
+            if let Some(err) = report.open_error {
+                eprintln!(
+                    "Skipping {:04x}:{:04x} bus={} addr={}: open failed: {err}",
+                    vid,
+                    pid,
+                    device.bus_number(),
+                    device.address()
+                );
                 continue;
             }
-
-            let mut fastboot = match FastbootRusb::open(&device) {
-                Ok(fastboot) => fastboot,
-                Err(err) => {
-                    eprintln!(
-                        "Skipping {:04x}:{:04x} bus={} addr={}: open failed: {err}",
-                        vid,
-                        pid,
-                        device.bus_number(),
-                        device.address()
-                    );
-                    continue;
-                }
-            };
-
-            let mut cache = std::collections::BTreeMap::new();
-            match pollster::block_on(probe_profile_with_cache(&mut fastboot, profile, &mut cache)) {
-                Ok(()) => matched.push(fastboot),
-                Err(err) => {
-                    debug!(
-                        profile_id = %profile.id,
-                        vid = %format!("{:04x}", vid),
-                        pid = %format!("{:04x}", pid),
-                        bus = device.bus_number(),
-                        addr = device.address(),
-                        error = %format_probe_error(err),
-                        "fastboot probe failed"
-                    );
+            for attempt in report.attempts {
+                match attempt.result {
+                    Ok(()) => matched_indices.push(report.candidate_index),
+                    Err(err) => {
+                        debug!(
+                            profile_id = %profile.id,
+                            vid = %format!("{:04x}", vid),
+                            pid = %format!("{:04x}", pid),
+                            bus = device.bus_number(),
+                            addr = device.address(),
+                            error = %format_probe_error(err),
+                            "fastboot probe failed"
+                        );
+                    }
                 }
             }
         }
 
-        Some(match matched.len() {
+        let idx = match matched_indices.len() {
             0 => bail!(
                 "no matching fastboot device found for profile {}",
                 profile.id
             ),
-            1 => matched.remove(0),
+            1 => matched_indices[0],
             _ => bail!(
                 "multiple fastboot devices matched profile {}; please connect only one",
                 profile.id
             ),
-        })
+        };
+
+        let candidate = &candidates[idx];
+        let fastboot = FastbootRusb::open(candidate.device()).map_err(|err| {
+            anyhow::anyhow!(
+                "open failed for {:04x}:{:04x} bus={} addr={}: {err}",
+                candidate.vid,
+                candidate.pid,
+                candidate.device().bus_number(),
+                candidate.device().address()
+            )
+        })?;
+
+        Some(fastboot)
     } else {
         None
     };
@@ -385,6 +408,41 @@ fn format_probe_error(
             expected,
             actual,
         } => format!("getvar {name} mismatch: expected '{expected}', got '{actual}'"),
+    }
+}
+
+struct RusbCandidate {
+    device: rusb::Device<UsbContext>,
+    vid: u16,
+    pid: u16,
+}
+
+impl RusbCandidate {
+    fn new(device: rusb::Device<UsbContext>, vid: u16, pid: u16) -> Self {
+        Self { device, vid, pid }
+    }
+
+    fn device(&self) -> &rusb::Device<UsbContext> {
+        &self.device
+    }
+}
+
+impl FastbootCandidate for RusbCandidate {
+    type Wire = FastbootRusb;
+    type Error = fastboop_transport_fastboot_rusb::FastbootRusbError;
+    type OpenFuture<'a> =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Wire, Self::Error>> + 'a>>;
+
+    fn vid(&self) -> u16 {
+        self.vid
+    }
+
+    fn pid(&self) -> u16 {
+        self.pid
+    }
+
+    fn open<'a>(&'a self) -> Self::OpenFuture<'a> {
+        Box::pin(async move { FastbootRusb::open(&self.device) })
     }
 }
 
