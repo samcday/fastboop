@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use fastboop_core::RootfsProvider;
 use fastboop_core::fastboot::{FastbootProtocolError, ProbeError};
-use fastboop_core::prober::FastbootCandidate;
-use fastboop_transport_fastboot_rusb::FastbootRusb;
-use rusb::Context as UsbContext;
+use fastboop_transport_fastboot_rusb::FastbootRusbCandidate;
 
 mod boot;
 mod detect;
@@ -17,40 +15,7 @@ pub use boot::{BootArgs, run_boot};
 pub use detect::run_detect;
 pub use stage0::{Stage0Args, run_stage0};
 
-pub(crate) struct RusbCandidate {
-    device: rusb::Device<UsbContext>,
-    vid: u16,
-    pid: u16,
-}
-
-impl RusbCandidate {
-    pub(crate) fn new(device: rusb::Device<UsbContext>, vid: u16, pid: u16) -> Self {
-        Self { device, vid, pid }
-    }
-
-    pub(crate) fn device(&self) -> &rusb::Device<UsbContext> {
-        &self.device
-    }
-}
-
-impl FastbootCandidate for RusbCandidate {
-    type Wire = FastbootRusb;
-    type Error = fastboop_transport_fastboot_rusb::FastbootRusbError;
-    type OpenFuture<'a> =
-        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Wire, Self::Error>> + 'a>>;
-
-    fn vid(&self) -> u16 {
-        self.vid
-    }
-
-    fn pid(&self) -> u16 {
-        self.pid
-    }
-
-    fn open<'a>(&'a self) -> Self::OpenFuture<'a> {
-        Box::pin(async move { FastbootRusb::open(&self.device) })
-    }
-}
+pub(crate) type RusbCandidate = FastbootRusbCandidate;
 
 pub(crate) fn format_probe_error(
     err: ProbeError<FastbootProtocolError<fastboop_transport_fastboot_rusb::FastbootRusbError>>,

@@ -2,6 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use fastboop_core::fastboot::{FastbootWire, Response};
+use fastboop_core::prober::FastbootCandidate;
 use rusb::{Context, Device, DeviceHandle, Direction, TransferType};
 use tracing::trace;
 
@@ -21,6 +22,12 @@ pub struct FastbootRusb {
     ep_in: u8,
     ep_out: u8,
     timeout: Duration,
+}
+
+pub struct FastbootRusbCandidate {
+    device: rusb::Device<Context>,
+    vid: u16,
+    pid: u16,
 }
 
 #[derive(Debug)]
@@ -131,6 +138,16 @@ impl FastbootRusb {
     }
 }
 
+impl FastbootRusbCandidate {
+    pub fn new(device: rusb::Device<Context>, vid: u16, pid: u16) -> Self {
+        Self { device, vid, pid }
+    }
+
+    pub fn device(&self) -> &rusb::Device<Context> {
+        &self.device
+    }
+}
+
 impl Drop for FastbootRusb {
     fn drop(&mut self) {
         let _ = self.handle.release_interface(self.interface);
@@ -168,6 +185,25 @@ impl FastbootWire for FastbootRusb {
 
     fn read_response<'a>(&'a mut self) -> Self::ReadResponseFuture<'a> {
         Box::pin(async move { self.read_response_inner() })
+    }
+}
+
+impl FastbootCandidate for FastbootRusbCandidate {
+    type Wire = FastbootRusb;
+    type Error = FastbootRusbError;
+    type OpenFuture<'a> =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Wire, Self::Error>> + 'a>>;
+
+    fn vid(&self) -> u16 {
+        self.vid
+    }
+
+    fn pid(&self) -> u16 {
+        self.pid
+    }
+
+    fn open<'a>(&'a self) -> Self::OpenFuture<'a> {
+        Box::pin(async move { FastbootRusb::open(&self.device) })
     }
 }
 

@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::fastboot::{boot, download};
-use fastboop_core::prober::probe_candidates;
+use fastboop_core::prober::{FastbootCandidate, probe_candidates};
 use fastboop_stage0::{Stage0Options, build_stage0};
 use fastboop_transport_fastboot_rusb::FastbootRusb;
 use rusb::{Context as UsbContext, UsbContext as _};
@@ -124,8 +124,8 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         let fastboot = FastbootRusb::open(candidate.device()).map_err(|err| {
             anyhow::anyhow!(
                 "open failed for {:04x}:{:04x} bus={} addr={}: {err}",
-                candidate.vid,
-                candidate.pid,
+                candidate.vid(),
+                candidate.pid(),
                 candidate.device().bus_number(),
                 candidate.device().address()
             )
