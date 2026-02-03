@@ -167,8 +167,7 @@ pub fn build_stage0<P: RootfsProvider>(
     let mut cmdline_parts: Vec<String> = Vec::new();
     if opts.enable_serial {
         cmdline_parts.push("smoo.acm=1".to_string());
-        cmdline_parts.push("console=tty0".to_string());
-        cmdline_parts.push("console=ttyGS0".to_string());
+        cmdline_parts.push("plymouth.ignore-serial-consoles".to_string());
     }
     if let Some(personalization) = &opts.personalization {
         let personalization = personalization.cmdline_append();
