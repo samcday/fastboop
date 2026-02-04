@@ -23,5 +23,6 @@ This file keeps Codex sessions fast and predictable. Read it before coding.
 ## Output expectations
 - Prefer small, reviewable diffs; add brief rationale in the PR/commit message body when applicable.
 - Unless explicitly impossible, do not end a turn without running and passing `cargo fmt`, `cargo check --workspace`, `cargo clippy --workspace`, and `cargo test --workspace` (or explaining why it failed/was skipped).
+- Desktop + web builds must pass: `dx build -p desktop` and `dx build -p web`.
 - Avoid introducing new tools/dependencies without a short justification and a confirmation from the Developer.
 - If instructions in this file conflict with user directions, ask for clarification before proceeding.

@@ -13,6 +13,7 @@ pub enum TransportKind {
 pub struct DetectedDevice {
     pub vid: u16,
     pub pid: u16,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]

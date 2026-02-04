@@ -6,8 +6,10 @@ edition = "2021"
 [dependencies]
 dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
+fastboop-core = { path = "../../crates/fastboop-core" }
+fastboop-fastboot-rusb = { path = "../../crates/fastboop-fastboot-rusb" }
+rusb = "0.9.4"
 
 [features]
 default = ["desktop"]
 desktop = ["dioxus/desktop"]
-

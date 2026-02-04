@@ -8,7 +8,8 @@ pub fn Home() -> Element {
             state: ProbeState::Ready {
                 transport: TransportKind::NativeUsb,
                 devices: Vec::new(),
-            }
+            },
+            on_connect: None,
         }
     }
 }

@@ -5,7 +5,7 @@ use crate::{DetectedDevice, ProbeState, TransportKind};
 const HERO_CSS: Asset = asset!("/assets/styling/hero.css");
 
 #[component]
-pub fn Hero(state: ProbeState) -> Element {
+pub fn Hero(state: ProbeState, on_connect: Option<EventHandler<MouseEvent>>) -> Element {
     let (cta, status_class) = match &state {
         ProbeState::Loading => (
             rsx! {
@@ -23,19 +23,23 @@ pub fn Hero(state: ProbeState) -> Element {
         ProbeState::Ready {
             transport: TransportKind::WebUsb,
             ..
-        } => (
-            rsx! {
-                button { class: "cta__button", "Connect a device" }
-                p { class: "cta__hint", "WebUSB only shows previously authorized devices." }
-            },
-            "cta cta--ready",
-        ),
+        } => {
+            let cta = match on_connect {
+                Some(handler) => rsx! {
+                    button { class: "cta__button", onclick: move |evt| handler.call(evt), "Connect a device" }
+                    p { class: "cta__hint", "WebUSB only shows previously authorized devices." }
+                },
+                None => rsx! {
+                    p { class: "cta__hint", "WebUSB only shows previously authorized devices." }
+                },
+            };
+            (cta, "cta cta--ready")
+        }
         ProbeState::Ready {
             transport: TransportKind::NativeUsb,
             ..
         } => (
             rsx! {
-                button { class: "cta__button", "Connect a device" }
                 p { class: "cta__hint", "Native USB will scan for fastboot devices." }
             },
             "cta cta--ready",
@@ -103,6 +107,7 @@ fn DeviceRow(device: DetectedDevice) -> Element {
     rsx! {
         li {
             span { class: "device-id", "{id}" }
+            span { class: "device-name", "{device.name}" }
             span { class: "device-mode", "fastboot" }
         }
     }

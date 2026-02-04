@@ -102,6 +102,7 @@ mod tests {
     use crate::fastboot::{FastbootWire, Response};
     use alloc::collections::BTreeMap;
     use alloc::string::ToString;
+    use alloc::vec;
     use core::pin::Pin;
     use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 

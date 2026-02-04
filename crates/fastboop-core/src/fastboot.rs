@@ -3,7 +3,8 @@
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
+use alloc::format;
+use alloc::string::{String, ToString};
 use core::fmt;
 use core::future::Future;
 
