@@ -1,6 +1,30 @@
+@import url("https://fonts.googleapis.com/css2?family=Fragment+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap");
+
+:root {
+    --font-display: "Space Grotesk", "Work Sans", sans-serif;
+    --font-mono: "Fragment Mono", "JetBrains Mono", monospace;
+    --color-bg: #0b0f12;
+    --color-text: #f7f1e7;
+    --color-text-muted: rgba(247, 241, 231, 0.72);
+    --color-text-subtle: rgba(247, 241, 231, 0.58);
+    --color-accent: #69bdb0;
+}
+
+* {
+    box-sizing: border-box;
+}
+
 body {
-    background-color: #0f1116;
-    color: #ffffff;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    margin: 20px;
+    margin: 0;
+    min-height: 100vh;
+    color: var(--color-text);
+    font-family: var(--font-display);
+    background: radial-gradient(circle at top left, rgba(33, 61, 68, 0.45), transparent 45%),
+        radial-gradient(circle at 70% 10%, rgba(69, 120, 112, 0.35), transparent 40%),
+        radial-gradient(circle at 20% 80%, rgba(102, 74, 45, 0.35), transparent 45%),
+        var(--color-bg);
+}
+
+a {
+    color: inherit;
 }

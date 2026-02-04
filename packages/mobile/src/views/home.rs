@@ -4,7 +4,6 @@ use ui::Hero;
 #[component]
 pub fn Home() -> Element {
     rsx! {
-        Hero {}
-
+        Hero { webusb_supported: None }
     }
 }
