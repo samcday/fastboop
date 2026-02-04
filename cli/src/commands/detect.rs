@@ -13,11 +13,6 @@ use super::{RusbCandidate, format_probe_error};
 pub fn run_detect() -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
     let profiles = load_device_profiles(&devpro_dirs)?;
-    if profiles.is_empty() {
-        eprintln!("No device profiles found in {:?}", devpro_dirs);
-        return Ok(());
-    }
-
     let profiles = dedup_profiles(&profiles);
     let profiles: Vec<DeviceProfile> = profiles.into_iter().cloned().collect();
     let mut profiles_by_id = HashMap::new();

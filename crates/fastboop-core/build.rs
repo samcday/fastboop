@@ -8,11 +8,12 @@ use fastboop_schema::bin::DeviceProfileBin;
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let workspace_root = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root");
-    let devpro_dir = workspace_root.join("devprofiles.d");
+    let devpro_dir = find_devpro_dir(&manifest_dir).unwrap_or_else(|| {
+        manifest_dir
+            .parent()
+            .unwrap_or(manifest_dir.as_path())
+            .join("devprofiles.d")
+    });
 
     println!("cargo:rerun-if-changed={}", devpro_dir.display());
 
@@ -54,6 +55,17 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let out_path = out_dir.join("builtin_devpros.bin");
     fs::write(&out_path, bytes).expect("write builtin devpros");
+}
+
+fn find_devpro_dir(start: &Path) -> Option<PathBuf> {
+    let mut dir = start;
+    loop {
+        let candidate = dir.join("devprofiles.d");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        dir = dir.parent()?;
+    }
 }
 
 fn is_devpro_path(path: &Path) -> bool {
