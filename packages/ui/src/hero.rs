@@ -1,24 +1,65 @@
 use dioxus::prelude::*;
 
+use crate::{DetectedDevice, ProbeState, TransportKind};
+
 const HERO_CSS: Asset = asset!("/assets/styling/hero.css");
 
 #[component]
-pub fn Hero(webusb_supported: Option<bool>) -> Element {
-    let status_class = match webusb_supported {
-        Some(true) => "cta cta--ready",
-        Some(false) => "cta cta--blocked",
-        None => "cta cta--ready",
+pub fn Hero(state: ProbeState) -> Element {
+    let (cta, status_class) = match &state {
+        ProbeState::Loading => (
+            rsx! {
+                p { class: "cta__hint", "Checking for devices..." }
+            },
+            "cta cta--checking",
+        ),
+        ProbeState::Unsupported => (
+            rsx! {
+                p { class: "cta__error", "sorry ur browser sux lol" }
+                p { class: "cta__hint", "WebUSB is missing here. Chromium-based browsers are required." }
+            },
+            "cta cta--blocked",
+        ),
+        ProbeState::Ready {
+            transport: TransportKind::WebUsb,
+            ..
+        } => (
+            rsx! {
+                button { class: "cta__button", "Connect a device" }
+                p { class: "cta__hint", "WebUSB only shows previously authorized devices." }
+            },
+            "cta cta--ready",
+        ),
+        ProbeState::Ready {
+            transport: TransportKind::NativeUsb,
+            ..
+        } => (
+            rsx! {
+                button { class: "cta__button", "Connect a device" }
+                p { class: "cta__hint", "Native USB will scan for fastboot devices." }
+            },
+            "cta cta--ready",
+        ),
     };
 
-    let cta = match webusb_supported {
-        Some(true) | None => rsx! {
-            button { class: "cta__button", "Connect a device" }
-            p { class: "cta__hint", "Put your device into fastboot mode and click the big button already!" }
-        },
-        Some(false) => rsx! {
-            p { class: "cta__error", "WebUSB unsupported" }
-            p { class: "cta__hint", "fastboop requires WebUSB, which is only available in Chromium-based browsers. Desktop app coming soon on Flathub for Firefox users." }
-        },
+    let devices = match &state {
+        ProbeState::Ready { devices, .. } => devices.as_slice(),
+        _ => &[],
+    };
+
+    let device_list = if devices.is_empty() {
+        rsx! {}
+    } else {
+        rsx! {
+            div { class: "device-list",
+                h2 { "Detected devices" }
+                ul {
+                    for device in devices {
+                        DeviceRow { device: device.clone() }
+                    }
+                }
+            }
+        }
     };
 
     rsx! {
@@ -31,7 +72,7 @@ pub fn Hero(webusb_supported: Option<bool>) -> Element {
                 p { class: "landing__eyebrow", "Zero-flash Linux boot" }
                 h1 { "Boot real Linux on pocket hardware without flashing." }
                 p { class: "landing__lede",
-                    "fastboop talks to a vendor bootloader over WebUSB, builds a tiny stage0 initrd, "
+                    "fastboop talks to a vendor bootloader over USB (WebUSB in the browser), builds a tiny stage0 initrd, "
                     "and boots straight into smoo. Nothing is written to storage."
                 }
 
@@ -42,8 +83,27 @@ pub fn Hero(webusb_supported: Option<bool>) -> Element {
                     li { "Ephemeral RAM boot into smoo" }
                 }
 
-                div { class: status_class, {cta} }
+                {device_list}
+
+                if devices.is_empty() {
+                    div { class: status_class, {cta} }
+                }
+
+                p { class: "landing__note",
+                    "Desktop app coming soon on Flathub for folks who can't use WebUSB."
+                }
             }
+        }
+    }
+}
+
+#[component]
+fn DeviceRow(device: DetectedDevice) -> Element {
+    let id = format!("{:04x}:{:04x}", device.vid, device.pid);
+    rsx! {
+        li {
+            span { class: "device-id", "{id}" }
+            span { class: "device-mode", "fastboot" }
         }
     }
 }

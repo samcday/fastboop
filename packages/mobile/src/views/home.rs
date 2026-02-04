@@ -1,9 +1,14 @@
 use dioxus::prelude::*;
-use ui::Hero;
+use ui::{Hero, ProbeState, TransportKind};
 
 #[component]
 pub fn Home() -> Element {
     rsx! {
-        Hero { webusb_supported: None }
+        Hero {
+            state: ProbeState::Ready {
+                transport: TransportKind::NativeUsb,
+                devices: Vec::new(),
+            }
+        }
     }
 }

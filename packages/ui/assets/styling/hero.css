@@ -78,6 +78,10 @@
   border-color: rgba(105, 189, 176, 0.4);
 }
 
+.cta--checking {
+  border-style: dashed;
+}
+
 .cta__button {
   font-family: var(--font-display);
   font-size: 1.2rem;
@@ -111,6 +115,48 @@
   margin-top: 22px;
   color: var(--color-text-subtle);
   font-size: 0.95rem;
+}
+
+.device-list {
+  margin: 0 0 28px;
+  padding: 20px 22px;
+  border-radius: 18px;
+  background: rgba(12, 16, 20, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.device-list h2 {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+}
+
+.device-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.device-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.device-id {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+}
+
+.device-mode {
+  font-size: 0.8rem;
+  color: var(--color-text-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
 
 @media (max-width: 720px) {
