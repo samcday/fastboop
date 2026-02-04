@@ -8,7 +8,7 @@ anyhow = "1.0.91"
 clap = { version = "4.5.21", features = ["derive"] }
 fastboop-core = { path = "../fastboop-core", features = ["std"] }
 fastboop-stage0 = { path = "../fastboop-stage0" }
-fastboop-transport-fastboot-rusb = { path = "../fastboop-transport-fastboot-rusb" }
+fastboop-fastboot-rusb = { path = "../fastboop-fastboot-rusb" }
 pollster = "0.3.0"
 rusb = "0.9.4"
 serde = { version = "1.0.217", features = ["derive"] }

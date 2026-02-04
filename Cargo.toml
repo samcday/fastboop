@@ -3,7 +3,7 @@ members = [
     "crates/fastboop-core",
     "crates/fastboop-cli",
     "crates/fastboop-stage0",
-    "crates/fastboop-transport-fastboot-rusb",
-    "crates/fastboop-transport-fastboot-webusb",
+    "crates/fastboop-fastboot-rusb",
+    "crates/fastboop-fastboot-webusb",
 ]
 resolver = "2"

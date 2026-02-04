@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use fastboop_core::RootfsProvider;
 use fastboop_core::fastboot::{FastbootProtocolError, ProbeError};
-use fastboop_transport_fastboot_rusb::FastbootRusbCandidate;
+use fastboop_fastboot_rusb::FastbootRusbCandidate;
 
 mod boot;
 mod detect;
@@ -18,7 +18,7 @@ pub use stage0::{Stage0Args, run_stage0};
 pub(crate) type RusbCandidate = FastbootRusbCandidate;
 
 pub(crate) fn format_probe_error(
-    err: ProbeError<FastbootProtocolError<fastboop_transport_fastboot_rusb::FastbootRusbError>>,
+    err: ProbeError<FastbootProtocolError<fastboop_fastboot_rusb::FastbootRusbError>>,
 ) -> String {
     match err {
         ProbeError::Transport(err) => err.to_string(),

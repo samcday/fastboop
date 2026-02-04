@@ -1,5 +1,5 @@
 [package]
-name = "fastboop-transport-fastboot-rusb"
+name = "fastboop-fastboot-rusb"
 version = "0.1.0"
 edition = "2024"
 

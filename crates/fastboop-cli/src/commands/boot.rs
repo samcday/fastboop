@@ -6,8 +6,8 @@ use clap::Args;
 use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::prober::{FastbootCandidate, probe_candidates};
+use fastboop_fastboot_rusb::FastbootRusb;
 use fastboop_stage0::{Stage0Options, build_stage0};
-use fastboop_transport_fastboot_rusb::FastbootRusb;
 use rusb::{Context as UsbContext, UsbContext as _};
 use tracing::debug;
 

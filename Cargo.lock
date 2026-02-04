@@ -178,8 +178,8 @@ dependencies = [
  "anyhow",
  "clap",
  "fastboop-core",
+ "fastboop-fastboot-rusb",
  "fastboop-stage0",
- "fastboop-transport-fastboot-rusb",
  "pollster",
  "rusb",
  "serde",
@@ -199,18 +199,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fastboop-stage0"
-version = "0.1.0"
-dependencies = [
- "dtoolkit",
- "fastboop-core",
- "miniz_oxide",
- "ruzstd",
- "tracing",
-]
-
-[[package]]
-name = "fastboop-transport-fastboot-rusb"
+name = "fastboop-fastboot-rusb"
 version = "0.1.0"
 dependencies = [
  "fastboop-core",
@@ -219,7 +208,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fastboop-transport-fastboot-webusb"
+name = "fastboop-fastboot-webusb"
 version = "0.1.0"
 dependencies = [
  "fastboop-core",
@@ -228,6 +217,17 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "fastboop-stage0"
+version = "0.1.0"
+dependencies = [
+ "dtoolkit",
+ "fastboop-core",
+ "miniz_oxide",
+ "ruzstd",
+ "tracing",
 ]
 
 [[package]]
