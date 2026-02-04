@@ -3,6 +3,7 @@
 extern crate alloc;
 
 pub mod bootimg;
+pub mod builtin;
 pub mod devpro;
 pub mod fastboot;
 pub mod personalization;

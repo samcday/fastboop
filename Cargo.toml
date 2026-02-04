@@ -2,6 +2,7 @@
 members = [
     "cli",
     "crates/fastboop-core",
+    "crates/fastboop-schema",
     "crates/fastboop-stage0",
     "crates/fastboop-fastboot-rusb",
     "crates/fastboop-fastboot-webusb",
@@ -15,3 +16,4 @@ resolver = "2"
 [workspace.dependencies]
 dioxus = { version = "0.7.1" }
 ui = { path = "packages/ui" }
+fastboop-schema = { path = "crates/fastboop-schema", default-features = false }

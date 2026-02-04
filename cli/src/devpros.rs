@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use fastboop_core::DeviceProfile;
+use fastboop_core::builtin::builtin_profiles;
 use tracing::warn;
 
 pub fn resolve_devpro_dirs() -> Result<Vec<PathBuf>> {
@@ -33,6 +34,11 @@ pub fn resolve_devpro_dirs() -> Result<Vec<PathBuf>> {
 
 pub fn load_device_profiles(dirs: &[PathBuf]) -> Result<HashMap<String, DeviceProfile>> {
     let mut profiles = HashMap::new();
+    let builtin = builtin_profiles().context("loading builtin device profiles")?;
+    for profile in builtin {
+        profiles.insert(profile.id.clone(), profile);
+    }
+    let mut file_ids = HashSet::new();
     for dir in dirs {
         if !dir.is_dir() {
             continue;
@@ -65,7 +71,7 @@ pub fn load_device_profiles(dirs: &[PathBuf]) -> Result<HashMap<String, DevicePr
                     continue;
                 }
             };
-            if profiles.contains_key(&profile.id) {
+            if !file_ids.insert(profile.id.clone()) {
                 bail!(
                     "duplicate device profile id '{}' found in {}",
                     profile.id,
