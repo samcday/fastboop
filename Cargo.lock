@@ -429,6 +429,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
+name = "cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fastboop-core",
+ "fastboop-fastboot-rusb",
+ "fastboop-stage0",
+ "pollster 0.3.0",
+ "rusb",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cocoa"
 version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1549,24 +1567,6 @@ checksum = "df61bf483e837f88d5c2291dcf55c67be7e676b3a51acc48db3a7b163b91ed63"
 dependencies = [
  "num-traits",
  "serde",
-]
-
-[[package]]
-name = "fastboop-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "fastboop-core",
- "fastboop-fastboot-rusb",
- "fastboop-stage0",
- "pollster 0.3.0",
- "rusb",
- "serde",
- "serde_json",
- "serde_yaml",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

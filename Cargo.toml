@@ -1,7 +1,7 @@
 [workspace]
 members = [
+    "cli",
     "crates/fastboop-core",
-    "crates/fastboop-cli",
     "crates/fastboop-stage0",
     "crates/fastboop-fastboot-rusb",
     "crates/fastboop-fastboot-webusb",

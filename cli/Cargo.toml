@@ -1,14 +1,14 @@
 [package]
-name = "fastboop-cli"
+name = "cli"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.91"
 clap = { version = "4.5.21", features = ["derive"] }
-fastboop-core = { path = "../fastboop-core", features = ["std"] }
-fastboop-stage0 = { path = "../fastboop-stage0" }
-fastboop-fastboot-rusb = { path = "../fastboop-fastboot-rusb" }
+fastboop-core = { path = "../crates/fastboop-core", features = ["std"] }
+fastboop-stage0 = { path = "../crates/fastboop-stage0" }
+fastboop-fastboot-rusb = { path = "../crates/fastboop-fastboot-rusb" }
 pollster = "0.3.0"
 rusb = "0.9.4"
 serde = { version = "1.0.217", features = ["derive"] }
