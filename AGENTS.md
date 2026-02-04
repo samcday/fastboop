@@ -8,7 +8,7 @@ This file keeps Codex sessions fast and predictable. Read it before coding.
 - **Codex**: writes code/diffs, keeps builds green, follows this file.
 
 ## Kickoff checklist (each session)
-- Read `AGENTS.md`, `README.md`, and skim `smoo/HACKING.md` for protocol invariants shared with smoo.
+- Read `AGENTS.md`, `README.md`, `docs/*.md` and skim `smoo/HACKING.md` for protocol invariants shared with smoo.
 - Confirm workspace layout (`crates/*`) and no-std expectations for core logic crates.
 - Use `rustfmt --edition 2021`; prefer async-first; avoid blocking unless justified.
 - Target stable Rust (MSRV 1.87 to match smoo) and keep code `cargo build --workspace --locked` clean.

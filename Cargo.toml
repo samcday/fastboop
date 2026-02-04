@@ -5,5 +5,13 @@ members = [
     "crates/fastboop-stage0",
     "crates/fastboop-fastboot-rusb",
     "crates/fastboop-fastboot-webusb",
+    "packages/desktop",
+    "packages/mobile",
+    "packages/ui",
+    "packages/web",
 ]
 resolver = "2"
+
+[workspace.dependencies]
+dioxus = { version = "0.7.1" }
+ui = { path = "packages/ui" }
