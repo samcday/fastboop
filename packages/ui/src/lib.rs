@@ -3,9 +3,6 @@
 mod hero;
 pub use hero::Hero;
 
-mod navbar;
-pub use navbar::Navbar;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportKind {
     WebUsb,
