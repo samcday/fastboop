@@ -1,0 +1,42 @@
+app-id: com.samcday.fastboop
+runtime: org.gnome.Platform
+runtime-version: "48"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: fastboop
+finish-args:
+  - --share=network
+  - --device=all
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+modules:
+  - name: xdotool
+    buildsystem: simple
+    build-commands:
+      - make
+      - make PREFIX=/app install
+    sources:
+      - type: archive
+        url: https://github.com/jordansissel/xdotool/archive/refs/tags/v3.20160805.1.tar.gz
+        sha256: ddafca1239075c203769c17a5a184587731e56fbe0438c09d08f8af1704e117a
+  - name: fastboop
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        RUSTFLAGS: -L/app/lib
+    build-commands:
+      - cargo build --release -p desktop --locked
+      - install -Dm755 target/release/desktop /app/bin/fastboop
+      - install -Dm644 packages/desktop/assets/main.css /app/bin/assets/main.css
+      - install -Dm644 packages/ui/assets/styling/hero.css /app/bin/assets/styling/hero.css
+      - install -Dm644 flatpak/com.samcday.fastboop.desktop /app/share/applications/com.samcday.fastboop.desktop
+      - install -Dm644 flatpak/com.samcday.fastboop.metainfo.xml /app/share/metainfo/com.samcday.fastboop.metainfo.xml
+      - install -Dm644 flatpak/com.samcday.fastboop.svg /app/share/icons/hicolor/scalable/apps/com.samcday.fastboop.svg
+    sources:
+      - type: dir
+        path: ..

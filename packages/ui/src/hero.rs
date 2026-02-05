@@ -4,8 +4,18 @@ use crate::{DetectedDevice, ProbeState, TransportKind};
 
 const HERO_CSS: Asset = asset!("/assets/styling/hero.css");
 
+fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
+    if std::env::var_os("FLATPAK_ID").is_some() {
+        flatpak_path.to_string()
+    } else {
+        asset.to_string()
+    }
+}
+
 #[component]
 pub fn Hero(state: ProbeState, on_connect: Option<EventHandler<MouseEvent>>) -> Element {
+    let hero_css = stylesheet_href(&HERO_CSS, "/assets/styling/hero.css");
+
     let (cta, status_class) = match &state {
         ProbeState::Loading => (
             rsx! {
@@ -67,7 +77,7 @@ pub fn Hero(state: ProbeState, on_connect: Option<EventHandler<MouseEvent>>) -> 
     };
 
     rsx! {
-        document::Link { rel: "stylesheet", href: HERO_CSS }
+        document::Link { rel: "stylesheet", href: hero_css }
 
         section {
             id: "landing",

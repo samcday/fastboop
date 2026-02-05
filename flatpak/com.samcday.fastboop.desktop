@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=fastboop
+Comment=Ephemeral Linux boot over USB bootloaders
+Exec=fastboop
+Icon=com.samcday.fastboop
+Terminal=false
+Categories=Utility;System;
+Keywords=fastboot;usb;boot;linux;

@@ -14,6 +14,14 @@ enum Route {
 
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 
+fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
+    if std::env::var_os("FLATPAK_ID").is_some() {
+        flatpak_path.to_string()
+    } else {
+        asset.to_string()
+    }
+}
+
 fn main() {
     init_tracing();
     dioxus::launch(App);
@@ -26,11 +34,13 @@ fn init_tracing() {
 
 #[component]
 fn App() -> Element {
+    let main_css = stylesheet_href(&MAIN_CSS, "/assets/main.css");
+
     // Build cool things ✌️
 
     rsx! {
         // Global app resources
-        document::Link { rel: "stylesheet", href: MAIN_CSS }
+        document::Link { rel: "stylesheet", href: main_css }
 
         Router::<Route> {}
     }
