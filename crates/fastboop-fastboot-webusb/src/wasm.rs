@@ -1,6 +1,7 @@
 use fastboop_core::fastboot::{FastbootWire, Response};
 use fastboop_core::prober::FastbootCandidate;
 use js_sys::Uint8Array;
+use std::cell::Cell;
 use tracing::{debug, trace};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -14,6 +15,7 @@ pub struct FastbootWebUsb {
     interface: u8,
     ep_in: u8,
     ep_out: u8,
+    claimed: Cell<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,25 +66,29 @@ impl FastbootWebUsb {
             interface,
             ep_in,
             ep_out,
+            claimed: Cell::new(false),
         }
     }
 
     pub async fn ensure_open(&self) -> Result<(), FastbootWebUsbError> {
         if self.device.opened() {
             trace!(interface = self.interface, "fastboot webusb already open");
-            return Ok(());
+        } else {
+            debug!(interface = self.interface, "fastboot webusb opening");
+            JsFuture::from(self.device.open()).await?;
         }
-        debug!(interface = self.interface, "fastboot webusb opening");
-        JsFuture::from(self.device.open()).await?;
         if self.device.configuration().is_none() {
             debug!("fastboot webusb select configuration");
             JsFuture::from(self.device.select_configuration(1)).await?;
         }
-        debug!(
-            interface = self.interface,
-            "fastboot webusb claim interface"
-        );
-        JsFuture::from(self.device.claim_interface(self.interface)).await?;
+        if !self.claimed.get() {
+            debug!(
+                interface = self.interface,
+                "fastboot webusb claim interface"
+            );
+            JsFuture::from(self.device.claim_interface(self.interface)).await?;
+            self.claimed.set(true);
+        }
         Ok(())
     }
 
@@ -206,7 +212,7 @@ impl FastbootWire for FastbootWebUsb {
     fn send_command<'a>(&'a mut self, cmd: &'a str) -> Self::SendCommandFuture<'a> {
         Box::pin(async move {
             self.ensure_open().await?;
-            self.send_command(cmd).await
+            self.send_command_inner(cmd).await
         })
     }
 
