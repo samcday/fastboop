@@ -864,6 +864,8 @@ dependencies = [
  "fastboop-core",
  "fastboop-fastboot-rusb",
  "rusb",
+ "tracing",
+ "tracing-subscriber",
  "ui",
 ]
 
@@ -3012,6 +3014,8 @@ name = "mobile"
 version = "0.1.0"
 dependencies = [
  "dioxus",
+ "tracing",
+ "tracing-subscriber",
  "ui",
 ]
 
@@ -5399,6 +5403,9 @@ dependencies = [
  "fastboop-core",
  "fastboop-fastboot-webusb",
  "js-sys",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-wasm",
  "ui",
  "wasm-bindgen",
  "wasm-bindgen-futures",

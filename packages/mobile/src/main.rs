@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use tracing_subscriber::EnvFilter;
 
 use views::Home;
 
@@ -14,7 +15,13 @@ enum Route {
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 
 fn main() {
+    init_tracing();
     dioxus::launch(App);
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
 #[component]

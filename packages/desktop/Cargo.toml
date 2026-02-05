@@ -9,6 +9,8 @@ ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
 fastboop-fastboot-rusb = { path = "../../crates/fastboop-fastboot-rusb" }
 rusb = "0.9.4"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 [features]
 default = ["desktop"]
