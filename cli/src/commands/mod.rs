@@ -110,7 +110,7 @@ pub(crate) fn ensure_smoo_source(smoo: &Option<PathBuf>, existing: &Option<Vec<u
         bail!("--smoo is required unless --augment contains /usr/bin/smoo-gadget");
     };
     let has_smoo = fastboop_stage0::cpio_contains_path(data, "usr/bin/smoo-gadget")
-        .map_err(|e| anyhow::anyhow!("invalid initrd: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("invalid initrd: {e:?}"))?;
     if !has_smoo {
         bail!("--smoo is required unless --augment contains /usr/bin/smoo-gadget");
     }

@@ -187,7 +187,7 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         extra_cmdline.as_deref(),
         existing.as_deref(),
     )
-    .map_err(|e| anyhow::anyhow!("stage0 build failed: {:?}", e))?;
+    .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
 
     let cmdline = join_cmdline(
         profile

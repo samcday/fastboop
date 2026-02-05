@@ -76,7 +76,7 @@ pub fn load_device_profiles(dirs: &[PathBuf]) -> Result<HashMap<String, DevicePr
                 );
             }
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                let key = format!("file:{}", stem);
+                let key = format!("file:{stem}");
                 profiles.entry(key).or_insert_with(|| profile.clone());
             }
             profiles.insert(profile.id.clone(), profile);
