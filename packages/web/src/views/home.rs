@@ -37,7 +37,7 @@ pub fn Home() -> Element {
 
     #[cfg(target_arch = "wasm32")]
     let on_connect: Option<EventHandler<MouseEvent>> = {
-        let mut refresh = refresh;
+        let refresh = refresh;
         Some(EventHandler::new(move |_| {
             let mut refresh = refresh;
             spawn(async move {

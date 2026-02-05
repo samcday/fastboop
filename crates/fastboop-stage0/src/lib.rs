@@ -230,7 +230,7 @@ fn find_kernel_in_modules<P: RootfsProvider>(
         if entry.contains("rescue") {
             continue;
         }
-        let candidate = format!("{}/{}/vmlinuz", base, entry);
+        let candidate = format!("{base}/{entry}/vmlinuz");
         if rootfs.exists(&candidate).unwrap_or(false) {
             return Ok(Some(candidate.trim_start_matches('/').to_string()));
         }
@@ -246,7 +246,7 @@ fn detect_modules_dir<P: RootfsProvider>(rootfs: &P) -> Result<ModulesDir, Stage
             if let Some(first) = entries.first() {
                 return Ok(ModulesDir {
                     kver: first.clone(),
-                    source_root: format!("{}/{}", base, first),
+                    source_root: format!("{base}/{first}"),
                 });
             }
         }
@@ -331,20 +331,20 @@ fn select_dtb<P: RootfsProvider>(
     let name = profile.devicetree_name.trim_start_matches('/');
     let mut candidates = Vec::new();
     candidates.extend_from_slice(&[
-        format!("/boot/dtb/{}.dtb", name),
-        format!("/boot/{}.dtb", name),
-        format!("/lib/firmware/{}.dtb", name),
-        format!("/usr/lib/firmware/{}.dtb", name),
+        format!("/boot/dtb/{name}.dtb"),
+        format!("/boot/{name}.dtb"),
+        format!("/lib/firmware/{name}.dtb"),
+        format!("/usr/lib/firmware/{name}.dtb"),
     ]);
     if let Ok(mods) = rootfs.read_dir("/usr/lib/modules") {
         for m in mods {
-            let base = format!("/usr/lib/modules/{}/dtb", m);
-            candidates.push(format!("{}/{}.dtb", base, name));
-            candidates.push(format!("{}/{}", base, name));
+            let base = format!("/usr/lib/modules/{m}/dtb");
+            candidates.push(format!("{base}/{name}.dtb"));
+            candidates.push(format!("{base}/{name}"));
             if let Ok(entries) = rootfs.read_dir(&base) {
                 for e in entries {
                     if e.ends_with(".dtb") && e.contains(name) {
-                        candidates.push(format!("{}/{}", base, e));
+                        candidates.push(format!("{base}/{e}"));
                     }
                 }
             }

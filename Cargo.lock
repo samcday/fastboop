@@ -1616,7 +1616,6 @@ version = "0.1.0"
 dependencies = [
  "fastboop-schema",
  "postcard",
- "schemars",
  "serde",
  "serde_yaml",
  "tracing",

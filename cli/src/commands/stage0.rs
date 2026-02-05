@@ -91,7 +91,7 @@ pub fn run_stage0(args: Stage0Args) -> Result<()> {
         args.cmdline_append.as_deref(),
         existing.as_deref(),
     )
-    .map_err(|e| anyhow::anyhow!("stage0 build failed: {:?}", e))?;
+    .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
 
     let mut stdout = std::io::stdout().lock();
     stdout

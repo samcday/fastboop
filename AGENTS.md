@@ -11,7 +11,7 @@ This file keeps Codex sessions fast and predictable. Read it before coding.
 - Read `AGENTS.md`, `README.md`, `docs/*.md` and skim `smoo/HACKING.md` for protocol invariants shared with smoo.
 - Confirm workspace layout (`crates/*`) and no-std expectations for core logic crates.
 - Use `rustfmt --edition 2021`; prefer async-first; avoid blocking unless justified.
-- Target stable Rust (MSRV 1.87 to match smoo) and keep code `cargo build --workspace --locked` clean.
+- Target stable Rust (MSRV 1.88) and keep code `cargo build --workspace --locked` clean.
 - Keep logic crates no_std + `alloc`; isolate std/platform bindings in leaf crates (CLI/web/host tooling).
 
 ## Architectural defaults
