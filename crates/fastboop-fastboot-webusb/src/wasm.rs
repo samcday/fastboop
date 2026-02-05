@@ -1,7 +1,7 @@
 use fastboop_core::fastboot::{FastbootWire, Response};
 use fastboop_core::prober::FastbootCandidate;
 use js_sys::Uint8Array;
-use tracing::trace;
+use tracing::{debug, trace};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{UsbDevice, UsbDirection, UsbEndpoint, UsbEndpointType, UsbTransferStatus};
@@ -69,19 +69,31 @@ impl FastbootWebUsb {
 
     pub async fn ensure_open(&self) -> Result<(), FastbootWebUsbError> {
         if self.device.opened() {
+            trace!(interface = self.interface, "fastboot webusb already open");
             return Ok(());
         }
+        debug!(interface = self.interface, "fastboot webusb opening");
         JsFuture::from(self.device.open()).await?;
         if self.device.configuration().is_none() {
+            debug!("fastboot webusb select configuration");
             JsFuture::from(self.device.select_configuration(1)).await?;
         }
+        debug!(
+            interface = self.interface,
+            "fastboot webusb claim interface"
+        );
         JsFuture::from(self.device.claim_interface(self.interface)).await?;
         Ok(())
     }
 
-    async fn send_command(&self, cmd: &str) -> Result<Response, FastbootWebUsbError> {
+    async fn send_command_inner(&self, cmd: &str) -> Result<Response, FastbootWebUsbError> {
         trace!(command = %cmd, "fastboot send");
         let out = Uint8Array::from(cmd.as_bytes());
+        trace!(
+            len = out.length(),
+            ep_out = self.ep_out,
+            "fastboot transfer_out command"
+        );
         let promise = self
             .device
             .transfer_out_with_u8_array(self.ep_out, &out)
@@ -91,11 +103,17 @@ impl FastbootWebUsb {
     }
 
     async fn read_response_inner(&self) -> Result<Response, FastbootWebUsbError> {
+        trace!(
+            ep_in = self.ep_in,
+            len = RESPONSE_BUFFER_LEN,
+            "fastboot transfer_in response"
+        );
         let result =
             JsFuture::from(self.device.transfer_in(self.ep_in, RESPONSE_BUFFER_LEN)).await?;
         let result: web_sys::UsbInTransferResult =
             result.dyn_into().map_err(FastbootWebUsbError::Js)?;
         if result.status() != UsbTransferStatus::Ok {
+            debug!(status = ?result.status(), "fastboot transfer_in status");
             return Err(FastbootWebUsbError::InvalidResponse);
         }
         let data = result.data().ok_or(FastbootWebUsbError::InvalidResponse)?;
@@ -107,12 +125,14 @@ impl FastbootWebUsb {
             .byte_length()
             .try_into()
             .map_err(|_| FastbootWebUsbError::InvalidResponse)?;
+        trace!(start, len, "fastboot response buffer view");
         let end: u32 = start
             .checked_add(len)
             .ok_or(FastbootWebUsbError::InvalidResponse)?;
         let view = Uint8Array::new(&data.buffer()).subarray(start, end);
         let buf = view.to_vec();
         if buf.len() < 4 {
+            debug!(len = buf.len(), "fastboot response too short");
             return Err(FastbootWebUsbError::InvalidResponse);
         }
         let status = String::from_utf8_lossy(&buf[..4]).to_string();
@@ -194,6 +214,11 @@ impl FastbootWire for FastbootWebUsb {
         Box::pin(async move {
             self.ensure_open().await?;
             let out = Uint8Array::from(data);
+            trace!(
+                len = out.length(),
+                ep_out = self.ep_out,
+                "fastboot transfer_out data"
+            );
             let promise = self
                 .device
                 .transfer_out_with_u8_array(self.ep_out, &out)
@@ -235,9 +260,11 @@ fn truncate_payload(payload: &str) -> String {
 
 async fn ensure_configured(device: &UsbDevice) -> Result<(), FastbootWebUsbError> {
     if !device.opened() {
+        debug!("fastboot webusb open device for discovery");
         JsFuture::from(device.open()).await?;
     }
     if device.configuration().is_none() {
+        debug!("fastboot webusb select configuration for discovery");
         JsFuture::from(device.select_configuration(1)).await?;
     }
     Ok(())
@@ -255,6 +282,13 @@ fn find_fastboot_interface(device: &UsbDevice) -> Result<(u8, u8, u8), FastbootW
         let mut ep_out = None;
         for endpoint in alt.endpoints().iter() {
             let endpoint: UsbEndpoint = endpoint.dyn_into().map_err(FastbootWebUsbError::Js)?;
+            trace!(
+                interface = interface.interface_number(),
+                ep = endpoint.endpoint_number(),
+                direction = ?endpoint.direction(),
+                kind = ?endpoint.type_(),
+                "fastboot endpoint"
+            );
             if endpoint.type_() != UsbEndpointType::Bulk {
                 continue;
             }
@@ -265,6 +299,10 @@ fn find_fastboot_interface(device: &UsbDevice) -> Result<(u8, u8, u8), FastbootW
             }
         }
         if let (Some(ep_in), Some(ep_out)) = (ep_in, ep_out) {
+            debug!(
+                interface = interface.interface_number(),
+                ep_in, ep_out, "fastboot interface selected"
+            );
             return Ok((interface.interface_number(), ep_in, ep_out));
         }
     }
