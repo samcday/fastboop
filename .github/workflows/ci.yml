@@ -81,8 +81,14 @@ jobs:
       - name: Install Dioxus CLI
         run: cargo binstall dioxus-cli --no-confirm
 
-      - name: Install AWS CLI
-        run: sudo apt-get update && sudo apt-get install -y awscli
+      - name: Install AWS CLI (v2)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y unzip
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install
 
       - name: Dioxus build (web release)
         run: dx build -p web --release
