@@ -1,1 +1,3 @@
 target/
+.terraform/
+terraform.tfstate.backup
