@@ -25,8 +25,8 @@ pub fn Hero(state: ProbeState, on_connect: Option<EventHandler<MouseEvent>>) -> 
         ),
         ProbeState::Unsupported => (
             rsx! {
-                p { class: "cta__error", "sorry ur browser sux lol" }
-                p { class: "cta__hint", "WebUSB is missing here. Chromium-based browsers are required." }
+                p { class: "cta__error", "Unsupported browser" }
+                p { class: "cta__hint", "Yes, I know it's 2026. But WebUSB is missing in this browser, sorry :( fastboop requires a Chromium-based browser. Otherwise, use the CLI or the desktop app." }
             },
             "cta cta--blocked",
         ),
