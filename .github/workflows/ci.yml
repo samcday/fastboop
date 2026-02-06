@@ -82,7 +82,7 @@ jobs:
         run: cargo binstall dioxus-cli --force --no-confirm
 
       - name: Dioxus build (web release)
-        run: dx build -p web --release
+        run: dx build -p web --release --base-path "/commit/${GITHUB_SHA}/"
 
       - name: Upload snapshot to R2
         env:
