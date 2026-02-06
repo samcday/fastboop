@@ -55,3 +55,45 @@ jobs:
 
       - name: Dioxus build (desktop)
         run: dx build -p desktop
+
+  deploy-bleeding:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          targets: wasm32-unknown-unknown
+
+      - name: Install cargo-binstall
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+
+      - name: Install Dioxus CLI
+        run: cargo binstall dioxus-cli --no-confirm
+
+      - name: Install AWS CLI
+        run: sudo apt-get update && sudo apt-get install -y awscli
+
+      - name: Dioxus build (web release)
+        run: dx build -p web --release
+
+      - name: Upload snapshot to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_REGION: auto
+          AWS_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        run: |
+          set -euo pipefail
+          build_dir="target/dx/web/release/web/public"
+          dest_prefix="commit/${GITHUB_SHA}"
+          aws s3 sync "$build_dir" "s3://fastboop-bleeding/$dest_prefix/" --endpoint-url "$AWS_ENDPOINT_URL"
+          printf '%s' "$GITHUB_SHA" > latest.txt
+          aws s3 cp latest.txt "s3://fastboop-bleeding/latest.txt" --endpoint-url "$AWS_ENDPOINT_URL" --cache-control "no-store"
