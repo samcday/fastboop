@@ -1,9 +1,10 @@
 [workspace]
 members = [
     "cli",
+    "stage0",
     "crates/fastboop-core",
     "crates/fastboop-schema",
-    "crates/fastboop-stage0",
+    "crates/fastboop-stage0-generator",
     "crates/fastboop-fastboot-rusb",
     "crates/fastboop-fastboot-webusb",
     "packages/desktop",
@@ -12,6 +13,9 @@ members = [
     "packages/web",
 ]
 resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
 
 [workspace.dependencies]
 dioxus = { version = "0.7.1" }

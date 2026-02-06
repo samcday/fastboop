@@ -31,18 +31,12 @@ pub(crate) fn format_probe_error(
 #[derive(Clone)]
 pub(crate) struct DirectoryRootfs {
     pub(crate) root: PathBuf,
-    pub(crate) smoo: Option<PathBuf>,
 }
 
 impl RootfsProvider for DirectoryRootfs {
     type Error = anyhow::Error;
 
     fn read_all(&self, path: &str) -> Result<Vec<u8>> {
-        if path == "smoo-gadget" {
-            let smoo = self.smoo.as_ref().context("smoo-gadget not provided")?;
-            return fs::read(smoo)
-                .with_context(|| format!("reading smoo binary {}", smoo.display()));
-        }
         let path = resolve_rooted(&self.root, path)?;
         fs::read(&path).with_context(|| format!("reading {}", path.display()))
     }
@@ -97,21 +91,6 @@ pub(crate) fn read_dtbo_overlays(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>> {
         out.push(data);
     }
     Ok(out)
-}
-
-pub(crate) fn ensure_smoo_source(smoo: &Option<PathBuf>, existing: &Option<Vec<u8>>) -> Result<()> {
-    if smoo.is_some() {
-        return Ok(());
-    }
-    let Some(data) = existing else {
-        bail!("--smoo is required unless --augment contains /usr/bin/smoo-gadget");
-    };
-    let has_smoo = fastboop_stage0::cpio_contains_path(data, "usr/bin/smoo-gadget")
-        .map_err(|e| anyhow::anyhow!("invalid initrd: {e:?}"))?;
-    if !has_smoo {
-        bail!("--smoo is required unless --augment contains /usr/bin/smoo-gadget");
-    }
-    Ok(())
 }
 
 fn resolve_rooted(root: &Path, path: &str) -> Result<PathBuf> {

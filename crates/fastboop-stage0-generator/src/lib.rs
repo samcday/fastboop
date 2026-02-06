@@ -15,7 +15,7 @@ use fastboop_core::{DeviceProfile, InjectMac, Personalization, RootfsProvider};
 
 const MODULES_LOAD_PATH: &str = "etc/modules-load.d/fastboop-stage0.conf";
 const MODULES_ROOT: &str = "lib/modules";
-const SMOO_BIN_PATH: &str = "usr/bin/smoo-gadget";
+const INIT_BIN_PATH: &str = "init";
 const BASE_REQUIRED_MODULES: &[&str] = &[
     "configfs",
     "libcomposite",
@@ -50,7 +50,7 @@ pub struct Stage0Options {
 pub struct Stage0Build {
     pub kernel_image: Vec<u8>,
     pub kernel_path: String,
-    pub smoo_path: String,
+    pub init_path: String,
     pub initrd: Vec<u8>,
     pub dtb: Vec<u8>,
     pub kernel_cmdline_append: String,
@@ -67,7 +67,7 @@ struct ModulesDir {
     source_root: String,
 }
 
-/// Build a minimal stage0 initrd containing smoo as PID1 plus modules.
+/// Build a minimal stage0 initrd containing fastboop stage0 as PID1 plus modules.
 pub fn build_stage0<P: RootfsProvider>(
     profile: &DeviceProfile,
     rootfs: &P,
@@ -80,7 +80,7 @@ pub fn build_stage0<P: RootfsProvider>(
         .read_all(&kernel_path)
         .map_err(|_| Stage0Error::MissingFile(kernel_path.clone()))?;
 
-    let smoo_path = SMOO_BIN_PATH.to_string();
+    let init_path = INIT_BIN_PATH.to_string();
 
     let mut modules_dir = None;
     let mut modules_dep = ModulesDep::new();
@@ -117,8 +117,6 @@ pub fn build_stage0<P: RootfsProvider>(
     } else {
         CpioImage::new()
     };
-    let has_smoo = image.has_path(SMOO_BIN_PATH);
-
     image.ensure_dir("dev")?;
     image.ensure_dir("proc")?;
     image.ensure_dir("sys")?;
@@ -126,17 +124,10 @@ pub fn build_stage0<P: RootfsProvider>(
     image.ensure_dir("etc/modules-load.d")?;
     image.ensure_dir("lib")?;
     image.ensure_dir("lib/modules")?;
-    image.ensure_dir("sbin")?;
-    image.ensure_dir("usr")?;
-    image.ensure_dir("usr/bin")?;
 
-    if !has_smoo {
-        let smoo_init = rootfs
-            .read_all("smoo-gadget")
-            .map_err(|_| Stage0Error::MissingFile("smoo-gadget".into()))?;
-        image.ensure_file(SMOO_BIN_PATH, 0o100755, &smoo_init)?;
+    if !image.has_path(INIT_BIN_PATH) {
+        image.ensure_file(INIT_BIN_PATH, 0o100755, embedded_stage0_binary())?;
     }
-    image.ensure_symlink("init", SMOO_BIN_PATH)?;
 
     if !required_modules.is_empty() {
         let modules_dir = modules_dir
@@ -190,11 +181,15 @@ pub fn build_stage0<P: RootfsProvider>(
     Ok(Stage0Build {
         kernel_image,
         kernel_path,
-        smoo_path,
+        init_path,
         initrd: image.finish()?,
         dtb: dtb_bytes,
         kernel_cmdline_append: cmdline,
     })
+}
+
+fn embedded_stage0_binary() -> &'static [u8] {
+    include_bytes!(env!("FASTBOOP_STAGE0_EMBED_PATH"))
 }
 
 fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Error> {
@@ -993,18 +988,6 @@ impl CpioImage {
             path: path.to_string(),
             mode,
             data: data.to_vec(),
-        });
-        Ok(())
-    }
-
-    fn ensure_symlink(&mut self, path: &str, target: &str) -> Result<(), Stage0Error> {
-        if self.index.contains(path) {
-            return Ok(());
-        }
-        self.push(CpioEntry {
-            path: path.to_string(),
-            mode: 0o120777,
-            data: target.as_bytes().to_vec(),
         });
         Ok(())
     }

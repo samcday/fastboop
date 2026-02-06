@@ -1,0 +1,4 @@
+[submodule "smoo"]
+	path = smoo
+	url = https://github.com/samcday/smoo.git
+	branch = stage0

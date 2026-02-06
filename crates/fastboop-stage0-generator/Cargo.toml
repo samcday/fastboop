@@ -1,5 +1,5 @@
 [package]
-name = "fastboop-stage0"
+name = "fastboop-stage0-generator"
 version = "0.1.0"
 edition = "2024"
 

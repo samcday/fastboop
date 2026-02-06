@@ -3,20 +3,17 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use fastboop_stage0::{Stage0Options, build_stage0};
+use fastboop_stage0_generator::{Stage0Options, build_stage0};
 
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
 
-use super::{DirectoryRootfs, ensure_smoo_source, read_dtbo_overlays, read_existing_initrd};
+use super::{DirectoryRootfs, read_dtbo_overlays, read_existing_initrd};
 
 #[derive(Args)]
 pub struct Stage0Args {
     /// Path to rootfs (directory or mount) containing kernel/modules.
     #[arg(value_name = "ROOTFS")]
     pub rootfs: PathBuf,
-    /// Path to smoo-gadget binary to embed as /init (must be self-contained/static for now).
-    #[arg(long)]
-    pub smoo: Option<PathBuf>,
     /// Device profile id to use (must be present in loaded DevPros).
     #[arg(long, required = true)]
     pub device_profile: String,
@@ -32,7 +29,7 @@ pub struct Stage0Args {
     /// Extra required modules (repeatable).
     #[arg(long = "require-module")]
     pub require_modules: Vec<String>,
-    /// Extra kernel cmdline to append after the smoo.modules= argument.
+    /// Extra kernel cmdline to append after generated stage0 arguments.
     #[arg(long, alias = "cmdline")]
     pub cmdline_append: Option<String>,
     /// Enable CDC-ACM gadget (smoo.acm=1) and include usb_f_acm.
@@ -77,12 +74,7 @@ pub fn run_stage0(args: Stage0Args) -> Result<()> {
     };
 
     let existing = read_existing_initrd(&args.augment)?;
-    ensure_smoo_source(&args.smoo, &existing)?;
-
-    let provider = DirectoryRootfs {
-        root: args.rootfs,
-        smoo: args.smoo,
-    };
+    let provider = DirectoryRootfs { root: args.rootfs };
 
     let build = build_stage0(
         profile,
@@ -99,10 +91,10 @@ pub fn run_stage0(args: Stage0Args) -> Result<()> {
         .context("writing initrd to stdout")?;
     eprintln!("Kernel cmdline append: {}", build.kernel_cmdline_append);
     eprintln!(
-        "Kernel: {} ({} bytes); smoo: {}",
+        "Kernel: {} ({} bytes); init: {}",
         build.kernel_path,
         build.kernel_image.len(),
-        build.smoo_path
+        build.init_path
     );
     Ok(())
 }

@@ -10,15 +10,14 @@ use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, 
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::prober::probe_candidates;
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
-use fastboop_stage0::{Stage0Options, build_stage0};
+use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use tracing::debug;
 
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
 use crate::personalization::personalization_from_host;
 
 use super::{
-    DirectoryRootfs, Stage0Args, ensure_smoo_source, format_probe_error, read_dtbo_overlays,
-    read_existing_initrd,
+    DirectoryRootfs, Stage0Args, format_probe_error, read_dtbo_overlays, read_existing_initrd,
 };
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -85,11 +84,8 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
     };
 
     let existing = read_existing_initrd(&args.stage0.augment)?;
-    ensure_smoo_source(&args.stage0.smoo, &existing)?;
-
     let provider = DirectoryRootfs {
         root: args.stage0.rootfs,
-        smoo: args.stage0.smoo,
     };
 
     let mut extra_parts = Vec::new();
