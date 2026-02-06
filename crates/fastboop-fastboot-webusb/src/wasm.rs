@@ -1,15 +1,42 @@
-use fastboop_core::device::{DeviceEvent, DeviceEventHandler, DeviceWatcher as DeviceWatcherTrait};
+use fastboop_core::device::{
+    DeviceEvent, DeviceFilter, DeviceHandle as DeviceHandleTrait,
+    DeviceWatcher as DeviceWatcherTrait,
+};
 use fastboop_core::fastboot::{FastbootWire, Response};
-use fastboop_core::prober::FastbootCandidate;
-use js_sys::{Reflect, Uint8Array};
+use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use futures_core::Stream;
+use js_sys::{Array, Reflect, Uint8Array};
 use std::cell::Cell;
-use std::rc::Rc;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
 use tracing::{debug, trace};
 use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::JsFuture;
-use web_sys::{Usb, UsbDevice, UsbDirection, UsbEndpoint, UsbEndpointType, UsbTransferStatus};
+use wasm_bindgen_futures::{JsFuture, spawn_local};
+use web_sys::{
+    Usb, UsbDevice, UsbDeviceFilter, UsbDeviceRequestOptions, UsbDirection, UsbEndpoint,
+    UsbEndpointType, UsbTransferStatus,
+};
 
 const RESPONSE_BUFFER_LEN: u32 = 4096;
+
+#[derive(Clone)]
+struct SendSyncUsbDevice(UsbDevice);
+
+unsafe impl Send for SendSyncUsbDevice {}
+unsafe impl Sync for SendSyncUsbDevice {}
+
+impl SendSyncUsbDevice {
+    fn clone_inner(&self) -> UsbDevice {
+        self.0.clone()
+    }
+}
+
+impl std::fmt::Debug for SendSyncUsbDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SendSyncUsbDevice")
+    }
+}
 
 #[derive(Debug)]
 pub struct FastbootWebUsb {
@@ -21,19 +48,18 @@ pub struct FastbootWebUsb {
 }
 
 #[derive(Debug, Clone)]
-pub struct FastbootWebUsbCandidate {
-    device: UsbDevice,
-    interface: u8,
-    ep_in: u8,
-    ep_out: u8,
+pub struct WebUsbDeviceHandle {
+    device: SendSyncUsbDevice,
     vid: u16,
     pid: u16,
 }
 
+pub type FastbootWebUsbCandidate = WebUsbDeviceHandle;
+
 pub struct DeviceWatcher {
     usb: Usb,
+    receiver: UnboundedReceiver<DeviceEvent<WebUsbDeviceHandle>>,
     on_connect: wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>,
-    on_disconnect: wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>,
 }
 
 #[derive(Debug)]
@@ -50,6 +76,7 @@ pub enum FastbootWebUsbError {
 pub enum DeviceWatcherError {
     Unsupported,
     Js(JsValue),
+    ChannelClosed,
 }
 
 impl std::fmt::Display for FastbootWebUsbError {
@@ -86,6 +113,7 @@ impl std::fmt::Display for DeviceWatcherError {
         match self {
             Self::Unsupported => write!(f, "webusb is not available"),
             Self::Js(err) => write!(f, "js error: {:?}", err),
+            Self::ChannelClosed => write!(f, "device watcher event stream closed"),
         }
     }
 }
@@ -183,36 +211,25 @@ impl FastbootWebUsb {
     }
 }
 
-impl FastbootWebUsbCandidate {
-    pub fn new(device: UsbDevice, interface: u8, ep_in: u8, ep_out: u8) -> Self {
-        let vid = device.vendor_id();
-        let pid = device.product_id();
+impl WebUsbDeviceHandle {
+    pub fn new(device: UsbDevice) -> Self {
         Self {
-            device,
-            interface,
-            ep_in,
-            ep_out,
-            vid,
-            pid,
+            vid: device.vendor_id(),
+            pid: device.product_id(),
+            device: SendSyncUsbDevice(device),
         }
     }
 
-    pub async fn from_device(device: UsbDevice) -> Result<Self, FastbootWebUsbError> {
-        ensure_configured(&device).await?;
-        let (interface, ep_in, ep_out) = find_fastboot_interface(&device)?;
-        Ok(Self::new(device, interface, ep_in, ep_out))
-    }
-
-    pub fn device(&self) -> &UsbDevice {
-        &self.device
+    pub fn device(&self) -> UsbDevice {
+        self.device.clone_inner()
     }
 }
 
-impl FastbootCandidate for FastbootWebUsbCandidate {
-    type Wire = FastbootWebUsb;
-    type Error = FastbootWebUsbError;
-    type OpenFuture<'a> =
-        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Wire, Self::Error>> + 'a>>;
+impl DeviceHandleTrait for WebUsbDeviceHandle {
+    type FastbootWire = FastbootWebUsb;
+    type OpenFastbootError = FastbootWebUsbError;
+    type OpenFastbootFuture<'a> =
+        Pin<Box<dyn Future<Output = Result<Self::FastbootWire, Self::OpenFastbootError>> + 'a>>;
 
     fn vid(&self) -> u16 {
         self.vid
@@ -222,12 +239,13 @@ impl FastbootCandidate for FastbootWebUsbCandidate {
         self.pid
     }
 
-    fn open<'a>(&'a self) -> Self::OpenFuture<'a> {
-        let device = self.device.clone();
-        let interface = self.interface;
-        let ep_in = self.ep_in;
-        let ep_out = self.ep_out;
-        Box::pin(async move { Ok(FastbootWebUsb::new(device, interface, ep_in, ep_out)) })
+    fn open_fastboot<'a>(&'a self) -> Self::OpenFastbootFuture<'a> {
+        let device = self.device.clone_inner();
+        Box::pin(async move {
+            ensure_configured(&device).await?;
+            let (interface, ep_in, ep_out) = find_fastboot_interface(&device)?;
+            Ok(FastbootWebUsb::new(device, interface, ep_in, ep_out))
+        })
     }
 }
 
@@ -273,51 +291,58 @@ impl FastbootWire for FastbootWebUsb {
     }
 }
 
-pub async fn fastboot_candidates_from_devices(
-    devices: &[UsbDevice],
-) -> Vec<FastbootWebUsbCandidate> {
-    let mut candidates = Vec::new();
-    for device in devices {
-        let device = device.clone();
-        if let Ok(candidate) = FastbootWebUsbCandidate::from_device(device).await {
-            candidates.push(candidate);
+impl Drop for FastbootWebUsb {
+    fn drop(&mut self) {
+        if self.claimed.get() {
+            let _ = self.device.release_interface(self.interface);
+            self.claimed.set(false);
         }
+        let _ = self.device.close();
     }
-    candidates
 }
 
 impl DeviceWatcher {
-    pub fn new(handler: DeviceEventHandler) -> Result<Self, DeviceWatcherError> {
-        <Self as DeviceWatcherTrait>::new(handler)
+    pub fn new(filters: &[DeviceFilter]) -> Result<Self, DeviceWatcherError> {
+        let usb = webusb_handle()?;
+        let filters = std::rc::Rc::new(filters.to_vec());
+        let (sender, receiver) = unbounded();
+
+        enqueue_authorized_devices(usb.clone(), std::rc::Rc::clone(&filters), sender.clone());
+
+        let on_connect = {
+            let filters = std::rc::Rc::clone(&filters);
+            let sender = sender.clone();
+            wasm_bindgen::closure::Closure::wrap(Box::new(move |evt: JsValue| {
+                trace!(target: "fastboop::webusb::watcher", "webusb connect event");
+                if let Some(device) = event_device(&evt) {
+                    enqueue_if_matching(&filters, &sender, device);
+                }
+            }) as Box<dyn FnMut(JsValue)>)
+        };
+
+        usb.add_event_listener_with_callback("connect", on_connect.as_ref().unchecked_ref())?;
+
+        Ok(Self {
+            usb,
+            receiver,
+            on_connect,
+        })
     }
 }
 
 impl DeviceWatcherTrait for DeviceWatcher {
+    type Device = WebUsbDeviceHandle;
     type Error = DeviceWatcherError;
-    type Handler = DeviceEventHandler;
 
-    fn new(handler: Self::Handler) -> Result<Self, Self::Error> {
-        let usb = webusb_handle()?;
-        let handler: Rc<dyn Fn(DeviceEvent)> = Rc::from(handler);
-        let on_connect = {
-            let handler = Rc::clone(&handler);
-            wasm_bindgen::closure::Closure::wrap(Box::new(move |_evt: JsValue| {
-                (handler)(DeviceEvent::Arrived);
-            }) as Box<dyn FnMut(JsValue)>)
-        };
-        let on_disconnect = {
-            let handler = Rc::clone(&handler);
-            wasm_bindgen::closure::Closure::wrap(Box::new(move |_evt: JsValue| {
-                (handler)(DeviceEvent::Left);
-            }) as Box<dyn FnMut(JsValue)>)
-        };
-        usb.add_event_listener_with_callback("connect", on_connect.as_ref().unchecked_ref())?;
-        usb.add_event_listener_with_callback("disconnect", on_disconnect.as_ref().unchecked_ref())?;
-        Ok(Self {
-            usb,
-            on_connect,
-            on_disconnect,
-        })
+    fn poll_next_event(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Result<DeviceEvent<Self::Device>, Self::Error>> {
+        match Pin::new(&mut self.receiver).poll_next(cx) {
+            Poll::Ready(Some(event)) => Poll::Ready(Ok(event)),
+            Poll::Ready(None) => Poll::Ready(Err(DeviceWatcherError::ChannelClosed)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -327,11 +352,92 @@ impl Drop for DeviceWatcher {
             "connect",
             self.on_connect.as_ref().unchecked_ref(),
         );
-        let _ = self.usb.remove_event_listener_with_callback(
-            "disconnect",
-            self.on_disconnect.as_ref().unchecked_ref(),
-        );
     }
+}
+
+pub async fn request_device(
+    filters: &[DeviceFilter],
+) -> Result<WebUsbDeviceHandle, DeviceWatcherError> {
+    let usb = webusb_handle()?;
+    let options = UsbDeviceRequestOptions::new(&JsValue::from(build_filters(filters)));
+    let device = JsFuture::from(usb.request_device(&options)).await?;
+    let device = device
+        .dyn_into::<UsbDevice>()
+        .map_err(DeviceWatcherError::Js)?;
+    Ok(WebUsbDeviceHandle::new(device))
+}
+
+fn enqueue_authorized_devices(
+    usb: Usb,
+    filters: std::rc::Rc<Vec<DeviceFilter>>,
+    sender: UnboundedSender<DeviceEvent<WebUsbDeviceHandle>>,
+) {
+    spawn_local(async move {
+        let devices = match JsFuture::from(usb.get_devices()).await {
+            Ok(devices) => devices,
+            Err(err) => {
+                debug!(target: "fastboop::webusb::watcher", ?err, "webusb getDevices failed");
+                return;
+            }
+        };
+        let devices: Array = match devices.dyn_into() {
+            Ok(devices) => devices,
+            Err(err) => {
+                debug!(target: "fastboop::webusb::watcher", ?err, "webusb getDevices cast failed");
+                return;
+            }
+        };
+        for value in devices.iter() {
+            if let Ok(device) = value.dyn_into::<UsbDevice>() {
+                enqueue_if_matching(&filters, &sender, device);
+            }
+        }
+    });
+}
+
+fn event_device(evt: &JsValue) -> Option<UsbDevice> {
+    let value = Reflect::get(evt, &JsValue::from_str("device")).ok()?;
+    value.dyn_into::<UsbDevice>().ok()
+}
+
+fn enqueue_if_matching(
+    filters: &[DeviceFilter],
+    sender: &UnboundedSender<DeviceEvent<WebUsbDeviceHandle>>,
+    device: UsbDevice,
+) {
+    let vid = device.vendor_id();
+    let pid = device.product_id();
+    if !matches_filters(filters, vid, pid) {
+        return;
+    }
+    let _ = sender.unbounded_send(DeviceEvent::Arrived {
+        device: WebUsbDeviceHandle::new(device),
+    });
+}
+
+fn matches_filters(filters: &[DeviceFilter], vid: u16, pid: u16) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
+    filters
+        .iter()
+        .any(|filter| filter.vid == vid && filter.pid == pid)
+}
+
+fn build_filters(filters: &[DeviceFilter]) -> Array {
+    let array = Array::new();
+    let mut deduped = Vec::new();
+    for filter in filters {
+        if deduped.contains(filter) {
+            continue;
+        }
+        deduped.push(*filter);
+        let usb_filter = UsbDeviceFilter::new();
+        usb_filter.set_vendor_id(filter.vid);
+        usb_filter.set_product_id(filter.pid);
+        array.push(&usb_filter);
+    }
+    array
 }
 
 fn truncate_payload(payload: &str) -> String {

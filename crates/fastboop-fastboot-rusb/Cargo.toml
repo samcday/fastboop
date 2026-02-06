@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 fastboop-core = { path = "../fastboop-core" }
+futures-channel = "0.3.31"
+futures-core = "0.3.31"
 rusb = "0.9.4"
 tracing = "0.1.41"
 

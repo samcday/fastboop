@@ -1,24 +1,27 @@
 use std::path::PathBuf;
+use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use fastboop_core::DeviceProfile;
 use fastboop_core::bootimg::build_android_bootimg;
+use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, profile_filters};
 use fastboop_core::fastboot::{boot, download};
-use fastboop_core::prober::{FastbootCandidate, probe_candidates};
-use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb};
+use fastboop_core::prober::probe_candidates;
+use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_stage0::{Stage0Options, build_stage0};
-use rusb::{Context as UsbContext, UsbContext as _};
 use tracing::debug;
 
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
 use crate::personalization::personalization_from_host;
 
 use super::{
-    DirectoryRootfs, RusbCandidate, Stage0Args, ensure_smoo_source, format_probe_error,
-    read_dtbo_overlays, read_existing_initrd,
+    DirectoryRootfs, Stage0Args, ensure_smoo_source, format_probe_error, read_dtbo_overlays,
+    read_existing_initrd,
 };
+
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Args)]
 pub struct BootArgs {
@@ -177,127 +180,102 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
 }
 
 fn wait_for_fastboot_device(profile: &DeviceProfile, wait: Duration) -> Result<FastbootRusb> {
-    let context = UsbContext::new().context("creating USB context")?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _watcher = DeviceWatcher::new(Box::new(move |_event| {
-        let _ = tx.send(());
-    }))
-    .context("starting USB hotplug watcher")?;
+    let filters = profile_filters(std::slice::from_ref(profile));
+    let mut watcher = DeviceWatcher::new(&filters).context("starting USB hotplug watcher")?;
     let deadline = if wait.is_zero() {
         None
     } else {
         Some(Instant::now() + wait)
     };
     let mut waiting = false;
-    loop {
-        let devices = context.devices().context("enumerating USB devices")?;
-        let mut candidates = Vec::new();
-        for device in devices.iter() {
-            let desc = match device.device_descriptor() {
-                Ok(desc) => desc,
-                Err(err) => {
-                    eprintln!("Skipping USB device: unable to read descriptor: {err}");
-                    continue;
-                }
-            };
-            candidates.push(RusbCandidate::new(
-                device,
-                desc.vendor_id(),
-                desc.product_id(),
-            ));
-        }
+    let profiles = vec![profile.clone()];
 
-        let profiles = vec![profile.clone()];
-        let reports = pollster::block_on(probe_candidates(&profiles, &candidates));
-        let mut matched_indices = Vec::new();
-        for report in reports {
-            let candidate = &candidates[report.candidate_index];
-            let device = candidate.device();
-            let vid = report.vid;
-            let pid = report.pid;
-            if let Some(err) = report.open_error {
-                eprintln!(
-                    "Skipping {:04x}:{:04x} bus={} addr={}: open failed: {err}",
-                    vid,
-                    pid,
-                    device.bus_number(),
-                    device.address()
-                );
-                continue;
+    loop {
+        match watcher.try_next_event() {
+            Poll::Ready(Ok(DeviceEvent::Arrived { device })) => {
+                if let Some(fastboot) = probe_arrived_device(profile, &profiles, device)? {
+                    return Ok(fastboot);
+                }
             }
-            for attempt in report.attempts {
-                match attempt.result {
-                    Ok(()) => matched_indices.push(report.candidate_index),
-                    Err(err) => {
-                        debug!(
-                            profile_id = %profile.id,
-                            vid = %format!("{:04x}", vid),
-                            pid = %format!("{:04x}", pid),
-                            bus = device.bus_number(),
-                            addr = device.address(),
-                            error = %format_probe_error(err),
-                            "fastboot probe failed"
+            Poll::Ready(Err(err)) => {
+                bail!("USB watcher disconnected: {err}");
+            }
+            Poll::Pending => {
+                if !waiting {
+                    waiting = true;
+                    if wait.is_zero() {
+                        eprintln!(
+                            "Waiting for fastboot device matching profile {}...",
+                            profile.id
+                        );
+                    } else {
+                        eprintln!(
+                            "Waiting up to {}s for fastboot device matching profile {}...",
+                            wait.as_secs(),
+                            profile.id
                         );
                     }
                 }
-            }
-        }
 
-        let idx = match matched_indices.len() {
-            0 => None,
-            1 => Some(matched_indices[0]),
-            _ => {
-                bail!(
-                    "multiple fastboot devices matched profile {}; please connect only one",
-                    profile.id
-                )
+                if let Some(deadline) = deadline {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        bail!(
+                            "timed out waiting for fastboot device matching profile {}",
+                            profile.id
+                        );
+                    }
+                    let remaining = deadline.saturating_duration_since(now);
+                    std::thread::sleep(remaining.min(IDLE_POLL_INTERVAL));
+                } else {
+                    std::thread::sleep(IDLE_POLL_INTERVAL);
+                }
             }
-        };
-
-        if let Some(idx) = idx {
-            let candidate = &candidates[idx];
-            let fastboot = FastbootRusb::open(candidate.device()).map_err(|err| {
-                anyhow::anyhow!(
-                    "open failed for {:04x}:{:04x} bus={} addr={}: {err}",
-                    candidate.vid(),
-                    candidate.pid(),
-                    candidate.device().bus_number(),
-                    candidate.device().address()
-                )
-            })?;
-            return Ok(fastboot);
-        }
-
-        if !waiting {
-            waiting = true;
-            if wait.is_zero() {
-                eprintln!(
-                    "Waiting for fastboot device matching profile {}...",
-                    profile.id
-                );
-            } else {
-                eprintln!(
-                    "Waiting up to {}s for fastboot device matching profile {}...",
-                    wait.as_secs(),
-                    profile.id
-                );
-            }
-        }
-
-        if let Some(deadline) = deadline {
-            let now = Instant::now();
-            if now >= deadline {
-                bail!(
-                    "timed out waiting for fastboot device matching profile {}",
-                    profile.id
-                );
-            }
-            let remaining = deadline.saturating_duration_since(now);
-            let _ = rx.recv_timeout(remaining.min(Duration::from_secs(1)));
-        } else {
-            let _ = rx.recv();
         }
     }
+}
+
+fn probe_arrived_device(
+    profile: &DeviceProfile,
+    profiles: &[DeviceProfile],
+    device: RusbDeviceHandle,
+) -> Result<Option<FastbootRusb>> {
+    let candidates = [device];
+    let reports = pollster::block_on(probe_candidates(profiles, &candidates));
+    for report in reports {
+        let candidate = &candidates[report.candidate_index];
+        let vid = report.vid;
+        let pid = report.pid;
+        if let Some(err) = report.open_error {
+            eprintln!("Skipping {vid:04x}:{pid:04x}: open failed: {err}");
+            continue;
+        }
+        for attempt in report.attempts {
+            match attempt.result {
+                Ok(()) => {
+                    let fastboot =
+                        pollster::block_on(candidate.open_fastboot()).map_err(|err| {
+                            anyhow::anyhow!(
+                                "open failed for {:04x}:{:04x}: {err}",
+                                candidate.vid(),
+                                candidate.pid(),
+                            )
+                        })?;
+                    return Ok(Some(fastboot));
+                }
+                Err(err) => {
+                    debug!(
+                        profile_id = %profile.id,
+                        vid = %format!("{:04x}", vid),
+                        pid = %format!("{:04x}", pid),
+                        error = %format_probe_error(err),
+                        "fastboot probe failed"
+                    );
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn join_cmdline(left: Option<&str>, right: Option<&str>) -> String {

@@ -1,14 +1,20 @@
 use std::fmt;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
 
-use fastboop_core::device::{DeviceEventHandler, DeviceWatcher as DeviceWatcherTrait};
+use fastboop_core::device::{
+    DeviceEvent, DeviceFilter, DeviceHandle as DeviceHandleTrait,
+    DeviceWatcher as DeviceWatcherTrait,
+};
 use fastboop_core::fastboot::{FastbootWire, Response};
-use fastboop_core::prober::FastbootCandidate;
 
 #[derive(Debug)]
 pub struct FastbootWebUsb;
 
 #[derive(Debug, Clone, Copy)]
-pub struct FastbootWebUsbCandidate;
+pub struct WebUsbDeviceHandle;
+
+pub type FastbootWebUsbCandidate = WebUsbDeviceHandle;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DeviceWatcher;
@@ -41,37 +47,54 @@ impl FastbootWebUsb {
     }
 }
 
-impl FastbootWebUsbCandidate {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for FastbootWebUsbCandidate {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Default for FastbootWebUsb {
     fn default() -> Self {
         Self::new()
     }
 }
 
+impl DeviceHandleTrait for WebUsbDeviceHandle {
+    type FastbootWire = FastbootWebUsb;
+    type OpenFastbootError = FastbootWebUsbError;
+    type OpenFastbootFuture<'a> =
+        core::future::Ready<Result<Self::FastbootWire, Self::OpenFastbootError>>;
+
+    fn vid(&self) -> u16 {
+        0
+    }
+
+    fn pid(&self) -> u16 {
+        0
+    }
+
+    fn open_fastboot<'a>(&'a self) -> Self::OpenFastbootFuture<'a> {
+        core::future::ready(Err(FastbootWebUsbError))
+    }
+}
+
 impl DeviceWatcher {
-    pub fn new(handler: DeviceEventHandler) -> Result<Self, DeviceWatcherError> {
-        <Self as DeviceWatcherTrait>::new(handler)
+    pub fn new(_filters: &[DeviceFilter]) -> Result<Self, DeviceWatcherError> {
+        Err(DeviceWatcherError)
     }
 }
 
 impl DeviceWatcherTrait for DeviceWatcher {
+    type Device = WebUsbDeviceHandle;
     type Error = DeviceWatcherError;
-    type Handler = DeviceEventHandler;
 
-    fn new(_handler: Self::Handler) -> Result<Self, Self::Error> {
-        Err(DeviceWatcherError)
+    fn poll_next_event(
+        self: Pin<&mut Self>,
+        _cx: &mut TaskContext<'_>,
+    ) -> Poll<Result<DeviceEvent<Self::Device>, Self::Error>> {
+        let _ = self;
+        Poll::Ready(Err(DeviceWatcherError))
     }
+}
+
+pub async fn request_device(
+    _filters: &[DeviceFilter],
+) -> Result<WebUsbDeviceHandle, DeviceWatcherError> {
+    Err(DeviceWatcherError)
 }
 
 impl FastbootWire for FastbootWebUsb {
@@ -92,25 +115,6 @@ impl FastbootWire for FastbootWebUsb {
     }
 
     fn read_response<'a>(&'a mut self) -> Self::ReadResponseFuture<'a> {
-        Box::pin(async { Err(FastbootWebUsbError) })
-    }
-}
-
-impl FastbootCandidate for FastbootWebUsbCandidate {
-    type Wire = FastbootWebUsb;
-    type Error = FastbootWebUsbError;
-    type OpenFuture<'a> =
-        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Wire, Self::Error>> + 'a>>;
-
-    fn vid(&self) -> u16 {
-        0
-    }
-
-    fn pid(&self) -> u16 {
-        0
-    }
-
-    fn open<'a>(&'a self) -> Self::OpenFuture<'a> {
         Box::pin(async { Err(FastbootWebUsbError) })
     }
 }

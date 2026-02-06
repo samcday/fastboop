@@ -8,13 +8,9 @@ dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
 fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
-js-sys = "0.3.76"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "registry", "std"] }
 tracing-wasm = "0.2.1"
-wasm-bindgen = "0.2.99"
-wasm-bindgen-futures = "0.4.49"
-web-sys = { version = "0.3.76", features = ["Navigator", "Usb", "UsbDevice", "UsbDeviceFilter", "UsbDeviceRequestOptions", "Window"] }
 
 [features]
 default = ["web"]

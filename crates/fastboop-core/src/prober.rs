@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 
 use crate::DeviceProfile;
+use crate::device::DeviceHandle;
 use crate::fastboot::{
     FastbootProtocolError, FastbootSession, FastbootWire, ProbeError, profile_matches_vid_pid,
 };
@@ -20,6 +21,30 @@ pub trait FastbootCandidate {
     fn vid(&self) -> u16;
     fn pid(&self) -> u16;
     fn open<'a>(&'a self) -> Self::OpenFuture<'a>;
+}
+
+impl<D> FastbootCandidate for D
+where
+    D: DeviceHandle,
+{
+    type Wire = D::FastbootWire;
+    type Error = D::OpenFastbootError;
+    type OpenFuture<'a>
+        = D::OpenFastbootFuture<'a>
+    where
+        Self: 'a;
+
+    fn vid(&self) -> u16 {
+        DeviceHandle::vid(self)
+    }
+
+    fn pid(&self) -> u16 {
+        DeviceHandle::pid(self)
+    }
+
+    fn open<'a>(&'a self) -> Self::OpenFuture<'a> {
+        DeviceHandle::open_fastboot(self)
+    }
 }
 
 #[derive(Debug)]

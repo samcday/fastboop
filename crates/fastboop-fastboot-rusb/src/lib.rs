@@ -1,9 +1,16 @@
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
-use fastboop_core::device::{DeviceEvent, DeviceWatcher as DeviceWatcherTrait};
+use fastboop_core::device::{
+    DeviceEvent, DeviceFilter, DeviceHandle as DeviceHandleTrait,
+    DeviceWatcher as DeviceWatcherTrait,
+};
 use fastboop_core::fastboot::{FastbootWire, Response};
-use fastboop_core::prober::FastbootCandidate;
+use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use futures_core::Stream;
 use rusb::{Context, Device, DeviceHandle, Direction, TransferType, UsbContext as _};
 use std::sync::{
     Arc,
@@ -31,15 +38,19 @@ pub struct FastbootRusb {
     timeout: Duration,
 }
 
-pub struct FastbootRusbCandidate {
+#[derive(Clone, Debug)]
+pub struct RusbDeviceHandle {
     device: rusb::Device<Context>,
     vid: u16,
     pid: u16,
 }
 
+pub type FastbootRusbCandidate = RusbDeviceHandle;
+
 pub struct DeviceWatcher {
     _context: Arc<Context>,
     _registration: rusb::Registration<Context>,
+    receiver: UnboundedReceiver<DeviceEvent<RusbDeviceHandle>>,
     running: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -61,6 +72,7 @@ pub enum DeviceWatcherError {
     HotplugUnsupported,
     Usb(rusb::Error),
     ThreadSpawn(std::io::Error),
+    ChannelClosed,
 }
 
 impl fmt::Display for FastbootRusbError {
@@ -106,47 +118,46 @@ impl std::fmt::Display for DeviceWatcherError {
             Self::HotplugUnsupported => write!(f, "usb hotplug not supported"),
             Self::Usb(err) => write!(f, "usb error: {err}"),
             Self::ThreadSpawn(err) => write!(f, "failed to spawn hotplug thread: {err}"),
+            Self::ChannelClosed => write!(f, "device watcher event stream closed"),
         }
     }
 }
 
 struct HotplugCallback {
-    handler: Arc<dyn Fn(DeviceEvent) + Send + Sync + 'static>,
+    filters: Arc<Vec<DeviceFilter>>,
+    sender: UnboundedSender<DeviceEvent<RusbDeviceHandle>>,
 }
 
 impl rusb::Hotplug<Context> for HotplugCallback {
-    fn device_arrived(&mut self, _device: Device<Context>) {
-        (self.handler)(DeviceEvent::Arrived);
+    fn device_arrived(&mut self, device: Device<Context>) {
+        enqueue_if_matching(&self.filters, &self.sender, device);
     }
 
-    fn device_left(&mut self, _device: Device<Context>) {
-        (self.handler)(DeviceEvent::Left);
-    }
+    fn device_left(&mut self, _device: Device<Context>) {}
 }
 
 impl DeviceWatcher {
-    pub fn new(
-        handler: Box<dyn Fn(DeviceEvent) + Send + Sync + 'static>,
-    ) -> Result<Self, DeviceWatcherError> {
-        <Self as DeviceWatcherTrait>::new(handler)
-    }
-}
-
-impl DeviceWatcherTrait for DeviceWatcher {
-    type Error = DeviceWatcherError;
-    type Handler = Box<dyn Fn(DeviceEvent) + Send + Sync + 'static>;
-
-    fn new(handler: Self::Handler) -> Result<Self, Self::Error> {
+    pub fn new(filters: &[DeviceFilter]) -> Result<Self, DeviceWatcherError> {
         if !rusb::has_hotplug() {
             return Err(DeviceWatcherError::HotplugUnsupported);
         }
+
         let context = Arc::new(Context::new()?);
-        let handler = Arc::from(handler);
+        let filters = Arc::new(filters.to_vec());
+        let (sender, receiver) = unbounded();
+
+        if let Ok(devices) = context.devices() {
+            for device in devices.iter() {
+                enqueue_if_matching(&filters, &sender, device);
+            }
+        }
+
         let callback = HotplugCallback {
-            handler: Arc::clone(&handler),
+            filters: Arc::clone(&filters),
+            sender: sender.clone(),
         };
         let registration = rusb::HotplugBuilder::new()
-            .enumerate(true)
+            .enumerate(false)
             .register(context.as_ref(), Box::new(callback))?;
         let running = Arc::new(AtomicBool::new(true));
         let thread_context = Arc::clone(&context);
@@ -163,12 +174,30 @@ impl DeviceWatcherTrait for DeviceWatcher {
                 }
             })
             .map_err(DeviceWatcherError::ThreadSpawn)?;
+
         Ok(Self {
             _context: context,
             _registration: registration,
+            receiver,
             running,
             thread: Some(thread),
         })
+    }
+}
+
+impl DeviceWatcherTrait for DeviceWatcher {
+    type Device = RusbDeviceHandle;
+    type Error = DeviceWatcherError;
+
+    fn poll_next_event(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Result<DeviceEvent<Self::Device>, Self::Error>> {
+        match Pin::new(&mut self.receiver).poll_next(cx) {
+            Poll::Ready(Some(event)) => Poll::Ready(Ok(event)),
+            Poll::Ready(None) => Poll::Ready(Err(DeviceWatcherError::ChannelClosed)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -248,13 +277,38 @@ impl FastbootRusb {
     }
 }
 
-impl FastbootRusbCandidate {
+impl RusbDeviceHandle {
     pub fn new(device: rusb::Device<Context>, vid: u16, pid: u16) -> Self {
         Self { device, vid, pid }
     }
 
+    pub fn from_device(device: rusb::Device<Context>) -> Result<Self, rusb::Error> {
+        let desc = device.device_descriptor()?;
+        Ok(Self::new(device, desc.vendor_id(), desc.product_id()))
+    }
+
     pub fn device(&self) -> &rusb::Device<Context> {
         &self.device
+    }
+}
+
+impl DeviceHandleTrait for RusbDeviceHandle {
+    type FastbootWire = FastbootRusb;
+    type OpenFastbootError = FastbootRusbError;
+    type OpenFastbootFuture<'a> = Pin<
+        Box<dyn Future<Output = Result<Self::FastbootWire, Self::OpenFastbootError>> + Send + 'a>,
+    >;
+
+    fn vid(&self) -> u16 {
+        self.vid
+    }
+
+    fn pid(&self) -> u16 {
+        self.pid
+    }
+
+    fn open_fastboot<'a>(&'a self) -> Self::OpenFastbootFuture<'a> {
+        Box::pin(async move { FastbootRusb::open(&self.device) })
     }
 }
 
@@ -298,25 +352,6 @@ impl FastbootWire for FastbootRusb {
     }
 }
 
-impl FastbootCandidate for FastbootRusbCandidate {
-    type Wire = FastbootRusb;
-    type Error = FastbootRusbError;
-    type OpenFuture<'a> =
-        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Wire, Self::Error>> + 'a>>;
-
-    fn vid(&self) -> u16 {
-        self.vid
-    }
-
-    fn pid(&self) -> u16 {
-        self.pid
-    }
-
-    fn open<'a>(&'a self) -> Self::OpenFuture<'a> {
-        Box::pin(async move { FastbootRusb::open(&self.device) })
-    }
-}
-
 pub fn find_fastboot_interface(
     device: &Device<Context>,
 ) -> Result<FastbootInterface, FastbootRusbError> {
@@ -353,6 +388,34 @@ pub fn find_fastboot_interface(
         }
     }
     Err(FastbootRusbError::NoFastbootInterface)
+}
+
+fn enqueue_if_matching(
+    filters: &[DeviceFilter],
+    sender: &UnboundedSender<DeviceEvent<RusbDeviceHandle>>,
+    device: Device<Context>,
+) {
+    let desc = match device.device_descriptor() {
+        Ok(desc) => desc,
+        Err(_) => return,
+    };
+    let vid = desc.vendor_id();
+    let pid = desc.product_id();
+    if !matches_filters(filters, vid, pid) {
+        return;
+    }
+    let _ = sender.unbounded_send(DeviceEvent::Arrived {
+        device: RusbDeviceHandle::new(device, vid, pid),
+    });
+}
+
+fn matches_filters(filters: &[DeviceFilter], vid: u16, pid: u16) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
+    filters
+        .iter()
+        .any(|filter| filter.vid == vid && filter.pid == pid)
 }
 
 fn truncate_payload(payload: &str) -> String {

@@ -2627,7 +2627,6 @@ dependencies = [
  "fastboop-fastboot-rusb",
  "fastboop-stage0",
  "pollster 0.3.0",
- "rusb",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2653,7 +2652,6 @@ dependencies = [
  "dioxus",
  "fastboop-core",
  "fastboop-fastboot-rusb",
- "rusb",
  "tracing",
  "tracing-subscriber",
  "ui",
@@ -2664,6 +2662,8 @@ name = "fastboop-fastboot-rusb"
 version = "0.1.0"
 dependencies = [
  "fastboop-core",
+ "futures-channel",
+ "futures-core",
  "rusb",
  "tracing",
 ]
@@ -2673,6 +2673,8 @@ name = "fastboop-fastboot-webusb"
 version = "0.1.0"
 dependencies = [
  "fastboop-core",
+ "futures-channel",
+ "futures-core",
  "js-sys",
  "tracing",
  "wasm-bindgen",
@@ -2716,14 +2718,10 @@ dependencies = [
  "dioxus",
  "fastboop-core",
  "fastboop-fastboot-webusb",
- "js-sys",
  "tracing",
  "tracing-subscriber",
  "tracing-wasm",
  "ui",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]

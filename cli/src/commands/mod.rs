@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use fastboop_core::RootfsProvider;
 use fastboop_core::fastboot::{FastbootProtocolError, ProbeError};
-use fastboop_fastboot_rusb::FastbootRusbCandidate;
 
 mod boot;
 mod detect;
@@ -14,8 +13,6 @@ mod stage0;
 pub use boot::{BootArgs, run_boot};
 pub use detect::{DetectArgs, run_detect};
 pub use stage0::{Stage0Args, run_stage0};
-
-pub(crate) type RusbCandidate = FastbootRusbCandidate;
 
 pub(crate) fn format_probe_error(
     err: ProbeError<FastbootProtocolError<fastboop_fastboot_rusb::FastbootRusbError>>,
