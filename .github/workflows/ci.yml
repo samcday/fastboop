@@ -54,10 +54,10 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Dioxus build (web)
-        run: dx build -p web
+        run: dx build -p fastboop-web
 
       - name: Dioxus build (desktop)
-        run: dx build -p desktop
+        run: dx build -p fastboop-desktop
 
   deploy-bleeding:
     runs-on: ubuntu-latest
@@ -82,7 +82,7 @@ jobs:
         run: cargo binstall dioxus-cli --force --no-confirm
 
       - name: Dioxus build (web release)
-        run: dx build -p web --release --base-path "/commit/${GITHUB_SHA}/"
+        run: dx build -p fastboop-web --release --base-path "/commit/${GITHUB_SHA}/"
 
       - name: Upload snapshot to R2
         env:
@@ -92,7 +92,7 @@ jobs:
           AWS_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
         run: |
           set -euo pipefail
-          build_dir="target/dx/web/release/web/public"
+          build_dir="target/dx/fastboop-web/release/web/public"
           dest_prefix="commit/${GITHUB_SHA}"
           aws s3 sync "$build_dir" "s3://fastboop-bleeding/$dest_prefix/" --endpoint-url "$AWS_ENDPOINT_URL"
           printf '%s' "$GITHUB_SHA" > latest.txt
