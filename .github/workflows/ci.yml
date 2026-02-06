@@ -39,7 +39,7 @@ jobs:
           tool: cargo-binstall
 
       - name: Install Dioxus CLI
-        run: cargo binstall dioxus-cli --no-confirm
+        run: cargo binstall dioxus-cli --force --no-confirm
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -79,7 +79,7 @@ jobs:
           tool: cargo-binstall
 
       - name: Install Dioxus CLI
-        run: cargo binstall dioxus-cli --no-confirm
+        run: cargo binstall dioxus-cli --force --no-confirm
 
       - name: Install AWS CLI (v2)
         run: |
