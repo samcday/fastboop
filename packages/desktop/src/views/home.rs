@@ -1,15 +1,58 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
+use dioxus::core::schedule_update;
 use dioxus::prelude::*;
 use fastboop_core::builtin::builtin_profiles;
 use fastboop_core::prober::probe_candidates;
-use fastboop_fastboot_rusb::FastbootRusbCandidate;
+use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusbCandidate};
 use rusb::{Context as UsbContext, UsbContext as _};
+use tracing::{debug, info};
 use ui::{DetectedDevice, Hero, ProbeState, TransportKind};
 
 #[component]
 pub fn Home() -> Element {
-    let probe = use_resource(|| async move { probe_fastboot_devices().await });
+    let refresh = use_signal(|| 0u32);
+    let mut watcher = use_signal(|| None::<DeviceWatcher>);
+    let pending_events = use_hook(|| Arc::new(AtomicU32::new(0)));
+    let schedule_ui_update = schedule_update();
+    let pending_events_for_watch = Arc::clone(&pending_events);
+    let pending_events_for_drain = Arc::clone(&pending_events);
+
+    use_effect(move || {
+        if watcher.read().is_some() {
+            return;
+        }
+
+        let pending_events = Arc::clone(&pending_events_for_watch);
+        let schedule_ui_update = schedule_ui_update.clone();
+        let created = DeviceWatcher::new(Box::new(move |event| {
+            pending_events.fetch_add(1, Ordering::Relaxed);
+            debug!(?event, "desktop usb hotplug event");
+            (schedule_ui_update)();
+        }));
+        if let Ok(created) = created {
+            watcher.set(Some(created));
+            info!("desktop usb watcher started");
+        } else if let Err(err) = created {
+            info!(%err, "desktop usb watcher unavailable");
+        }
+    });
+
+    use_effect(move || {
+        let drained = pending_events_for_drain.swap(0, Ordering::Relaxed);
+        if drained > 0 {
+            let mut refresh = refresh;
+            refresh.set(refresh() + drained);
+            debug!(drained, "desktop queued usb events");
+        }
+    });
+
+    let probe = use_resource(move || {
+        let refresh = refresh();
+        async move { probe_fastboot_devices(refresh).await }
+    });
     let state = match probe() {
         Some(state) => state,
         None => ProbeState::Loading,
@@ -20,7 +63,7 @@ pub fn Home() -> Element {
     }
 }
 
-async fn probe_fastboot_devices() -> ProbeState {
+async fn probe_fastboot_devices(_refresh: u32) -> ProbeState {
     let profiles = match builtin_profiles() {
         Ok(profiles) => profiles,
         Err(_) => {

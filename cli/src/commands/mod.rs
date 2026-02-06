@@ -12,7 +12,7 @@ mod detect;
 mod stage0;
 
 pub use boot::{BootArgs, run_boot};
-pub use detect::run_detect;
+pub use detect::{DetectArgs, run_detect};
 pub use stage0::{Stage0Args, run_stage0};
 
 pub(crate) type RusbCandidate = FastbootRusbCandidate;

@@ -1,11 +1,13 @@
+use fastboop_core::device::{DeviceEvent, DeviceEventHandler, DeviceWatcher as DeviceWatcherTrait};
 use fastboop_core::fastboot::{FastbootWire, Response};
 use fastboop_core::prober::FastbootCandidate;
-use js_sys::Uint8Array;
+use js_sys::{Reflect, Uint8Array};
 use std::cell::Cell;
+use std::rc::Rc;
 use tracing::{debug, trace};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{UsbDevice, UsbDirection, UsbEndpoint, UsbEndpointType, UsbTransferStatus};
+use web_sys::{Usb, UsbDevice, UsbDirection, UsbEndpoint, UsbEndpointType, UsbTransferStatus};
 
 const RESPONSE_BUFFER_LEN: u32 = 4096;
 
@@ -28,6 +30,12 @@ pub struct FastbootWebUsbCandidate {
     pid: u16,
 }
 
+pub struct DeviceWatcher {
+    usb: Usb,
+    on_connect: wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>,
+    on_disconnect: wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>,
+}
+
 #[derive(Debug)]
 pub enum FastbootWebUsbError {
     Js(JsValue),
@@ -36,6 +44,12 @@ pub enum FastbootWebUsbError {
     Fail(String),
     UnexpectedStatus(String),
     DownloadTooLarge(usize),
+}
+
+#[derive(Debug)]
+pub enum DeviceWatcherError {
+    Unsupported,
+    Js(JsValue),
 }
 
 impl std::fmt::Display for FastbootWebUsbError {
@@ -53,9 +67,26 @@ impl std::fmt::Display for FastbootWebUsbError {
 
 impl std::error::Error for FastbootWebUsbError {}
 
+impl std::error::Error for DeviceWatcherError {}
+
 impl From<JsValue> for FastbootWebUsbError {
     fn from(value: JsValue) -> Self {
         Self::Js(value)
+    }
+}
+
+impl From<JsValue> for DeviceWatcherError {
+    fn from(value: JsValue) -> Self {
+        Self::Js(value)
+    }
+}
+
+impl std::fmt::Display for DeviceWatcherError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported => write!(f, "webusb is not available"),
+            Self::Js(err) => write!(f, "js error: {:?}", err),
+        }
     }
 }
 
@@ -255,6 +286,54 @@ pub async fn fastboot_candidates_from_devices(
     candidates
 }
 
+impl DeviceWatcher {
+    pub fn new(handler: DeviceEventHandler) -> Result<Self, DeviceWatcherError> {
+        <Self as DeviceWatcherTrait>::new(handler)
+    }
+}
+
+impl DeviceWatcherTrait for DeviceWatcher {
+    type Error = DeviceWatcherError;
+    type Handler = DeviceEventHandler;
+
+    fn new(handler: Self::Handler) -> Result<Self, Self::Error> {
+        let usb = webusb_handle()?;
+        let handler: Rc<dyn Fn(DeviceEvent)> = Rc::from(handler);
+        let on_connect = {
+            let handler = Rc::clone(&handler);
+            wasm_bindgen::closure::Closure::wrap(Box::new(move |_evt: JsValue| {
+                (handler)(DeviceEvent::Arrived);
+            }) as Box<dyn FnMut(JsValue)>)
+        };
+        let on_disconnect = {
+            let handler = Rc::clone(&handler);
+            wasm_bindgen::closure::Closure::wrap(Box::new(move |_evt: JsValue| {
+                (handler)(DeviceEvent::Left);
+            }) as Box<dyn FnMut(JsValue)>)
+        };
+        usb.add_event_listener_with_callback("connect", on_connect.as_ref().unchecked_ref())?;
+        usb.add_event_listener_with_callback("disconnect", on_disconnect.as_ref().unchecked_ref())?;
+        Ok(Self {
+            usb,
+            on_connect,
+            on_disconnect,
+        })
+    }
+}
+
+impl Drop for DeviceWatcher {
+    fn drop(&mut self) {
+        let _ = self.usb.remove_event_listener_with_callback(
+            "connect",
+            self.on_connect.as_ref().unchecked_ref(),
+        );
+        let _ = self.usb.remove_event_listener_with_callback(
+            "disconnect",
+            self.on_disconnect.as_ref().unchecked_ref(),
+        );
+    }
+}
+
 fn truncate_payload(payload: &str) -> String {
     const MAX: usize = 96;
     if payload.len() <= MAX {
@@ -262,6 +341,17 @@ fn truncate_payload(payload: &str) -> String {
     } else {
         format!("{}…", &payload[..MAX])
     }
+}
+
+fn webusb_handle() -> Result<Usb, DeviceWatcherError> {
+    let window = web_sys::window().ok_or(DeviceWatcherError::Unsupported)?;
+    let navigator = window.navigator();
+    let has_usb = Reflect::has(&navigator, &JsValue::from_str("usb"))?;
+    if !has_usb {
+        return Err(DeviceWatcherError::Unsupported);
+    }
+    let usb = Reflect::get(&navigator, &JsValue::from_str("usb"))?;
+    usb.dyn_into::<Usb>().map_err(DeviceWatcherError::Js)
 }
 
 async fn ensure_configured(device: &UsbDevice) -> Result<(), FastbootWebUsbError> {

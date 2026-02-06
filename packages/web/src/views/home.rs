@@ -12,7 +12,7 @@ use fastboop_core::builtin::builtin_profiles;
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::prober::probe_candidates;
 #[cfg(target_arch = "wasm32")]
-use fastboop_fastboot_webusb::fastboot_candidates_from_devices;
+use fastboop_fastboot_webusb::{fastboot_candidates_from_devices, DeviceWatcher};
 #[cfg(target_arch = "wasm32")]
 use js_sys::{Array, Reflect};
 #[cfg(target_arch = "wasm32")]
@@ -25,6 +25,27 @@ use web_sys::{Usb, UsbDevice, UsbDeviceFilter, UsbDeviceRequestOptions};
 #[component]
 pub fn Home() -> Element {
     let refresh = use_signal(|| 0u32);
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut watcher = use_signal(|| None::<DeviceWatcher>);
+        use_effect(move || {
+            if watcher.read().is_some() {
+                return;
+            }
+            let handler = {
+                let refresh = std::rc::Rc::new(std::cell::RefCell::new(refresh));
+                Box::new(move |_event| {
+                    let mut refresh = *refresh.borrow();
+                    refresh.set(refresh() + 1);
+                })
+            };
+            if let Ok(created) = DeviceWatcher::new(handler) {
+                watcher.set(Some(created));
+            }
+        });
+    }
+
     let probe = use_resource(move || {
         let refresh = refresh();
         async move { probe_fastboot_devices(refresh).await }

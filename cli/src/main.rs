@@ -6,7 +6,7 @@ mod commands;
 mod devpros;
 mod personalization;
 
-use commands::{BootArgs, Stage0Args, run_boot, run_detect, run_stage0};
+use commands::{BootArgs, DetectArgs, Stage0Args, run_boot, run_detect, run_stage0};
 
 #[derive(Parser)]
 #[command(author, version, about = "fastboop CLI utilities")]
@@ -20,7 +20,7 @@ enum Commands {
     /// Boot a device by synthesizing stage0 and issuing fastboot download+boot.
     Boot(BootArgs),
     /// Detect connected fastboot devices that match a DevPro.
-    Detect,
+    Detect(DetectArgs),
     /// Synthesize a stage0 initrd from a rootfs and device profile; writes cpio to stdout.
     Stage0(Stage0Args),
 }
@@ -31,7 +31,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Boot(args) => run_boot(args),
-        Commands::Detect => run_detect(),
+        Commands::Detect(args) => run_detect(args),
         Commands::Stage0(args) => run_stage0(args),
     }
 }

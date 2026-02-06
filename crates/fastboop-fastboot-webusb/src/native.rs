@@ -1,5 +1,6 @@
 use std::fmt;
 
+use fastboop_core::device::{DeviceEventHandler, DeviceWatcher as DeviceWatcherTrait};
 use fastboop_core::fastboot::{FastbootWire, Response};
 use fastboop_core::prober::FastbootCandidate;
 
@@ -10,7 +11,13 @@ pub struct FastbootWebUsb;
 pub struct FastbootWebUsbCandidate;
 
 #[derive(Debug, Clone, Copy)]
+pub struct DeviceWatcher;
+
+#[derive(Debug, Clone, Copy)]
 pub struct FastbootWebUsbError;
+
+#[derive(Debug, Clone, Copy)]
+pub struct DeviceWatcherError;
 
 impl fmt::Display for FastbootWebUsbError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -19,6 +26,14 @@ impl fmt::Display for FastbootWebUsbError {
 }
 
 impl std::error::Error for FastbootWebUsbError {}
+
+impl fmt::Display for DeviceWatcherError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "webusb is only available on wasm32")
+    }
+}
+
+impl std::error::Error for DeviceWatcherError {}
 
 impl FastbootWebUsb {
     pub fn new() -> Self {
@@ -41,6 +56,21 @@ impl Default for FastbootWebUsbCandidate {
 impl Default for FastbootWebUsb {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl DeviceWatcher {
+    pub fn new(handler: DeviceEventHandler) -> Result<Self, DeviceWatcherError> {
+        <Self as DeviceWatcherTrait>::new(handler)
+    }
+}
+
+impl DeviceWatcherTrait for DeviceWatcher {
+    type Error = DeviceWatcherError;
+    type Handler = DeviceEventHandler;
+
+    fn new(_handler: Self::Handler) -> Result<Self, Self::Error> {
+        Err(DeviceWatcherError)
     }
 }
 

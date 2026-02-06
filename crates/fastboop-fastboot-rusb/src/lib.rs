@@ -1,12 +1,19 @@
 use std::fmt;
 use std::time::Duration;
 
+use fastboop_core::device::{DeviceEvent, DeviceWatcher as DeviceWatcherTrait};
 use fastboop_core::fastboot::{FastbootWire, Response};
 use fastboop_core::prober::FastbootCandidate;
-use rusb::{Context, Device, DeviceHandle, Direction, TransferType};
-use tracing::trace;
+use rusb::{Context, Device, DeviceHandle, Direction, TransferType, UsbContext as _};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread::JoinHandle;
+use tracing::{trace, warn};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+const HOTPLUG_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const RESPONSE_BUFFER_LEN: usize = 4096;
 
 #[derive(Clone, Copy, Debug)]
@@ -30,6 +37,13 @@ pub struct FastbootRusbCandidate {
     pid: u16,
 }
 
+pub struct DeviceWatcher {
+    _context: Arc<Context>,
+    _registration: rusb::Registration<Context>,
+    running: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
 #[derive(Debug)]
 pub enum FastbootRusbError {
     Usb(rusb::Error),
@@ -40,6 +54,13 @@ pub enum FastbootRusbError {
     UnexpectedStatus(String),
     ShortWrite,
     Utf8(std::string::FromUtf8Error),
+}
+
+#[derive(Debug)]
+pub enum DeviceWatcherError {
+    HotplugUnsupported,
+    Usb(rusb::Error),
+    ThreadSpawn(std::io::Error),
 }
 
 impl fmt::Display for FastbootRusbError {
@@ -59,7 +80,15 @@ impl fmt::Display for FastbootRusbError {
 
 impl std::error::Error for FastbootRusbError {}
 
+impl std::error::Error for DeviceWatcherError {}
+
 impl From<rusb::Error> for FastbootRusbError {
+    fn from(value: rusb::Error) -> Self {
+        Self::Usb(value)
+    }
+}
+
+impl From<rusb::Error> for DeviceWatcherError {
     fn from(value: rusb::Error) -> Self {
         Self::Usb(value)
     }
@@ -68,6 +97,87 @@ impl From<rusb::Error> for FastbootRusbError {
 impl From<std::string::FromUtf8Error> for FastbootRusbError {
     fn from(value: std::string::FromUtf8Error) -> Self {
         Self::Utf8(value)
+    }
+}
+
+impl std::fmt::Display for DeviceWatcherError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HotplugUnsupported => write!(f, "usb hotplug not supported"),
+            Self::Usb(err) => write!(f, "usb error: {err}"),
+            Self::ThreadSpawn(err) => write!(f, "failed to spawn hotplug thread: {err}"),
+        }
+    }
+}
+
+struct HotplugCallback {
+    handler: Arc<dyn Fn(DeviceEvent) + Send + Sync + 'static>,
+}
+
+impl rusb::Hotplug<Context> for HotplugCallback {
+    fn device_arrived(&mut self, _device: Device<Context>) {
+        (self.handler)(DeviceEvent::Arrived);
+    }
+
+    fn device_left(&mut self, _device: Device<Context>) {
+        (self.handler)(DeviceEvent::Left);
+    }
+}
+
+impl DeviceWatcher {
+    pub fn new(
+        handler: Box<dyn Fn(DeviceEvent) + Send + Sync + 'static>,
+    ) -> Result<Self, DeviceWatcherError> {
+        <Self as DeviceWatcherTrait>::new(handler)
+    }
+}
+
+impl DeviceWatcherTrait for DeviceWatcher {
+    type Error = DeviceWatcherError;
+    type Handler = Box<dyn Fn(DeviceEvent) + Send + Sync + 'static>;
+
+    fn new(handler: Self::Handler) -> Result<Self, Self::Error> {
+        if !rusb::has_hotplug() {
+            return Err(DeviceWatcherError::HotplugUnsupported);
+        }
+        let context = Arc::new(Context::new()?);
+        let handler = Arc::from(handler);
+        let callback = HotplugCallback {
+            handler: Arc::clone(&handler),
+        };
+        let registration = rusb::HotplugBuilder::new()
+            .enumerate(true)
+            .register(context.as_ref(), Box::new(callback))?;
+        let running = Arc::new(AtomicBool::new(true));
+        let thread_context = Arc::clone(&context);
+        let thread_running = Arc::clone(&running);
+        let thread = std::thread::Builder::new()
+            .name("fastboop-rusb-hotplug".to_string())
+            .spawn(move || {
+                while thread_running.load(Ordering::Relaxed) {
+                    if let Err(err) = thread_context.handle_events(Some(HOTPLUG_POLL_INTERVAL)) {
+                        if !matches!(err, rusb::Error::Interrupted) {
+                            warn!(%err, "rusb hotplug event loop error");
+                        }
+                    }
+                }
+            })
+            .map_err(DeviceWatcherError::ThreadSpawn)?;
+        Ok(Self {
+            _context: context,
+            _registration: registration,
+            running,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for DeviceWatcher {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
