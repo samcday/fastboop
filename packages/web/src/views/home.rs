@@ -65,6 +65,18 @@ pub fn Home() -> Element {
                                 refresh.set(refresh().saturating_add(1));
                             }
                         }
+                        Ok(DeviceEvent::Left { device }) => {
+                            let mut removed = false;
+                            candidates.write().retain(|candidate| {
+                                let keep = candidate.vid() != device.vid()
+                                    || candidate.pid() != device.pid();
+                                removed |= !keep;
+                                keep
+                            });
+                            if removed {
+                                refresh.set(refresh().saturating_add(1));
+                            }
+                        }
                         Err(err) => {
                             warn!(target: "fastboop::web::watcher", %err, "webusb watcher stopped");
                             break;

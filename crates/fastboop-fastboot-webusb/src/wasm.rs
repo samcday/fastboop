@@ -60,6 +60,7 @@ pub struct DeviceWatcher {
     usb: Usb,
     receiver: UnboundedReceiver<DeviceEvent<WebUsbDeviceHandle>>,
     on_connect: wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>,
+    on_disconnect: wasm_bindgen::closure::Closure<dyn FnMut(JsValue)>,
 }
 
 #[derive(Debug)]
@@ -315,17 +316,30 @@ impl DeviceWatcher {
             wasm_bindgen::closure::Closure::wrap(Box::new(move |evt: JsValue| {
                 trace!(target: "fastboop::webusb::watcher", "webusb connect event");
                 if let Some(device) = event_device(&evt) {
-                    enqueue_if_matching(&filters, &sender, device);
+                    enqueue_arrived_if_matching(&filters, &sender, device);
+                }
+            }) as Box<dyn FnMut(JsValue)>)
+        };
+
+        let on_disconnect = {
+            let filters = std::rc::Rc::clone(&filters);
+            let sender = sender.clone();
+            wasm_bindgen::closure::Closure::wrap(Box::new(move |evt: JsValue| {
+                trace!(target: "fastboop::webusb::watcher", "webusb disconnect event");
+                if let Some(device) = event_device(&evt) {
+                    enqueue_left_if_matching(&filters, &sender, device);
                 }
             }) as Box<dyn FnMut(JsValue)>)
         };
 
         usb.add_event_listener_with_callback("connect", on_connect.as_ref().unchecked_ref())?;
+        usb.add_event_listener_with_callback("disconnect", on_disconnect.as_ref().unchecked_ref())?;
 
         Ok(Self {
             usb,
             receiver,
             on_connect,
+            on_disconnect,
         })
     }
 }
@@ -351,6 +365,10 @@ impl Drop for DeviceWatcher {
         let _ = self.usb.remove_event_listener_with_callback(
             "connect",
             self.on_connect.as_ref().unchecked_ref(),
+        );
+        let _ = self.usb.remove_event_listener_with_callback(
+            "disconnect",
+            self.on_disconnect.as_ref().unchecked_ref(),
         );
     }
 }
@@ -389,7 +407,7 @@ fn enqueue_authorized_devices(
         };
         for value in devices.iter() {
             if let Ok(device) = value.dyn_into::<UsbDevice>() {
-                enqueue_if_matching(&filters, &sender, device);
+                enqueue_arrived_if_matching(&filters, &sender, device);
             }
         }
     });
@@ -400,7 +418,7 @@ fn event_device(evt: &JsValue) -> Option<UsbDevice> {
     value.dyn_into::<UsbDevice>().ok()
 }
 
-fn enqueue_if_matching(
+fn enqueue_arrived_if_matching(
     filters: &[DeviceFilter],
     sender: &UnboundedSender<DeviceEvent<WebUsbDeviceHandle>>,
     device: UsbDevice,
@@ -411,6 +429,21 @@ fn enqueue_if_matching(
         return;
     }
     let _ = sender.unbounded_send(DeviceEvent::Arrived {
+        device: WebUsbDeviceHandle::new(device),
+    });
+}
+
+fn enqueue_left_if_matching(
+    filters: &[DeviceFilter],
+    sender: &UnboundedSender<DeviceEvent<WebUsbDeviceHandle>>,
+    device: UsbDevice,
+) {
+    let vid = device.vendor_id();
+    let pid = device.product_id();
+    if !matches_filters(filters, vid, pid) {
+        return;
+    }
+    let _ = sender.unbounded_send(DeviceEvent::Left {
         device: WebUsbDeviceHandle::new(device),
     });
 }

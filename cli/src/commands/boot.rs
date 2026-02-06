@@ -197,6 +197,7 @@ fn wait_for_fastboot_device(profile: &DeviceProfile, wait: Duration) -> Result<F
                     return Ok(fastboot);
                 }
             }
+            Poll::Ready(Ok(DeviceEvent::Left { .. })) => {}
             Poll::Ready(Err(err)) => {
                 bail!("USB watcher disconnected: {err}");
             }

@@ -46,6 +46,11 @@ pub fn Home() -> Element {
                             candidates.write().push(device);
                         }
                     }
+                    Ok(DeviceEvent::Left { device }) => {
+                        candidates.write().retain(|candidate| {
+                            candidate.vid() != device.vid() || candidate.pid() != device.pid()
+                        });
+                    }
                     Err(err) => {
                         info!(%err, "desktop usb watcher stopped");
                         break;

@@ -17,6 +17,7 @@ pub struct DeviceFilter {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceEvent<D> {
     Arrived { device: D },
+    Left { device: D },
 }
 
 pub trait DeviceHandle: Clone + Send + Sync + 'static {

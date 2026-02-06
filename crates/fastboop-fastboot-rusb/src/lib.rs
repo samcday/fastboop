@@ -130,10 +130,12 @@ struct HotplugCallback {
 
 impl rusb::Hotplug<Context> for HotplugCallback {
     fn device_arrived(&mut self, device: Device<Context>) {
-        enqueue_if_matching(&self.filters, &self.sender, device);
+        enqueue_arrived_if_matching(&self.filters, &self.sender, device);
     }
 
-    fn device_left(&mut self, _device: Device<Context>) {}
+    fn device_left(&mut self, device: Device<Context>) {
+        enqueue_left_if_matching(&self.filters, &self.sender, device);
+    }
 }
 
 impl DeviceWatcher {
@@ -148,7 +150,7 @@ impl DeviceWatcher {
 
         if let Ok(devices) = context.devices() {
             for device in devices.iter() {
-                enqueue_if_matching(&filters, &sender, device);
+                enqueue_arrived_if_matching(&filters, &sender, device);
             }
         }
 
@@ -390,7 +392,7 @@ pub fn find_fastboot_interface(
     Err(FastbootRusbError::NoFastbootInterface)
 }
 
-fn enqueue_if_matching(
+fn enqueue_arrived_if_matching(
     filters: &[DeviceFilter],
     sender: &UnboundedSender<DeviceEvent<RusbDeviceHandle>>,
     device: Device<Context>,
@@ -405,6 +407,25 @@ fn enqueue_if_matching(
         return;
     }
     let _ = sender.unbounded_send(DeviceEvent::Arrived {
+        device: RusbDeviceHandle::new(device, vid, pid),
+    });
+}
+
+fn enqueue_left_if_matching(
+    filters: &[DeviceFilter],
+    sender: &UnboundedSender<DeviceEvent<RusbDeviceHandle>>,
+    device: Device<Context>,
+) {
+    let desc = match device.device_descriptor() {
+        Ok(desc) => desc,
+        Err(_) => return,
+    };
+    let vid = desc.vendor_id();
+    let pid = desc.product_id();
+    if !matches_filters(filters, vid, pid) {
+        return;
+    }
+    let _ = sender.unbounded_send(DeviceEvent::Left {
         device: RusbDeviceHandle::new(device, vid, pid),
     });
 }

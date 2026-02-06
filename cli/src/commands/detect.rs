@@ -51,6 +51,7 @@ pub fn run_detect(args: DetectArgs) -> Result<()> {
                     return Ok(());
                 }
             }
+            Poll::Ready(Ok(DeviceEvent::Left { .. })) => {}
             Poll::Ready(Err(err)) => {
                 eprintln!("USB watcher disconnected: {err}");
                 return Ok(());
