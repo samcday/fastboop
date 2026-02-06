@@ -1140,24 +1140,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
-name = "cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "fastboop-core",
- "fastboop-fastboot-rusb",
- "fastboop-stage0",
- "pollster 0.3.0",
- "rusb",
- "serde",
- "serde_json",
- "serde_yaml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1770,19 +1752,6 @@ dependencies = [
  "rustc_version",
  "syn 2.0.114",
  "unicode-xid",
-]
-
-[[package]]
-name = "desktop"
-version = "0.1.0"
-dependencies = [
- "dioxus",
- "fastboop-core",
- "fastboop-fastboot-rusb",
- "rusb",
- "tracing",
- "tracing-subscriber",
- "ui",
 ]
 
 [[package]]
@@ -2649,6 +2618,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastboop-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fastboop-core",
+ "fastboop-fastboot-rusb",
+ "fastboop-stage0",
+ "pollster 0.3.0",
+ "rusb",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fastboop-core"
 version = "0.1.0"
 dependencies = [
@@ -2657,6 +2644,19 @@ dependencies = [
  "serde",
  "serde_yaml",
  "tracing",
+]
+
+[[package]]
+name = "fastboop-desktop"
+version = "0.1.0"
+dependencies = [
+ "dioxus",
+ "fastboop-core",
+ "fastboop-fastboot-rusb",
+ "rusb",
+ "tracing",
+ "tracing-subscriber",
+ "ui",
 ]
 
 [[package]]
@@ -2681,6 +2681,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastboop-mobile"
+version = "0.1.0"
+dependencies = [
+ "dioxus",
+ "tracing",
+ "tracing-subscriber",
+ "ui",
+]
+
+[[package]]
 name = "fastboop-schema"
 version = "0.1.0"
 dependencies = [
@@ -2697,6 +2707,23 @@ dependencies = [
  "miniz_oxide",
  "ruzstd",
  "tracing",
+]
+
+[[package]]
+name = "fastboop-web"
+version = "0.1.0"
+dependencies = [
+ "dioxus",
+ "fastboop-core",
+ "fastboop-fastboot-webusb",
+ "js-sys",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-wasm",
+ "ui",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -4661,16 +4688,6 @@ dependencies = [
  "libc",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "mobile"
-version = "0.1.0"
-dependencies = [
- "dioxus",
- "tracing",
- "tracing-subscriber",
- "ui",
 ]
 
 [[package]]
@@ -8422,23 +8439,6 @@ dependencies = [
  "log",
  "once_cell",
  "pkg-config",
-]
-
-[[package]]
-name = "web"
-version = "0.1.0"
-dependencies = [
- "dioxus",
- "fastboop-core",
- "fastboop-fastboot-webusb",
- "js-sys",
- "tracing",
- "tracing-subscriber",
- "tracing-wasm",
- "ui",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]
