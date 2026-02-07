@@ -28,20 +28,22 @@ pub(crate) fn format_probe_error(
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct DirectoryRootfs {
     pub(crate) root: PathBuf,
 }
 
+#[allow(dead_code)]
 impl RootfsProvider for DirectoryRootfs {
     type Error = anyhow::Error;
 
-    fn read_all(&self, path: &str) -> Result<Vec<u8>> {
+    async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
         let path = resolve_rooted(&self.root, path)?;
         fs::read(&path).with_context(|| format!("reading {}", path.display()))
     }
 
-    fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+    async fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
         let path = resolve_rooted(&self.root, path)?;
         let mut f = fs::File::open(&path)
             .with_context(|| format!("opening {} for range read", path.display()))?;
@@ -55,7 +57,7 @@ impl RootfsProvider for DirectoryRootfs {
         Ok(buf)
     }
 
-    fn read_dir(&self, path: &str) -> Result<Vec<String>> {
+    async fn read_dir(&self, path: &str) -> Result<Vec<String>> {
         let path = resolve_rooted(&self.root, path)?;
         let entries =
             fs::read_dir(&path).with_context(|| format!("reading directory {}", path.display()))?;
@@ -69,7 +71,7 @@ impl RootfsProvider for DirectoryRootfs {
         Ok(names)
     }
 
-    fn exists(&self, path: &str) -> Result<bool> {
+    async fn exists(&self, path: &str) -> Result<bool> {
         let path = resolve_rooted(&self.root, path)?;
         Ok(path.exists())
     }
@@ -93,6 +95,7 @@ pub(crate) fn read_dtbo_overlays(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>> {
     Ok(out)
 }
 
+#[allow(dead_code)]
 fn resolve_rooted(root: &Path, path: &str) -> Result<PathBuf> {
     let trimmed = path.trim_start_matches('/');
     if trimmed.is_empty() {

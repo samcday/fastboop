@@ -53,6 +53,16 @@ impl<'a> MakeWriter<'a> for KmsgMakeWriter {
 const SMOO_CLASS: u8 = 0xFF;
 const SMOO_SUBCLASS: u8 = 0x53;
 const SMOO_PROTOCOL: u8 = 0x4D;
+const STAGE0_ROLE_ENV: &str = "FASTBOOP_STAGE0_ROLE";
+const STAGE0_ROLE_GADGET_CHILD: &str = "gadget-child";
+const STAGE0_ROLE_KMSG_CHILD: &str = "kmsg-child";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Stage0Role {
+    Pid1,
+    GadgetChild,
+    KmsgChild,
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "fastboop-stage0", version)]
@@ -88,12 +98,6 @@ struct Args {
     /// Expose Prometheus metrics on this TCP port (0 disables).
     #[arg(long, default_value_t = 0)]
     metrics_port: u16,
-    /// Internal flag for the forked gadget child.
-    #[arg(long, hide = true)]
-    pid1_child: bool,
-    /// Internal flag for the forked kmsg forwarding daemon.
-    #[arg(long, hide = true)]
-    pid1_kmsg_child: bool,
     /// Use an existing FunctionFS directory and skip configfs management.
     #[arg(long, value_name = "PATH")]
     ffs_dir: Option<PathBuf>,
@@ -107,22 +111,55 @@ enum DmaHeapSelection {
 }
 
 fn main() -> Result<()> {
-    let args_vec: Vec<OsString> = std::env::args_os().collect();
-    let args = Args::parse_from(args_vec.clone());
-    if args.pid1_kmsg_child {
-        init_logging(true);
-        warn!("pid1: kmsg forwarder starting");
-        run_kmsg_daemon().context("kmsg daemon")?;
-        return Ok(());
+    let role = stage0_role_from_env();
+    let raw_args: Vec<OsString> = std::env::args_os().collect();
+    let cleaned_args = sanitize_startup_args(raw_args, role);
+    let args = Args::parse_from(cleaned_args.clone());
+    match role {
+        Stage0Role::KmsgChild => {
+            init_logging(true);
+            info!(role = "kmsg-child", "stage0 startup role selected");
+            warn!("pid1: kmsg forwarder starting");
+            run_kmsg_daemon().context("kmsg daemon")
+        }
+        Stage0Role::GadgetChild => {
+            init_logging(true);
+            info!(role = "gadget-child", "stage0 startup role selected");
+            write_kmsg_line("stage0 role=gadget-child");
+            run_gadget_child(args)
+        }
+        Stage0Role::Pid1 => {
+            init_logging(true);
+            info!(role = "pid1", "stage0 startup role selected");
+            run_pid1(&args, &cleaned_args).context("pid1 initramfs flow")
+        }
     }
-    if args.pid1_child {
-        return run_gadget_child(args);
+}
+
+fn stage0_role_from_env() -> Stage0Role {
+    parse_stage0_role(std::env::var_os(STAGE0_ROLE_ENV).as_deref())
+}
+
+fn parse_stage0_role(value: Option<&OsStr>) -> Stage0Role {
+    match value {
+        Some(v) if v == OsStr::new(STAGE0_ROLE_GADGET_CHILD) => Stage0Role::GadgetChild,
+        Some(v) if v == OsStr::new(STAGE0_ROLE_KMSG_CHILD) => Stage0Role::KmsgChild,
+        _ => Stage0Role::Pid1,
     }
-    init_logging(true);
-    run_pid1(&args, &args_vec).context("pid1 initramfs flow")
+}
+
+fn sanitize_startup_args(raw_args: Vec<OsString>, role: Stage0Role) -> Vec<OsString> {
+    let argv0 = raw_args.first().cloned().unwrap_or_else(OsString::new);
+    let auto_pid1 = argv0 == OsStr::new("/init");
+    if auto_pid1 && role == Stage0Role::Pid1 {
+        vec![argv0]
+    } else {
+        raw_args
+    }
 }
 
 fn run_gadget_child(args: Args) -> Result<()> {
+    write_kmsg_line("pid1-child: starting gadget runtime");
     let gadget_args = smoo_gadget_app::Args {
         vendor_id: args.vendor_id,
         product_id: args.product_id,
@@ -141,7 +178,11 @@ fn run_gadget_child(args: Args) -> Result<()> {
         .enable_all()
         .build()
         .context("build tokio runtime")?;
-    runtime.block_on(smoo_gadget_app::run_with_args(gadget_args))
+    let result = runtime.block_on(smoo_gadget_app::run_with_args(gadget_args));
+    if let Err(err) = &result {
+        write_kmsg_line(&format!("pid1-child: gadget runtime failed: {err:#}"));
+    }
+    result
 }
 
 fn map_dma_heap(heap: DmaHeapSelection) -> smoo_gadget_app::DmaHeapSelection {
@@ -853,7 +894,10 @@ fn wait_for_ffs_endpoints(
             return Ok(true);
         }
         if let Ok(Some(status)) = child.try_wait() {
-            error!("pid1: gadget child exited while waiting for FunctionFS endpoints: {status}");
+            error!(
+                "pid1: gadget child exited while waiting for FunctionFS endpoints: {}",
+                describe_exit_status(status)
+            );
             return Err(anyhow!("gadget child exited: {status}"));
         }
         ticks = ticks.wrapping_add(1);
@@ -886,9 +930,6 @@ fn spawn_gadget_child(
     for arg in args {
         if skip_next {
             skip_next = false;
-            continue;
-        }
-        if arg == OsStr::new("--pid1-child") {
             continue;
         }
         let arg_str = arg.to_string_lossy();
@@ -931,8 +972,8 @@ fn spawn_gadget_child(
         child_args.push(OsStr::new("--ffs-dir").to_os_string());
         child_args.push(ffs_dir.as_os_str().to_os_string());
     }
-    child_args.push(OsStr::new("--pid1-child").to_os_string());
     let mut cmd = std::process::Command::new(exe);
+    cmd.env(STAGE0_ROLE_ENV, STAGE0_ROLE_GADGET_CHILD);
     if let Some(log_level) = cmdline_value("smoo.log") {
         cmd.env("RUST_LOG", log_level);
         info!("pid1: set RUST_LOG from smoo.log");
@@ -947,14 +988,34 @@ fn spawn_gadget_child(
     cmd.spawn().context("spawn gadget process")
 }
 
+fn describe_exit_status(status: std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(code) = status.code() {
+            return format!("exit code {code}");
+        }
+        if let Some(signal) = status.signal() {
+            return format!("signal {signal}");
+        }
+    }
+    status.to_string()
+}
+
+fn write_kmsg_line(message: &str) {
+    if let Ok(mut file) = File::options().write(true).open("/dev/kmsg") {
+        let _ = writeln!(file, "{message}");
+    }
+}
+
 fn spawn_kmsg_daemon() -> Result<std::process::Child> {
     let exe = std::env::current_exe().context("locate self")?;
     let mut cmd = std::process::Command::new(exe);
+    cmd.env(STAGE0_ROLE_ENV, STAGE0_ROLE_KMSG_CHILD);
     if let Some(log_level) = cmdline_value("smoo.log") {
         cmd.env("RUST_LOG", log_level);
         info!("pid1: set RUST_LOG from smoo.log for kmsg forwarder");
     }
-    cmd.arg("--pid1-kmsg-child");
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
@@ -1246,4 +1307,48 @@ fn make_ep(direction: EndpointDirection, ty: TransferType, packet_size: u16) -> 
 fn parse_hex_u16(input: &str) -> Result<u16, String> {
     let trimmed = input.trim_start_matches("0x").trim_start_matches("0X");
     u16::from_str_radix(trimmed, 16).map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pid1_role_sanitizes_bootloader_tail_on_init() {
+        let cleaned = sanitize_startup_args(
+            vec![OsString::from("/init"), OsString::from("android")],
+            Stage0Role::Pid1,
+        );
+        assert_eq!(cleaned, vec![OsString::from("/init")]);
+    }
+
+    #[test]
+    fn child_roles_preserve_full_args_on_init() {
+        let raw = vec![
+            OsString::from("/init"),
+            OsString::from("--queue-depth"),
+            OsString::from("64"),
+        ];
+        assert_eq!(
+            sanitize_startup_args(raw.clone(), Stage0Role::GadgetChild),
+            raw
+        );
+    }
+
+    #[test]
+    fn role_parser_defaults_and_matches_known_values() {
+        assert_eq!(parse_stage0_role(None), Stage0Role::Pid1);
+        assert_eq!(
+            parse_stage0_role(Some(OsStr::new(STAGE0_ROLE_GADGET_CHILD))),
+            Stage0Role::GadgetChild
+        );
+        assert_eq!(
+            parse_stage0_role(Some(OsStr::new(STAGE0_ROLE_KMSG_CHILD))),
+            Stage0Role::KmsgChild
+        );
+        assert_eq!(
+            parse_stage0_role(Some(OsStr::new("weird-value"))),
+            Stage0Role::Pid1
+        );
+    }
 }

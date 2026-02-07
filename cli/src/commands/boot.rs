@@ -7,18 +7,18 @@ use clap::Args;
 use fastboop_core::DeviceProfile;
 use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, profile_filters};
+use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
-use fastboop_core::prober::probe_candidates;
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use tracing::debug;
 
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
+use crate::erofs_rootfs::open_erofs_rootfs;
 use crate::personalization::personalization_from_host;
+use crate::smoo_host::run_host_daemon;
 
-use super::{
-    DirectoryRootfs, Stage0Args, format_probe_error, read_dtbo_overlays, read_existing_initrd,
-};
+use super::{Stage0Args, format_probe_error, read_dtbo_overlays, read_existing_initrd};
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -84,9 +84,6 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
     };
 
     let existing = read_existing_initrd(&args.stage0.augment)?;
-    let provider = DirectoryRootfs {
-        root: args.stage0.rootfs,
-    };
 
     let mut extra_parts = Vec::new();
     if let Some(cmdline) = args
@@ -107,14 +104,32 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         Some(extra_parts.join(" "))
     };
 
-    let build = build_stage0(
-        profile,
-        &provider,
-        &opts,
-        extra_cmdline.as_deref(),
-        existing.as_deref(),
-    )
-    .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
+    let rootfs_rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("create tokio runtime for rootfs reads")?;
+    let (_provider, block_reader, image_size_bytes, image_identity, build) =
+        rootfs_rt.block_on(async {
+            let (provider, block_reader, image_size_bytes, image_identity) =
+                open_erofs_rootfs(&args.stage0.rootfs).await?;
+            let build = build_stage0(
+                profile,
+                &provider,
+                &opts,
+                extra_cmdline.as_deref(),
+                existing.as_deref(),
+            )
+            .await;
+            anyhow::Ok((
+                provider,
+                block_reader,
+                image_size_bytes,
+                image_identity,
+                build,
+            ))
+        })?;
+
+    let build = build.map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
 
     let cmdline = join_cmdline(
         profile
@@ -172,6 +187,9 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("fastboot download failed: {e}"))?;
     pollster::block_on(boot(&mut fastboot))
         .map_err(|e| anyhow::anyhow!("fastboot boot failed: {e}"))?;
+
+    run_host_daemon(block_reader, image_size_bytes, image_identity)
+        .context("running smoo host daemon after boot")?;
     Ok(())
 }
 
@@ -184,12 +202,11 @@ fn wait_for_fastboot_device(profile: &DeviceProfile, wait: Duration) -> Result<F
         Some(Instant::now() + wait)
     };
     let mut waiting = false;
-    let profiles = vec![profile.clone()];
 
     loop {
         match watcher.try_next_event() {
             Poll::Ready(Ok(DeviceEvent::Arrived { device })) => {
-                if let Some(fastboot) = probe_arrived_device(profile, &profiles, device)? {
+                if let Some(fastboot) = probe_arrived_device(profile, device)? {
                     return Ok(fastboot);
                 }
             }
@@ -234,44 +251,36 @@ fn wait_for_fastboot_device(profile: &DeviceProfile, wait: Duration) -> Result<F
 
 fn probe_arrived_device(
     profile: &DeviceProfile,
-    profiles: &[DeviceProfile],
     device: RusbDeviceHandle,
 ) -> Result<Option<FastbootRusb>> {
-    let candidates = [device];
-    let reports = pollster::block_on(probe_candidates(profiles, &candidates));
-    for report in reports {
-        let candidate = &candidates[report.candidate_index];
-        let vid = report.vid;
-        let pid = report.pid;
-        if let Some(err) = report.open_error {
+    let vid = device.vid();
+    let pid = device.pid();
+    if !profile_matches_vid_pid(profile, vid, pid) {
+        return Ok(None);
+    }
+
+    let mut fastboot = match pollster::block_on(device.open_fastboot()) {
+        Ok(fastboot) => fastboot,
+        Err(err) => {
             eprintln!("Skipping {vid:04x}:{pid:04x}: open failed: {err}");
-            continue;
+            return Ok(None);
         }
-        for attempt in report.attempts {
-            match attempt.result {
-                Ok(()) => {
-                    let fastboot =
-                        pollster::block_on(candidate.open_fastboot()).map_err(|err| {
-                            anyhow::anyhow!(
-                                "open failed for {:04x}:{:04x}: {err}",
-                                candidate.vid(),
-                                candidate.pid(),
-                            )
-                        })?;
-                    return Ok(Some(fastboot));
-                }
-                Err(err) => {
-                    debug!(
-                        profile_id = %profile.id,
-                        vid = %format!("{:04x}", vid),
-                        pid = %format!("{:04x}", pid),
-                        error = %format_probe_error(err),
-                        "fastboot probe failed"
-                    );
-                }
-            }
+    };
+
+    let mut session = FastbootSession::new(&mut fastboot);
+    match pollster::block_on(session.probe_profile(profile)) {
+        Ok(()) => return Ok(Some(fastboot)),
+        Err(err) => {
+            debug!(
+                profile_id = %profile.id,
+                vid = %format!("{:04x}", vid),
+                pid = %format!("{:04x}", pid),
+                error = %format_probe_error(err),
+                "fastboot probe failed"
+            );
         }
     }
+
     Ok(None)
 }
 

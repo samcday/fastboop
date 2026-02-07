@@ -2650,6 +2650,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "erofs-rs"
+version = "0.1.1"
+dependencies = [
+ "async-trait",
+ "bitflags 2.10.0",
+ "lz4_flex",
+ "memmap2",
+ "miniz_oxide 0.9.0",
+ "rustix 1.1.3",
+ "spin 0.10.0",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2701,16 +2714,26 @@ name = "fastboop-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "fastboop-core",
  "fastboop-fastboot-rusb",
  "fastboop-stage0-generator",
+ "gibblox-core",
+ "gibblox-file",
+ "gibblox-http",
  "pollster 0.3.0",
  "serde",
  "serde_json",
  "serde_yaml",
+ "smoo-host-blocksource-gibblox",
+ "smoo-host-core",
+ "smoo-host-transport-rusb",
+ "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -2799,7 +2822,7 @@ version = "0.1.0"
 dependencies = [
  "dtoolkit",
  "fastboop-core",
- "miniz_oxide",
+ "miniz_oxide 0.8.9",
  "ruzstd",
  "tracing",
 ]
@@ -2864,7 +2887,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
- "miniz_oxide",
+ "miniz_oxide 0.8.9",
 ]
 
 [[package]]
@@ -3280,6 +3303,61 @@ dependencies = [
  "r-efi",
  "wasip2",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "gibblox-cache"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-channel",
+ "gibblox-core",
+ "tokio",
+]
+
+[[package]]
+name = "gibblox-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "erofs-rs",
+ "futures",
+ "gibblox-cache",
+ "gibblox-file",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "gibblox-file"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "gibblox-core",
+ "tracing",
+]
+
+[[package]]
+name = "gibblox-http"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-util",
+ "gibblox-core",
+ "http 1.4.0",
+ "http-body-util",
+ "hyper 1.8.1",
+ "hyper-util",
+ "js-sys",
+ "reqwest",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -3800,7 +3878,7 @@ dependencies = [
  "hash32 0.2.1",
  "rustc_version",
  "serde",
- "spin",
+ "spin 0.9.8",
  "stable_deref_trait",
 ]
 
@@ -3990,6 +4068,7 @@ dependencies = [
  "http 1.4.0",
  "http-body 1.0.1",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "pin-utils",
@@ -4665,6 +4744,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
+name = "lz4_flex"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab6473172471198271ff72e9379150e9dfd70d8e533e0752a27e515b48dd375e"
+
+[[package]]
 name = "mac"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4953,6 +5038,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "miniz_oxide"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5faa9f23e86bd5768d76def086192ff5f869fb088da12a976ea21e9796b975f6"
+dependencies = [
+ "adler2",
+]
+
+[[package]]
 name = "mio"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5007,7 +5101,7 @@ dependencies = [
  "httparse",
  "memchr",
  "mime",
- "spin",
+ "spin 0.9.8",
  "version_check",
 ]
 
@@ -6010,7 +6104,7 @@ dependencies = [
  "crc32fast",
  "fdeflate",
  "flate2",
- "miniz_oxide",
+ "miniz_oxide 0.8.9",
 ]
 
 [[package]]
@@ -7358,7 +7452,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
  "usb-gadget",
 ]
 
@@ -7399,6 +7492,39 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "smoo-host-blocksource-gibblox"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "gibblox-core",
+ "smoo-host-core",
+]
+
+[[package]]
+name = "smoo-host-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-channel",
+ "futures-util",
+ "metrics",
+ "smoo-proto",
+ "tracing",
+]
+
+[[package]]
+name = "smoo-host-transport-rusb"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crossbeam-channel",
+ "rusb",
+ "smoo-host-core",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -7462,6 +7588,12 @@ checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 dependencies = [
  "lock_api",
 ]
+
+[[package]]
+name = "spin"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 
 [[package]]
 name = "spirv"

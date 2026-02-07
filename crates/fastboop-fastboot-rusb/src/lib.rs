@@ -21,6 +21,8 @@ use tracing::{trace, warn};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const HOTPLUG_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const OPEN_BUSY_RETRY_DELAY: Duration = Duration::from_millis(150);
+const OPEN_BUSY_RETRIES: usize = 20;
 const RESPONSE_BUFFER_LEN: usize = 4096;
 
 #[derive(Clone, Copy, Debug)]
@@ -215,8 +217,38 @@ impl Drop for DeviceWatcher {
 impl FastbootRusb {
     pub fn open(device: &Device<Context>) -> Result<Self, FastbootRusbError> {
         let iface = find_fastboot_interface(device)?;
-        let handle = device.open()?;
-        Self::from_handle(handle, iface, DEFAULT_TIMEOUT)
+        for attempt in 0..OPEN_BUSY_RETRIES {
+            let handle = match device.open() {
+                Ok(handle) => handle,
+                Err(rusb::Error::Busy) if attempt + 1 < OPEN_BUSY_RETRIES => {
+                    trace!(
+                        attempt = attempt + 1,
+                        retries = OPEN_BUSY_RETRIES,
+                        "fastboot open busy; retrying"
+                    );
+                    std::thread::sleep(OPEN_BUSY_RETRY_DELAY);
+                    continue;
+                }
+                Err(err) => return Err(err.into()),
+            };
+
+            match Self::from_handle(handle, iface, DEFAULT_TIMEOUT) {
+                Ok(fastboot) => return Ok(fastboot),
+                Err(FastbootRusbError::Usb(rusb::Error::Busy))
+                    if attempt + 1 < OPEN_BUSY_RETRIES =>
+                {
+                    trace!(
+                        attempt = attempt + 1,
+                        retries = OPEN_BUSY_RETRIES,
+                        "fastboot claim busy; retrying"
+                    );
+                    std::thread::sleep(OPEN_BUSY_RETRY_DELAY);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        Err(FastbootRusbError::Usb(rusb::Error::Busy))
     }
 
     pub fn from_handle(

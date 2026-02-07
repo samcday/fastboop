@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(async_fn_in_trait)]
 
 extern crate alloc;
 
@@ -25,10 +26,10 @@ pub trait RootfsProvider {
     type Error;
 
     /// Read the full contents of a file at `path` (absolute or relative to rootfs).
-    fn read_all(&self, path: &str) -> Result<alloc::vec::Vec<u8>, Self::Error>;
+    async fn read_all(&self, path: &str) -> Result<alloc::vec::Vec<u8>, Self::Error>;
 
     /// Read a range of bytes from a file at `path`.
-    fn read_range(
+    async fn read_range(
         &self,
         path: &str,
         offset: u64,
@@ -36,8 +37,8 @@ pub trait RootfsProvider {
     ) -> Result<alloc::vec::Vec<u8>, Self::Error>;
 
     /// List entries (file/dir names) in a directory at `path`.
-    fn read_dir(&self, path: &str) -> Result<alloc::vec::Vec<String>, Self::Error>;
+    async fn read_dir(&self, path: &str) -> Result<alloc::vec::Vec<String>, Self::Error>;
 
     /// Check if a path exists.
-    fn exists(&self, path: &str) -> Result<bool, Self::Error>;
+    async fn exists(&self, path: &str) -> Result<bool, Self::Error>;
 }

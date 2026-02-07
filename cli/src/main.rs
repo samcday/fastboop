@@ -4,7 +4,9 @@ use tracing_subscriber::EnvFilter;
 
 mod commands;
 mod devpros;
+mod erofs_rootfs;
 mod personalization;
+mod smoo_host;
 
 use commands::{BootArgs, DetectArgs, Stage0Args, run_boot, run_detect, run_stage0};
 

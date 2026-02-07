@@ -6,12 +6,13 @@ use clap::Args;
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
+use crate::erofs_rootfs::open_erofs_rootfs;
 
-use super::{DirectoryRootfs, read_dtbo_overlays, read_existing_initrd};
+use super::{read_dtbo_overlays, read_existing_initrd};
 
 #[derive(Args)]
 pub struct Stage0Args {
-    /// Path to rootfs (directory or mount) containing kernel/modules.
+    /// Path or HTTP(S) URL to EROFS image containing kernel/modules.
     #[arg(value_name = "ROOTFS")]
     pub rootfs: PathBuf,
     /// Device profile id to use (must be present in loaded DevPros).
@@ -74,16 +75,24 @@ pub fn run_stage0(args: Stage0Args) -> Result<()> {
     };
 
     let existing = read_existing_initrd(&args.augment)?;
-    let provider = DirectoryRootfs { root: args.rootfs };
-
-    let build = build_stage0(
-        profile,
-        &provider,
-        &opts,
-        args.cmdline_append.as_deref(),
-        existing.as_deref(),
-    )
-    .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
+    let rootfs_rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("create tokio runtime for rootfs reads")?;
+    let build = rootfs_rt
+        .block_on(async {
+            let (provider, _, _, _) = open_erofs_rootfs(&args.rootfs).await?;
+            let build = build_stage0(
+                profile,
+                &provider,
+                &opts,
+                args.cmdline_append.as_deref(),
+                existing.as_deref(),
+            )
+            .await;
+            anyhow::Ok(build)
+        })?
+        .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
 
     let mut stdout = std::io::stdout().lock();
     stdout

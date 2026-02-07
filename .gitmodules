@@ -2,3 +2,6 @@
 	path = smoo
 	url = https://github.com/samcday/smoo.git
 	branch = stage0
+[submodule "gibblox"]
+	path = gibblox
+	url = https://github.com/samcday/gibblox.git

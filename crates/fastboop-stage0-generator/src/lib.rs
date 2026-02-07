@@ -68,16 +68,17 @@ struct ModulesDir {
 }
 
 /// Build a minimal stage0 initrd containing fastboop stage0 as PID1 plus modules.
-pub fn build_stage0<P: RootfsProvider>(
+pub async fn build_stage0<P: RootfsProvider>(
     profile: &DeviceProfile,
     rootfs: &P,
     opts: &Stage0Options,
     extra_cmdline: Option<&str>,
     existing_cpio: Option<&[u8]>,
 ) -> Result<Stage0Build, Stage0Error> {
-    let kernel_path = detect_kernel(rootfs)?;
+    let kernel_path = detect_kernel(rootfs).await?;
     let kernel_image = rootfs
         .read_all(&kernel_path)
+        .await
         .map_err(|_| Stage0Error::MissingFile(kernel_path.clone()))?;
 
     let init_path = INIT_BIN_PATH.to_string();
@@ -88,8 +89,8 @@ pub fn build_stage0<P: RootfsProvider>(
     let mut modules_builtin = BTreeSet::new();
     let needs_modules = !opts.extra_modules.is_empty() || !profile.stage0.kernel_modules.is_empty();
     if needs_modules {
-        let dir = detect_modules_dir(rootfs)?;
-        let (dep, paths, builtin) = load_modules_metadata(rootfs, &dir)?;
+        let dir = detect_modules_dir(rootfs).await?;
+        let (dep, paths, builtin) = load_modules_metadata(rootfs, &dir).await?;
         modules_dir = Some(dir);
         modules_dep = dep;
         module_paths = paths;
@@ -99,9 +100,10 @@ pub fn build_stage0<P: RootfsProvider>(
     let dtb_bytes = if let Some(override_bytes) = &opts.dtb_override {
         override_bytes.clone()
     } else {
-        let dtb_path = select_dtb(profile, rootfs)?;
+        let dtb_path = select_dtb(profile, rootfs).await?;
         rootfs
             .read_all(&dtb_path)
+            .await
             .map_err(|_| Stage0Error::MissingFile(dtb_path.clone()))?
     };
 
@@ -132,7 +134,7 @@ pub fn build_stage0<P: RootfsProvider>(
     if !required_modules.is_empty() {
         let modules_dir = modules_dir
             .ok_or_else(|| Stage0Error::MissingFile("/lib/modules (modules directory)".into()))?;
-        copy_module_indexes(rootfs, &modules_dir, &mut image)?;
+        copy_module_indexes(rootfs, &modules_dir, &mut image).await?;
 
         for module in &required_modules {
             if modules_builtin.contains(module) {
@@ -141,6 +143,7 @@ pub fn build_stage0<P: RootfsProvider>(
             let (rel, path) = module_path_for(module, &module_paths, &modules_dir)?;
             let data = rootfs
                 .read_all(&path)
+                .await
                 .map_err(|_| Stage0Error::MissingFile(path.clone()))?;
             let cpio_path = format!("{MODULES_ROOT}/{rel}");
             image.ensure_file(cpio_path.as_str(), 0o100644, &data)?;
@@ -192,31 +195,31 @@ fn embedded_stage0_binary() -> &'static [u8] {
     include_bytes!(env!("FASTBOOP_STAGE0_EMBED_PATH"))
 }
 
-fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Error> {
-    if let Some(found) = find_kernel_in_modules(rootfs, "/lib/modules")? {
+async fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Error> {
+    if let Some(found) = find_kernel_in_modules(rootfs, "/lib/modules").await? {
         return Ok(found);
     }
-    if let Some(found) = find_kernel_in_modules(rootfs, "/usr/lib/modules")? {
+    if let Some(found) = find_kernel_in_modules(rootfs, "/usr/lib/modules").await? {
         return Ok(found);
     }
 
     const CANDIDATES: &[&str] = &["/boot/vmlinuz", "/boot/Image", "/boot/Image.gz"];
     for cand in CANDIDATES {
-        if rootfs.exists(cand).unwrap_or(false) {
+        if rootfs.exists(cand).await.unwrap_or(false) {
             return Ok(cand.trim_start_matches('/').to_string());
         }
     }
-    if let Some(found) = find_kernel_recursive(rootfs, "/boot", 3)? {
+    if let Some(found) = find_kernel_recursive(rootfs, "/boot", 3).await? {
         return Ok(found);
     }
     Err(Stage0Error::MissingFile("kernel image".into()))
 }
 
-fn find_kernel_in_modules<P: RootfsProvider>(
+async fn find_kernel_in_modules<P: RootfsProvider>(
     rootfs: &P,
     base: &str,
 ) -> Result<Option<String>, Stage0Error> {
-    let mut entries = match rootfs.read_dir(base) {
+    let mut entries = match rootfs.read_dir(base).await {
         Ok(entries) => entries,
         Err(_) => return Ok(None),
     };
@@ -226,17 +229,17 @@ fn find_kernel_in_modules<P: RootfsProvider>(
             continue;
         }
         let candidate = format!("{base}/{entry}/vmlinuz");
-        if rootfs.exists(&candidate).unwrap_or(false) {
+        if rootfs.exists(&candidate).await.unwrap_or(false) {
             return Ok(Some(candidate.trim_start_matches('/').to_string()));
         }
     }
     Ok(None)
 }
 
-fn detect_modules_dir<P: RootfsProvider>(rootfs: &P) -> Result<ModulesDir, Stage0Error> {
+async fn detect_modules_dir<P: RootfsProvider>(rootfs: &P) -> Result<ModulesDir, Stage0Error> {
     let bases = ["/lib/modules", "/usr/lib/modules"];
     for base in &bases {
-        if let Ok(mut entries) = rootfs.read_dir(base) {
+        if let Ok(mut entries) = rootfs.read_dir(base).await {
             entries.sort();
             if let Some(first) = entries.first() {
                 return Ok(ModulesDir {
@@ -251,7 +254,7 @@ fn detect_modules_dir<P: RootfsProvider>(rootfs: &P) -> Result<ModulesDir, Stage
     ))
 }
 
-fn find_kernel_recursive<P: RootfsProvider>(
+async fn find_kernel_recursive<P: RootfsProvider>(
     rootfs: &P,
     start: &str,
     max_depth: usize,
@@ -259,7 +262,7 @@ fn find_kernel_recursive<P: RootfsProvider>(
     let mut stack = Vec::new();
     stack.push((start.trim_end_matches('/').to_string(), 0usize));
     while let Some((dir, depth)) = stack.pop() {
-        let entries = match rootfs.read_dir(&dir) {
+        let entries = match rootfs.read_dir(&dir).await {
             Ok(e) => e,
             Err(_) => continue,
         };
@@ -267,7 +270,7 @@ fn find_kernel_recursive<P: RootfsProvider>(
             let mut path = dir.clone();
             path.push('/');
             path.push_str(&name);
-            let is_dir = rootfs.read_dir(&path).is_ok();
+            let is_dir = rootfs.read_dir(&path).await.is_ok();
             if is_dir && depth < max_depth {
                 stack.push((path, depth + 1));
             } else if is_kernel_name(&name) {
@@ -282,35 +285,37 @@ fn is_kernel_name(name: &str) -> bool {
     name.starts_with("vmlinuz") || name.starts_with("Image") || name == "linux"
 }
 
-fn load_modules_metadata<P: RootfsProvider>(
+async fn load_modules_metadata<P: RootfsProvider>(
     rootfs: &P,
     modules_dir: &ModulesDir,
 ) -> Result<(ModulesDep, ModulePaths, BTreeSet<String>), Stage0Error> {
     let dep_path = format!("{}/modules.dep", modules_dir.source_root);
     let dep_data = rootfs
         .read_all(&dep_path)
+        .await
         .map_err(|_| Stage0Error::MissingFile(dep_path.clone()))?;
     let (modules_dep, module_paths) = parse_modules_dep(&dep_data);
 
     let builtin_path = format!("{}/modules.builtin", modules_dir.source_root);
-    let builtin_data = rootfs.read_all(&builtin_path).unwrap_or_default();
+    let builtin_data = rootfs.read_all(&builtin_path).await.unwrap_or_default();
     let modules_builtin = parse_modules_builtin(&builtin_data);
 
     Ok((modules_dep, module_paths, modules_builtin))
 }
 
-fn copy_module_indexes<P: RootfsProvider>(
+async fn copy_module_indexes<P: RootfsProvider>(
     rootfs: &P,
     modules_dir: &ModulesDir,
     image: &mut CpioImage,
 ) -> Result<(), Stage0Error> {
     for name in MODULE_INDEX_FILES {
         let source = format!("{}/{}", modules_dir.source_root, name);
-        if !rootfs.exists(&source).unwrap_or(false) {
+        if !rootfs.exists(&source).await.unwrap_or(false) {
             continue;
         }
         let data = rootfs
             .read_all(&source)
+            .await
             .map_err(|_| Stage0Error::MissingFile(source.clone()))?;
         let rel = format!("{}/{}", modules_dir.kver, name);
         let cpio_path = format!("{MODULES_ROOT}/{rel}");
@@ -319,7 +324,7 @@ fn copy_module_indexes<P: RootfsProvider>(
     Ok(())
 }
 
-fn select_dtb<P: RootfsProvider>(
+async fn select_dtb<P: RootfsProvider>(
     profile: &DeviceProfile,
     rootfs: &P,
 ) -> Result<String, Stage0Error> {
@@ -331,12 +336,12 @@ fn select_dtb<P: RootfsProvider>(
         format!("/lib/firmware/{name}.dtb"),
         format!("/usr/lib/firmware/{name}.dtb"),
     ]);
-    if let Ok(mods) = rootfs.read_dir("/usr/lib/modules") {
+    if let Ok(mods) = rootfs.read_dir("/usr/lib/modules").await {
         for m in mods {
             let base = format!("/usr/lib/modules/{m}/dtb");
             candidates.push(format!("{base}/{name}.dtb"));
             candidates.push(format!("{base}/{name}"));
-            if let Ok(entries) = rootfs.read_dir(&base) {
+            if let Ok(entries) = rootfs.read_dir(&base).await {
                 for e in entries {
                     if e.ends_with(".dtb") && e.contains(name) {
                         candidates.push(format!("{base}/{e}"));
@@ -346,7 +351,7 @@ fn select_dtb<P: RootfsProvider>(
         }
     }
     for cand in candidates {
-        if rootfs.exists(&cand).unwrap_or(false) {
+        if rootfs.exists(&cand).await.unwrap_or(false) {
             return Ok(cand.trim_start_matches('/').to_string());
         }
     }
