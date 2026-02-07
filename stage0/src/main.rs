@@ -134,9 +134,6 @@ fn run_gadget_child(args: Args) -> Result<()> {
         state_file: Some(args.state_file),
         adopt: args.adopt,
         metrics_port: args.metrics_port,
-        pid1: false,
-        pid1_child: args.pid1_child,
-        pid1_kmsg_child: false,
         ffs_dir: args.ffs_dir,
     };
 
