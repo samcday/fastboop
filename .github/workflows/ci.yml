@@ -28,10 +28,35 @@ jobs:
           submodules: recursive
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev libudev-dev libxdo-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev libudev-dev libxdo-dev \
+            musl-tools linux-libc-dev
+
+      - name: Set up musl kernel headers
+        run: |
+          # The stage0 generator cross-builds to aarch64-unknown-linux-musl.
+          # bindgen (clang) needs asm/ and linux/ headers findable for that target.
+          # On x86_64, asm-generic works for the ioctl.h etc. that ublk needs.
+          sudo mkdir -p /usr/include/$(uname -m)-linux-musl
+          sudo ln -sf /usr/include/linux /usr/include/$(uname -m)-linux-musl/linux
+          sudo ln -sf /usr/include/asm-generic /usr/include/$(uname -m)-linux-musl/asm-generic
+          if [ -d /usr/include/$(uname -m)-linux-gnu/asm ]; then
+            sudo ln -sf /usr/include/$(uname -m)-linux-gnu/asm /usr/include/$(uname -m)-linux-musl/asm
+          elif [ -d /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm /usr/include/$(uname -m)-linux-musl/asm
+          fi
+          # Also ensure bare /usr/include/asm exists for cross-target bindgen.
+          # bindgen for the aarch64 cross target may search system include paths.
+          if [ ! -e /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm-generic /usr/include/asm
+          fi
 
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: aarch64-unknown-linux-musl
 
       - name: Install cargo-binstall
         uses: taiki-e/install-action@v2
@@ -137,8 +162,29 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools linux-libc-dev
+
+      - name: Set up musl kernel headers
+        run: |
+          sudo mkdir -p /usr/include/$(uname -m)-linux-musl
+          sudo ln -sf /usr/include/linux /usr/include/$(uname -m)-linux-musl/linux
+          sudo ln -sf /usr/include/asm-generic /usr/include/$(uname -m)-linux-musl/asm-generic
+          if [ -d /usr/include/$(uname -m)-linux-gnu/asm ]; then
+            sudo ln -sf /usr/include/$(uname -m)-linux-gnu/asm /usr/include/$(uname -m)-linux-musl/asm
+          elif [ -d /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm /usr/include/$(uname -m)-linux-musl/asm
+          fi
+          if [ ! -e /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm-generic /usr/include/asm
+          fi
+
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: aarch64-unknown-linux-musl
 
       - name: Install cargo-binstall
         uses: taiki-e/install-action@v2
