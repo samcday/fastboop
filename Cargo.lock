@@ -2717,11 +2717,10 @@ dependencies = [
  "async-trait",
  "clap",
  "fastboop-core",
+ "fastboop-erofs-rootfs",
  "fastboop-fastboot-rusb",
  "fastboop-stage0-generator",
  "gibblox-core",
- "gibblox-file",
- "gibblox-http",
  "pollster 0.3.0",
  "serde",
  "serde_json",
@@ -2751,12 +2750,37 @@ dependencies = [
 name = "fastboop-desktop"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "dioxus",
  "fastboop-core",
+ "fastboop-erofs-rootfs",
  "fastboop-fastboot-rusb",
+ "fastboop-stage0-generator",
+ "gibblox-core",
+ "smoo-host-blocksource-gibblox",
+ "smoo-host-core",
+ "smoo-host-transport-rusb",
+ "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "ui",
+]
+
+[[package]]
+name = "fastboop-erofs-rootfs"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "fastboop-core",
+ "gibblox-cache",
+ "gibblox-cache-store-opfs",
+ "gibblox-cache-store-std",
+ "gibblox-core",
+ "gibblox-file",
+ "gibblox-http",
+ "url",
 ]
 
 [[package]]
@@ -2831,13 +2855,25 @@ dependencies = [
 name = "fastboop-web"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "dioxus",
  "fastboop-core",
+ "fastboop-erofs-rootfs",
  "fastboop-fastboot-webusb",
+ "fastboop-stage0-generator",
+ "gibblox-core",
+ "gloo-timers",
+ "js-sys",
+ "smoo-host-blocksource-gibblox",
+ "smoo-host-core",
+ "smoo-host-webusb",
  "tracing",
  "tracing-subscriber",
  "tracing-wasm",
  "ui",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -3317,12 +3353,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-cache-store-opfs"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gibblox-cache",
+ "gibblox-core",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "gibblox-cache-store-std"
 version = "0.0.1"
 dependencies = [
  "async-trait",
  "gibblox-cache",
  "gibblox-core",
+ "tracing",
 ]
 
 [[package]]
@@ -7536,6 +7585,20 @@ dependencies = [
  "smoo-host-core",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "smoo-host-webusb"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "js-sys",
+ "smoo-host-core",
+ "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

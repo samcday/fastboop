@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use tracing_subscriber::EnvFilter;
 
-use views::Home;
+use views::{DevicePage, Home, SessionStore};
 
 mod views;
 
@@ -10,6 +10,8 @@ mod views;
 enum Route {
     #[route("/")]
     Home {},
+    #[route("/device/:session_id")]
+    DevicePage { session_id: String },
 }
 
 const MAIN_CSS: Asset = asset!("/assets/main.css");
@@ -35,6 +37,8 @@ fn init_tracing() {
 #[component]
 fn App() -> Element {
     let main_css = stylesheet_href(&MAIN_CSS, "/assets/main.css");
+    let sessions = use_signal(|| Vec::new());
+    use_context_provider(|| -> SessionStore { sessions });
 
     // Build cool things ✌️
 

@@ -3,7 +3,7 @@ use tracing::Level;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tracing_wasm::{WASMLayer, WASMLayerConfigBuilder};
 
-use views::Home;
+use views::{DevicePage, Home, SessionStore};
 
 mod views;
 
@@ -12,6 +12,8 @@ mod views;
 enum Route {
     #[route("/")]
     Home {},
+    #[route("/device/:session_id")]
+    DevicePage { session_id: String },
 }
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");
@@ -35,6 +37,9 @@ fn init_tracing() {
 
 #[component]
 fn App() -> Element {
+    let sessions = use_signal(|| Vec::new());
+    use_context_provider(|| -> SessionStore { sessions });
+
     // Build cool things ✌️
 
     rsx! {

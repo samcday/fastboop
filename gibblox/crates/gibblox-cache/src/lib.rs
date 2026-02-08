@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
 use core::{
     cell::UnsafeCell,
@@ -15,13 +15,12 @@ use gibblox_core::{
     BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
     derive_block_identity_id,
 };
-use tracing::trace;
+use tracing::{debug, trace};
 
 const CACHE_MAGIC: [u8; 7] = *b"GIBBLX!";
-const CACHE_VERSION: u8 = 1;
+const CACHE_VERSION: u8 = 2;
 const CACHE_PREFIX_LEN: usize = 28;
-const CACHE_DIRTY_OFFSET: u64 = 8;
-const DEFAULT_FLUSH_BATCHES: u32 = 64;
+const DEFAULT_FLUSH_BLOCKS: u32 = 64;
 const ZERO_CHUNK_LEN: usize = 4096;
 
 /// Backend I/O abstraction for a single cache file.
@@ -69,6 +68,10 @@ where
 ///
 /// The cache file contains a compact header, a per-block validity bitmap, and raw backing bytes.
 /// Misses are fetched from the inner reader, written into the data region, and marked valid.
+/// 
+/// The cache flushes automatically after writing `flush_every_blocks` new blocks to ensure
+/// persistence across sessions. There is no dirty flag; the bitmap is the authoritative
+/// source of validity.
 pub struct CachedBlockReader<S, C> {
     inner: S,
     cache: C,
@@ -76,7 +79,7 @@ pub struct CachedBlockReader<S, C> {
     total_blocks: u64,
     bitmap_offset: u64,
     data_offset: u64,
-    flush_every_batches: u32,
+    flush_every_blocks: u32,
     state: SpinLock<CacheState>,
     in_flight: SpinLock<InFlight>,
     mutation_lock: AsyncLock,
@@ -87,21 +90,25 @@ where
     S: BlockReader,
     C: CacheOps,
 {
-    /// Construct a cached reader using the default write-batch flush policy.
+    /// Construct a cached reader using the default flush policy.
     pub async fn new(inner: S, cache: C) -> GibbloxResult<Self> {
-        Self::with_flush_batch_limit(inner, cache, DEFAULT_FLUSH_BATCHES).await
+        Self::with_flush_block_limit(inner, cache, DEFAULT_FLUSH_BLOCKS).await
     }
 
-    /// Construct a cached reader with a custom write-batch flush threshold.
-    pub async fn with_flush_batch_limit(
+    /// Construct a cached reader with a custom flush threshold.
+    /// 
+    /// The cache will flush after writing `flush_every_blocks` newly cached blocks.
+    /// Lower values provide better crash resilience at the cost of more frequent I/O.
+    /// A value of 1 flushes after every write batch (maximally safe but slowest).
+    pub async fn with_flush_block_limit(
         inner: S,
         cache: C,
-        flush_every_batches: u32,
+        flush_every_blocks: u32,
     ) -> GibbloxResult<Self> {
-        if flush_every_batches == 0 {
+        if flush_every_blocks == 0 {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
-                "flush batch limit must be non-zero",
+                "flush block limit must be non-zero",
             ));
         }
         let block_size = inner.block_size();
@@ -115,12 +122,21 @@ where
         let layout = CacheLayout::new(block_size, total_blocks)?;
         let identity = cached_reader_identity_string(&inner);
         let opened = open_or_initialize_cache(&cache, &layout, &identity).await?;
+        let valid_blocks = opened.valid.iter().map(|b| b.count_ones()).sum::<u32>();
+        debug!(
+            block_size,
+            total_blocks,
+            identity = %identity,
+            valid_blocks,
+            flush_every_blocks,
+            "cached block reader initialized"
+        );
         trace!(
             block_size,
             total_blocks,
             bitmap_offset = opened.mapping.bitmap_offset,
             data_offset = opened.mapping.data_offset,
-            flush_every_batches,
+            flush_every_blocks,
             "cached block reader initialized"
         );
 
@@ -131,11 +147,13 @@ where
             total_blocks,
             bitmap_offset: opened.mapping.bitmap_offset,
             data_offset: opened.mapping.data_offset,
-            flush_every_batches,
+            flush_every_blocks,
             state: SpinLock::new(CacheState {
                 valid: opened.valid,
-                dirty: false,
-                batches_since_flush: 0,
+                blocks_since_flush: 0,
+                total_hits: 0,
+                total_misses: 0,
+                last_stats_log: 0,
             }),
             in_flight: SpinLock::new(InFlight::new()),
             mutation_lock: AsyncLock::new(),
@@ -143,9 +161,9 @@ where
     }
 
     /// Force a cache flush and clear the dirty bit if there are pending writes.
-    pub async fn flush_cache(&self) -> GibbloxResult<()> {
+    pub     async fn flush_cache(&self) -> GibbloxResult<()> {
         let _guard = self.mutation_lock.lock().await;
-        trace!("cache flush requested explicitly");
+        debug!("cache flush requested explicitly");
         self.flush_locked_if_needed(true).await
     }
 
@@ -316,22 +334,7 @@ where
         ranges
     }
 
-    async fn ensure_dirty_locked(&self) -> GibbloxResult<()> {
-        let should_mark = {
-            let mut guard = self.state.lock();
-            if guard.dirty {
-                false
-            } else {
-                guard.dirty = true;
-                true
-            }
-        };
-        if should_mark {
-            trace!("marking cache dirty");
-            write_dirty_flag(&self.cache, true).await?;
-        }
-        Ok(())
-    }
+
 
     fn mark_valid_and_collect_bitmap_write(
         &self,
@@ -346,36 +349,36 @@ where
 
         let mut guard = self.state.lock();
         set_bits(&mut guard.valid, start_block, blocks);
-        guard.batches_since_flush = guard.batches_since_flush.saturating_add(1);
-        let should_flush = guard.batches_since_flush >= self.flush_every_batches;
+        guard.blocks_since_flush = guard.blocks_since_flush.saturating_add(blocks as u32);
+        let should_flush = guard.blocks_since_flush >= self.flush_every_blocks;
         let chunk = guard.valid[first_byte..=last_byte].to_vec();
         let bitmap_offset = self.bitmap_offset + first_byte as u64;
         Ok((bitmap_offset, chunk, should_flush))
     }
 
     async fn flush_locked_if_needed(&self, force: bool) -> GibbloxResult<()> {
-        let should_flush = {
+        let (should_flush, blocks_written, valid_blocks) = {
             let guard = self.state.lock();
-            if !guard.dirty {
-                false
-            } else {
-                force || guard.batches_since_flush >= self.flush_every_batches
-            }
+            let valid = guard.valid.iter().map(|b| b.count_ones()).sum::<u32>();
+            let should = force || guard.blocks_since_flush >= self.flush_every_blocks;
+            (should, guard.blocks_since_flush, valid)
         };
         if !should_flush {
             return Ok(());
         }
 
-        trace!(force, "flushing cache data and metadata");
+        debug!(
+            force,
+            blocks_since_last_flush = blocks_written,
+            valid_blocks,
+            "flushing cache data and metadata"
+        );
 
-        self.cache.flush().await?;
-        write_dirty_flag(&self.cache, false).await?;
         self.cache.flush().await?;
 
         let mut guard = self.state.lock();
-        guard.dirty = false;
-        guard.batches_since_flush = 0;
-        trace!("cache flush completed");
+        guard.blocks_since_flush = 0;
+        debug!("cache flush completed successfully");
         Ok(())
     }
 
@@ -404,7 +407,6 @@ where
                 }
 
                 let _mutation_guard = self.mutation_lock.lock().await;
-                self.ensure_dirty_locked().await?;
 
                 let data_offset = self.data_offset_for_block(*start_block)?;
                 self.cache.write_at(data_offset, &buf).await?;
@@ -468,6 +470,29 @@ where
         self.validate_range(lba, blocks)?;
 
         let missing = self.fill_from_cache(lba, blocks, buf).await?;
+        
+        // Update hit/miss statistics and log periodically
+        {
+            let mut guard = self.state.lock();
+            if missing.is_empty() {
+                guard.total_hits += blocks;
+            } else {
+                guard.total_hits += blocks - missing.len() as u64;
+                guard.total_misses += missing.len() as u64;
+            }
+            let total_reads = guard.total_hits + guard.total_misses;
+            if total_reads > 0 && (total_reads - guard.last_stats_log) >= 1000 {
+                guard.last_stats_log = total_reads;
+                let hit_rate = (guard.total_hits as f64 / total_reads as f64) * 100.0;
+                debug!(
+                    total_hits = guard.total_hits,
+                    total_misses = guard.total_misses,
+                    hit_rate = format!("{:.1}%", hit_rate),
+                    "cache statistics"
+                );
+            }
+        }
+        
         if missing.is_empty() {
             trace!(lba, blocks, "cache hit");
             return Ok(buf.len());
@@ -594,7 +619,6 @@ impl CacheMapping {
 }
 
 struct CacheHeader {
-    dirty: bool,
     block_size: u32,
     total_blocks: u64,
     identity_len: u32,
@@ -605,9 +629,9 @@ impl CacheHeader {
         let mut out = [0u8; CACHE_PREFIX_LEN];
         out[0..7].copy_from_slice(&CACHE_MAGIC);
         out[7] = CACHE_VERSION;
-        out[8] = if self.dirty { 1 } else { 0 };
-        out[9] = 0;
-        out[10..12].copy_from_slice(&0u16.to_le_bytes());
+        out[8] = 0; // reserved
+        out[9] = 0; // reserved
+        out[10..12].copy_from_slice(&0u16.to_le_bytes()); // reserved
         out[12..16].copy_from_slice(&self.block_size.to_le_bytes());
         out[16..24].copy_from_slice(&self.total_blocks.to_le_bytes());
         out[24..28].copy_from_slice(&self.identity_len.to_le_bytes());
@@ -621,11 +645,6 @@ impl CacheHeader {
         if prefix[7] != CACHE_VERSION {
             return None;
         }
-        let dirty = match prefix[8] {
-            0 => false,
-            1 => true,
-            _ => return None,
-        };
         let block_size = u32::from_le_bytes([prefix[12], prefix[13], prefix[14], prefix[15]]);
         let total_blocks = u64::from_le_bytes([
             prefix[16], prefix[17], prefix[18], prefix[19], prefix[20], prefix[21], prefix[22],
@@ -633,7 +652,6 @@ impl CacheHeader {
         ]);
         let identity_len = u32::from_le_bytes([prefix[24], prefix[25], prefix[26], prefix[27]]);
         Some(Self {
-            dirty,
             block_size,
             total_blocks,
             identity_len,
@@ -651,24 +669,31 @@ async fn open_or_initialize_cache<C: CacheOps>(
     layout: &CacheLayout,
     identity: &str,
 ) -> GibbloxResult<OpenedCache> {
-    trace!(
+    debug!(
         block_size = layout.block_size,
         total_blocks = layout.total_blocks,
+        identity = %identity,
         "opening cache state"
     );
     let mut prefix = [0u8; CACHE_PREFIX_LEN];
     let have_prefix = read_exact_at(cache, 0, &mut prefix).await?;
     if !have_prefix {
-        trace!("cache prefix missing; initializing cache file");
+        debug!("cache prefix missing; initializing new cache file");
         return initialize_cache(cache, layout, identity).await;
     }
 
     let Some(header) = CacheHeader::decode_prefix(&prefix) else {
-        trace!("cache header invalid; reinitializing cache file");
+        debug!("cache header invalid; reinitializing cache file");
         return initialize_cache(cache, layout, identity).await;
     };
     if header.block_size != layout.block_size || header.total_blocks != layout.total_blocks {
-        trace!("cache geometry mismatch; reinitializing cache file");
+        debug!(
+            stored_block_size = header.block_size,
+            stored_total_blocks = header.total_blocks,
+            expected_block_size = layout.block_size,
+            expected_total_blocks = layout.total_blocks,
+            "cache geometry mismatch; reinitializing cache file"
+        );
         return initialize_cache(cache, layout, identity).await;
     }
 
@@ -676,11 +701,16 @@ async fn open_or_initialize_cache<C: CacheOps>(
     let mapping = CacheMapping::new(layout, identity_len)?;
     let mut stored_identity = vec![0u8; identity_len];
     if !read_exact_at(cache, CACHE_PREFIX_LEN as u64, &mut stored_identity).await? {
-        trace!("cache identity bytes missing; reinitializing cache file");
+        debug!("cache identity bytes missing; reinitializing cache file");
         return initialize_cache(cache, layout, identity).await;
     }
+    let stored_identity_str = String::from_utf8_lossy(&stored_identity);
     if stored_identity.as_slice() != identity.as_bytes() {
-        trace!("cache identity mismatch; reinitializing cache file");
+        debug!(
+            stored_identity = %stored_identity_str,
+            expected_identity = %identity,
+            "cache identity mismatch; reinitializing cache file"
+        );
         return initialize_cache(cache, layout, identity).await;
     }
 
@@ -688,19 +718,12 @@ async fn open_or_initialize_cache<C: CacheOps>(
 
     let mut valid = vec![0u8; layout.bitmap_len_usize()];
     if !read_exact_at(cache, mapping.bitmap_offset, &mut valid).await? {
-        trace!("cache bitmap missing; reinitializing cache file");
+        debug!("cache bitmap missing; reinitializing cache file");
         return initialize_cache(cache, layout, identity).await;
     }
 
-    if header.dirty {
-        trace!("cache opened dirty; clearing bitmap");
-        valid.fill(0);
-        write_zero_region(cache, mapping.bitmap_offset, layout.bitmap_bytes).await?;
-        write_dirty_flag(cache, false).await?;
-        cache.flush().await?;
-    }
-
-    trace!("cache state opened successfully");
+    let valid_blocks = valid.iter().map(|b| b.count_ones()).sum::<u32>();
+    debug!(valid_blocks, "cache opened successfully with existing data");
 
     Ok(OpenedCache { mapping, valid })
 }
@@ -717,7 +740,6 @@ async fn initialize_cache<C: CacheOps>(
     cache.set_len(mapping.total_len).await?;
 
     let header = CacheHeader {
-        dirty: false,
         block_size: layout.block_size,
         total_blocks: layout.total_blocks,
         identity_len: identity_len as u32,
@@ -731,22 +753,18 @@ async fn initialize_cache<C: CacheOps>(
     write_zero_region(cache, mapping.bitmap_offset, layout.bitmap_bytes).await?;
     cache.flush().await?;
 
-    trace!(
+    debug!(
         block_size = layout.block_size,
         total_blocks = layout.total_blocks,
+        identity = %identity,
         identity_len,
-        "cache file initialized"
+        "cache file initialized with clean state"
     );
 
     Ok(OpenedCache {
         mapping,
         valid: vec![0u8; layout.bitmap_len_usize()],
     })
-}
-
-async fn write_dirty_flag<C: CacheOps>(cache: &C, dirty: bool) -> GibbloxResult<()> {
-    let value = [if dirty { 1u8 } else { 0u8 }];
-    cache.write_at(CACHE_DIRTY_OFFSET, &value).await
 }
 
 async fn read_exact_at<C: CacheOps>(
@@ -801,8 +819,10 @@ impl InFlight {
 
 struct CacheState {
     valid: Vec<u8>,
-    dirty: bool,
-    batches_since_flush: u32,
+    blocks_since_flush: u32,
+    total_hits: u64,
+    total_misses: u64,
+    last_stats_log: u64,
 }
 
 fn bit_is_set(bits: &[u8], idx: u64) -> bool {

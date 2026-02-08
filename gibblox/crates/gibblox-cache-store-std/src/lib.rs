@@ -5,6 +5,7 @@ use std::env;
 use std::fs::{File, OpenOptions, create_dir_all};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
+use tracing::debug;
 
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::FileExt;
@@ -21,6 +22,7 @@ impl StdCacheOps {
     /// Open or create a cache file inside the process user's default cache location.
     pub fn open_default(cache_id: u32) -> GibbloxResult<Self> {
         let root = default_cache_root()?;
+        debug!(cache_id = format!("{:08x}", cache_id), cache_root = %root.display(), "opening cache in default location");
         Self::open_in(root, cache_id)
     }
 
@@ -60,6 +62,7 @@ impl StdCacheOps {
             .truncate(false)
             .open(&path)
             .map_err(map_io_err("open cache file"))?;
+        debug!(cache_path = %path.display(), "opened std cache file");
         Ok(Self {
             path,
             file: Mutex::new(file),

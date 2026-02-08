@@ -1,0 +1,25 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/soc@0/spmi@c440000/pmic@3";
+		__overlay__ {
+			haptics@c000 {
+				compatible = "qcom,pmi8998-haptics", "qcom,spmi-haptics";
+				reg = <0xc000>;
+
+				interrupts = <0x3 0xc0 0x0 0x3>,
+					     <0x3 0xc0 0x1 0x3>;
+				interrupt-names = "short", "play";
+
+				qcom,wave-shape = <0>;
+				qcom,play-mode = <1>;
+				qcom,brake-pattern = <0x3 0x3 0x2 0x1>;
+				qcom,wave-play-rate-us = <4255>;
+
+				status = "okay";
+			};
+		};
+	};
+};

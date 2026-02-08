@@ -13,7 +13,11 @@ fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
 }
 
 #[component]
-pub fn Hero(state: ProbeState, on_connect: Option<EventHandler<MouseEvent>>) -> Element {
+pub fn Hero(
+    state: ProbeState,
+    on_connect: Option<EventHandler<MouseEvent>>,
+    on_boot: Option<EventHandler<usize>>,
+) -> Element {
     let hero_css = stylesheet_href(&HERO_CSS, "/assets/styling/hero.css");
 
     let (cta, status_class) = match &state {
@@ -68,8 +72,12 @@ pub fn Hero(state: ProbeState, on_connect: Option<EventHandler<MouseEvent>>) -> 
             div { class: "device-list",
                 h2 { "Detected devices" }
                 ul {
-                    for device in devices {
-                        DeviceRow { device: device.clone() }
+                    for (index, device) in devices.iter().enumerate() {
+                        DeviceRow {
+                            index,
+                            device: device.clone(),
+                            on_boot: on_boot.clone(),
+                        }
                     }
                 }
             }
@@ -112,13 +120,28 @@ pub fn Hero(state: ProbeState, on_connect: Option<EventHandler<MouseEvent>>) -> 
 }
 
 #[component]
-fn DeviceRow(device: DetectedDevice) -> Element {
+fn DeviceRow(
+    index: usize,
+    device: DetectedDevice,
+    on_boot: Option<EventHandler<usize>>,
+) -> Element {
     let id = format!("{:04x}:{:04x}", device.vid, device.pid);
+    let boot_button = match on_boot {
+        Some(handler) => rsx! {
+            button {
+                class: "device-boot",
+                onclick: move |_| handler.call(index),
+                "Boot"
+            }
+        },
+        None => rsx! {},
+    };
     rsx! {
         li {
             span { class: "device-id", "{id}" }
             span { class: "device-name", "{device.name}" }
             span { class: "device-mode", "fastboot" }
+            {boot_button}
         }
     }
 }

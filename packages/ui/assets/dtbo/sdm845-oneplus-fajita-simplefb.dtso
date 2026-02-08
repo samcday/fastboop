@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Simple framebuffer + cont_splash reserved memory overlay for OnePlus 6T.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/reserved-memory";
+
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <2>;
+
+			cont_splash_mem: splash@9d400000 {
+				reg = <0 0x9d400000 0 0x02400000>;
+				no-map;
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/chosen";
+
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <2>;
+
+			framebuffer: framebuffer@9d400000 {
+				compatible = "simple-framebuffer";
+				memory-region = <&cont_splash_mem>;
+				reg = <0 0x9d400000 0 0x02400000>;
+
+				format = "a8r8g8b8";
+				stride = <4320>;
+				width = <1080>;
+				height = <2340>;
+			};
+		};
+	};
+};

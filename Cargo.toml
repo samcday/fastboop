@@ -2,6 +2,7 @@
 members = [
     "cli",
     "stage0",
+    "crates/fastboop-erofs-rootfs",
     "crates/fastboop-core",
     "crates/fastboop-schema",
     "crates/fastboop-stage0-generator",

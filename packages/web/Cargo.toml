@@ -5,13 +5,25 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+anyhow = "1.0.91"
 dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
+fastboop-erofs-rootfs = { path = "../../crates/fastboop-erofs-rootfs" }
+fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
+gibblox-core = { path = "../../gibblox/crates/gibblox-core" }
+smoo-host-core = { path = "../../smoo/crates/smoo-host-core", features = ["std"] }
+smoo-host-webusb = { path = "../../smoo/crates/smoo-host-webusb" }
+smoo-host-blocksource-gibblox = { path = "../../crates/smoo-host-blocksource-gibblox" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "registry", "std"] }
 tracing-wasm = "0.2.1"
+gloo-timers = { version = "0.3.0", features = ["futures"] }
+js-sys = "0.3.82"
+wasm-bindgen = "0.2.95"
+wasm-bindgen-futures = "0.4.45"
+web-sys = { version = "0.3.82", features = ["Window", "Navigator", "Usb", "UsbDevice", "UsbDeviceRequestOptions", "UsbDeviceFilter"] }
 
 [features]
 default = ["web"]

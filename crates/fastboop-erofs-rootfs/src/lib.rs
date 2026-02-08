@@ -1,24 +1,38 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use fastboop_core::RootfsProvider;
+use gibblox_cache::CachedBlockReader;
+#[cfg(target_arch = "wasm32")]
+use gibblox_cache_store_opfs::OpfsCacheOps;
+#[cfg(not(target_arch = "wasm32"))]
+use gibblox_cache_store_std::StdCacheOps;
 use gibblox_core::{BlockReader, GibbloxErrorKind, ReadContext};
+#[cfg(not(target_arch = "wasm32"))]
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
 use url::Url;
 
-const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
 const DIRENT_SIZE: usize = 12;
+pub const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
 
 #[derive(Clone)]
-pub(crate) struct ErofsRootfs {
+pub struct ErofsRootfs {
     fs: gibblox_core::erofs_rs::EroFS<GibbloxReadAtAdapter>,
 }
 
+pub struct OpenedRootfs {
+    pub provider: ErofsRootfs,
+    pub reader: Arc<dyn BlockReader>,
+    pub size_bytes: u64,
+    pub identity: String,
+}
+
 impl ErofsRootfs {
-    pub(crate) async fn new(reader: Arc<dyn BlockReader>, image_size_bytes: u64) -> Result<Self> {
+    async fn new(reader: Arc<dyn BlockReader>, image_size_bytes: u64) -> Result<Self> {
         let source_block_size = reader.block_size();
         if source_block_size == 0 || !source_block_size.is_power_of_two() {
             bail!("source block size must be non-zero power of two");
@@ -29,7 +43,7 @@ impl ErofsRootfs {
         };
         let fs = gibblox_core::erofs_rs::EroFS::from_image(adapter, image_size_bytes)
             .await
-            .context("open erofs image")?;
+            .map_err(|err| anyhow!("open erofs image: {err}"))?;
         Ok(Self { fs })
     }
 
@@ -50,38 +64,66 @@ impl ErofsRootfs {
         self.fs
             .get_path_inode_str(path)
             .await
-            .with_context(|| format!("resolve EROFS path {path}"))
+            .map_err(|err| anyhow!("resolve EROFS path {path}: {err}"))
     }
 }
 
-pub(crate) async fn open_erofs_rootfs(
-    rootfs: &Path,
-) -> Result<(ErofsRootfs, Arc<dyn BlockReader>, u64, String)> {
-    let rootfs_arg = rootfs.to_string_lossy();
-    if rootfs_arg.starts_with("http://") || rootfs_arg.starts_with("https://") {
-        open_http_erofs(&rootfs_arg).await
-    } else {
-        open_local_erofs(rootfs).await
+pub async fn open_erofs_rootfs(rootfs: &str) -> Result<OpenedRootfs> {
+    if rootfs.starts_with("http://") || rootfs.starts_with("https://") {
+        return open_http_erofs(rootfs).await;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return open_local_erofs(Path::new(rootfs)).await;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        bail!("local filesystem rootfs paths are unsupported on wasm targets");
     }
 }
 
-async fn open_http_erofs(
-    rootfs_url: &str,
-) -> Result<(ErofsRootfs, Arc<dyn BlockReader>, u64, String)> {
+async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
     let url = Url::parse(rootfs_url).with_context(|| format!("parse rootfs URL {rootfs_url}"))?;
     let http_reader = HttpBlockReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
         .await
         .map_err(|err| anyhow!("open HTTP EROFS image {url}: {err}"))?;
     let size_bytes = http_reader.size_bytes();
     let identity = url.to_string();
-    let reader: Arc<dyn BlockReader> = Arc::new(http_reader);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let reader: Arc<dyn BlockReader> = {
+        let cache = StdCacheOps::open_default_for_reader(&http_reader)
+            .await
+            .map_err(|err| anyhow!("open std cache for HTTP rootfs: {err}"))?;
+        let cached = CachedBlockReader::new(http_reader, cache)
+            .await
+            .map_err(|err| anyhow!("initialize std cache for HTTP rootfs: {err}"))?;
+        Arc::new(cached)
+    };
+
+    #[cfg(target_arch = "wasm32")]
+    let reader: Arc<dyn BlockReader> = {
+        let cache = OpfsCacheOps::open_for_reader(&http_reader)
+            .await
+            .map_err(|err| anyhow!("open OPFS cache for HTTP rootfs: {err}"))?;
+        let cached = CachedBlockReader::new(http_reader, cache)
+            .await
+            .map_err(|err| anyhow!("initialize OPFS cache for HTTP rootfs: {err}"))?;
+        Arc::new(cached)
+    };
+
     let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
-    Ok((provider, reader, size_bytes, identity))
+    Ok(OpenedRootfs {
+        provider,
+        reader,
+        size_bytes,
+        identity,
+    })
 }
 
-async fn open_local_erofs(
-    image_path: &Path,
-) -> Result<(ErofsRootfs, Arc<dyn BlockReader>, u64, String)> {
+#[cfg(not(target_arch = "wasm32"))]
+async fn open_local_erofs(image_path: &Path) -> Result<OpenedRootfs> {
     let canonical = std::fs::canonicalize(image_path)
         .with_context(|| format!("canonicalize {}", image_path.display()))?;
     let file_reader = StdFileBlockReader::open(&canonical, DEFAULT_IMAGE_BLOCK_SIZE)
@@ -90,7 +132,12 @@ async fn open_local_erofs(
     let identity = format!("file:{}", canonical.display());
     let reader: Arc<dyn BlockReader> = Arc::new(file_reader);
     let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
-    Ok((provider, reader, size_bytes, identity))
+    Ok(OpenedRootfs {
+        provider,
+        reader,
+        size_bytes,
+        identity,
+    })
 }
 
 impl RootfsProvider for ErofsRootfs {
@@ -113,7 +160,7 @@ impl RootfsProvider for ErofsRootfs {
                 .fs
                 .read_inode_range(&inode, offset, &mut out[offset..])
                 .await
-                .with_context(|| format!("read EROFS file {normalized}"))?;
+                .map_err(|err| anyhow!("read EROFS file {normalized}: {err}"))?;
             if read == 0 {
                 break;
             }
@@ -146,7 +193,7 @@ impl RootfsProvider for ErofsRootfs {
             .fs
             .read_inode_range(&inode, offset, &mut out)
             .await
-            .with_context(|| format!("read range in EROFS file {normalized}"))?;
+            .map_err(|err| anyhow!("read range in EROFS file {normalized}: {err}"))?;
         out.truncate(read);
         Ok(out)
     }
@@ -171,7 +218,7 @@ impl RootfsProvider for ErofsRootfs {
                 .fs
                 .read_inode_range(&inode, offset, &mut block)
                 .await
-                .with_context(|| format!("read EROFS directory {normalized}"))?;
+                .map_err(|err| anyhow!("read EROFS directory {normalized}: {err}"))?;
             block.truncate(read);
             parse_dir_block(&block, &mut names)
                 .with_context(|| format!("parse EROFS directory block for {normalized}"))?;

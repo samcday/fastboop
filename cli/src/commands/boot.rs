@@ -9,12 +9,12 @@ use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, profile_filters};
 use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
+use fastboop_erofs_rootfs::open_erofs_rootfs;
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use tracing::debug;
 
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
-use crate::erofs_rootfs::open_erofs_rootfs;
 use crate::personalization::personalization_from_host;
 use crate::smoo_host::run_host_daemon;
 
@@ -110,21 +110,20 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         .context("create tokio runtime for rootfs reads")?;
     let (_provider, block_reader, image_size_bytes, image_identity, build) =
         rootfs_rt.block_on(async {
-            let (provider, block_reader, image_size_bytes, image_identity) =
-                open_erofs_rootfs(&args.stage0.rootfs).await?;
+            let opened = open_erofs_rootfs(&args.stage0.rootfs.to_string_lossy()).await?;
             let build = build_stage0(
                 profile,
-                &provider,
+                &opened.provider,
                 &opts,
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )
             .await;
             anyhow::Ok((
-                provider,
-                block_reader,
-                image_size_bytes,
-                image_identity,
+                opened.provider,
+                opened.reader,
+                opened.size_bytes,
+                opened.identity,
                 build,
             ))
         })?;

@@ -194,7 +194,7 @@ async fn cache_persists_across_instances_after_flush() {
 }
 
 #[tokio::test]
-async fn dirty_on_open_clears_bitmap() {
+async fn cache_persists_without_explicit_flush() {
     let cache = Arc::new(MemoryCacheOps::new());
 
     let reader_a = FakeReader::new(512, 4, None);
@@ -209,6 +209,7 @@ async fn dirty_on_open_clears_bitmap() {
         .await
         .expect("read A");
     assert_eq!(reads_a.load(Ordering::SeqCst), 1);
+    // Drop without explicit flush - bitmap writes should still be durable
     drop(cached_a);
 
     let reader_b = FakeReader::new(512, 4, None);
@@ -222,7 +223,8 @@ async fn dirty_on_open_clears_bitmap() {
         .read_blocks(0, &mut second, ReadContext::FOREGROUND)
         .await
         .expect("read B");
-    assert_eq!(reads_b.load(Ordering::SeqCst), 1);
+    // Without dirty flag, cache should persist and we get a cache hit
+    assert_eq!(reads_b.load(Ordering::SeqCst), 0);
     assert_eq!(first, second);
 }
 

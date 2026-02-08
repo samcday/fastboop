@@ -3,10 +3,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args;
+use fastboop_erofs_rootfs::open_erofs_rootfs;
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
-use crate::erofs_rootfs::open_erofs_rootfs;
 
 use super::{read_dtbo_overlays, read_existing_initrd};
 
@@ -81,10 +81,10 @@ pub fn run_stage0(args: Stage0Args) -> Result<()> {
         .context("create tokio runtime for rootfs reads")?;
     let build = rootfs_rt
         .block_on(async {
-            let (provider, _, _, _) = open_erofs_rootfs(&args.rootfs).await?;
+            let opened = open_erofs_rootfs(&args.rootfs.to_string_lossy()).await?;
             let build = build_stage0(
                 profile,
-                &provider,
+                &opened.provider,
                 &opts,
                 args.cmdline_append.as_deref(),
                 existing.as_deref(),

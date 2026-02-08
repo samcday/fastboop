@@ -1,0 +1,23 @@
+[package]
+name = "fastboop-erofs-rootfs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.91"
+async-trait = "0.1.89"
+fastboop-core = { path = "../fastboop-core" }
+gibblox-cache = { path = "../../gibblox/crates/gibblox-cache", features = ["std"] }
+url = "2.5.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gibblox-core = { path = "../../gibblox/crates/gibblox-core" }
+gibblox-http = { path = "../../gibblox/crates/gibblox-http", default-features = false, features = ["wasm-client"] }
+gibblox-cache-store-opfs = { path = "../../gibblox/crates/gibblox-cache-store-opfs" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+gibblox-core = { path = "../../gibblox/crates/gibblox-core", features = ["std"] }
+gibblox-http = { path = "../../gibblox/crates/gibblox-http", default-features = false, features = ["native-client"] }
+gibblox-file = { path = "../../gibblox/crates/gibblox-file" }
+gibblox-cache-store-std = { path = "../../gibblox/crates/gibblox-cache-store-std" }

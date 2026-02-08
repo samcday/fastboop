@@ -159,6 +159,15 @@
   letter-spacing: 0.12em;
 }
 
+.device-boot {
+  border: 1px solid rgba(105, 189, 176, 0.5);
+  background: rgba(105, 189, 176, 0.14);
+  color: var(--color-text);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
 @media (max-width: 720px) {
   #landing {
     padding: 72px 16px 96px;

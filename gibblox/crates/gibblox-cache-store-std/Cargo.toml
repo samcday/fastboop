@@ -9,3 +9,4 @@ license = { workspace = true }
 async-trait = "0.1.89"
 gibblox-cache = { path = "../gibblox-cache", default-features = false }
 gibblox-core = { path = "../gibblox-core", default-features = false }
+tracing = "0.1"
