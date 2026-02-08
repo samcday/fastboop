@@ -8,6 +8,7 @@
 //! # Example
 //!
 //! ```no_run
+//! extern crate alloc;
 //! use erofs_rs::EroFS;
 //! use erofs_rs::ReadAt;
 //! use alloc::sync::Arc;
