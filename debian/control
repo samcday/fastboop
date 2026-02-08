@@ -1,0 +1,27 @@
+Source: fastboop
+Section: utils
+Priority: optional
+Maintainer: Samuel Day <me@samcday.com>
+Rules-Requires-Root: no
+Build-Depends:
+ debhelper-compat (= 13),
+ help2man,
+ cargo,
+ clang,
+ libusb-1.0-0-dev,
+ rustc,
+Standards-Version: 4.7.2
+Homepage: https://github.com/samcday/fastboop
+Vcs-Browser: https://github.com/samcday/fastboop
+Vcs-Git: https://github.com/samcday/fastboop.git
+
+Package: fastboop
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+Description: Ephemeral Linux boot tool for USB-enabled pocket computers
+ fastboop ephemerally boots Linux installations on pocket computers that expose
+ a non-mutating USB-enabled bootloader interface (i.e. fastboot), without
+ flashing or permanently modifying the device. It works from the web, desktop,
+ or CLI.

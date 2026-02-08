@@ -1,0 +1,65 @@
+name: debian
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'debs')
+    name: Build .debs
+    runs-on: ${{ matrix.runner }}
+    container: debian:unstable
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      DEB_BUILD_OPTIONS: nocheck
+      DEB_BUILD_PROFILES: nocheck
+    steps:
+      - name: Install deps
+        run: |
+          apt-get update
+          apt-get -y --no-install-recommends install \
+            build-essential \
+            ca-certificates \
+            devscripts \
+            dpkg-dev \
+            eatmydata \
+            equivs \
+            fakeroot \
+            git
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build-deps
+        run: |
+          set -euo pipefail
+          eatmydata apt-get -y --no-install-recommends \
+            build-dep .
+
+      - name: Build packages
+        run: |
+          set -euxo pipefail
+          dpkg-buildpackage -us -uc -b
+          mkdir -p debs
+          mv ../*.deb ${GITHUB_WORKSPACE}/debs
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debs-${{ matrix.arch }}
+          path: debs
