@@ -122,6 +122,11 @@ jobs:
           elif [ -d /usr/include/asm ]; then
             sudo ln -sf /usr/include/asm /usr/include/$(uname -m)-linux-musl/asm
           fi
+          # Also ensure bare /usr/include/asm exists for cross-target bindgen.
+          # bindgen for the cross target may search system include paths.
+          if [ ! -e /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm-generic /usr/include/asm
+          fi
 
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
