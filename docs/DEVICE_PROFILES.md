@@ -239,7 +239,7 @@ Silent fallback is forbidden.
 - DevPro = **how to boot a device safely**
 - Rootfs + stage0 = **what is booted**
 - fastboop = **glue between vendor bootloader and smoo**
-- smoo = **everything after `/init`**
+- smoo = **the gadget/export data plane stage0 relies on during handoff**
 
 If you find yourself wanting to add more logic to DevPro:
 stop.

@@ -10,9 +10,9 @@ Stage0 exists to do one job and then get out of the way.
 
 ## Purpose
 
-**Stage0** is a productionized, minimal initramfs synthesized by fastboop whose sole purpose is to:
+**Stage0** is a productionized initramfs synthesized by fastboop whose purpose is to:
 
-> Boot the device kernel, start **smoo-gadget** as PID 1, and hand off immediately.
+> Boot the device kernel, run embedded **smoo-gadget-app** under stage0 PID1 supervision, mount the exported root, and exec distro init.
 
 Stage0 targets **well-tested, understood platforms** that we want to make boring. It assumes the host just booted it over the same USB link (e.g. `fastboot boot`) and should bring up smoo right away.
 
@@ -27,10 +27,11 @@ Stage0 is **not** persistent.
 
 Stage0 must do *only* the following:
 
-1. Mount minimal virtual filesystems (`/proc`, `/sys`, `/dev`)
+1. Mount minimal virtual filesystems (`/proc`, `/sys`, `/dev`, `/run`)
 2. Load a host-generated kernel module list deterministically (no `modprobe`)
-3. Start `smoo-gadget` as PID 1 (or immediately exec into it), logging to `/dev/console`
-4. Keep running `smoo-gadget`; if it exits, stage0 has failed loudly
+3. Configure gadget stack + FunctionFS, then spawn embedded `smoo-gadget-app`
+4. Wait for smoo-exported block device and mount root (`erofs` lower + tmpfs `overlay` upper)
+5. Exec distro init (`/lib/systemd/systemd` or `/sbin/init`)
 
 Anything beyond this is out of scope for v0.
 
@@ -42,7 +43,6 @@ Stage0 must **not**:
 
 - Touch persistent storage
 - Partition disks
-- Mount the target rootfs
 - Contain distro logic
 - Run installers
 - Provide interactive shells or general toolboxes
@@ -80,7 +80,8 @@ Stage0 userspace is intentionally hermetic and minimal.
 
 It contains:
 
-- `smoo-gadget` (running as PID 1)
+- `fastboop-stage0` (running as PID 1)
+- embedded `smoo-gadget-app` runtime
 - minimal directory layout to support module loading + FunctionFS:
   - `/sbin`
   - `/lib`
@@ -130,15 +131,17 @@ path must be provided in an `--augment` cpio or in the main rootfs.
 The `/init` entrypoint performs, in order:
 
 1. Mount `/proc`, `/sys`, `/dev`
-2. Set up logging to `/dev/console` (PID 1 behavior)
+2. Set up logging to `/dev/kmsg` (PID 1 behavior)
 3. Load required kernel modules (in dependency order) from the host-provided list
-4. Exec `smoo-gadget`
+4. Configure gadget + spawn `smoo-gadget-app`
+5. Wait for exported block device and mount overlay root
+6. Exec distro init
 
-There is no init system.
-There is no service supervision.
-There is no fallback path.
+There is no full init system inside stage0.
+There is explicit supervision of the gadget child process.
+There is no interactive fallback path.
 
-If `smoo-gadget` exits, stage0 has failed.
+If the gadget child exits unexpectedly before handoff, stage0 has failed.
 
 ---
 
@@ -154,7 +157,7 @@ Examples:
 - missing kernel modules
 - payload exceeds size limits
 - incompatible kernel version
-- smoo-gadget missing or not executable
+- embedded smoo runtime failing before root handoff
 
 Silent degradation is forbidden.
 
@@ -164,9 +167,9 @@ Silent degradation is forbidden.
 
 Stage0 exists **only** to get smoo running.
 
-Once `smoo-gadget` is executing:
-- fastboop’s responsibilities are complete
-- all further boot, handoff, and filesystem logic belongs to smoo
+Once stage0 has launched smoo and switched root:
+- smoo continues serving the block export path
+- userspace boot and system lifecycle belong to the booted distro
 
 Stage0 must not attempt to anticipate or replicate smoo behavior.
 
@@ -177,7 +180,7 @@ Advanced users or distro integrators can build their own initrd (e.g. with mkosi
 ## Summary (the box)
 
 - Stage0 = minimal initramfs
-- Purpose = bring up USB gadget + exec smoo
+- Purpose = bring up USB gadget, launch embedded smoo, mount root, exec init
 - Inputs = DevPro + rootfs + boot constraints
 - Outputs = ephemeral boot payload
 - Lifetime = seconds

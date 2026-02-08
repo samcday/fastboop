@@ -17,7 +17,7 @@ This file keeps Codex sessions fast and predictable. Read it before coding.
 ## Architectural defaults
 - Core traits/types live in `fastboop-core` and `fastboop-transport`; they must be allocator-aware and cancellation-safe.
 - Device/profile/state-machine logic stays platform-agnostic; transports/adapters (fastboot, WebUSB, desktop libusb) live in std/wasm crates.
-- Stage0 assembly lives in std crates; smoo is not built or linked here—keep protocols/types aligned with smoo for compatibility.
+- Stage0 assembly lives in std crates; fastboop-stage0 embeds `smoo-gadget-app` directly, while protocol/types must stay aligned with smoo.
 - Logging via `tracing`; tests should mock transports and preserve `(export_id, request_id)` discipline from smoo.
 
 ## Output expectations
