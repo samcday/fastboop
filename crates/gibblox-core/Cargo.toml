@@ -17,6 +17,7 @@ tracing = { version = "0.1.41", default-features = false, features = ["attribute
 [dev-dependencies]
 futures = { version = "0.3.31", default-features = false, features = ["executor"] }
 gibblox-cache = { path = "../gibblox-cache" }
+gibblox-cache-store-std = { path = "../gibblox-cache-store-std" }
 gibblox-file = { path = "../gibblox-file" }
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 

@@ -1,4 +1,4 @@
-use gibblox_cache::{CachedSource, MemoryCacheStore};
+use gibblox_cache::{CachedBlockReader, MemoryCacheOps};
 use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -74,8 +74,8 @@ impl BlockReader for FakeReader {
 async fn cache_hit_after_miss() {
     let reader = FakeReader::new(512, 16, None);
     let reads = reader.read_counter();
-    let cache = MemoryCacheStore::new(512, 16).expect("cache store");
-    let cached = CachedSource::new(reader, cache)
+    let cache = MemoryCacheOps::new();
+    let cached = CachedBlockReader::new(reader, cache, "fake://disk/a")
         .await
         .expect("cached source");
 
@@ -96,9 +96,9 @@ async fn cache_inflight_dedupes_reads() {
     let gate = Arc::new(Notify::new());
     let reader = FakeReader::new(512, 8, Some(Arc::clone(&gate)));
     let reads = reader.read_counter();
-    let cache = MemoryCacheStore::new(512, 8).expect("cache store");
+    let cache = MemoryCacheOps::new();
     let cached = Arc::new(
-        CachedSource::new(reader, cache)
+        CachedBlockReader::new(reader, cache, "fake://disk/b")
             .await
             .expect("cached source"),
     );
@@ -121,4 +121,88 @@ async fn cache_inflight_dedupes_reads() {
     let _ = task_b.await;
 
     assert_eq!(reads.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cache_persists_across_instances_after_flush() {
+    let cache = Arc::new(MemoryCacheOps::new());
+
+    let reader_a = FakeReader::new(512, 4, None);
+    let reads_a = reader_a.read_counter();
+    let cached_a = CachedBlockReader::new(reader_a, Arc::clone(&cache), "fake://disk/persist")
+        .await
+        .expect("cached source A");
+
+    let mut first = vec![0u8; 512];
+    cached_a.read_blocks(0, &mut first).await.expect("read A");
+    assert_eq!(reads_a.load(Ordering::SeqCst), 1);
+    cached_a.flush_cache().await.expect("flush cache A");
+    drop(cached_a);
+
+    let reader_b = FakeReader::new(512, 4, None);
+    let reads_b = reader_b.read_counter();
+    let cached_b = CachedBlockReader::new(reader_b, Arc::clone(&cache), "fake://disk/persist")
+        .await
+        .expect("cached source B");
+
+    let mut second = vec![0u8; 512];
+    cached_b.read_blocks(0, &mut second).await.expect("read B");
+    assert_eq!(reads_b.load(Ordering::SeqCst), 0);
+    assert_eq!(first, second);
+}
+
+#[tokio::test]
+async fn dirty_on_open_clears_bitmap() {
+    let cache = Arc::new(MemoryCacheOps::new());
+
+    let reader_a = FakeReader::new(512, 4, None);
+    let reads_a = reader_a.read_counter();
+    let cached_a = CachedBlockReader::new(reader_a, Arc::clone(&cache), "fake://disk/dirty")
+        .await
+        .expect("cached source A");
+
+    let mut first = vec![0u8; 512];
+    cached_a.read_blocks(0, &mut first).await.expect("read A");
+    assert_eq!(reads_a.load(Ordering::SeqCst), 1);
+    drop(cached_a);
+
+    let reader_b = FakeReader::new(512, 4, None);
+    let reads_b = reader_b.read_counter();
+    let cached_b = CachedBlockReader::new(reader_b, Arc::clone(&cache), "fake://disk/dirty")
+        .await
+        .expect("cached source B");
+
+    let mut second = vec![0u8; 512];
+    cached_b.read_blocks(0, &mut second).await.expect("read B");
+    assert_eq!(reads_b.load(Ordering::SeqCst), 1);
+    assert_eq!(first, second);
+}
+
+#[tokio::test]
+async fn identity_mismatch_resets_cache_file() {
+    let cache = Arc::new(MemoryCacheOps::new());
+
+    let reader_a = FakeReader::new(512, 4, None);
+    let cached_a = CachedBlockReader::new(reader_a, Arc::clone(&cache), "fake://disk/id-a")
+        .await
+        .expect("cached source A");
+    let mut first = vec![0u8; 512];
+    cached_a.read_blocks(1, &mut first).await.expect("read A");
+    cached_a.flush_cache().await.expect("flush cache A");
+
+    let reader_b = FakeReader::new(512, 4, None);
+    let reads_b = reader_b.read_counter();
+    let cached_b = CachedBlockReader::new(reader_b, Arc::clone(&cache), "fake://disk/id-b")
+        .await
+        .expect("cached source B");
+
+    let mut second = vec![0u8; 512];
+    cached_b.read_blocks(1, &mut second).await.expect("read B");
+    assert_eq!(reads_b.load(Ordering::SeqCst), 1);
+    assert_eq!(first, second);
+
+    let mut third = vec![0u8; 512];
+    cached_b.read_blocks(1, &mut third).await.expect("read C");
+    assert_eq!(reads_b.load(Ordering::SeqCst), 1);
+    assert_eq!(second, third);
 }

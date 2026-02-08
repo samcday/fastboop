@@ -268,7 +268,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gibblox-cache-store-idb"
+name = "gibblox-cache-store-opfs"
 version = "0.0.1"
 dependencies = [
  "async-trait",
@@ -277,7 +277,15 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "web-sys",
+]
+
+[[package]]
+name = "gibblox-cache-store-std"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gibblox-cache",
+ "gibblox-core",
 ]
 
 [[package]]
@@ -288,6 +296,7 @@ dependencies = [
  "erofs-rs",
  "futures",
  "gibblox-cache",
+ "gibblox-cache-store-std",
  "gibblox-file",
  "tracing",
  "tracing-subscriber",

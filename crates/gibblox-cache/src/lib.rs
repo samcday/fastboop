@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, collections::BTreeMap, vec, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
 use core::{
     cell::UnsafeCell,
@@ -12,47 +12,112 @@ use core::{
 use futures_channel::oneshot;
 use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
 
-/// Persistent storage for cached blocks.
+const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
+const FNV_PRIME: u32 = 0x0100_0193;
+
+const CACHE_MAGIC: [u8; 7] = *b"GIBBLX!";
+const CACHE_VERSION: u8 = 1;
+const CACHE_PREFIX_LEN: usize = 28;
+const CACHE_DIRTY_OFFSET: u64 = 8;
+const DEFAULT_FLUSH_BATCHES: u32 = 64;
+const ZERO_CHUNK_LEN: usize = 4096;
+
+/// Derive a stable non-zero 32-bit hash from an identity string.
+pub fn stable_identity_hash(identity: &str) -> u32 {
+    let mut state = FNV_OFFSET_BASIS;
+    for byte in identity.as_bytes() {
+        state ^= u32::from(*byte);
+        state = state.wrapping_mul(FNV_PRIME);
+    }
+    if state == 0 { 1 } else { state }
+}
+
+/// Build a deterministic cache filename from an identity string.
+pub fn cache_file_name(identity: &str) -> String {
+    format!("{:08x}.bin", stable_identity_hash(identity))
+}
+
+/// Backend I/O abstraction for a single cache file.
 ///
 /// Implementations are expected to be internally synchronized; the cache wrapper may call these
 /// methods concurrently from multiple tasks.
 #[async_trait]
-pub trait CacheStore: Send + Sync {
-    /// Logical block size in bytes.
-    fn block_size(&self) -> u32;
+pub trait CacheOps: Send + Sync {
+    /// Read bytes at a fixed offset. Returns the number of bytes read.
+    async fn read_at(&self, offset: u64, out: &mut [u8]) -> GibbloxResult<usize>;
 
-    /// Total number of blocks that can be stored.
-    fn total_blocks(&self) -> u64;
+    /// Write all bytes at a fixed offset.
+    async fn write_at(&self, offset: u64, data: &[u8]) -> GibbloxResult<()>;
 
-    /// Attempt to read a single cached block into `out`.
-    ///
-    /// Returns `Ok(true)` if the block was present and `out` has been filled. Returns `Ok(false)`
-    /// when the block is not yet cached.
-    async fn read_block(&self, block_idx: u64, out: &mut [u8]) -> GibbloxResult<bool>;
+    /// Resize the underlying cache file.
+    async fn set_len(&self, len: u64) -> GibbloxResult<()>;
 
-    /// Write one or more contiguous blocks starting at `start_block`.
-    ///
-    /// `data` must be a multiple of `block_size()`.
-    async fn write_blocks(&self, start_block: u64, data: &[u8]) -> GibbloxResult<()>;
+    /// Persist pending data and metadata changes.
+    async fn flush(&self) -> GibbloxResult<()>;
 }
 
-/// Read-only gibblox source wrapper that consults a cache store before forwarding to the inner
-/// source. Misses are fetched from the inner source, written to the store, then served.
-pub struct CachedSource<S, C> {
+#[async_trait]
+impl<T> CacheOps for Arc<T>
+where
+    T: CacheOps + ?Sized,
+{
+    async fn read_at(&self, offset: u64, out: &mut [u8]) -> GibbloxResult<usize> {
+        (**self).read_at(offset, out).await
+    }
+
+    async fn write_at(&self, offset: u64, data: &[u8]) -> GibbloxResult<()> {
+        (**self).write_at(offset, data).await
+    }
+
+    async fn set_len(&self, len: u64) -> GibbloxResult<()> {
+        (**self).set_len(len).await
+    }
+
+    async fn flush(&self) -> GibbloxResult<()> {
+        (**self).flush().await
+    }
+}
+
+/// Read-only block reader wrapper that consults a local file-style cache.
+///
+/// The cache file contains a compact header, a per-block validity bitmap, and raw backing bytes.
+/// Misses are fetched from the inner reader, written into the data region, and marked valid.
+pub struct CachedBlockReader<S, C> {
     inner: S,
     cache: C,
     block_size: u32,
     total_blocks: u64,
+    bitmap_offset: u64,
+    data_offset: u64,
+    flush_every_batches: u32,
+    state: SpinLock<CacheState>,
     in_flight: SpinLock<InFlight>,
+    mutation_lock: AsyncLock,
 }
 
-impl<S, C> CachedSource<S, C>
+impl<S, C> CachedBlockReader<S, C>
 where
     S: BlockReader,
-    C: CacheStore,
+    C: CacheOps,
 {
-    /// Construct a cached source, verifying block size and total block invariants up front.
-    pub async fn new(inner: S, cache: C) -> GibbloxResult<Self> {
+    /// Construct a cached reader using the default write-batch flush policy.
+    pub async fn new(inner: S, cache: C, identity: impl Into<String>) -> GibbloxResult<Self> {
+        Self::with_flush_batch_limit(inner, cache, identity, DEFAULT_FLUSH_BATCHES).await
+    }
+
+    /// Construct a cached reader with a custom write-batch flush threshold.
+    pub async fn with_flush_batch_limit(
+        inner: S,
+        cache: C,
+        identity: impl Into<String>,
+        flush_every_batches: u32,
+    ) -> GibbloxResult<Self> {
+        if flush_every_batches == 0 {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "flush batch limit must be non-zero",
+            ));
+        }
         let block_size = inner.block_size();
         if block_size == 0 || !block_size.is_power_of_two() {
             return Err(GibbloxError::with_message(
@@ -60,26 +125,33 @@ where
                 "block size must be non-zero power of two",
             ));
         }
-        if block_size != cache.block_size() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "cache block size mismatch",
-            ));
-        }
         let total_blocks = inner.total_blocks().await?;
-        if total_blocks != cache.total_blocks() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "cache and inner total blocks differ",
-            ));
-        }
+        let identity = identity.into();
+        let layout = CacheLayout::new(block_size, total_blocks)?;
+        let opened = open_or_initialize_cache(&cache, &layout, &identity).await?;
+
         Ok(Self {
             inner,
             cache,
             block_size,
             total_blocks,
+            bitmap_offset: opened.mapping.bitmap_offset,
+            data_offset: opened.mapping.data_offset,
+            flush_every_batches,
+            state: SpinLock::new(CacheState {
+                valid: opened.valid,
+                dirty: false,
+                batches_since_flush: 0,
+            }),
             in_flight: SpinLock::new(InFlight::new()),
+            mutation_lock: AsyncLock::new(),
         })
+    }
+
+    /// Force a cache flush and clear the dirty bit if there are pending writes.
+    pub async fn flush_cache(&self) -> GibbloxResult<()> {
+        let _guard = self.mutation_lock.lock().await;
+        self.flush_locked_if_needed(true).await
     }
 
     fn block_size_usize(&self) -> usize {
@@ -112,6 +184,38 @@ where
         Ok((len / self.block_size_usize()) as u64)
     }
 
+    fn data_offset_for_block(&self, block_idx: u64) -> GibbloxResult<u64> {
+        let block_bytes = block_idx
+            .checked_mul(self.block_size as u64)
+            .ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "block offset overflow")
+            })?;
+        self.data_offset.checked_add(block_bytes).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "data offset overflow")
+        })
+    }
+
+    fn snapshot_segments(&self, lba: u64, blocks: u64) -> Vec<(u64, u64, bool)> {
+        let guard = self.state.lock();
+        let mut segments = Vec::new();
+        let mut block = lba;
+        while block < lba + blocks {
+            let hit = bit_is_set(&guard.valid, block);
+            let mut len = 1u64;
+            while block + len < lba + blocks && bit_is_set(&guard.valid, block + len) == hit {
+                len += 1;
+            }
+            segments.push((block, len, hit));
+            block += len;
+        }
+        segments
+    }
+
+    fn invalidate_range(&self, start_block: u64, blocks: u64) {
+        let mut guard = self.state.lock();
+        clear_bits(&mut guard.valid, start_block, blocks);
+    }
+
     async fn fill_from_cache(
         &self,
         lba: u64,
@@ -120,14 +224,34 @@ where
     ) -> GibbloxResult<Vec<u64>> {
         let mut missing = Vec::new();
         let bs = self.block_size_usize();
-        for (idx, block) in (lba..lba + blocks).enumerate() {
-            let start = idx * bs;
-            let end = start + bs;
-            let hit = self.cache.read_block(block, &mut buf[start..end]).await?;
+        let segments = self.snapshot_segments(lba, blocks);
+
+        for (start_block, len_blocks, hit) in segments {
             if !hit {
-                missing.push(block);
+                missing.extend(start_block..start_block + len_blocks);
+                continue;
+            }
+
+            let block_offset = (start_block - lba) as usize;
+            let byte_start = block_offset.checked_mul(bs).ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "buffer offset overflow")
+            })?;
+            let byte_len = (len_blocks as usize).checked_mul(bs).ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "buffer length overflow")
+            })?;
+            let byte_end = byte_start.checked_add(byte_len).ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "buffer end overflow")
+            })?;
+            let out = &mut buf[byte_start..byte_end];
+
+            let data_offset = self.data_offset_for_block(start_block)?;
+            let full = read_exact_at(&self.cache, data_offset, out).await?;
+            if !full {
+                self.invalidate_range(start_block, len_blocks);
+                missing.extend(start_block..start_block + len_blocks);
             }
         }
+
         Ok(missing)
     }
 
@@ -149,6 +273,17 @@ where
             }
         }
         (to_fetch, waiters)
+    }
+
+    fn take_waiters(&self, start_block: u64, len_blocks: u64) -> Vec<oneshot::Sender<()>> {
+        let mut guard = self.in_flight.lock();
+        let mut senders = Vec::new();
+        for block in start_block..(start_block + len_blocks) {
+            if let Some(mut pending) = guard.waiters.remove(&block) {
+                senders.append(&mut pending);
+            }
+        }
+        senders
     }
 
     fn coalesce(blocks: &[u64]) -> Vec<(u64, u64)> {
@@ -173,6 +308,65 @@ where
         ranges
     }
 
+    async fn ensure_dirty_locked(&self) -> GibbloxResult<()> {
+        let should_mark = {
+            let mut guard = self.state.lock();
+            if guard.dirty {
+                false
+            } else {
+                guard.dirty = true;
+                true
+            }
+        };
+        if should_mark {
+            write_dirty_flag(&self.cache, true).await?;
+        }
+        Ok(())
+    }
+
+    fn mark_valid_and_collect_bitmap_write(
+        &self,
+        start_block: u64,
+        blocks: u64,
+    ) -> GibbloxResult<(u64, Vec<u8>, bool)> {
+        let end_block = start_block.checked_add(blocks).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "block range overflow")
+        })?;
+        let first_byte = (start_block / 8) as usize;
+        let last_byte = ((end_block - 1) / 8) as usize;
+
+        let mut guard = self.state.lock();
+        set_bits(&mut guard.valid, start_block, blocks);
+        guard.batches_since_flush = guard.batches_since_flush.saturating_add(1);
+        let should_flush = guard.batches_since_flush >= self.flush_every_batches;
+        let chunk = guard.valid[first_byte..=last_byte].to_vec();
+        let bitmap_offset = self.bitmap_offset + first_byte as u64;
+        Ok((bitmap_offset, chunk, should_flush))
+    }
+
+    async fn flush_locked_if_needed(&self, force: bool) -> GibbloxResult<()> {
+        let should_flush = {
+            let guard = self.state.lock();
+            if !guard.dirty {
+                false
+            } else {
+                force || guard.batches_since_flush >= self.flush_every_batches
+            }
+        };
+        if !should_flush {
+            return Ok(());
+        }
+
+        self.cache.flush().await?;
+        write_dirty_flag(&self.cache, false).await?;
+        self.cache.flush().await?;
+
+        let mut guard = self.state.lock();
+        guard.dirty = false;
+        guard.batches_since_flush = 0;
+        Ok(())
+    }
+
     async fn fetch_and_populate(&self, ranges: &[(u64, u64)]) -> GibbloxResult<()> {
         let bs = self.block_size_usize();
         for (start_block, len_blocks) in ranges {
@@ -180,37 +374,47 @@ where
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "range too large")
             })?;
             let mut buf = vec![0u8; expected_bytes];
-            let read = self.inner.read_blocks(*start_block, &mut buf).await?;
-            if read != expected_bytes {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "inner source returned short read",
-                ));
-            }
-            self.cache.write_blocks(*start_block, &buf).await?;
-            let senders = {
-                let mut guard = self.in_flight.lock();
-                let mut senders = Vec::new();
-                for block in *start_block..(*start_block + *len_blocks) {
-                    if let Some(mut pending) = guard.waiters.remove(&block) {
-                        senders.append(&mut pending);
-                    }
+            let result = async {
+                let read = self.inner.read_blocks(*start_block, &mut buf).await?;
+                if read != expected_bytes {
+                    return Err(GibbloxError::with_message(
+                        GibbloxErrorKind::Io,
+                        "inner source returned short read",
+                    ));
                 }
-                senders
-            };
+
+                let _mutation_guard = self.mutation_lock.lock().await;
+                self.ensure_dirty_locked().await?;
+
+                let data_offset = self.data_offset_for_block(*start_block)?;
+                self.cache.write_at(data_offset, &buf).await?;
+
+                let (bitmap_offset, bitmap_chunk, should_flush) =
+                    self.mark_valid_and_collect_bitmap_write(*start_block, *len_blocks)?;
+                self.cache.write_at(bitmap_offset, &bitmap_chunk).await?;
+                if should_flush {
+                    self.flush_locked_if_needed(false).await?;
+                }
+
+                Ok(())
+            }
+            .await;
+
+            let senders = self.take_waiters(*start_block, *len_blocks);
             for sender in senders {
                 let _ = sender.send(());
             }
+            result?;
         }
         Ok(())
     }
 }
 
 #[async_trait]
-impl<S, C> BlockReader for CachedSource<S, C>
+impl<S, C> BlockReader for CachedBlockReader<S, C>
 where
     S: BlockReader,
-    C: CacheStore,
+    C: CacheOps,
 {
     fn block_size(&self) -> u32 {
         self.block_size
@@ -226,10 +430,12 @@ where
             return Ok(0);
         }
         self.validate_range(lba, blocks)?;
+
         let missing = self.fill_from_cache(lba, blocks, buf).await?;
         if missing.is_empty() {
             return Ok(buf.len());
         }
+
         let (to_fetch, waiters) = self.mark_in_flight(&missing);
         if !to_fetch.is_empty() {
             self.fetch_and_populate(&Self::coalesce(&to_fetch)).await?;
@@ -237,6 +443,7 @@ where
         for waiter in waiters {
             let _ = waiter.await;
         }
+
         let final_missing = self.fill_from_cache(lba, blocks, buf).await?;
         if !final_missing.is_empty() {
             return Err(GibbloxError::with_message(
@@ -246,6 +453,256 @@ where
         }
         Ok(buf.len())
     }
+}
+
+/// Backward-compatible alias while callers migrate.
+pub type CachedSource<S, C> = CachedBlockReader<S, C>;
+
+struct CacheLayout {
+    block_size: u32,
+    total_blocks: u64,
+    bitmap_bytes: u64,
+    data_bytes: u64,
+}
+
+impl CacheLayout {
+    fn new(block_size: u32, total_blocks: u64) -> GibbloxResult<Self> {
+        if block_size == 0 || !block_size.is_power_of_two() {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "block size must be non-zero power of two",
+            ));
+        }
+        let bitmap_bytes = total_blocks.div_ceil(8);
+        if bitmap_bytes > usize::MAX as u64 {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::OutOfRange,
+                "bitmap exceeds addressable memory",
+            ));
+        }
+        let data_bytes = total_blocks.checked_mul(block_size as u64).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "cache too large")
+        })?;
+
+        Ok(Self {
+            block_size,
+            total_blocks,
+            bitmap_bytes,
+            data_bytes,
+        })
+    }
+
+    fn bitmap_len_usize(&self) -> usize {
+        self.bitmap_bytes as usize
+    }
+}
+
+struct CacheMapping {
+    bitmap_offset: u64,
+    data_offset: u64,
+    total_len: u64,
+}
+
+impl CacheMapping {
+    fn new(layout: &CacheLayout, identity_len: usize) -> GibbloxResult<Self> {
+        if identity_len > u32::MAX as usize {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "identity too large",
+            ));
+        }
+        let bitmap_offset = (CACHE_PREFIX_LEN as u64)
+            .checked_add(identity_len as u64)
+            .ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "metadata overflow")
+            })?;
+        let data_offset = bitmap_offset
+            .checked_add(layout.bitmap_bytes)
+            .ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "bitmap overflow")
+            })?;
+        let total_len = data_offset.checked_add(layout.data_bytes).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "cache length overflow")
+        })?;
+        Ok(Self {
+            bitmap_offset,
+            data_offset,
+            total_len,
+        })
+    }
+}
+
+struct CacheHeader {
+    dirty: bool,
+    block_size: u32,
+    total_blocks: u64,
+    identity_len: u32,
+}
+
+impl CacheHeader {
+    fn encode_prefix(&self) -> [u8; CACHE_PREFIX_LEN] {
+        let mut out = [0u8; CACHE_PREFIX_LEN];
+        out[0..7].copy_from_slice(&CACHE_MAGIC);
+        out[7] = CACHE_VERSION;
+        out[8] = if self.dirty { 1 } else { 0 };
+        out[9] = 0;
+        out[10..12].copy_from_slice(&0u16.to_le_bytes());
+        out[12..16].copy_from_slice(&self.block_size.to_le_bytes());
+        out[16..24].copy_from_slice(&self.total_blocks.to_le_bytes());
+        out[24..28].copy_from_slice(&self.identity_len.to_le_bytes());
+        out
+    }
+
+    fn decode_prefix(prefix: &[u8; CACHE_PREFIX_LEN]) -> Option<Self> {
+        if prefix[0..7] != CACHE_MAGIC {
+            return None;
+        }
+        if prefix[7] != CACHE_VERSION {
+            return None;
+        }
+        let dirty = match prefix[8] {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
+        let block_size = u32::from_le_bytes([prefix[12], prefix[13], prefix[14], prefix[15]]);
+        let total_blocks = u64::from_le_bytes([
+            prefix[16], prefix[17], prefix[18], prefix[19], prefix[20], prefix[21], prefix[22],
+            prefix[23],
+        ]);
+        let identity_len = u32::from_le_bytes([prefix[24], prefix[25], prefix[26], prefix[27]]);
+        Some(Self {
+            dirty,
+            block_size,
+            total_blocks,
+            identity_len,
+        })
+    }
+}
+
+struct OpenedCache {
+    mapping: CacheMapping,
+    valid: Vec<u8>,
+}
+
+async fn open_or_initialize_cache<C: CacheOps>(
+    cache: &C,
+    layout: &CacheLayout,
+    identity: &str,
+) -> GibbloxResult<OpenedCache> {
+    let mut prefix = [0u8; CACHE_PREFIX_LEN];
+    let have_prefix = read_exact_at(cache, 0, &mut prefix).await?;
+    if !have_prefix {
+        return initialize_cache(cache, layout, identity).await;
+    }
+
+    let Some(header) = CacheHeader::decode_prefix(&prefix) else {
+        return initialize_cache(cache, layout, identity).await;
+    };
+    if header.block_size != layout.block_size || header.total_blocks != layout.total_blocks {
+        return initialize_cache(cache, layout, identity).await;
+    }
+
+    let identity_len = header.identity_len as usize;
+    let mapping = CacheMapping::new(layout, identity_len)?;
+    let mut stored_identity = vec![0u8; identity_len];
+    if !read_exact_at(cache, CACHE_PREFIX_LEN as u64, &mut stored_identity).await? {
+        return initialize_cache(cache, layout, identity).await;
+    }
+    if stored_identity.as_slice() != identity.as_bytes() {
+        return initialize_cache(cache, layout, identity).await;
+    }
+
+    cache.set_len(mapping.total_len).await?;
+
+    let mut valid = vec![0u8; layout.bitmap_len_usize()];
+    if !read_exact_at(cache, mapping.bitmap_offset, &mut valid).await? {
+        return initialize_cache(cache, layout, identity).await;
+    }
+
+    if header.dirty {
+        valid.fill(0);
+        write_zero_region(cache, mapping.bitmap_offset, layout.bitmap_bytes).await?;
+        write_dirty_flag(cache, false).await?;
+        cache.flush().await?;
+    }
+
+    Ok(OpenedCache { mapping, valid })
+}
+
+async fn initialize_cache<C: CacheOps>(
+    cache: &C,
+    layout: &CacheLayout,
+    identity: &str,
+) -> GibbloxResult<OpenedCache> {
+    let identity_len = identity.len();
+    let mapping = CacheMapping::new(layout, identity_len)?;
+
+    cache.set_len(0).await?;
+    cache.set_len(mapping.total_len).await?;
+
+    let header = CacheHeader {
+        dirty: false,
+        block_size: layout.block_size,
+        total_blocks: layout.total_blocks,
+        identity_len: identity_len as u32,
+    }
+    .encode_prefix();
+
+    cache.write_at(0, &header).await?;
+    cache
+        .write_at(CACHE_PREFIX_LEN as u64, identity.as_bytes())
+        .await?;
+    write_zero_region(cache, mapping.bitmap_offset, layout.bitmap_bytes).await?;
+    cache.flush().await?;
+
+    Ok(OpenedCache {
+        mapping,
+        valid: vec![0u8; layout.bitmap_len_usize()],
+    })
+}
+
+async fn write_dirty_flag<C: CacheOps>(cache: &C, dirty: bool) -> GibbloxResult<()> {
+    let value = [if dirty { 1u8 } else { 0u8 }];
+    cache.write_at(CACHE_DIRTY_OFFSET, &value).await
+}
+
+async fn read_exact_at<C: CacheOps>(
+    cache: &C,
+    mut offset: u64,
+    out: &mut [u8],
+) -> GibbloxResult<bool> {
+    let mut filled = 0usize;
+    while filled < out.len() {
+        let read = cache.read_at(offset, &mut out[filled..]).await?;
+        if read == 0 {
+            return Ok(false);
+        }
+        filled = filled.checked_add(read).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "read size overflow")
+        })?;
+        offset = offset.checked_add(read as u64).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "read offset overflow")
+        })?;
+    }
+    Ok(true)
+}
+
+async fn write_zero_region<C: CacheOps>(cache: &C, mut offset: u64, len: u64) -> GibbloxResult<()> {
+    if len == 0 {
+        return Ok(());
+    }
+    let mut remaining = len;
+    let zero = [0u8; ZERO_CHUNK_LEN];
+    while remaining > 0 {
+        let write_len = remaining.min(ZERO_CHUNK_LEN as u64) as usize;
+        cache.write_at(offset, &zero[..write_len]).await?;
+        offset = offset.checked_add(write_len as u64).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "zero-fill offset overflow")
+        })?;
+        remaining -= write_len as u64;
+    }
+    Ok(())
 }
 
 struct InFlight {
@@ -260,131 +717,107 @@ impl InFlight {
     }
 }
 
-/// In-memory `CacheStore` backed by a `Vec<u8>` and a validity bitmap.
-pub struct MemoryCacheStore {
-    block_size: u32,
-    total_blocks: u64,
-    state: SpinLock<MemoryState>,
-}
-
-struct MemoryState {
-    data: Vec<u8>,
+struct CacheState {
     valid: Vec<u8>,
+    dirty: bool,
+    batches_since_flush: u32,
 }
 
-impl MemoryCacheStore {
-    pub fn new(block_size: u32, total_blocks: u64) -> GibbloxResult<Self> {
-        if block_size == 0 || !block_size.is_power_of_two() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "block size must be non-zero power of two",
-            ));
-        }
-        let total_bytes = (total_blocks as u128)
-            .checked_mul(block_size as u128)
-            .ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "cache too large")
-            })?;
-        if total_bytes > usize::MAX as u128 {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "cache size exceeds addressable memory",
-            ));
-        }
-        let data = vec![0u8; total_bytes as usize];
-        let valid = vec![0u8; total_blocks.div_ceil(8) as usize];
-        Ok(Self {
-            block_size,
-            total_blocks,
-            state: SpinLock::new(MemoryState { data, valid }),
-        })
-    }
+fn bit_is_set(bits: &[u8], idx: u64) -> bool {
+    let byte_idx = (idx / 8) as usize;
+    let mask = 1u8 << (idx % 8);
+    bits[byte_idx] & mask != 0
+}
 
-    fn block_size_usize(&self) -> usize {
-        self.block_size as usize
+fn set_bits(bits: &mut [u8], start: u64, len: u64) {
+    for idx in start..start + len {
+        let byte_idx = (idx / 8) as usize;
+        let mask = 1u8 << (idx % 8);
+        bits[byte_idx] |= mask;
     }
+}
 
-    fn offset(&self, block_idx: u64) -> GibbloxResult<usize> {
-        if block_idx >= self.total_blocks {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "block index out of bounds",
-            ));
+fn clear_bits(bits: &mut [u8], start: u64, len: u64) {
+    for idx in start..start + len {
+        let byte_idx = (idx / 8) as usize;
+        let mask = 1u8 << (idx % 8);
+        bits[byte_idx] &= !mask;
+    }
+}
+
+/// In-memory cache file implementation useful for tests and embedded callers.
+pub struct MemoryCacheOps {
+    state: SpinLock<Vec<u8>>,
+}
+
+impl MemoryCacheOps {
+    pub fn new() -> Self {
+        Self {
+            state: SpinLock::new(Vec::new()),
         }
-        let byte_offset = (block_idx as usize)
-            .checked_mul(self.block_size_usize())
-            .ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset overflow")
-            })?;
-        Ok(byte_offset)
     }
+}
 
-    fn is_valid(valid: &[u8], block_idx: u64) -> bool {
-        let byte_idx = (block_idx / 8) as usize;
-        let mask = 1u8 << (block_idx % 8);
-        valid[byte_idx] & mask != 0
-    }
-
-    fn mark_valid(valid: &mut [u8], start_block: u64, blocks: u64) {
-        for block in start_block..start_block + blocks {
-            let byte_idx = (block / 8) as usize;
-            let mask = 1u8 << (block % 8);
-            valid[byte_idx] |= mask;
-        }
+impl Default for MemoryCacheOps {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[async_trait]
-impl CacheStore for MemoryCacheStore {
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
-
-    fn total_blocks(&self) -> u64 {
-        self.total_blocks
-    }
-
-    async fn read_block(&self, block_idx: u64, out: &mut [u8]) -> GibbloxResult<bool> {
-        if out.len() != self.block_size_usize() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "buffer length must equal block size",
-            ));
+impl CacheOps for MemoryCacheOps {
+    async fn read_at(&self, offset: u64, out: &mut [u8]) -> GibbloxResult<usize> {
+        if out.is_empty() {
+            return Ok(0);
         }
         let guard = self.state.lock();
-        let offset = self.offset(block_idx)?;
-        if !Self::is_valid(&guard.valid, block_idx) {
-            return Ok(false);
+        let start = match usize::try_from(offset) {
+            Ok(v) => v,
+            Err(_) => return Ok(0),
+        };
+        if start >= guard.len() {
+            return Ok(0);
         }
-        out.copy_from_slice(&guard.data[offset..offset + self.block_size_usize()]);
-        Ok(true)
+        let available = guard.len() - start;
+        let copy_len = available.min(out.len());
+        out[..copy_len].copy_from_slice(&guard[start..start + copy_len]);
+        Ok(copy_len)
     }
 
-    async fn write_blocks(&self, start_block: u64, data: &[u8]) -> GibbloxResult<()> {
-        if !data.len().is_multiple_of(self.block_size_usize()) {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "write payload must align to block size",
-            ));
-        }
-        let blocks = (data.len() / self.block_size_usize()) as u64;
-        if start_block
-            .checked_add(blocks)
-            .map(|end| end > self.total_blocks)
-            .unwrap_or(true)
-        {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "write exceeds cache bounds",
-            ));
+    async fn write_at(&self, offset: u64, data: &[u8]) -> GibbloxResult<()> {
+        if data.is_empty() {
+            return Ok(());
         }
         let mut guard = self.state.lock();
-        let offset = self.offset(start_block)?;
-        guard.data[offset..offset + data.len()].copy_from_slice(data);
-        Self::mark_valid(&mut guard.valid, start_block, blocks);
+        let start = usize::try_from(offset).map_err(|_| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset exceeds memory cache")
+        })?;
+        let end = start.checked_add(data.len()).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "write overflow")
+        })?;
+        if end > guard.len() {
+            guard.resize(end, 0);
+        }
+        guard[start..end].copy_from_slice(data);
+        Ok(())
+    }
+
+    async fn set_len(&self, len: u64) -> GibbloxResult<()> {
+        let len = usize::try_from(len).map_err(|_| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "length exceeds memory cache")
+        })?;
+        let mut guard = self.state.lock();
+        guard.resize(len, 0);
+        Ok(())
+    }
+
+    async fn flush(&self) -> GibbloxResult<()> {
         Ok(())
     }
 }
+
+/// Backward-compatible alias while callers migrate.
+pub type MemoryCacheStore = MemoryCacheOps;
 
 /// Minimal spin-based lock suitable for short critical sections in `no_std + alloc`.
 pub struct SpinLock<T> {
@@ -425,12 +858,14 @@ impl<T> core::ops::Deref for SpinLockGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: protected by `SpinLock::lock` and released in guard drop.
         unsafe { &*self.lock.value.get() }
     }
 }
 
 impl<T> core::ops::DerefMut for SpinLockGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: protected by `SpinLock::lock` and released in guard drop.
         unsafe { &mut *self.lock.value.get() }
     }
 }
@@ -438,5 +873,80 @@ impl<T> core::ops::DerefMut for SpinLockGuard<'_, T> {
 impl<T> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
         self.lock.locked.store(false, Ordering::Release);
+    }
+}
+
+/// A tiny async lock built on top of `SpinLock` and oneshot waiters.
+pub struct AsyncLock {
+    state: SpinLock<AsyncLockState>,
+}
+
+struct AsyncLockState {
+    locked: bool,
+    waiters: Vec<oneshot::Sender<()>>,
+}
+
+impl AsyncLock {
+    pub fn new() -> Self {
+        Self {
+            state: SpinLock::new(AsyncLockState {
+                locked: false,
+                waiters: Vec::new(),
+            }),
+        }
+    }
+
+    pub async fn lock(&self) -> AsyncLockGuard<'_> {
+        loop {
+            let waiter = {
+                let mut guard = self.state.lock();
+                if !guard.locked {
+                    guard.locked = true;
+                    None
+                } else {
+                    let (tx, rx) = oneshot::channel();
+                    guard.waiters.push(tx);
+                    Some(rx)
+                }
+            };
+
+            if let Some(waiter) = waiter {
+                let _ = waiter.await;
+                continue;
+            }
+
+            return AsyncLockGuard { lock: self };
+        }
+    }
+
+    fn unlock(&self) {
+        let maybe_next = {
+            let mut guard = self.state.lock();
+            if let Some(next) = guard.waiters.pop() {
+                Some(next)
+            } else {
+                guard.locked = false;
+                None
+            }
+        };
+        if let Some(next) = maybe_next {
+            let _ = next.send(());
+        }
+    }
+}
+
+impl Default for AsyncLock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct AsyncLockGuard<'a> {
+    lock: &'a AsyncLock,
+}
+
+impl Drop for AsyncLockGuard<'_> {
+    fn drop(&mut self) {
+        self.lock.unlock();
     }
 }

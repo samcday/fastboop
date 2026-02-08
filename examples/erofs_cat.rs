@@ -2,7 +2,8 @@ use std::env;
 use std::io::{self, Write};
 
 use futures::executor::block_on;
-use gibblox_cache::{CachedSource, MemoryCacheStore};
+use gibblox_cache::CachedBlockReader;
+use gibblox_cache_store_std::StdCacheOps;
 use gibblox_core::{BlockReader, EroBlockReader};
 use gibblox_file::StdFileBlockReader;
 use tracing::{debug, info, trace};
@@ -29,9 +30,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let source_block_size = 4096u32;
     info!(image_path, file_path, "starting erofs_cat");
     let source = StdFileBlockReader::open(&image_path, source_block_size)?;
-    let source_total_blocks = block_on(source.total_blocks())?;
-    let cache = MemoryCacheStore::new(source.block_size(), source_total_blocks)?;
-    let cached_source = block_on(CachedSource::new(source, cache))?;
+    let identity = format!("file:{image_path}");
+    let cache = StdCacheOps::open_default(&identity)?;
+    let cached_source = block_on(CachedBlockReader::new(source, cache, identity))?;
     let reader = block_on(EroBlockReader::new(cached_source, &file_path, 4096))?;
     let total_blocks = block_on(reader.total_blocks())?;
     info!(

@@ -6,7 +6,8 @@ members = [
     "crates/gibblox-file",
     "crates/gibblox-http",
     "crates/gibblox-cache",
-    "crates/gibblox-cache-store-idb",
+    "crates/gibblox-cache-store-std",
+    "crates/gibblox-cache-store-opfs",
 ]
 
 [workspace.package]

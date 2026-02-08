@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::{boxed::Box, string::String};
 use async_trait::async_trait;
 use core::fmt;
 

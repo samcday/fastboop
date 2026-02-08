@@ -1,18 +1,11 @@
 [package]
-name = "gibblox-cache"
+name = "gibblox-cache-store-std"
 version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 license = { workspace = true }
 
-[features]
-default = []
-std = []
-
 [dependencies]
 async-trait = "0.1.89"
-futures-channel = { version = "0.3.31", default-features = false, features = ["alloc"] }
+gibblox-cache = { path = "../gibblox-cache", default-features = false }
 gibblox-core = { path = "../gibblox-core", default-features = false }
-
-[dev-dependencies]
-tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync"] }
