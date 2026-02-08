@@ -2711,7 +2711,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fastboop-schema",
  "postcard",
@@ -2749,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-desktop"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "dioxus",
  "fastboop-core",
@@ -2761,7 +2761,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-fastboot-rusb"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fastboop-core",
  "futures-channel",
@@ -2772,7 +2772,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-fastboot-webusb"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fastboop-core",
  "futures-channel",
@@ -2786,7 +2786,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-mobile"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "dioxus",
  "tracing",
@@ -2796,7 +2796,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-schema"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "schemars",
  "serde",
@@ -2804,7 +2804,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-stage0"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2818,7 +2818,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-stage0-generator"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "dtoolkit",
  "fastboop-core",
@@ -2829,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-web"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "dioxus",
  "fastboop-core",
@@ -3307,7 +3307,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-cache"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "futures-channel",
@@ -3317,7 +3317,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "erofs-rs",
@@ -3330,7 +3330,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-file"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -3339,7 +3339,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-http"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7438,7 +7438,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-gadget-app"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7457,7 +7457,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-gadget-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7480,7 +7480,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-gadget-ublk"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -7496,7 +7496,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-blocksource-gibblox"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -7505,7 +7505,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "futures-channel",
@@ -7517,7 +7517,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-transport-rusb"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "crossbeam-channel",
@@ -7529,7 +7529,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-proto"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "heapless 0.8.0",
 ]
@@ -8578,7 +8578,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "dioxus",
 ]

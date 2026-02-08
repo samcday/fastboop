@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
 
 concurrency:
@@ -13,8 +15,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -54,9 +59,63 @@ jobs:
       - name: Dioxus build (desktop)
         run: dx build -p fastboop-desktop
 
+  build:
+    runs-on: ${{ matrix.runner }}
+    needs: check
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - name: aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y musl-tools libusb-1.0-0-dev
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Build CLI (static musl)
+        run: |
+          cargo build \
+            -p fastboop-cli \
+            --release \
+            --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastboop-${{ matrix.name }}
+          path: target/${{ matrix.target }}/release/fastboop-cli
+
+      - name: Prepare release binary
+        if: github.event_name == 'release'
+        run: |
+          cp target/${{ matrix.target }}/release/fastboop-cli fastboop-${{ matrix.name }}
+
+      - name: Upload binary to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.event.release.name }}
+          files: fastboop-${{ matrix.name }}
+
   deploy-bleeding:
     runs-on: ubuntu-latest
-    needs: build
+    needs: check
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout

@@ -1,7 +1,8 @@
 [package]
 name = "fastboop-mobile"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 dioxus = { workspace = true, features = ["router"] }
