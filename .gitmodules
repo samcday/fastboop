@@ -1,3 +1,0 @@
-[submodule "erofs-rs"]
-	path = erofs-rs
-	url = https://github.com/samcday/erofs-rs.git
