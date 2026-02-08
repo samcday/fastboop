@@ -10,8 +10,8 @@ match:
 probe:
   - fastboot.getvar: product
     equals: sdm845
-  - fastboot.getvar: partition-type:boot_aging
-    exists:
+  - fastboot.getvar: parallel-download-flash
+    not_exists:
 
 boot:
   fastboot_boot:
@@ -21,10 +21,14 @@ boot:
       kernel_offset: 0x00008000
 
       kernel:
-        encoding: image
+        encoding: image.gz
 
 stage0:
+  inject_mac:
+    bluetooth: qcom,wcn3990-bt
+    wifi: qcom,wcn3990-wifi
   kernel_modules:
+    # This is the core set for a working UDC.
     - dwc3
     - dwc3-qcom
     - dwc3-qcom-legacy
@@ -34,3 +38,7 @@ stage0:
     - pinctrl-sdm845
     - gcc-sdm845
     - qnoc-sdm845
+
+    # This isn't required for UDC, but needs to load
+    # early to avoid deferred-probe timeouts on arm-smmu.
+    - gpucc-sdm845
