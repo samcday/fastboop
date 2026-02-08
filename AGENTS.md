@@ -8,14 +8,22 @@ This file keeps Codex sessions fast and predictable. Read it before coding.
 - **Codex**: writes code/diffs, keeps builds green, follows this file.
 
 ## Kickoff checklist (each session)
-- Read `AGENTS.md`, `README.md`, `docs/*.md` and skim `smoo/HACKING.md` for protocol invariants shared with smoo.
+- Use the document index below and only read the docs needed for the task at hand.
 - Confirm workspace layout (`crates/*`) and no-std expectations for core logic crates.
-- Use `rustfmt --edition 2021`; prefer async-first; avoid blocking unless justified.
+- Use `rustfmt --edition 2024`; prefer async-first; avoid blocking unless justified.
 - Target stable Rust (MSRV 1.88) and keep code `cargo build --workspace --locked` clean.
 - Keep logic crates no_std + `alloc`; isolate std/platform bindings in leaf crates (CLI/web/host tooling).
 
+## Document index (read-on-demand)
+- `docs/DEVICE_PROFILES.md`: read when touching DevPro schema, matching/probing rules, or fastboot boot constraints.
+- `docs/STAGE0.md`: read when touching `stage0/`, `crates/fastboop-stage0-generator/`, or CLI stage0/boot flow.
+- `docs/DIOXUS.md`: read when touching `packages/web`, `packages/desktop`, `packages/mobile`, or `packages/ui` Dioxus code.
+- `smoo/AGENTS.md`: read when reasoning with any types that come from `smoo-*` crates, or when touching the `smoo/` subtree.
+- `gibblox/AGENTS.md`: read when reasoning with any types that come from `gibblox-*` crates, or when touching the `gibblox/` subtree.
+- If a change crosses areas (for example stage0 + protocol), read all relevant docs before editing.
+
 ## Architectural defaults
-- Core traits/types live in `fastboop-core` and `fastboop-transport`; they must be allocator-aware and cancellation-safe.
+- Core traits/types live in `fastboop-core`; they must be allocator-aware and cancellation-safe.
 - Device/profile/state-machine logic stays platform-agnostic; transports/adapters (fastboot, WebUSB, desktop libusb) live in std/wasm crates.
 - Stage0 assembly lives in std crates; fastboop-stage0 embeds `smoo-gadget-app` directly, while protocol/types must stay aligned with smoo.
 - Logging via `tracing`; tests should mock transports and preserve `(export_id, request_id)` discipline from smoo.
