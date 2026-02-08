@@ -1,7 +1,7 @@
 [submodule "smoo"]
 	path = smoo
 	url = https://github.com/samcday/smoo.git
-	branch = stage0
+	branch = main
 [submodule "gibblox"]
 	path = gibblox
 	url = https://github.com/samcday/gibblox.git
