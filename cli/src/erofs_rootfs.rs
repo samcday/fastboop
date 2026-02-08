@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use fastboop_core::RootfsProvider;
-use gibblox_core::{BlockReader, GibbloxErrorKind};
+use gibblox_core::{BlockReader, GibbloxErrorKind, ReadContext};
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
 use url::Url;
@@ -214,7 +214,7 @@ impl gibblox_core::erofs_rs::ReadAt for GibbloxReadAtAdapter {
             let lba = (start as usize + filled) / self.block_size;
             let read = self
                 .inner
-                .read_blocks(lba as u64, &mut scratch[filled..])
+                .read_blocks(lba as u64, &mut scratch[filled..], ReadContext::FOREGROUND)
                 .await
                 .map_err(map_gibblox_err)?;
             if read == 0 {

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use core::hash::Hasher;
-use gibblox_core::{BlockReader, GibbloxErrorKind};
+use gibblox_core::{BlockReader, GibbloxErrorKind, ReadContext};
 use smoo_host_core::{BlockSource, BlockSourceError, BlockSourceErrorKind, BlockSourceResult};
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ impl BlockSource for GibbloxBlockSource {
     }
 
     async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> BlockSourceResult<usize> {
-        self.reader.read_blocks(lba, buf).await.map_err(map_error)
+        self.reader.read_blocks(lba, buf, ReadContext::FOREGROUND).await.map_err(map_error)
     }
 
     async fn write_blocks(&self, _lba: u64, _buf: &[u8]) -> BlockSourceResult<usize> {
