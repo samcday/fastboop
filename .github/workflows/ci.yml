@@ -81,7 +81,21 @@ jobs:
           submodules: recursive
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y musl-tools libusb-1.0-0-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools linux-libc-dev
+
+      - name: Set up musl kernel headers
+        run: |
+          # libusb1-sys vendored build needs linux headers in the musl sysroot.
+          sudo mkdir -p /usr/include/$(uname -m)-linux-musl
+          sudo ln -sf /usr/include/linux /usr/include/$(uname -m)-linux-musl/linux
+          sudo ln -sf /usr/include/asm-generic /usr/include/$(uname -m)-linux-musl/asm-generic
+          if [ -d /usr/include/$(uname -m)-linux-gnu/asm ]; then
+            sudo ln -sf /usr/include/$(uname -m)-linux-gnu/asm /usr/include/$(uname -m)-linux-musl/asm
+          elif [ -d /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm /usr/include/$(uname -m)-linux-musl/asm
+          fi
 
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
