@@ -68,7 +68,7 @@ where
 ///
 /// The cache file contains a compact header, a per-block validity bitmap, and raw backing bytes.
 /// Misses are fetched from the inner reader, written into the data region, and marked valid.
-/// 
+///
 /// The cache flushes automatically after writing `flush_every_blocks` new blocks to ensure
 /// persistence across sessions. There is no dirty flag; the bitmap is the authoritative
 /// source of validity.
@@ -96,7 +96,7 @@ where
     }
 
     /// Construct a cached reader with a custom flush threshold.
-    /// 
+    ///
     /// The cache will flush after writing `flush_every_blocks` newly cached blocks.
     /// Lower values provide better crash resilience at the cost of more frequent I/O.
     /// A value of 1 flushes after every write batch (maximally safe but slowest).
@@ -161,7 +161,7 @@ where
     }
 
     /// Force a cache flush and clear the dirty bit if there are pending writes.
-    pub     async fn flush_cache(&self) -> GibbloxResult<()> {
+    pub async fn flush_cache(&self) -> GibbloxResult<()> {
         let _guard = self.mutation_lock.lock().await;
         debug!("cache flush requested explicitly");
         self.flush_locked_if_needed(true).await
@@ -334,8 +334,6 @@ where
         ranges
     }
 
-
-
     fn mark_valid_and_collect_bitmap_write(
         &self,
         start_block: u64,
@@ -470,7 +468,7 @@ where
         self.validate_range(lba, blocks)?;
 
         let missing = self.fill_from_cache(lba, blocks, buf).await?;
-        
+
         // Update hit/miss statistics and log periodically
         {
             let mut guard = self.state.lock();
@@ -492,7 +490,7 @@ where
                 );
             }
         }
-        
+
         if missing.is_empty() {
             trace!(lba, blocks, "cache hit");
             return Ok(buf.len());
