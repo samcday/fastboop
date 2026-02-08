@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use gibblox_cache::{CacheOps, cache_file_name};
-use gibblox_core::{GibbloxError, GibbloxErrorKind, GibbloxResult};
+use gibblox_cache::{CacheOps, derive_cached_reader_identity_id};
+use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
 use js_sys::{Promise, Uint8Array};
 use std::{
     future::Future,
@@ -73,14 +73,24 @@ pub struct OpfsCacheOps {
 
 impl OpfsCacheOps {
     /// Open or create an OPFS cache file under the `gibblox` origin-private directory.
-    pub async fn open(identity: &str) -> GibbloxResult<Self> {
-        let name = cache_file_name(identity);
+    pub async fn open(cache_id: u32) -> GibbloxResult<Self> {
+        let name = cache_file_name(cache_id);
         let promise = js_opfs_open(&name).map_err(js_io)?;
         let handle = SendJsFuture::from(promise).await.map_err(js_io)?;
         Ok(Self {
             handle: SendJsValue(handle),
         })
     }
+
+    pub async fn open_for_reader<R: BlockReader + ?Sized>(reader: &R) -> GibbloxResult<Self> {
+        let total_blocks = reader.total_blocks().await?;
+        let cache_id = derive_cached_reader_identity_id(reader, total_blocks);
+        Self::open(cache_id).await
+    }
+}
+
+fn cache_file_name(cache_id: u32) -> String {
+    format!("{cache_id:08x}.bin")
 }
 
 #[derive(Clone)]

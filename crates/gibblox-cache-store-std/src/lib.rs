@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use gibblox_cache::{CacheOps, cache_file_name};
-use gibblox_core::{GibbloxError, GibbloxErrorKind, GibbloxResult};
+use gibblox_cache::{CacheOps, derive_cached_reader_identity_id};
+use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
 use std::env;
 use std::fs::{File, OpenOptions, create_dir_all};
 use std::path::{Path, PathBuf};
@@ -19,16 +19,35 @@ pub struct StdCacheOps {
 
 impl StdCacheOps {
     /// Open or create a cache file inside the process user's default cache location.
-    pub fn open_default(identity: &str) -> GibbloxResult<Self> {
+    pub fn open_default(cache_id: u32) -> GibbloxResult<Self> {
         let root = default_cache_root()?;
-        Self::open_in(root, identity)
+        Self::open_in(root, cache_id)
+    }
+
+    /// Open or create a cache file for a block reader identity in the default cache root.
+    pub async fn open_default_for_reader<R: BlockReader + ?Sized>(
+        reader: &R,
+    ) -> GibbloxResult<Self> {
+        let total_blocks = reader.total_blocks().await?;
+        let cache_id = derive_cached_reader_identity_id(reader, total_blocks);
+        Self::open_default(cache_id)
     }
 
     /// Open or create a cache file under a caller-provided root directory.
-    pub fn open_in(root: impl AsRef<Path>, identity: &str) -> GibbloxResult<Self> {
+    pub fn open_in(root: impl AsRef<Path>, cache_id: u32) -> GibbloxResult<Self> {
         create_dir_all(root.as_ref()).map_err(map_io_err("create cache directory"))?;
-        let path = root.as_ref().join(cache_file_name(identity));
+        let path = root.as_ref().join(cache_file_name(cache_id));
         Self::open_path(path)
+    }
+
+    /// Open or create a cache file for a block reader identity under a caller-provided root.
+    pub async fn open_in_for_reader<R: BlockReader + ?Sized>(
+        root: impl AsRef<Path>,
+        reader: &R,
+    ) -> GibbloxResult<Self> {
+        let total_blocks = reader.total_blocks().await?;
+        let cache_id = derive_cached_reader_identity_id(reader, total_blocks);
+        Self::open_in(root, cache_id)
     }
 
     /// Open or create a cache file at an explicit path.
@@ -57,6 +76,10 @@ impl StdCacheOps {
             GibbloxError::with_message(GibbloxErrorKind::Io, "cache file lock poisoned")
         })
     }
+}
+
+fn cache_file_name(cache_id: u32) -> String {
+    format!("{cache_id:08x}.bin")
 }
 
 #[async_trait]

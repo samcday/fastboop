@@ -33,10 +33,9 @@ use gibblox_cache_store_std::StdCacheOps;
 use gibblox_http::HttpBlockReader;
 
 # async fn example() -> anyhow::Result<()> {
-let identity = "http:https://example.com/rootfs.img";
 let source = HttpBlockReader::new("https://example.com/rootfs.img".parse()?, 4096).await?;
-let cache = StdCacheOps::open_default(identity)?;
-let source = CachedBlockReader::new(source, cache, identity).await?;
+let cache = StdCacheOps::open_default_for_reader(&source).await?;
+let source = CachedBlockReader::new(source, cache).await?;
 let mut buf = vec![0u8; 4096];
 source.read_blocks(0, &mut buf).await?;
 # Ok(())

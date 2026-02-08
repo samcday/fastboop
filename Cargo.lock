@@ -265,6 +265,7 @@ dependencies = [
  "futures-channel",
  "gibblox-core",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

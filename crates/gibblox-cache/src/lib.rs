@@ -2,18 +2,19 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
 use core::{
     cell::UnsafeCell,
+    fmt,
     hint::spin_loop,
     sync::atomic::{AtomicBool, Ordering},
 };
 use futures_channel::oneshot;
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
-
-const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
-const FNV_PRIME: u32 = 0x0100_0193;
+use gibblox_core::{
+    BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, derive_block_identity_id,
+};
+use tracing::trace;
 
 const CACHE_MAGIC: [u8; 7] = *b"GIBBLX!";
 const CACHE_VERSION: u8 = 1;
@@ -21,21 +22,6 @@ const CACHE_PREFIX_LEN: usize = 28;
 const CACHE_DIRTY_OFFSET: u64 = 8;
 const DEFAULT_FLUSH_BATCHES: u32 = 64;
 const ZERO_CHUNK_LEN: usize = 4096;
-
-/// Derive a stable non-zero 32-bit hash from an identity string.
-pub fn stable_identity_hash(identity: &str) -> u32 {
-    let mut state = FNV_OFFSET_BASIS;
-    for byte in identity.as_bytes() {
-        state ^= u32::from(*byte);
-        state = state.wrapping_mul(FNV_PRIME);
-    }
-    if state == 0 { 1 } else { state }
-}
-
-/// Build a deterministic cache filename from an identity string.
-pub fn cache_file_name(identity: &str) -> String {
-    format!("{:08x}.bin", stable_identity_hash(identity))
-}
 
 /// Backend I/O abstraction for a single cache file.
 ///
@@ -101,15 +87,14 @@ where
     C: CacheOps,
 {
     /// Construct a cached reader using the default write-batch flush policy.
-    pub async fn new(inner: S, cache: C, identity: impl Into<String>) -> GibbloxResult<Self> {
-        Self::with_flush_batch_limit(inner, cache, identity, DEFAULT_FLUSH_BATCHES).await
+    pub async fn new(inner: S, cache: C) -> GibbloxResult<Self> {
+        Self::with_flush_batch_limit(inner, cache, DEFAULT_FLUSH_BATCHES).await
     }
 
     /// Construct a cached reader with a custom write-batch flush threshold.
     pub async fn with_flush_batch_limit(
         inner: S,
         cache: C,
-        identity: impl Into<String>,
         flush_every_batches: u32,
     ) -> GibbloxResult<Self> {
         if flush_every_batches == 0 {
@@ -126,9 +111,17 @@ where
             ));
         }
         let total_blocks = inner.total_blocks().await?;
-        let identity = identity.into();
         let layout = CacheLayout::new(block_size, total_blocks)?;
+        let identity = cached_reader_identity_string(&inner);
         let opened = open_or_initialize_cache(&cache, &layout, &identity).await?;
+        trace!(
+            block_size,
+            total_blocks,
+            bitmap_offset = opened.mapping.bitmap_offset,
+            data_offset = opened.mapping.data_offset,
+            flush_every_batches,
+            "cached block reader initialized"
+        );
 
         Ok(Self {
             inner,
@@ -151,6 +144,7 @@ where
     /// Force a cache flush and clear the dirty bit if there are pending writes.
     pub async fn flush_cache(&self) -> GibbloxResult<()> {
         let _guard = self.mutation_lock.lock().await;
+        trace!("cache flush requested explicitly");
         self.flush_locked_if_needed(true).await
     }
 
@@ -252,6 +246,13 @@ where
             }
         }
 
+        trace!(
+            lba,
+            blocks,
+            missing = missing.len(),
+            "cache read pass complete"
+        );
+
         Ok(missing)
     }
 
@@ -272,6 +273,12 @@ where
                 }
             }
         }
+        trace!(
+            requested = blocks.len(),
+            to_fetch = to_fetch.len(),
+            waiting = waiters.len(),
+            "updated in-flight block registry"
+        );
         (to_fetch, waiters)
     }
 
@@ -319,6 +326,7 @@ where
             }
         };
         if should_mark {
+            trace!("marking cache dirty");
             write_dirty_flag(&self.cache, true).await?;
         }
         Ok(())
@@ -357,6 +365,8 @@ where
             return Ok(());
         }
 
+        trace!(force, "flushing cache data and metadata");
+
         self.cache.flush().await?;
         write_dirty_flag(&self.cache, false).await?;
         self.cache.flush().await?;
@@ -364,12 +374,17 @@ where
         let mut guard = self.state.lock();
         guard.dirty = false;
         guard.batches_since_flush = 0;
+        trace!("cache flush completed");
         Ok(())
     }
 
     async fn fetch_and_populate(&self, ranges: &[(u64, u64)]) -> GibbloxResult<()> {
         let bs = self.block_size_usize();
         for (start_block, len_blocks) in ranges {
+            trace!(
+                start_block,
+                len_blocks, "fetching missing range from inner source"
+            );
             let expected_bytes = (*len_blocks as usize).checked_mul(bs).ok_or_else(|| {
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "range too large")
             })?;
@@ -392,6 +407,13 @@ where
                 let (bitmap_offset, bitmap_chunk, should_flush) =
                     self.mark_valid_and_collect_bitmap_write(*start_block, *len_blocks)?;
                 self.cache.write_at(bitmap_offset, &bitmap_chunk).await?;
+                trace!(
+                    start_block,
+                    len_blocks,
+                    bytes = expected_bytes,
+                    should_flush,
+                    "cache range populated"
+                );
                 if should_flush {
                     self.flush_locked_if_needed(false).await?;
                 }
@@ -424,6 +446,10 @@ where
         Ok(self.total_blocks)
     }
 
+    fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+        write_cached_identity(&self.inner, out)
+    }
+
     async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
         let blocks = self.blocks_from_len(buf.len())?;
         if blocks == 0 {
@@ -433,8 +459,11 @@ where
 
         let missing = self.fill_from_cache(lba, blocks, buf).await?;
         if missing.is_empty() {
+            trace!(lba, blocks, "cache hit");
             return Ok(buf.len());
         }
+
+        trace!(lba, blocks, missing = missing.len(), "cache miss");
 
         let (to_fetch, waiters) = self.mark_in_flight(&missing);
         if !to_fetch.is_empty() {
@@ -455,8 +484,29 @@ where
     }
 }
 
-/// Backward-compatible alias while callers migrate.
-pub type CachedSource<S, C> = CachedBlockReader<S, C>;
+fn write_cached_identity<S: BlockReader + ?Sized>(
+    inner: &S,
+    out: &mut dyn fmt::Write,
+) -> fmt::Result {
+    out.write_str("cached:(")?;
+    inner.write_identity(out)?;
+    out.write_str(")")
+}
+
+pub fn cached_reader_identity_string<S: BlockReader + ?Sized>(inner: &S) -> String {
+    let mut identity = String::new();
+    let _ = write_cached_identity(inner, &mut identity);
+    identity
+}
+
+pub fn derive_cached_reader_identity_id<S: BlockReader + ?Sized>(
+    inner: &S,
+    total_blocks: u64,
+) -> u32 {
+    derive_block_identity_id(inner.block_size(), total_blocks, |writer| {
+        write_cached_identity(inner, writer)
+    })
+}
 
 struct CacheLayout {
     block_size: u32,
@@ -590,16 +640,24 @@ async fn open_or_initialize_cache<C: CacheOps>(
     layout: &CacheLayout,
     identity: &str,
 ) -> GibbloxResult<OpenedCache> {
+    trace!(
+        block_size = layout.block_size,
+        total_blocks = layout.total_blocks,
+        "opening cache state"
+    );
     let mut prefix = [0u8; CACHE_PREFIX_LEN];
     let have_prefix = read_exact_at(cache, 0, &mut prefix).await?;
     if !have_prefix {
+        trace!("cache prefix missing; initializing cache file");
         return initialize_cache(cache, layout, identity).await;
     }
 
     let Some(header) = CacheHeader::decode_prefix(&prefix) else {
+        trace!("cache header invalid; reinitializing cache file");
         return initialize_cache(cache, layout, identity).await;
     };
     if header.block_size != layout.block_size || header.total_blocks != layout.total_blocks {
+        trace!("cache geometry mismatch; reinitializing cache file");
         return initialize_cache(cache, layout, identity).await;
     }
 
@@ -607,9 +665,11 @@ async fn open_or_initialize_cache<C: CacheOps>(
     let mapping = CacheMapping::new(layout, identity_len)?;
     let mut stored_identity = vec![0u8; identity_len];
     if !read_exact_at(cache, CACHE_PREFIX_LEN as u64, &mut stored_identity).await? {
+        trace!("cache identity bytes missing; reinitializing cache file");
         return initialize_cache(cache, layout, identity).await;
     }
     if stored_identity.as_slice() != identity.as_bytes() {
+        trace!("cache identity mismatch; reinitializing cache file");
         return initialize_cache(cache, layout, identity).await;
     }
 
@@ -617,15 +677,19 @@ async fn open_or_initialize_cache<C: CacheOps>(
 
     let mut valid = vec![0u8; layout.bitmap_len_usize()];
     if !read_exact_at(cache, mapping.bitmap_offset, &mut valid).await? {
+        trace!("cache bitmap missing; reinitializing cache file");
         return initialize_cache(cache, layout, identity).await;
     }
 
     if header.dirty {
+        trace!("cache opened dirty; clearing bitmap");
         valid.fill(0);
         write_zero_region(cache, mapping.bitmap_offset, layout.bitmap_bytes).await?;
         write_dirty_flag(cache, false).await?;
         cache.flush().await?;
     }
+
+    trace!("cache state opened successfully");
 
     Ok(OpenedCache { mapping, valid })
 }
@@ -655,6 +719,13 @@ async fn initialize_cache<C: CacheOps>(
         .await?;
     write_zero_region(cache, mapping.bitmap_offset, layout.bitmap_bytes).await?;
     cache.flush().await?;
+
+    trace!(
+        block_size = layout.block_size,
+        total_blocks = layout.total_blocks,
+        identity_len,
+        "cache file initialized"
+    );
 
     Ok(OpenedCache {
         mapping,
@@ -815,9 +886,6 @@ impl CacheOps for MemoryCacheOps {
         Ok(())
     }
 }
-
-/// Backward-compatible alias while callers migrate.
-pub type MemoryCacheStore = MemoryCacheOps;
 
 /// Minimal spin-based lock suitable for short critical sections in `no_std + alloc`.
 pub struct SpinLock<T> {

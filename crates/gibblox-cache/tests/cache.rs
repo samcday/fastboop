@@ -7,6 +7,7 @@ use tokio::sync::Notify;
 struct FakeReader {
     block_size: u32,
     total_blocks: u64,
+    identity: &'static str,
     data: Vec<u8>,
     reads: Arc<AtomicUsize>,
     gate: Option<Arc<Notify>>,
@@ -14,6 +15,15 @@ struct FakeReader {
 
 impl FakeReader {
     fn new(block_size: u32, total_blocks: u64, gate: Option<Arc<Notify>>) -> Self {
+        Self::new_with_identity("fake://disk/default", block_size, total_blocks, gate)
+    }
+
+    fn new_with_identity(
+        identity: &'static str,
+        block_size: u32,
+        total_blocks: u64,
+        gate: Option<Arc<Notify>>,
+    ) -> Self {
         let mut data = Vec::new();
         let total_bytes = (block_size as usize) * (total_blocks as usize);
         for i in 0..total_bytes {
@@ -22,6 +32,7 @@ impl FakeReader {
         Self {
             block_size,
             total_blocks,
+            identity,
             data,
             reads: Arc::new(AtomicUsize::new(0)),
             gate,
@@ -41,6 +52,14 @@ impl BlockReader for FakeReader {
 
     async fn total_blocks(&self) -> GibbloxResult<u64> {
         Ok(self.total_blocks)
+    }
+
+    fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        write!(
+            out,
+            "{}:{}:{}",
+            self.identity, self.block_size, self.total_blocks
+        )
     }
 
     async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
@@ -75,7 +94,7 @@ async fn cache_hit_after_miss() {
     let reader = FakeReader::new(512, 16, None);
     let reads = reader.read_counter();
     let cache = MemoryCacheOps::new();
-    let cached = CachedBlockReader::new(reader, cache, "fake://disk/a")
+    let cached = CachedBlockReader::new(reader, cache)
         .await
         .expect("cached source");
 
@@ -98,7 +117,7 @@ async fn cache_inflight_dedupes_reads() {
     let reads = reader.read_counter();
     let cache = MemoryCacheOps::new();
     let cached = Arc::new(
-        CachedBlockReader::new(reader, cache, "fake://disk/b")
+        CachedBlockReader::new(reader, cache)
             .await
             .expect("cached source"),
     );
@@ -129,7 +148,7 @@ async fn cache_persists_across_instances_after_flush() {
 
     let reader_a = FakeReader::new(512, 4, None);
     let reads_a = reader_a.read_counter();
-    let cached_a = CachedBlockReader::new(reader_a, Arc::clone(&cache), "fake://disk/persist")
+    let cached_a = CachedBlockReader::new(reader_a, Arc::clone(&cache))
         .await
         .expect("cached source A");
 
@@ -141,7 +160,7 @@ async fn cache_persists_across_instances_after_flush() {
 
     let reader_b = FakeReader::new(512, 4, None);
     let reads_b = reader_b.read_counter();
-    let cached_b = CachedBlockReader::new(reader_b, Arc::clone(&cache), "fake://disk/persist")
+    let cached_b = CachedBlockReader::new(reader_b, Arc::clone(&cache))
         .await
         .expect("cached source B");
 
@@ -157,7 +176,7 @@ async fn dirty_on_open_clears_bitmap() {
 
     let reader_a = FakeReader::new(512, 4, None);
     let reads_a = reader_a.read_counter();
-    let cached_a = CachedBlockReader::new(reader_a, Arc::clone(&cache), "fake://disk/dirty")
+    let cached_a = CachedBlockReader::new(reader_a, Arc::clone(&cache))
         .await
         .expect("cached source A");
 
@@ -168,7 +187,7 @@ async fn dirty_on_open_clears_bitmap() {
 
     let reader_b = FakeReader::new(512, 4, None);
     let reads_b = reader_b.read_counter();
-    let cached_b = CachedBlockReader::new(reader_b, Arc::clone(&cache), "fake://disk/dirty")
+    let cached_b = CachedBlockReader::new(reader_b, Arc::clone(&cache))
         .await
         .expect("cached source B");
 
@@ -182,17 +201,17 @@ async fn dirty_on_open_clears_bitmap() {
 async fn identity_mismatch_resets_cache_file() {
     let cache = Arc::new(MemoryCacheOps::new());
 
-    let reader_a = FakeReader::new(512, 4, None);
-    let cached_a = CachedBlockReader::new(reader_a, Arc::clone(&cache), "fake://disk/id-a")
+    let reader_a = FakeReader::new_with_identity("fake://disk/id-a", 512, 4, None);
+    let cached_a = CachedBlockReader::new(reader_a, Arc::clone(&cache))
         .await
         .expect("cached source A");
     let mut first = vec![0u8; 512];
     cached_a.read_blocks(1, &mut first).await.expect("read A");
     cached_a.flush_cache().await.expect("flush cache A");
 
-    let reader_b = FakeReader::new(512, 4, None);
+    let reader_b = FakeReader::new_with_identity("fake://disk/id-b", 512, 4, None);
     let reads_b = reader_b.read_counter();
-    let cached_b = CachedBlockReader::new(reader_b, Arc::clone(&cache), "fake://disk/id-b")
+    let cached_b = CachedBlockReader::new(reader_b, Arc::clone(&cache))
         .await
         .expect("cached source B");
 

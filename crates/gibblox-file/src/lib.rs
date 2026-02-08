@@ -3,7 +3,7 @@ use std::fs::File;
 use std::os::unix::fs::FileExt;
 #[cfg(target_family = "windows")]
 use std::os::windows::fs::FileExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
@@ -14,6 +14,7 @@ pub struct StdFileBlockReader {
     file: File,
     size_bytes: u64,
     block_size: u32,
+    identity_path: String,
 }
 
 impl StdFileBlockReader {
@@ -25,11 +26,21 @@ impl StdFileBlockReader {
             ));
         }
         debug!(path = %path.as_ref().display(), block_size, "opening file-backed source");
+        let path = path.as_ref();
         let file = File::open(path).map_err(map_io_err("open file"))?;
-        Self::from_file(file, block_size)
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        Self::from_file_with_identity(file, block_size, canonical.to_string_lossy().into_owned())
     }
 
     pub fn from_file(file: File, block_size: u32) -> GibbloxResult<Self> {
+        Self::from_file_with_identity(file, block_size, String::from("<unknown>"))
+    }
+
+    pub fn from_file_with_identity(
+        file: File,
+        block_size: u32,
+        identity_path: String,
+    ) -> GibbloxResult<Self> {
         if block_size == 0 || !block_size.is_power_of_two() {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
@@ -42,6 +53,7 @@ impl StdFileBlockReader {
             file,
             size_bytes,
             block_size,
+            identity_path,
         })
     }
 
@@ -58,6 +70,10 @@ impl BlockReader for StdFileBlockReader {
 
     async fn total_blocks(&self) -> GibbloxResult<u64> {
         Ok(self.size_bytes.div_ceil(self.block_size as u64))
+    }
+
+    fn write_identity(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        write!(out, "file:{}", self.identity_path)
     }
 
     async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {

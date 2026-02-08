@@ -107,6 +107,10 @@ impl BlockReader for HttpBlockReader {
         Ok(self.size_bytes / self.block_size as u64)
     }
 
+    fn write_identity(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        write!(out, "http:{}", self.url.as_str())
+    }
+
     async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
         if buf.is_empty() {
             return Ok(0);

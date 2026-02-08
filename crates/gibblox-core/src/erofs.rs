@@ -1,6 +1,12 @@
 extern crate alloc;
 
-use alloc::{boxed::Box, string::ToString, sync::Arc, vec};
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    string::{String, ToString},
+    sync::Arc,
+    vec,
+};
 use async_trait::async_trait;
 use tracing::{info, trace};
 
@@ -10,6 +16,8 @@ use crate::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult};
 pub struct EroBlockReader {
     block_size: u32,
     file_size_bytes: u64,
+    file_path: String,
+    source_identity: String,
     inode: erofs_rs::types::Inode,
     fs: erofs_rs::EroFS<CoreBlockAdapter>,
 }
@@ -38,6 +46,7 @@ impl EroBlockReader {
         }
 
         let total_blocks = source.total_blocks().await?;
+        let source_identity = crate::block_identity_string(&source);
         let image_size_bytes = total_blocks
             .checked_mul(source_block_size as u64)
             .ok_or_else(|| {
@@ -71,6 +80,8 @@ impl EroBlockReader {
         Ok(Self {
             block_size,
             file_size_bytes,
+            file_path: path.to_owned(),
+            source_identity,
             inode,
             fs,
         })
@@ -89,6 +100,14 @@ impl BlockReader for EroBlockReader {
 
     async fn total_blocks(&self) -> GibbloxResult<u64> {
         Ok(self.file_size_bytes.div_ceil(self.block_size as u64))
+    }
+
+    fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        write!(
+            out,
+            "erofs-file:({}):{}",
+            self.source_identity, self.file_path
+        )
     }
 
     async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {

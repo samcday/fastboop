@@ -16,6 +16,7 @@ const VD_VERSION: u8 = 1;
 pub struct IsoFileBlockReader {
     block_size: u32,
     file_size_bytes: u64,
+    file_path: String,
     file_offset_bytes: u64,
     source_size_bytes: u64,
     source: Arc<dyn BlockReader>,
@@ -93,6 +94,7 @@ impl IsoFileBlockReader {
             ));
         }
 
+        let identity_path = normalize_identity_path(path)?;
         let target = resolve_path(&byte_reader, logical_block_size, &root, path).await?;
         if target.is_dir() {
             return Err(GibbloxError::with_message(
@@ -129,6 +131,7 @@ impl IsoFileBlockReader {
         Ok(Self {
             block_size,
             file_size_bytes,
+            file_path: identity_path,
             file_offset_bytes,
             source_size_bytes,
             source,
@@ -149,6 +152,12 @@ impl BlockReader for IsoFileBlockReader {
 
     async fn total_blocks(&self) -> GibbloxResult<u64> {
         Ok(self.file_size_bytes.div_ceil(self.block_size as u64))
+    }
+
+    fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        out.write_str("iso-file:(")?;
+        self.source.write_identity(out)?;
+        write!(out, "):{}", self.file_path)
     }
 
     async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {
@@ -391,6 +400,11 @@ fn split_path(path: &str) -> GibbloxResult<Vec<String>> {
     Ok(out)
 }
 
+fn normalize_identity_path(path: &str) -> GibbloxResult<String> {
+    let parts = split_path(path)?;
+    Ok(parts.join("/"))
+}
+
 fn parse_dir_record(raw: &[u8]) -> GibbloxResult<DirRecord> {
     if raw.len() < 34 {
         return Err(GibbloxError::with_message(
@@ -500,6 +514,10 @@ mod tests {
 
         async fn total_blocks(&self) -> GibbloxResult<u64> {
             Ok(self.data.len().div_ceil(self.block_size as usize) as u64)
+        }
+
+        fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+            write!(out, "fake-iso:{}:{}", self.block_size, self.data.len())
         }
 
         async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> GibbloxResult<usize> {

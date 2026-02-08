@@ -1,5 +1,6 @@
 use std::env;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use futures::executor::block_on;
 use gibblox_cache::CachedBlockReader;
@@ -30,10 +31,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let source_block_size = 4096u32;
     info!(image_path, file_path, "starting erofs_cat");
     let source = StdFileBlockReader::open(&image_path, source_block_size)?;
-    let identity = format!("file:{image_path}");
-    let cache = StdCacheOps::open_default(&identity)?;
-    let cached_source = block_on(CachedBlockReader::new(source, cache, identity))?;
-    let reader = block_on(EroBlockReader::new(cached_source, &file_path, 4096))?;
+    let cache = block_on(StdCacheOps::open_default_for_reader(&source))?;
+    let cached_source = Arc::new(block_on(CachedBlockReader::new(source, cache))?);
+    let reader = block_on(EroBlockReader::new(
+        Arc::clone(&cached_source),
+        &file_path,
+        4096,
+    ))?;
     let total_blocks = block_on(reader.total_blocks())?;
     info!(
         total_blocks,
@@ -55,6 +59,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         remaining -= write_len as u64;
     }
 
+    block_on(cached_source.flush_cache())?;
     info!("finished erofs_cat output");
     Ok(())
 }
