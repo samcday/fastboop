@@ -30,7 +30,10 @@ impl BlockSource for GibbloxBlockSource {
     }
 
     async fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> BlockSourceResult<usize> {
-        self.reader.read_blocks(lba, buf, ReadContext::FOREGROUND).await.map_err(map_error)
+        self.reader
+            .read_blocks(lba, buf, ReadContext::FOREGROUND)
+            .await
+            .map_err(map_error)
     }
 
     async fn write_blocks(&self, _lba: u64, _buf: &[u8]) -> BlockSourceResult<usize> {
