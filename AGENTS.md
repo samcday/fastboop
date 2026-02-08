@@ -1,36 +1,31 @@
-# fastboop — session ground rules
+# fastboop agent guide
 
-This file keeps Codex sessions fast and predictable. Read it before coding.
+fastboop is a non-mutating live-boot pipeline for phones and pocket computers that expose vendor USB boot mode (v0: fastboot RAM boot). It does not flash and it does not manage install policy. fastboop identifies the device with DevPro rules, builds a stage0 payload from upstream rootfs artifacts, boots that payload ephemerally, then hands runtime storage/export plumbing to smoo so the device can continue into full userspace. gibblox is the rootfs/artifact access layer that lets this happen without repacking distro images.
 
-## Roles
-- **Developer**: the human user setting direction, approving designs, making commits.
-- **ChatGPT**: refines prompts/designs, spots risks; keeps code snippets small.
-- **Codex**: writes code/diffs, keeps builds green, follows this file.
+## Session start (required)
+- Read `AGENTS.md`.
+- Read `HACKING.md`.
+- Then read only the docs relevant to the task from the index below.
 
-## Kickoff checklist (each session)
-- Use the document index below and only read the docs needed for the task at hand.
-- Confirm workspace layout (`crates/*`) and no-std expectations for core logic crates.
-- Use `rustfmt --edition 2024`; prefer async-first; avoid blocking unless justified.
-- Target stable Rust (MSRV 1.88) and keep code `cargo build --workspace --locked` clean.
-- Keep logic crates no_std + `alloc`; isolate std/platform bindings in leaf crates (CLI/web/host tooling).
+## Read-on-demand index
+- `docs/DEVICE_PROFILES.md`: DevPro schema, matching/probing semantics, boot constraints.
+- `docs/STAGE0.md`: stage0 contract, PID1 flow, handoff behavior.
+- `docs/DIOXUS.md`: Dioxus 0.7 usage in `packages/*`.
+- `smoo/AGENTS.md`: required when touching `smoo/` or behavior coupled to smoo protocol/runtime invariants.
+- `gibblox/AGENTS.md`: required when touching `gibblox/` or any `gibblox-*` crate integration.
+- Cross-domain changes must include all relevant docs before editing.
 
-## Document index (read-on-demand)
-- `docs/DEVICE_PROFILES.md`: read when touching DevPro schema, matching/probing rules, or fastboot boot constraints.
-- `docs/STAGE0.md`: read when touching `stage0/`, `crates/fastboop-stage0-generator/`, or CLI stage0/boot flow.
-- `docs/DIOXUS.md`: read when touching `packages/web`, `packages/desktop`, `packages/mobile`, or `packages/ui` Dioxus code.
-- `smoo/AGENTS.md`: read when reasoning with any types that come from `smoo-*` crates, or when touching the `smoo/` subtree.
-- `gibblox/AGENTS.md`: read when reasoning with any types that come from `gibblox-*` crates, or when touching the `gibblox/` subtree.
-- If a change crosses areas (for example stage0 + protocol), read all relevant docs before editing.
+## Minimal working rules
+- Keep diffs focused and reviewable.
+- Preserve non-mutating behavior (no flash/erase/format/slot toggles/unlock paths).
+- Keep platform-agnostic logic in core crates and platform bindings in leaf crates.
+- Prefer async-first code; justify blocking paths.
+- Use `tracing` for new operationally relevant behavior.
 
-## Architectural defaults
-- Core traits/types live in `fastboop-core`; they must be allocator-aware and cancellation-safe.
-- Device/profile/state-machine logic stays platform-agnostic; transports/adapters (fastboot, WebUSB, desktop libusb) live in std/wasm crates.
-- Stage0 assembly lives in std crates; fastboop-stage0 embeds `smoo-gadget-app` directly, while protocol/types must stay aligned with smoo.
-- Logging via `tracing`; tests should mock transports and preserve `(export_id, request_id)` discipline from smoo.
+## Validation
+- For non-trivial code changes, run the standard checks listed in `HACKING.md` and report what was run.
+- If a required check is skipped or fails, state it explicitly and why.
 
-## Output expectations
-- Prefer small, reviewable diffs; add brief rationale in the PR/commit message body when applicable.
-- Unless explicitly impossible, do not end a turn without running and passing `cargo fmt`, `cargo check --workspace`, `cargo clippy --workspace`, and `cargo test --workspace` (or explaining why it failed/was skipped).
-- Desktop + web builds must pass: `dx build -p fastboop-desktop` and `dx build -p fastboop-web`.
-- Avoid introducing new tools/dependencies without a short justification and a confirmation from the Developer.
-- If instructions in this file conflict with user directions, ask for clarification before proceeding.
+## Priority
+- User direction wins.
+- If this file conflicts with user direction, follow the user and call out the deviation.
