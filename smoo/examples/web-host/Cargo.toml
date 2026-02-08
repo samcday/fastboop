@@ -1,0 +1,55 @@
+[package]
+name = "web-host"
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+license = "GPL-3.0-only"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+smoo-host-core = { path = "../../crates/smoo-host-core" }
+smoo-host-webusb = { path = "../../crates/smoo-host-webusb" }
+smoo-host-blocksource-http = { path = "../../crates/smoo-host-blocksource-http", default-features = false, features = ["wasm-client"] }
+wasm-bindgen = "0.2.95"
+wasm-bindgen-futures = "0.4.45"
+web-sys = { version = "0.3.72", features = [
+    "Window",
+    "Navigator",
+    "Performance",
+    "PerformanceTiming",
+    "Usb",
+    "UsbConfiguration",
+    "UsbAlternateInterface",
+    "UsbInterface",
+    "UsbEndpoint",
+    "UsbDevice",
+    "UsbInTransferResult",
+    "UsbOutTransferResult",
+    "UsbControlTransferParameters",
+    "UsbRequestType",
+    "UsbRecipient",
+    "UsbTransferStatus",
+    "console",
+] }
+js-sys = "0.3.72"
+console_error_panic_hook = "0.1.7"
+url = "2.5.4"
+tracing = { version = "0.1.41", features = ["release_max_level_debug"] }
+tracing-wasm = "0.2.1"
+tracing-subscriber = { version = "0.3.18", default-features = false, features = [
+    "ansi",
+    "fmt",
+    "registry",
+    "std",
+] }
+futures-util = "0.3.31"
+
+[package.metadata.wasm-pack.profile.dev]
+wasm-opt = false
+source-map = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O"]
+source-map = true

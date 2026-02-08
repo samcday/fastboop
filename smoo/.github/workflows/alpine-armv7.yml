@@ -1,0 +1,77 @@
+name: Alpine (armv7)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  alpine-armv7:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Using fork (aarch64 branch from bgilbert/setup-alpine) until jirutka/setup-alpine#11 is resolved
+      - uses: samcday/setup-alpine@main
+        id: alpine
+        with:
+          arch: armv7
+          branch: edge
+          packages: alpine-sdk
+
+      - name: configure abuild key + deps
+        run: |
+          abuild-keygen -a -n
+          cp ~/.abuild/*.pub /etc/apk/keys/
+          abuild -F deps
+        shell: alpine.sh --root {0}
+
+      - name: set git revision for prerelease builds
+        if: github.event_name != 'release'
+        run: |
+          sed -i -e "s/^_gitrev=main$/_gitrev=$GITHUB_SHA/" APKBUILD
+        shell: alpine.sh --root {0}
+
+      - name: release prep
+        if: github.event_name == 'release'
+        run: |
+          sed -i -e 's/^\(pkgver=.*\)_git$/\1/' APKBUILD
+          sed -i -e '/^_gitrev=/d' -e 's/_gitrev/pkgver/g' APKBUILD
+        shell: alpine.sh --root {0}
+
+      - name: build packages
+        run: |
+          export PACKAGER_PRIVKEY=$HOME/.abuild/key.rsa
+          abuild -F checksum
+          abuild -F -P /packages
+          mv APKBUILD /packages
+          chmod -R 777 /packages
+          for f in /packages/smoo/armv7/*.apk; do
+            mv "$f" "${f%.apk}-armv7.apk"
+          done
+        shell: alpine.sh --root {0}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: APKBUILD-armv7
+          path: ${{ steps.alpine.outputs.root-path }}/packages/APKBUILD
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-armv7
+          path: ${{ steps.alpine.outputs.root-path }}/packages/smoo/armv7/*.apk
+
+      - name: upload .apk artifacts to release
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'release'
+        with:
+          name: ${{ github.event.release.name }}
+          files: |
+            ${{ steps.alpine.outputs.root-path }}/packages/smoo/armv7/*.apk

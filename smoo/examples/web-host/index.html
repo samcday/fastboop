@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>smoo web host demo</title>
+  <style>
+    :root {
+      --bg: #070b11;
+      --panel: #0f1624;
+      --muted: #7f8ca5;
+      --border: #1c2434;
+      --accent: #56f1c5;
+      --accent-2: #ffb347;
+      --warning: #f05d6d;
+      --text: #e6ecf5;
+      font-family: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(120% 120% at 20% 20%, #10213a 0%, rgba(16, 33, 58, 0) 40%), radial-gradient(90% 80% at 80% 20%, #102c24 0%, rgba(16, 44, 36, 0) 45%), var(--bg);
+      color: var(--text);
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 32px 18px 54px;
+      background: transparent;
+    }
+    .chrome {
+      max-width: 1040px;
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: flex-start;
+    }
+    .eyebrow {
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--accent);
+      font-size: 0.8rem;
+      margin: 0 0 6px;
+    }
+    h1 {
+      font-size: 2.1rem;
+      letter-spacing: -0.01em;
+      margin: 0 0 6px;
+    }
+    .lede {
+      margin: 0;
+      color: var(--muted);
+      max-width: 720px;
+      line-height: 1.6;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px 18px 14px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+    }
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 6px;
+      font-size: 0.95rem;
+    }
+    input[type="text"], select {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text);
+      outline: none;
+      font-size: 1rem;
+      transition: border-color 180ms ease, box-shadow 180ms ease;
+    }
+    input[type="text"]:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(86, 241, 197, 0.18);
+    }
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    button {
+      padding: 11px 16px;
+      border: none;
+      border-radius: 12px;
+      font-weight: 700;
+      background: linear-gradient(120deg, var(--accent), var(--accent-2));
+      color: #0b0f18;
+      cursor: pointer;
+      box-shadow: 0 10px 24px rgba(86, 241, 197, 0.25);
+      transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+    }
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 28px rgba(86, 241, 197, 0.35);
+    }
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      box-shadow: none;
+      transform: none;
+    }
+    .status {
+      padding: 8px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.02);
+      min-width: 100px;
+      text-align: center;
+    }
+    .stats {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+    .stat {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+    .stat .label {
+      font-size: 0.95rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .stat .value {
+      font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+      font-size: 1.3rem;
+      font-weight: 700;
+    }
+    .stat .hint {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .console {
+      background: #090d14;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+    .console__header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+    .console__header button {
+      padding: 7px 12px;
+      font-size: 0.9rem;
+      box-shadow: none;
+    }
+    .console__body {
+      padding: 14px;
+      max-height: 320px;
+      overflow: auto;
+      font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.01), rgba(255, 255, 255, 0));
+    }
+    .log-line {
+      white-space: pre-wrap;
+      margin: 0;
+      padding: 2px 0;
+      border-left: 3px solid transparent;
+    }
+    .log-line:nth-child(odd) {
+      background: rgba(255, 255, 255, 0.01);
+    }
+    .level-control {
+      min-width: 160px;
+    }
+    @media (max-width: 720px) {
+      .hero {
+        flex-direction: column;
+      }
+      .console__body {
+        max-height: 240px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="chrome">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">smoo web host</p>
+        <h1>wire up a gadget over WebUSB</h1>
+        <p class="lede">Pair with your smoo gadget, stream tracing logs in real-time, and watch the byte counters climb as traffic flows across the wire.</p>
+      </div>
+      <div class="level-control">
+        <label for="log-level">Log level</label>
+        <select id="log-level">
+          <option value="trace">trace</option>
+          <option value="debug">debug</option>
+          <option value="info" selected>info</option>
+          <option value="warn">warn</option>
+          <option value="error">error</option>
+        </select>
+      </div>
+    </header>
+
+    <div class="panel">
+      <label for="backing">HTTP backing URL</label>
+      <input id="backing" type="text" value="https://example.com/disk.img" />
+      <div class="actions">
+        <button id="connect">Connect</button>
+        <div class="status" id="status">idle</div>
+      </div>
+      <div class="stats">
+        <div class="stat">
+          <div class="label">UP</div>
+          <div class="value" id="up-bytes">0 B</div>
+          <div class="hint">host → gadget</div>
+        </div>
+        <div class="stat">
+          <div class="label">DOWN</div>
+          <div class="value" id="down-bytes">0 B</div>
+          <div class="hint">gadget → host</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="console">
+      <div class="console__header">
+        <span>tracing stream</span>
+        <button id="clear-log" type="button">Clear</button>
+      </div>
+      <div class="console__body" id="log"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    const logEl = document.getElementById("log");
+    const statusEl = document.getElementById("status");
+    const connectBtn = document.getElementById("connect");
+    const backingInput = document.getElementById("backing");
+    const levelSelect = document.getElementById("log-level");
+    const upEl = document.getElementById("up-bytes");
+    const downEl = document.getElementById("down-bytes");
+    const clearBtn = document.getElementById("clear-log");
+    const initialConfig = readHashConfig();
+
+    let wasmModule;
+    let countersRaf = null;
+
+    function appendLog(line) {
+      const row = document.createElement("div");
+      row.className = "log-line";
+      row.textContent = line.trimEnd();
+      logEl.appendChild(row);
+      if (logEl.children.length > 400) {
+        logEl.removeChild(logEl.firstChild);
+      }
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStatus(text, tone) {
+      statusEl.textContent = text;
+      statusEl.style.color = tone === "warn" ? "var(--warning)" : "var(--text)";
+    }
+
+    function toSafeNumber(value) {
+      if (typeof value === "bigint") {
+        if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+          return Number.MAX_SAFE_INTEGER;
+        }
+        return Number(value);
+      }
+      return value;
+    }
+
+    function formatBytes(bytes) {
+      bytes = toSafeNumber(bytes);
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let value = bytes;
+      let unit = units.shift();
+      while (value >= 1024 && units.length) {
+        value /= 1024;
+        unit = units.shift();
+      }
+      return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${unit}`;
+    }
+
+    function stopCounters() {
+      if (countersRaf !== null) {
+        cancelAnimationFrame(countersRaf);
+        countersRaf = null;
+      }
+    }
+
+    function startCounters(mod) {
+      stopCounters();
+      let lastLogged = { up: 0, down: 0 };
+      const tick = () => {
+        try {
+          const snap = mod.counters_snapshot();
+          if (snap) {
+            const up = toSafeNumber(snap.bytes_up());
+            const down = toSafeNumber(snap.bytes_down());
+            upEl.textContent = formatBytes(up);
+            downEl.textContent = formatBytes(down);
+            if (up !== lastLogged.up || down !== lastLogged.down) {
+              console.debug("[smoo] counters", { up, down });
+              lastLogged = { up, down };
+            }
+          } else {
+            console.debug("[smoo] counters unavailable");
+          }
+        } catch (err) {
+          console.warn("counter read failed", err);
+        }
+        countersRaf = requestAnimationFrame(tick);
+      };
+      countersRaf = requestAnimationFrame(tick);
+    }
+
+    function readHashConfig() {
+      const raw = window.location.hash.slice(1);
+      if (!raw) return {};
+      const params = new URLSearchParams(raw);
+      const cfg = {};
+      const backing = params.get("backing");
+      if (backing) {
+        cfg.backing = backing;
+      }
+      const level = params.get("level");
+      if (level) {
+        cfg.level = level;
+      }
+      return cfg;
+    }
+
+    function applyConfig(config) {
+      if (config.backing) {
+        backingInput.value = config.backing;
+      }
+      if (config.level && levelSelect.querySelector(`option[value="${config.level}"]`)) {
+        levelSelect.value = config.level;
+      }
+    }
+
+    function syncHash() {
+      const params = new URLSearchParams();
+      const backing = backingInput.value.trim();
+      if (backing) {
+        params.set("backing", backing);
+      }
+      const level = levelSelect.value;
+      if (level) {
+        params.set("level", level);
+      }
+      const newHash = params.toString();
+      const target = newHash ? `#${newHash}` : "";
+      const nextUrl = `${window.location.pathname}${window.location.search}${target}`;
+      if (nextUrl !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+        history.replaceState(null, "", nextUrl);
+      }
+    }
+
+    applyConfig(initialConfig);
+    if (initialConfig.backing) {
+      appendLog(`config: backing from URL fragment`);
+    }
+    if (initialConfig.level) {
+      appendLog(`config: log level ${initialConfig.level}`);
+    }
+    syncHash();
+
+    async function ensureModule() {
+      if (wasmModule) return wasmModule;
+      const mod = await import("./pkg/web_host.js");
+      await mod.default();
+      wasmModule = mod;
+      wasmModule.set_log_sink((line) => appendLog(line));
+      try {
+        wasmModule.set_log_level(levelSelect.value);
+      } catch (err) {
+        appendLog(`failed to set level: ${err}`);
+      }
+      return wasmModule;
+    }
+
+    levelSelect.addEventListener("change", async () => {
+      try {
+        const mod = await ensureModule();
+        mod.set_log_level(levelSelect.value);
+        appendLog(`log level → ${levelSelect.value}`);
+      } catch (err) {
+        appendLog(`level change failed: ${err}`);
+      }
+    });
+
+    clearBtn.addEventListener("click", () => {
+      logEl.innerHTML = "";
+    });
+
+    backingInput.addEventListener("input", syncHash);
+    levelSelect.addEventListener("change", syncHash);
+
+    connectBtn.addEventListener("click", async () => {
+      if (!("usb" in navigator)) {
+        appendLog("WebUSB not available in this browser.");
+        setStatus("unsupported", "warn");
+        return;
+      }
+      connectBtn.disabled = true;
+      setStatus("requesting device...");
+      try {
+        const mod = await ensureModule();
+        const device = await navigator.usb.requestDevice({
+          filters: [{ classCode: 0xff, subclassCode: 0x53, protocolCode: 0x4d }],
+        });
+        setStatus("connecting...");
+        await mod.start(device, backingInput.value.trim());
+        setStatus("pumping");
+        appendLog("connected; host loop started");
+        startCounters(mod);
+      } catch (err) {
+        console.error(err);
+        appendLog(`error: ${err}`);
+        setStatus("error", "warn");
+        stopCounters();
+      } finally {
+        connectBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

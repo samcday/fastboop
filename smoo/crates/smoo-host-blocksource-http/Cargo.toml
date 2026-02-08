@@ -1,0 +1,40 @@
+[package]
+name = "smoo-host-blocksource-http"
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+license = "GPL-3.0-only"
+
+[features]
+default = ["native-client"]
+native-client = ["reqwest", "tokio"]
+wasm-client = ["wasm-bindgen-futures", "web-sys", "js-sys", "wasm-bindgen", "futures-util"]
+
+[dependencies]
+async-trait = "0.1.89"
+thiserror = "1.0.69"
+http = "1.1.0"
+smoo-host-core = { path = "../smoo-host-core" }
+tracing = "0.1.41"
+url = "2.5.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { version = "0.12.8", default-features = false, features = ["http2", "json", "rustls-tls", "stream"], optional = true }
+tokio = { version = "1.48.0", features = ["rt", "net", "time"], optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2.95", optional = true }
+wasm-bindgen-futures = { version = "0.4.45", optional = true }
+js-sys = { version = "0.3.82", optional = true }
+futures-util = { version = "0.3.31", default-features = false, features = ["std"], optional = true }
+web-sys = { version = "0.3.72", optional = true, features = [
+    "Window",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Headers",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "AbortSignal",
+] }

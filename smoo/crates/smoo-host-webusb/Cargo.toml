@@ -1,0 +1,35 @@
+[package]
+name = "smoo-host-webusb"
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+license = "GPL-3.0-only"
+
+[dependencies]
+async-trait = "0.1.89"
+smoo-host-core = { path = "../smoo-host-core" }
+futures-util = { version = "0.3.31", default-features = false, features = ["std"] }
+tracing = "0.1.41"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.72"
+wasm-bindgen = "0.2.95"
+wasm-bindgen-futures = "0.4.45"
+web-sys = { version = "0.3.72", features = [
+    "Usb",
+    "UsbConfiguration",
+    "UsbDevice",
+    "UsbAlternateInterface",
+    "UsbEndpoint",
+    "UsbInterface",
+    "UsbInTransferResult",
+    "UsbOutTransferResult",
+    "UsbControlTransferParameters",
+    "UsbRequestType",
+    "UsbDirection",
+    "UsbEndpointType",
+    "UsbRecipient",
+    "UsbTransferStatus",
+    "Navigator",
+    "Window",
+] }

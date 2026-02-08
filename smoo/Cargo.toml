@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["apps/*", "crates/*", "examples/*"]
+
+[workspace.package]
+version = "0.0.1"
+rust-version = "1.88"

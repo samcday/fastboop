@@ -1,0 +1,33 @@
+# https://packit.dev/docs/configuration/
+specfile_path: smoo.spec
+files_to_sync:
+  - smoo.spec
+  - .packit.yaml
+upstream_package_name: smoo
+downstream_package_name: smoo
+jobs:
+  # Build PRs
+  - job: copr_build
+    manual_trigger: true
+    trigger: pull_request
+    enable_net: true
+    targets:
+      fedora-all-aarch64:
+        with_opts: [vendor]
+      fedora-all-x86_64:
+        with_opts: [vendor]
+
+  # Build main commits in samcday/smoo-nightly COPR
+  - job: copr_build
+    trigger: commit
+    enable_net: true
+    branch: main
+    owner: samcday
+    project: smoo-nightly
+
+  # Build tagged releases in samcday/smoo COPR
+  - job: copr_build
+    trigger: release
+    enable_net: true
+    owner: samcday
+    project: smoo

@@ -1,0 +1,30 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export CARGO_HOME = $(CURDIR)/debian/cargo_home
+export CARGO_PROFILE_RELEASE_DEBUG=2
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	dh_auto_configure
+
+override_dh_auto_build:
+	# Build the workspace normally
+	cargo build --release --workspace \
+		--bins
+
+override_dh_auto_install:
+	dh_auto_install
+	install -Dm0755 target/release/smoo-gadget-cli \
+		debian/smoo-gadget/usr/bin/smoo-gadget
+	install -Dm0755 target/release/smoo-host-cli \
+		debian/smoo-host/usr/bin/smoo-host
+
+override_dh_installman:
+	help2man -N -n "USB gadget CLI for the smoo inverted mass-storage protocol" \
+		-o debian/smoo-gadget.1 ./target/release/smoo-gadget-cli
+	help2man -N -n "Host CLI for the smoo inverted mass-storage protocol" \
+		-o debian/smoo-host.1 ./target/release/smoo-host-cli
+	dh_installman

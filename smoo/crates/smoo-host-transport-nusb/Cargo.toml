@@ -1,0 +1,12 @@
+[package]
+name = "smoo-host-transport-nusb"
+edition = "2024"
+version.workspace = true
+rust-version.workspace = true
+license = "GPL-3.0-only"
+
+[dependencies]
+async-trait = "0.1.89"
+nusb = { version = "0.2.1", features = ["tokio"] }
+smoo-host-core = { path = "../smoo-host-core" }
+tokio = { version = "1.48.0", features = ["sync"] }

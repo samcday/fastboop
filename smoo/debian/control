@@ -1,0 +1,34 @@
+Source: smoo
+Section: utils
+Priority: optional
+Maintainer: Samuel Day <me@samcday.com>
+Rules-Requires-Root: no
+Build-Depends:
+ debhelper-compat (= 13),
+ help2man,
+ cargo,
+ clang,
+ llvm-dev,
+ rustc,
+Standards-Version: 4.7.2
+Homepage: https://github.com/samcday/smoo
+Vcs-Browser: https://github.com/samcday/smoo
+Vcs-Git: https://github.com/samcday/smoo.git
+
+Package: smoo-gadget
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+Description: USB gadget CLI for the smoo inverted mass-storage protocol
+ smoo-gadget exposes a FunctionFS + ublk-based USB gadget that serves a block
+ device whose data comes from a host system.
+
+Package: smoo-host
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+Description: Host CLI for the smoo inverted mass-storage protocol
+ smoo-host speaks the smoo USB protocol over rusb to drive smoo gadgets from a
+ host system.

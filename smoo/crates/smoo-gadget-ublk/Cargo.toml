@@ -1,0 +1,27 @@
+[package]
+name = "smoo-gadget-ublk"
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+license = "GPL-3.0-only"
+
+[features]
+default = []
+apkbuild = ["io-uring/bindgen"]
+
+[dependencies]
+anyhow = "1.0.100"
+async-channel = "2.5.0"
+io-uring = "0.7.11"
+libc = "0.2.177"
+serde = { version = "1.0.228", features = ["derive"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+[build-dependencies]
+regex = "1.12.2"
+bindgen = "0.72.1"
+anyhow = "1.0.100"
+
+[dev-dependencies]
+tokio = { version = "1.48.0", features = ["rt-multi-thread"] }

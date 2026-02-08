@@ -1,0 +1,9 @@
+[package]
+name = "smoo-proto"
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+license = "MIT"
+
+[dependencies]
+heapless = { version = "0.8.0", default-features = false, features = ["serde"] }
