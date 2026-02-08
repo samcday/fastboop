@@ -3,7 +3,7 @@ use std::{fs::File, os::unix::fs::PermissionsExt, path::Path};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, Local};
 use clap::{Args, Subcommand};
-use erofs_rs::{types::Inode, EroFS, Image};
+use erofs_rs::{EroFS, Image, types::Inode};
 use memmap2::Mmap;
 
 #[derive(Args, Debug)]

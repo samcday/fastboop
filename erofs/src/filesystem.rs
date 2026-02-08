@@ -350,11 +350,11 @@ impl<R: ReadAt> EroFS<R> {
             let guard = self.compressed_cache.lock();
             if let Some(cache) = &*guard
                 && cache.inode_id == inode_id
-                    && cache.logical_start == extent.logical_start
-                    && cache.logical_len == extent.logical_len
-                {
-                    return Ok(Arc::clone(&cache.data));
-                }
+                && cache.logical_start == extent.logical_start
+                && cache.logical_len == extent.logical_len
+            {
+                return Ok(Arc::clone(&cache.data));
+            }
         }
 
         let mut compressed = vec![0u8; extent.physical_len];
