@@ -23,7 +23,10 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
 - Use `tracing` for new operationally relevant behavior.
 
 ## Validation
-- For non-trivial code changes, run the standard checks listed in `HACKING.md` and report what was run.
+- Follow the tiered validation policy in `HACKING.md`.
+- Run path-triggered checks for touched areas during development.
+- Run the full end-of-session gate for substantial changes.
+- `dx build -p fastboop-web` is required when `packages/web` is touched.
 - If a required check is skipped or fails, state it explicitly and why.
 
 ## Priority

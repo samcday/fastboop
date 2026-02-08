@@ -61,7 +61,29 @@ See `docs/DEVICE_PROFILES.md` for schema and semantics.
 - Keep logic crates `no_std + alloc`; isolate platform bindings to leaf crates.
 - Use `tracing` for observability.
 
-Before finishing substantial code changes, run:
+## Validation policy (tiered)
+
+Use cheap checks continuously and reserve broad gates for the end of substantial work.
+
+### Tier 0 (always, cheap)
+
+- `cargo fmt`
+- targeted `cargo check` for touched crate(s)
+
+### Tier 1 (path-triggered during development)
+
+Run checks based on changed paths:
+
+- `packages/web/**` -> `dx build -p fastboop-web` (required)
+- `packages/desktop/**` -> `dx build -p fastboop-desktop`
+- `packages/mobile/**` or `packages/ui/**` -> run relevant package build/check
+- `stage0/**` or `crates/fastboop-stage0-generator/**` -> targeted `cargo check` + relevant tests
+- `cli/**` -> targeted `cargo check` + relevant tests
+- `crates/**` core/schema/transport changes -> targeted checks for affected crates and dependents
+
+### Tier 2 (end-of-session gate for substantial changes)
+
+Run before handing off substantial work:
 
 ```sh
 cargo fmt
@@ -69,7 +91,19 @@ cargo check --workspace
 cargo clippy --workspace
 cargo test --workspace
 dx build -p fastboop-desktop
-dx build -p fastboop-web
 ```
 
-If any step is skipped, explain why.
+Also run `dx build -p fastboop-web` if `packages/web` was touched.
+
+### Environmental failure handling
+
+If a required check fails due to infrastructure/tooling instability (for example context/API errors from `dx`), do this:
+
+1. retry once;
+2. if it fails again with a non-code error signature, stop retrying;
+3. report the check as blocked by environment and call out that verification is still required in a fresh session/CI.
+
+### Reporting
+
+- Report what was run and final pass/fail state.
+- If any required check is skipped or blocked, state it explicitly and why.
