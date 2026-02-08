@@ -1,0 +1,18 @@
+[package]
+name = "gibblox-iso9660"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[features]
+default = []
+std = []
+
+[dependencies]
+async-trait = "0.1.89"
+gibblox-core = { path = "../gibblox-core" }
+tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
+
+[dev-dependencies]
+futures = { version = "0.3.31", default-features = false, features = ["executor"] }

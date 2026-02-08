@@ -1,0 +1,16 @@
+[package]
+name = "gibblox-cache-store-opfs"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+async-trait = "0.1.89"
+gibblox-cache = { path = "../gibblox-cache", default-features = false }
+gibblox-core = { path = "../gibblox-core", default-features = false }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.82"
+wasm-bindgen = "0.2.95"
+wasm-bindgen-futures = "0.4.45"

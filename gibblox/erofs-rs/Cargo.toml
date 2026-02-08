@@ -1,0 +1,31 @@
+[workspace]
+members = ["erofs", "erofs-cli"]
+resolver = "2"
+
+[workspace.package]
+rust-version = "1.88"
+edition = "2024"
+
+[workspace.lints.clippy]
+nursery = { level = "warn", priority = -1 }
+missing_const_for_fn = "allow"
+
+[workspace.dependencies]
+anyhow = "1"
+binrw = { version = "0.15", default-features = false }
+bitflags = "2"
+bytes = { version = "1", default-features = false }
+chrono = { version = "0.4", default-features = false }
+clap = { version = "4", default-features = false }
+memmap2 = { version = "0.9", default-features = false }
+rustix = { version = "1", default-features = false }
+tar = { version = "0.4", default-features = false}
+thiserror = "2"
+uuid = { version = "1", default-features = false }
+
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+opt-level = "z"

@@ -1,0 +1,11 @@
+[package]
+name = "gibblox-file"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+async-trait = "0.1.89"
+gibblox-core = { path = "../gibblox-core", features = ["std"], default-features = false }
+tracing = "0.1.41"

@@ -1,0 +1,24 @@
+[package]
+name = "erofs-cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "erofs-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true, default-features = false, features = [
+    "std",
+    "clock",
+] }
+clap = { workspace = true, default-features = true, features = ["derive"] }
+erofs-rs = { path = "../erofs" }
+memmap2 = { workspace = true, default-features = true }
+tar = { workspace = true, default-features = true }
+uuid = { workspace = true, default-features = true }
