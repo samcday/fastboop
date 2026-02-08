@@ -34,16 +34,39 @@ jobs:
           apt-get -y --no-install-recommends install \
             build-essential \
             ca-certificates \
+            curl \
             devscripts \
             dpkg-dev \
             eatmydata \
             equivs \
             fakeroot \
-            git
+            git \
+            linux-libc-dev \
+            musl-tools
 
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Install Rust toolchain via rustup
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --no-modify-path --profile minimal
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup target add aarch64-unknown-linux-musl
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Set up musl kernel headers
+        run: |
+          arch=$(uname -m)
+          mkdir -p /usr/include/${arch}-linux-musl
+          ln -sf /usr/include/linux /usr/include/${arch}-linux-musl/linux
+          ln -sf /usr/include/asm-generic /usr/include/${arch}-linux-musl/asm-generic
+          if [ -d /usr/include/${arch}-linux-gnu/asm ]; then
+            ln -sf /usr/include/${arch}-linux-gnu/asm /usr/include/${arch}-linux-musl/asm
+          elif [ -d /usr/include/asm ]; then
+            ln -sf /usr/include/asm /usr/include/${arch}-linux-musl/asm
+          fi
 
       - name: Install build-deps
         run: |
