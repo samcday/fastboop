@@ -74,6 +74,9 @@ struct Args {
     /// USB product ID for the gadget (hex).
     #[arg(long, value_name = "HEX", default_value = "0xBEEF", value_parser = parse_hex_u16)]
     product_id: u16,
+    /// USB serial string for gadget descriptors.
+    #[arg(long, value_name = "SERIAL", default_value = "0001")]
+    serial: String,
     /// Number of ublk queues to configure.
     #[arg(long, default_value_t = 1)]
     queue_count: u16,
@@ -583,6 +586,25 @@ fn cmdline_u16(key: &str) -> Option<u16> {
     }
 }
 
+fn cmdline_u16_flexible(key: &str) -> Option<u16> {
+    let raw = cmdline_value(key)?;
+    parse_u16_flexible(&raw).or_else(|| {
+        warn!("pid1: invalid {key} value '{raw}'");
+        None
+    })
+}
+
+fn parse_u16_flexible(input: &str) -> Option<u16> {
+    let trimmed = input.trim();
+    let maybe_hex = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"));
+    if let Some(hex) = maybe_hex {
+        return u16::from_str_radix(hex, 16).ok();
+    }
+    trimmed.parse::<u16>().ok()
+}
+
 fn cmdline_usize(key: &str) -> Option<usize> {
     let raw = cmdline_value(key)?;
     match raw.parse::<usize>() {
@@ -968,6 +990,28 @@ fn spawn_gadget_child(
         child_args.push(OsStr::new(&max_io_bytes.to_string()).to_os_string());
         info!("pid1: using max io bytes {max_io_bytes} from cmdline");
     }
+    if let Some(vendor_id) =
+        cmdline_u16_flexible("smoo.vendor").or_else(|| cmdline_u16_flexible("smoo.vendor_id"))
+    {
+        child_args.push(OsStr::new("--vendor-id").to_os_string());
+        child_args.push(OsStr::new(&format!("0x{vendor_id:04x}")).to_os_string());
+        info!("pid1: using vendor id 0x{vendor_id:04x} from cmdline");
+    }
+    if let Some(product_id) =
+        cmdline_u16_flexible("smoo.product").or_else(|| cmdline_u16_flexible("smoo.product_id"))
+    {
+        child_args.push(OsStr::new("--product-id").to_os_string());
+        child_args.push(OsStr::new(&format!("0x{product_id:04x}")).to_os_string());
+        info!("pid1: using product id 0x{product_id:04x} from cmdline");
+    }
+    if let Some(serial) = cmdline_value("smoo.serial") {
+        let serial = serial.trim();
+        if !serial.is_empty() {
+            child_args.push(OsStr::new("--serial").to_os_string());
+            child_args.push(OsStr::new(serial).to_os_string());
+            info!("pid1: using USB serial from cmdline");
+        }
+    }
     if let Some(ffs_dir) = ffs_dir {
         child_args.push(OsStr::new("--ffs-dir").to_os_string());
         child_args.push(ffs_dir.as_os_str().to_os_string());
@@ -1240,8 +1284,9 @@ fn setup_pid1_configfs(args: &Args) -> Result<GadgetGuard> {
     let (mut custom, handle) = builder.build();
 
     let klass = Class::new(SMOO_CLASS, SMOO_SUBCLASS, SMOO_PROTOCOL);
-    let id = Id::new(args.vendor_id, args.product_id);
-    let strings = Strings::new("smoo", "smoo gadget", "0001");
+    let (vendor_id, product_id, serial) = gadget_usb_identity(args);
+    let id = Id::new(vendor_id, product_id);
+    let strings = Strings::new("smoo", "smoo gadget", serial.as_str());
     let mut config = Config::new("config").with_function(handle);
 
     if cmdline_bool("smoo.acm") {
@@ -1259,6 +1304,20 @@ fn setup_pid1_configfs(args: &Args) -> Result<GadgetGuard> {
         registration: reg,
         ffs_dir,
     })
+}
+
+fn gadget_usb_identity(args: &Args) -> (u16, u16, String) {
+    let vendor_id = cmdline_u16_flexible("smoo.vendor")
+        .or_else(|| cmdline_u16_flexible("smoo.vendor_id"))
+        .unwrap_or(args.vendor_id);
+    let product_id = cmdline_u16_flexible("smoo.product")
+        .or_else(|| cmdline_u16_flexible("smoo.product_id"))
+        .unwrap_or(args.product_id);
+    let serial = cmdline_value("smoo.serial")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| args.serial.clone());
+    (vendor_id, product_id, serial)
 }
 
 fn configfs_builder() -> CustomBuilder {

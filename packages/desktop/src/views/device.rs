@@ -216,6 +216,9 @@ async fn boot_selected_device(
         dtb_override: None,
         dtbo_overlays,
         enable_serial: true,
+        smoo_vendor: Some(session.device.vid),
+        smoo_product: Some(session.device.pid),
+        smoo_serial: None,
         personalization: Some(personalization_from_host()),
     };
     let (build, runtime) = build_stage0_artifacts(session.device.profile.clone(), stage0_opts)

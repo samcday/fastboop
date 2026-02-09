@@ -80,6 +80,9 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         dtbo_overlays,
 
         enable_serial: args.stage0.serial,
+        smoo_vendor: None,
+        smoo_product: None,
+        smoo_serial: None,
         personalization: args.systemd_firstboot.then(personalization_from_host),
     };
 

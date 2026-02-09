@@ -43,6 +43,9 @@ pub struct Stage0Options {
     pub dtb_override: Option<Vec<u8>>,
     pub dtbo_overlays: Vec<Vec<u8>>,
     pub enable_serial: bool,
+    pub smoo_vendor: Option<u16>,
+    pub smoo_product: Option<u16>,
+    pub smoo_serial: Option<String>,
     pub personalization: Option<Personalization>,
 }
 
@@ -164,6 +167,18 @@ pub async fn build_stage0<P: RootfsProvider>(
     if opts.enable_serial {
         cmdline_parts.push("smoo.acm=1".to_string());
         cmdline_parts.push("plymouth.ignore-serial-consoles".to_string());
+    }
+    if let Some(vendor) = opts.smoo_vendor {
+        cmdline_parts.push(format!("smoo.vendor=0x{vendor:04x}"));
+    }
+    if let Some(product) = opts.smoo_product {
+        cmdline_parts.push(format!("smoo.product=0x{product:04x}"));
+    }
+    if let Some(serial) = opts.smoo_serial.as_ref() {
+        let serial = serial.trim();
+        if !serial.is_empty() {
+            cmdline_parts.push(format!("smoo.serial={serial}"));
+        }
     }
     if let Some(personalization) = &opts.personalization {
         let personalization = personalization.cmdline_append();

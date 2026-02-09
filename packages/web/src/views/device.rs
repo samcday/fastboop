@@ -275,6 +275,9 @@ async fn boot_selected_device(
         dtb_override: None,
         dtbo_overlays,
         enable_serial: true,
+        smoo_vendor: Some(session.device.vid),
+        smoo_product: Some(session.device.pid),
+        smoo_serial: webusb_serial_number(&session.device.handle),
         personalization: Some(personalization_from_browser()),
     };
     let profile_id = session.device.profile.id.clone();
@@ -641,6 +644,25 @@ fn personalization_from_browser() -> Personalization {
         keymap: None,
         timezone: Some(timezone),
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn webusb_serial_number(handle: &fastboop_fastboot_webusb::WebUsbDeviceHandle) -> Option<String> {
+    let device = handle.device();
+    let serial = Reflect::get(device.as_ref(), &JsValue::from_str("serialNumber"))
+        .ok()?
+        .as_string()?;
+    let serial = serial.trim();
+    if serial.is_empty() {
+        None
+    } else {
+        Some(serial.to_string())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn webusb_serial_number(_handle: &fastboop_fastboot_webusb::WebUsbDeviceHandle) -> Option<String> {
+    None
 }
 
 #[cfg(target_arch = "wasm32")]
