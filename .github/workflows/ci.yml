@@ -57,7 +57,6 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: aarch64-unknown-linux-musl
-          rustflags: "-D warnings --cfg=web_sys_unstable_apis"
 
       - name: Install cargo-binstall
         uses: taiki-e/install-action@v2
@@ -132,7 +131,6 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
-          rustflags: "-D warnings --cfg=web_sys_unstable_apis"
 
       - name: Build CLI (static musl)
         run: |
@@ -192,7 +190,6 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: aarch64-unknown-linux-musl
-          rustflags: "-D warnings --cfg=web_sys_unstable_apis"
 
       - name: Install cargo-binstall
         uses: taiki-e/install-action@v2
