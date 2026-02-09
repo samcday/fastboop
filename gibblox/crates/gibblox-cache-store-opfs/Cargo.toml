@@ -7,6 +7,7 @@ license = { workspace = true }
 
 [dependencies]
 async-trait = "0.1.89"
+futures-channel = "0.3.31"
 gibblox-cache = { path = "../gibblox-cache", default-features = false }
 gibblox-core = { path = "../gibblox-core", default-features = false }
 
@@ -14,3 +15,4 @@ gibblox-core = { path = "../gibblox-core", default-features = false }
 js-sys = "0.3.82"
 wasm-bindgen = "0.2.95"
 wasm-bindgen-futures = "0.4.45"
+web-sys = { version = "0.3.82", features = ["Blob", "BlobPropertyBag", "Event", "MessageEvent", "Url", "Worker"] }
