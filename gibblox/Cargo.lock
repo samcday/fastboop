@@ -338,6 +338,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-paged-lru"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures-channel",
+ "gibblox-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"

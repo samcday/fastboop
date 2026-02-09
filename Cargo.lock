@@ -2778,6 +2778,7 @@ dependencies = [
  "gibblox-core",
  "gibblox-file",
  "gibblox-http",
+ "gibblox-paged-lru",
  "tokio",
  "url",
  "wasm-bindgen-futures",
@@ -3422,6 +3423,17 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "gibblox-paged-lru"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures-channel",
+ "gibblox-core",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

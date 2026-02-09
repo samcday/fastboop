@@ -15,6 +15,7 @@ use gibblox_core::{BlockReader, GibbloxErrorKind, ReadContext};
 #[cfg(not(target_arch = "wasm32"))]
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
+use gibblox_paged_lru::PagedLruBlockReader;
 use url::Url;
 
 const DIRENT_SIZE: usize = 12;
@@ -112,7 +113,11 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
             tokio::spawn(worker);
         }
 
-        Arc::new(greedy)
+        Arc::new(
+            PagedLruBlockReader::new(greedy, Default::default())
+                .await
+                .map_err(|err| anyhow!("initialize paged LRU for HTTP rootfs: {err}"))?,
+        )
     };
 
     #[cfg(target_arch = "wasm32")]
@@ -135,7 +140,11 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
         //     wasm_bindgen_futures::spawn_local(worker);
         // }
 
-        Arc::new(cached)
+        Arc::new(
+            PagedLruBlockReader::new(cached, Default::default())
+                .await
+                .map_err(|err| anyhow!("initialize paged LRU for HTTP rootfs: {err}"))?,
+        )
     };
 
     let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;

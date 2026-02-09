@@ -9,6 +9,7 @@ anyhow = "1.0.91"
 async-trait = "0.1.89"
 fastboop-core = { path = "../fastboop-core" }
 gibblox-cache = { path = "../../gibblox/crates/gibblox-cache", features = ["std"] }
+gibblox-paged-lru = { path = "../../gibblox/crates/gibblox-paged-lru", features = ["std"] }
 url = "2.5.4"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
