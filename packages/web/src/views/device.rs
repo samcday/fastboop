@@ -1,7 +1,4 @@
-use std::collections::BTreeMap;
-use std::time::Duration;
-
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{anyhow, Result};
 use dioxus::prelude::*;
 use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
@@ -13,14 +10,8 @@ use fastboop_stage0_generator::{build_stage0, Stage0Options};
 use gloo_timers::future::sleep;
 #[cfg(target_arch = "wasm32")]
 use js_sys::{Array, Reflect};
-use smoo_host_blocksource_gibblox::GibbloxBlockSource;
-use smoo_host_core::control::ConfigExportsV0;
-use smoo_host_core::{
-    register_export, start_host_io_pump, BlockSource, BlockSourceHandle, HostErrorKind, SmooHost,
-};
 #[cfg(target_arch = "wasm32")]
 use smoo_host_webusb::{WebUsbControl, WebUsbTransport, WebUsbTransportConfig};
-use tracing::{debug, warn};
 use ui::oneplus_fajita_dtbo_overlays;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{JsCast, JsValue};
@@ -59,7 +50,7 @@ pub fn DevicePage(session_id: String) -> Element {
 
 #[component]
 fn BootingDevice(session_id: String, step: String) -> Element {
-    let mut sessions = use_context::<SessionStore>();
+    let sessions = use_context::<SessionStore>();
     let mut started = use_signal(|| false);
 
     use_effect(move || {
@@ -152,7 +143,7 @@ fn BootedDevice(session_id: String) -> Element {
         }
         kickoff.set(true);
         let session = sessions.read().iter().find(|s| s.id == session_id).cloned();
-        if let Some(session) = session {
+        if let Some(_session) = session {
             update_session_phase(
                 &mut sessions,
                 &session_id,

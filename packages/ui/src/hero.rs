@@ -76,7 +76,7 @@ pub fn Hero(
                         DeviceRow {
                             index,
                             device: device.clone(),
-                            on_boot: on_boot.clone(),
+                            on_boot: on_boot,
                         }
                     }
                 }

@@ -16,6 +16,7 @@ pub struct ProbedDevice {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct BootRuntime {
     pub reader: Arc<dyn BlockReader>,
     pub size_bytes: u64,

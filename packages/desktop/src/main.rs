@@ -37,7 +37,7 @@ fn init_tracing() {
 #[component]
 fn App() -> Element {
     let main_css = stylesheet_href(&MAIN_CSS, "/assets/main.css");
-    let sessions = use_signal(|| Vec::new());
+    let sessions = use_signal(Vec::new);
     use_context_provider(|| -> SessionStore { sessions });
 
     // Build cool things ✌️

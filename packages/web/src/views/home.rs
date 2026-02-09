@@ -29,7 +29,7 @@ struct ProbeSnapshot {
 
 #[component]
 pub fn Home() -> Element {
-    let mut sessions = use_context::<SessionStore>();
+    let sessions = use_context::<SessionStore>();
     let navigator = use_navigator();
     let refresh = use_signal(|| 0u32);
 
@@ -165,7 +165,6 @@ pub fn Home() -> Element {
 
     let on_boot = {
         let mut sessions = sessions;
-        let navigator = navigator.clone();
         let devices = snapshot.devices.clone();
         Some(EventHandler::new(move |index: usize| {
             let Some(device) = devices.get(index).cloned() else {

@@ -59,7 +59,7 @@ pub fn DevicePage(session_id: String) -> Element {
 
 #[component]
 fn BootingDevice(session_id: String, step: String) -> Element {
-    let mut sessions = use_context::<SessionStore>();
+    let sessions = use_context::<SessionStore>();
     let mut started = use_signal(|| false);
 
     use_effect(move || {
@@ -134,7 +134,7 @@ fn BootedDevice(session_id: String) -> Element {
         );
         let runtime_for_host = runtime.clone();
         std::thread::Builder::new()
-            .name(format!("fastboop-smoo-{}", session_id))
+            .name(format!("fastboop-smoo-{session_id}"))
             .spawn(move || {
                 if let Err(err) = run_rusb_host_daemon(
                     runtime_for_host.reader,
