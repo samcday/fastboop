@@ -1,53 +1,10 @@
-#[cfg(feature = "std")]
 use core::{cmp, hint};
-
-#[cfg(not(feature = "std"))]
-use core::{cmp, hint};
-
-#[cfg(feature = "std")]
-use std::ffi::OsStr;
 
 use alloc::string::{String, ToString};
 
 use crate::types::{Dirent, DirentFileType};
 use crate::{Error, Result};
 
-#[cfg(feature = "std")]
-pub fn find_nodeid_by_name(name: &OsStr, data: &[u8]) -> Result<Option<u64>> {
-    let dirent = read_nth_dirent(data, 0)?;
-    let n = dirent.name_off as usize / Dirent::size();
-    if n <= 2 {
-        return Ok(None);
-    }
-
-    let offset = 2;
-    let mut size = n - offset;
-    let mut base = 0usize;
-    while size > 1 {
-        let half = size / 2;
-        let mid = base + half;
-
-        let cmp = {
-            let (_, entry_name) = read_nth_id_name(data, mid + offset, n)?;
-            entry_name.as_str().cmp(&name.to_string_lossy())
-        };
-        base = hint::select_unpredictable(cmp == cmp::Ordering::Greater, base, mid);
-        size -= half;
-    }
-
-    let (inner_nid, cmp) = {
-        let (nid, entry_name) = read_nth_id_name(data, base + offset, n)?;
-        let cmp = entry_name.as_str().cmp(&name.to_string_lossy());
-        (nid, cmp)
-    };
-    if cmp != cmp::Ordering::Equal {
-        return Ok(None);
-    }
-
-    Ok(Some(inner_nid))
-}
-
-#[cfg(not(feature = "std"))]
 pub fn find_nodeid_by_name(name: &str, data: &[u8]) -> Result<Option<u64>> {
     let dirent = read_nth_dirent(data, 0)?;
     let n = dirent.name_off as usize / Dirent::size();

@@ -1,23 +1,11 @@
 use core::mem::size_of;
 
-#[cfg(feature = "std")]
-use std::{
-    fs::Permissions,
-    os::unix::fs::PermissionsExt,
-    time::{Duration, SystemTime},
-};
-
-#[cfg(feature = "std")]
-use rustix::fs::FileType;
-
 use crate::read::ReadCursor;
 use crate::{Error, Result};
 
-#[cfg(not(feature = "std"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileType(u32);
 
-#[cfg(not(feature = "std"))]
 impl FileType {
     pub fn from_raw_mode(mode: u32) -> Self {
         Self(mode)
@@ -186,20 +174,14 @@ bitflags::bitflags! {
 }
 
 impl FileMode {
+    const TYPE_MASK: u16 = 0o170000;
+
     pub fn is_dir(&self) -> bool {
-        self.contains(Self::DIR)
+        (self.bits() & Self::TYPE_MASK) == Self::DIR.bits()
     }
 
     pub fn is_file(&self) -> bool {
-        !self.intersects(
-            Self::DIR
-                | Self::CHAR_DEVICE
-                | Self::BLOCK_DEVICE
-                | Self::NAMED_PIPE
-                | Self::SOCKET
-                | Self::SYMLINK
-                | Self::IRREGULAR,
-        )
+        (self.bits() & Self::TYPE_MASK) == Self::IRREGULAR.bits()
     }
 }
 
@@ -284,15 +266,6 @@ impl Inode {
         self.file_type().is_symlink()
     }
 
-    #[cfg(feature = "std")]
-    pub fn permissions(&self) -> Permissions {
-        match self {
-            Self::Compact((_, n)) => Permissions::from_mode(n.mode.into()),
-            Self::Extended((_, n)) => Permissions::from_mode(n.mode.into()),
-        }
-    }
-
-    #[cfg(not(feature = "std"))]
     pub fn permissions(&self) -> u16 {
         match self {
             Self::Compact((_, n)) => n.mode,
@@ -300,23 +273,6 @@ impl Inode {
         }
     }
 
-    #[cfg(feature = "std")]
-    pub fn modified(&self) -> Option<SystemTime> {
-        match self {
-            Self::Compact((_, _)) => None,
-            Self::Extended((_, n)) => {
-                let secs = n.mtime;
-                let nanos = n.mtime_ns;
-                Some(
-                    SystemTime::UNIX_EPOCH
-                        + Duration::from_secs(secs)
-                        + Duration::from_nanos(nanos as u64),
-                )
-            }
-        }
-    }
-
-    #[cfg(not(feature = "std"))]
     pub fn modified(&self) -> Option<(u64, u32)> {
         match self {
             Self::Compact((_, _)) => None,

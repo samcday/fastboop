@@ -7,7 +7,7 @@ license = { workspace = true }
 
 [features]
 default = []
-std = ["erofs-rs/std"]
+std = []
 
 [dependencies]
 async-trait = "0.1.89"

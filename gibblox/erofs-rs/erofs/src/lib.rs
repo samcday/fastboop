@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 //! A pure Rust library for reading EROFS (Enhanced Read-Only File System) images.
 //!

@@ -1,5 +1,5 @@
 [workspace]
-members = ["erofs", "erofs-cli"]
+members = ["erofs"]
 resolver = "2"
 
 [workspace.package]

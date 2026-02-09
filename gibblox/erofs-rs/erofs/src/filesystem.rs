@@ -1,11 +1,5 @@
 use alloc::{format, string::ToString, sync::Arc, vec, vec::Vec};
 
-#[cfg(feature = "std")]
-use memmap2::Mmap;
-
-#[cfg(feature = "std")]
-use std::path::{Component, Path};
-
 use core::convert::TryInto;
 
 use spin::Mutex;
@@ -73,13 +67,6 @@ impl<R: ReadAt> EroFS<R> {
         })
     }
 
-    #[cfg(feature = "std")]
-    pub async fn new(mmap: Mmap) -> Result<EroFS<Arc<Mmap>>> {
-        let arc = Arc::new(mmap);
-        let size = arc.len() as u64;
-        EroFS::from_image(arc, size).await
-    }
-
     pub fn super_block(&self) -> &SuperBlock {
         &self.super_block
     }
@@ -88,7 +75,7 @@ impl<R: ReadAt> EroFS<R> {
         self.block_size
     }
 
-    pub async fn open_path(&self, path: &str) -> Result<File<R>> {
+    pub async fn open(&self, path: &str) -> Result<File<R>> {
         let inode = self
             .get_path_inode_str(path)
             .await?
@@ -96,18 +83,8 @@ impl<R: ReadAt> EroFS<R> {
         self.open_inode_file(inode).await
     }
 
-    #[cfg(feature = "std")]
-    pub async fn open<P: AsRef<Path>>(&self, path: P) -> Result<File<R>> {
-        let inode = self
-            .get_path_inode(path.as_ref())
-            .await?
-            .ok_or_else(|| Error::PathNotFound(path.as_ref().to_string_lossy().into_owned()))?;
-        self.open_inode_file(inode).await
-    }
-
-    #[cfg(not(feature = "std"))]
-    pub async fn open_str<P: AsRef<str>>(&self, path: P) -> Result<File<R>> {
-        self.open_path(path.as_ref()).await
+    pub async fn open_path(&self, path: &str) -> Result<File<R>> {
+        self.open(path).await
     }
 
     pub async fn open_inode_file(&self, inode: Inode) -> Result<File<R>> {
@@ -814,36 +791,6 @@ impl<R: ReadAt> EroFS<R> {
         Ok(rec)
     }
 
-    #[cfg(feature = "std")]
-    pub async fn get_path_inode(&self, path: &Path) -> Result<Option<Inode>> {
-        let mut nid = self.super_block.root_nid as u64;
-        'outer: for part in path.components() {
-            if part == Component::RootDir {
-                continue;
-            }
-            let inode = self.get_inode(nid).await?;
-            let block_count = inode.data_size().div_ceil(self.block_size);
-            if block_count == 0 {
-                return Ok(None);
-            }
-            for i in 0..block_count {
-                let block = self.get_inode_block(&inode, i * self.block_size).await?;
-                if let Some(found_nid) = dirent::find_nodeid_by_name(part.as_os_str(), &block)? {
-                    nid = found_nid;
-                    continue 'outer;
-                }
-            }
-            return Ok(None);
-        }
-        Ok(Some(self.get_inode(nid).await?))
-    }
-
-    #[cfg(feature = "std")]
-    pub async fn get_path_inode_str(&self, path: &str) -> Result<Option<Inode>> {
-        self.get_path_inode(Path::new(path)).await
-    }
-
-    #[cfg(not(feature = "std"))]
     pub async fn get_path_inode_str(&self, path: &str) -> Result<Option<Inode>> {
         let mut nid = self.super_block.root_nid as u64;
         'outer: for part in path.split('/') {
@@ -865,6 +812,10 @@ impl<R: ReadAt> EroFS<R> {
             return Ok(None);
         }
         Ok(Some(self.get_inode(nid).await?))
+    }
+
+    pub async fn get_path_inode(&self, path: &str) -> Result<Option<Inode>> {
+        self.get_path_inode_str(path).await
     }
 
     fn get_inode_offset(&self, nid: u64) -> u64 {

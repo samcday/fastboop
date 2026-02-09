@@ -14,15 +14,9 @@ rust-version = "1.88"
 [lints]
 workspace = true
 
-[features]
-default = ["std"]
-std = ["dep:memmap2", "dep:rustix"]
-
 [dependencies]
 bitflags = { workspace = true }
 async-trait = "0.1.89"
 lz4_flex = { version = "0.12.0", default-features = false, features = ["safe-decode"] }
 miniz_oxide = { version = "0.9.0", default-features = false, features = ["with-alloc"] }
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex"] }
-memmap2 = { workspace = true, default-features = false, optional = true }
-rustix = { workspace = true, default-features = false, features = ["fs"], optional = true }
