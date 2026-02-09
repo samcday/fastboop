@@ -14,16 +14,17 @@ use js_sys::{Array, Reflect};
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 #[cfg(target_arch = "wasm32")]
 use smoo_host_core::{
-    control::ConfigExportsV0, register_export, start_host_io_pump, BlockSource, BlockSourceHandle,
-    HostErrorKind, SmooHost,
+    control::{read_status, ConfigExportsV0},
+    heartbeat_once, register_export, start_host_io_pump, BlockSource, BlockSourceHandle,
+    HostErrorKind, SmooHost, TransportError, TransportErrorKind,
 };
 #[cfg(target_arch = "wasm32")]
 use smoo_host_webusb::{WebUsbControl, WebUsbTransport, WebUsbTransportConfig};
 #[cfg(target_arch = "wasm32")]
 use std::collections::BTreeMap;
+use std::future::Future;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
-use tracing::{debug, warn};
 use ui::oneplus_fajita_dtbo_overlays;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{JsCast, JsValue};
@@ -34,7 +35,11 @@ use super::session::{update_session_phase, BootRuntime, SessionPhase, SessionSto
 
 const ROOTFS_URL: &str = "https://bleeding.fastboop.win/sdm845-live-fedora/20260208.ero";
 const EXTRA_CMDLINE: &str =
-    "selinux=0 sysrq_always_enabled=1 panic=5 smoo.max_io_bytes=1048576 init_on_alloc=0 rhgb drm.panic_screen=kmsg";
+    "selinux=0 sysrq_always_enabled=1 panic=5 smoo.max_io_bytes=1048576 init_on_alloc=0 rhgb drm.panic_screen=kmsg smoo.queue_count=1 smoo.queue_depth=1 regulator_ignore_unused";
+#[cfg(target_arch = "wasm32")]
+const STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(200);
+#[cfg(target_arch = "wasm32")]
+const STATUS_RETRY_ATTEMPTS: usize = 5;
 
 #[component]
 pub fn DevicePage(session_id: String) -> Element {
@@ -72,7 +77,7 @@ fn BootingDevice(session_id: String, step: String) -> Element {
         started.set(true);
         let mut sessions = sessions;
         let session_id = session_id.clone();
-        spawn(async move {
+        spawn_detached(async move {
             match boot_selected_device(&mut sessions, &session_id).await {
                 Ok(runtime) => update_session_phase(
                     &mut sessions,
@@ -82,13 +87,16 @@ fn BootingDevice(session_id: String, step: String) -> Element {
                         host_started: false,
                     },
                 ),
-                Err(err) => update_session_phase(
-                    &mut sessions,
-                    &session_id,
-                    SessionPhase::Error {
-                        summary: err.to_string(),
-                    },
-                ),
+                Err(err) => {
+                    tracing::error!("boot flow failed for {session_id}: {err:#}");
+                    update_session_phase(
+                        &mut sessions,
+                        &session_id,
+                        SessionPhase::Error {
+                            summary: format!("{err:#}"),
+                        },
+                    )
+                }
             }
         });
     });
@@ -170,7 +178,7 @@ fn BootedDevice(session_id: String) -> Element {
                 let mut sessions = sessions;
                 let session_id = session_id.clone();
                 let runtime_for_host = runtime.clone();
-                spawn(async move {
+                spawn_detached(async move {
                     let device = session.device.handle.device();
                     if let Err(err) = run_web_host_daemon(
                         device,
@@ -180,11 +188,12 @@ fn BootedDevice(session_id: String) -> Element {
                     )
                     .await
                     {
+                        tracing::error!("web host daemon failed for {session_id}: {err:#}");
                         update_session_phase(
                             &mut sessions,
                             &session_id,
                             SessionPhase::Error {
-                                summary: err.to_string(),
+                                summary: format!("{err:#}"),
                             },
                         );
                     }
@@ -218,6 +227,16 @@ fn BootError(summary: String) -> Element {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn spawn_detached(fut: impl Future<Output = ()> + 'static) {
+    wasm_bindgen_futures::spawn_local(fut);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_detached(fut: impl Future<Output = ()> + 'static) {
+    spawn(fut);
+}
+
 async fn boot_selected_device(
     sessions: &mut SessionStore,
     session_id: &str,
@@ -239,8 +258,6 @@ async fn boot_selected_device(
             ),
         },
     );
-    let opened = open_erofs_rootfs(ROOTFS_URL).await?;
-
     update_session_phase(
         sessions,
         session_id,
@@ -260,15 +277,12 @@ async fn boot_selected_device(
         enable_serial: true,
         personalization: Some(personalization_from_browser()),
     };
-    let build = build_stage0(
-        &session.device.profile,
-        &opened.provider,
-        &stage0_opts,
-        Some(EXTRA_CMDLINE),
-        None,
-    )
-    .await
-    .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
+    let profile_id = session.device.profile.id.clone();
+    let (build, runtime) = build_stage0_artifacts(session.device.profile.clone(), stage0_opts)
+        .await
+        .with_context(|| {
+            format!("open rootfs and build stage0 (profile={profile_id}, rootfs={ROOTFS_URL})")
+        })?;
 
     update_session_phase(
         sessions,
@@ -350,10 +364,61 @@ async fn boot_selected_device(
         .map_err(|err| anyhow!("fastboot boot failed: {err}"))?;
 
     Ok(BootRuntime {
-        reader: opened.reader,
-        size_bytes: opened.size_bytes,
-        identity: opened.identity,
+        reader: runtime.reader,
+        size_bytes: runtime.size_bytes,
+        identity: runtime.identity,
     })
+}
+
+async fn build_stage0_artifacts(
+    profile: fastboop_core::DeviceProfile,
+    stage0_opts: Stage0Options,
+) -> Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
+    use futures_channel::oneshot;
+
+    tracing::info!("build_stage0_artifacts: creating channel");
+    let (tx, rx) = oneshot::channel();
+
+    // Spawn the stage0 build outside the Dioxus context using raw spawn_local
+    tracing::info!("build_stage0_artifacts: spawning task");
+    wasm_bindgen_futures::spawn_local(async move {
+        tracing::info!("build_stage0_artifacts: task started");
+        let result: Result<_> = async {
+            tracing::info!(profile = %profile.id, "opening rootfs for web boot");
+            let opened = open_erofs_rootfs(ROOTFS_URL).await?;
+            tracing::info!(profile = %profile.id, "building stage0 payload");
+            // Yield to allow cache workers to make progress
+            gloo_timers::future::sleep(std::time::Duration::from_millis(100)).await;
+            let build = build_stage0(
+                &profile,
+                &opened.provider,
+                &stage0_opts,
+                Some(EXTRA_CMDLINE),
+                None,
+            )
+            .await
+            .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
+            tracing::info!("build_stage0_artifacts: stage0 build completed");
+            Ok((
+                build,
+                BootRuntime {
+                    reader: opened.reader,
+                    size_bytes: opened.size_bytes,
+                    identity: opened.identity,
+                },
+            ))
+        }
+        .await;
+        tracing::info!("build_stage0_artifacts: sending result");
+        let _ = tx.send(result);
+    });
+
+    tracing::info!("build_stage0_artifacts: awaiting result");
+    let result = rx
+        .await
+        .map_err(|_| anyhow!("stage0 build task was cancelled"))?;
+    tracing::info!("build_stage0_artifacts: got result");
+    result
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -368,12 +433,12 @@ async fn run_web_host_daemon(
             Ok(pair) => pair,
             Err(err) => {
                 warn!(%err, "waiting for smoo webusb gadget");
-                sleep(Duration::from_millis(500)).await;
+                sleep(STATUS_RETRY_INTERVAL).await;
                 continue;
             }
         };
 
-        if let Err(err) = run_web_session(
+        match run_web_session(
             transport,
             control,
             reader.clone(),
@@ -382,10 +447,20 @@ async fn run_web_host_daemon(
         )
         .await
         {
-            warn!(%err, "smoo web session ended");
+            Ok(SessionEnd::TransportLost) => {
+                warn!("smoo web transport lost; waiting to reconnect");
+            }
+            Err(err) => {
+                warn!(%err, "smoo web session ended");
+            }
         }
-        sleep(Duration::from_millis(500)).await;
+        sleep(STATUS_RETRY_INTERVAL).await;
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+enum SessionEnd {
+    TransportLost,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -395,7 +470,7 @@ async fn run_web_session(
     reader: std::sync::Arc<dyn gibblox_core::BlockReader>,
     size_bytes: u64,
     identity: String,
-) -> Result<()> {
+) -> Result<SessionEnd> {
     let source = GibbloxBlockSource::new(reader, identity.clone());
     let block_size = source.block_size();
     ensure!(block_size > 0, "block size must be non-zero");
@@ -420,7 +495,7 @@ async fn run_web_session(
         .map_err(|err| anyhow!("build CONFIG_EXPORTS payload: {err:?}"))?;
 
     let (pump_handle, request_rx, pump_task) = start_host_io_pump(transport.clone());
-    spawn(async move {
+    wasm_bindgen_futures::spawn_local(async move {
         let _ = pump_task.await;
     });
 
@@ -429,6 +504,14 @@ async fn run_web_session(
     host.configure_exports_v0(&control, &payload)
         .await
         .context("send CONFIG_EXPORTS")?;
+
+    if let Err(err) =
+        fetch_status_with_retry(&control, STATUS_RETRY_ATTEMPTS, STATUS_RETRY_INTERVAL).await
+    {
+        warn!(%err, "SMOO_STATUS failed after CONFIG_EXPORTS");
+        let _ = pump_handle.shutdown().await;
+        return Ok(SessionEnd::TransportLost);
+    }
 
     loop {
         match host.run_once().await {
@@ -439,7 +522,34 @@ async fn run_web_session(
     }
 
     let _ = pump_handle.shutdown().await;
-    Ok(())
+    Ok(SessionEnd::TransportLost)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn fetch_status_with_retry(
+    client: &WebUsbControl,
+    attempts: usize,
+    delay: Duration,
+) -> std::result::Result<u64, TransportError> {
+    let mut attempt = 0;
+    loop {
+        match read_status(client).await {
+            Ok(status) => {
+                let _ = heartbeat_once(client).await;
+                return Ok(status.session_id);
+            }
+            Err(err) => {
+                attempt += 1;
+                if attempt >= attempts {
+                    return Err(err);
+                }
+                if err.kind() != TransportErrorKind::Timeout || attempt > 1 {
+                    warn!(attempt, attempts, %err, "SMOO_STATUS retry");
+                }
+                sleep(delay).await;
+            }
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

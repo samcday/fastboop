@@ -75,7 +75,9 @@ pub async fn build_stage0<P: RootfsProvider>(
     extra_cmdline: Option<&str>,
     existing_cpio: Option<&[u8]>,
 ) -> Result<Stage0Build, Stage0Error> {
+    tracing::debug!("build_stage0: detecting kernel");
     let kernel_path = detect_kernel(rootfs).await?;
+    tracing::debug!(kernel_path = %kernel_path, "build_stage0: kernel detected");
     let kernel_image = rootfs
         .read_all(&kernel_path)
         .await

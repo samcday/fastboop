@@ -124,18 +124,18 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
             .await
             .map_err(|err| anyhow!("initialize OPFS cache for HTTP rootfs: {err}"))?;
 
-        // Wrap in greedy reader and spawn workers
-        let (greedy, workers) = GreedyCachedBlockReader::new(cached, Default::default())
-            .await
-            .map_err(|err| anyhow!("initialize greedy cache for HTTP rootfs: {err}"))?;
+        // // Wrap in greedy reader and spawn workers
+        // let (greedy, workers) = GreedyCachedBlockReader::new(cached, Default::default())
+        //     .await
+        //     .map_err(|err| anyhow!("initialize greedy cache for HTTP rootfs: {err}"))?;
 
-        // Spawn background workers using wasm-bindgen-futures
-        wasm_bindgen_futures::spawn_local(workers.hot_worker);
-        for worker in workers.sweep_workers {
-            wasm_bindgen_futures::spawn_local(worker);
-        }
+        // // Spawn background workers using wasm-bindgen-futures
+        // wasm_bindgen_futures::spawn_local(workers.hot_worker);
+        // for worker in workers.sweep_workers {
+        //     wasm_bindgen_futures::spawn_local(worker);
+        // }
 
-        Arc::new(greedy)
+        Arc::new(cached)
     };
 
     let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
