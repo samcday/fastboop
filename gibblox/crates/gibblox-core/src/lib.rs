@@ -164,8 +164,9 @@ pub fn block_identity_string<R: BlockReader + ?Sized>(reader: &R) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ReadPriority {
     #[default]
-    Foreground,
-    Background,
+    High,
+    Medium,
+    Low,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -175,11 +176,15 @@ pub struct ReadContext {
 
 impl ReadContext {
     pub const FOREGROUND: Self = Self {
-        priority: ReadPriority::Foreground,
+        priority: ReadPriority::High,
+    };
+
+    pub const READAHEAD: Self = Self {
+        priority: ReadPriority::Medium,
     };
 
     pub const BACKGROUND: Self = Self {
-        priority: ReadPriority::Background,
+        priority: ReadPriority::Low,
     };
 }
 

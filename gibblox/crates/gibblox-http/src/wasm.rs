@@ -185,15 +185,17 @@ fn build_request_promise(
 
 fn priority_header_value(ctx: ReadContext) -> &'static str {
     match ctx.priority {
-        ReadPriority::Foreground => "u=0, i",
-        ReadPriority::Background => "u=7",
+        ReadPriority::High => "u=0, i",
+        ReadPriority::Medium => "u=3",
+        ReadPriority::Low => "u=7",
     }
 }
 
 fn fetch_priority_value(ctx: ReadContext) -> &'static str {
     match ctx.priority {
-        ReadPriority::Foreground => "high",
-        ReadPriority::Background => "low",
+        ReadPriority::High => "high",
+        ReadPriority::Medium => "auto",
+        ReadPriority::Low => "low",
     }
 }
 

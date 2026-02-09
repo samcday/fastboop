@@ -6,6 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use fastboop_core::RootfsProvider;
 use gibblox_cache::CachedBlockReader;
+use gibblox_cache::greedy::GreedyCachedBlockReader;
 #[cfg(target_arch = "wasm32")]
 use gibblox_cache_store_opfs::OpfsCacheOps;
 #[cfg(not(target_arch = "wasm32"))]
@@ -99,7 +100,19 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
         let cached = CachedBlockReader::new(http_reader, cache)
             .await
             .map_err(|err| anyhow!("initialize std cache for HTTP rootfs: {err}"))?;
-        Arc::new(cached)
+
+        // Wrap in greedy reader and spawn workers
+        let (greedy, workers) = GreedyCachedBlockReader::new(cached, Default::default())
+            .await
+            .map_err(|err| anyhow!("initialize greedy cache for HTTP rootfs: {err}"))?;
+
+        // Spawn background workers using tokio
+        tokio::spawn(workers.hot_worker);
+        for worker in workers.sweep_workers {
+            tokio::spawn(worker);
+        }
+
+        Arc::new(greedy)
     };
 
     #[cfg(target_arch = "wasm32")]
@@ -110,7 +123,19 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
         let cached = CachedBlockReader::new(http_reader, cache)
             .await
             .map_err(|err| anyhow!("initialize OPFS cache for HTTP rootfs: {err}"))?;
-        Arc::new(cached)
+
+        // Wrap in greedy reader and spawn workers
+        let (greedy, workers) = GreedyCachedBlockReader::new(cached, Default::default())
+            .await
+            .map_err(|err| anyhow!("initialize greedy cache for HTTP rootfs: {err}"))?;
+
+        // Spawn background workers using wasm-bindgen-futures
+        wasm_bindgen_futures::spawn_local(workers.hot_worker);
+        for worker in workers.sweep_workers {
+            wasm_bindgen_futures::spawn_local(worker);
+        }
+
+        Arc::new(greedy)
     };
 
     let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;

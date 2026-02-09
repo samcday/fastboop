@@ -6,12 +6,13 @@ rust-version = { workspace = true }
 license = { workspace = true }
 
 [features]
-default = []
-std = []
+default = ["std"]
+std = ["futures-channel/std"]
 
 [dependencies]
 async-trait = "0.1.89"
 futures-channel = { version = "0.3.31", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
 gibblox-core = { path = "../gibblox-core", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
 

@@ -106,8 +106,9 @@ impl Client {
 
 fn priority_header_value(ctx: ReadContext) -> &'static str {
     match ctx.priority {
-        ReadPriority::Foreground => "u=0, i",
-        ReadPriority::Background => "u=7",
+        ReadPriority::High => "u=0, i",
+        ReadPriority::Medium => "u=3",
+        ReadPriority::Low => "u=7",
     }
 }
 

@@ -17,6 +17,8 @@ use gibblox_core::{
 };
 use tracing::{debug, trace};
 
+pub mod greedy;
+
 const CACHE_MAGIC: [u8; 7] = *b"GIBBLX!";
 const CACHE_VERSION: u8 = 2;
 const CACHE_PREFIX_LEN: usize = 28;
@@ -433,6 +435,56 @@ where
             }
             result?;
         }
+        Ok(())
+    }
+
+    /// Ensure blocks [lba, lba+blocks) are cached without copying data out.
+    ///
+    /// This is an internal API for use by GreedyCachedBlockReader. It fetches
+    /// any missing blocks from the inner reader and populates the cache, but
+    /// does not allocate or return a caller buffer.
+    ///
+    /// Already-cached blocks are skipped (bitmap check only). The provided
+    /// ReadContext propagates priority hints to the inner reader.
+    pub async fn ensure_cached(
+        &self,
+        lba: u64,
+        blocks: u64,
+        ctx: ReadContext,
+    ) -> GibbloxResult<()> {
+        if blocks == 0 {
+            return Ok(());
+        }
+        self.validate_range(lba, blocks)?;
+
+        // Allocate temporary buffer for fetching
+        let bs = self.block_size_usize();
+        let total_bytes = (blocks as usize).checked_mul(bs).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "buffer size overflow")
+        })?;
+        let mut temp_buf = vec![0u8; total_bytes];
+
+        // Check cache, identify missing blocks
+        let missing = self.fill_from_cache(lba, blocks, &mut temp_buf).await?;
+        if missing.is_empty() {
+            return Ok(()); // All cached, early return
+        }
+
+        // Mark in-flight for deduplication
+        let (to_fetch, waiters) = self.mark_in_flight(&missing);
+
+        // Fetch missing ranges if we're the first to request them
+        if !to_fetch.is_empty() {
+            self.fetch_and_populate(&Self::coalesce(&to_fetch), ctx)
+                .await?;
+        }
+
+        // Wait for any overlapping in-flight fetches
+        for waiter in waiters {
+            let _ = waiter.await;
+        }
+
+        // temp_buf dropped here (no copy-out needed)
         Ok(())
     }
 }

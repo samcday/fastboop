@@ -2780,7 +2780,9 @@ dependencies = [
  "gibblox-core",
  "gibblox-file",
  "gibblox-http",
+ "tokio",
  "url",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -3347,6 +3349,7 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "futures-channel",
+ "futures-util",
  "gibblox-core",
  "tokio",
  "tracing",
