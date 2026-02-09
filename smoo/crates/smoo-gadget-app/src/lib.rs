@@ -47,8 +47,8 @@ use usb_gadget::{
 };
 
 const SMOO_CLASS: u8 = 0xFF;
-const SMOO_SUBCLASS: u8 = 0x53;
-const SMOO_PROTOCOL: u8 = 0x4D;
+const SMOO_SUBCLASS: u8 = 0x42;
+const SMOO_PROTOCOL: u8 = 0x03;
 const DEFAULT_MAX_IO_BYTES: usize = 4 * 1024 * 1024;
 const CONFIG_CHANNEL_DEPTH: usize = 32;
 const QUEUE_CHANNEL_DEPTH: usize = 128;

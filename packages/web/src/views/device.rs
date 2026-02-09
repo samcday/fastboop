@@ -25,6 +25,8 @@ use std::collections::BTreeMap;
 use std::future::Future;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
+#[cfg(target_arch = "wasm32")]
+use std::{cell::Cell, rc::Rc};
 use ui::oneplus_fajita_dtbo_overlays;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{JsCast, JsValue};
@@ -40,6 +42,10 @@ const EXTRA_CMDLINE: &str =
 const STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 #[cfg(target_arch = "wasm32")]
 const STATUS_RETRY_ATTEMPTS: usize = 5;
+#[cfg(target_arch = "wasm32")]
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(target_arch = "wasm32")]
+const IDLE_POLL: Duration = Duration::from_millis(5);
 
 #[component]
 pub fn DevicePage(session_id: String) -> Element {
@@ -508,24 +514,77 @@ async fn run_web_session(
         .await
         .context("send CONFIG_EXPORTS")?;
 
-    if let Err(err) =
-        fetch_status_with_retry(&control, STATUS_RETRY_ATTEMPTS, STATUS_RETRY_INTERVAL).await
-    {
-        warn!(%err, "SMOO_STATUS failed after CONFIG_EXPORTS");
-        let _ = pump_handle.shutdown().await;
-        return Ok(SessionEnd::TransportLost);
-    }
+    let initial_session_id =
+        match fetch_status_with_retry(&control, STATUS_RETRY_ATTEMPTS, STATUS_RETRY_INTERVAL).await
+        {
+            Ok(session_id) => session_id,
+            Err(err) => {
+                warn!(%err, "SMOO_STATUS failed after CONFIG_EXPORTS");
+                let _ = pump_handle.shutdown().await;
+                return Ok(SessionEnd::TransportLost);
+            }
+        };
+
+    let heartbeat_stop = Rc::new(Cell::new(false));
+    let heartbeat_client = control.clone();
+    let heartbeat_stop_task = heartbeat_stop.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        run_web_heartbeat(
+            heartbeat_client,
+            initial_session_id,
+            HEARTBEAT_INTERVAL,
+            heartbeat_stop_task,
+        )
+        .await;
+    });
 
     loop {
         match host.run_once().await {
-            Ok(()) => {}
+            Ok(()) => {
+                sleep(IDLE_POLL).await;
+            }
             Err(err) if err.kind() == HostErrorKind::Transport => break,
-            Err(err) => return Err(anyhow!(err.to_string())),
+            Err(err) => {
+                heartbeat_stop.set(true);
+                return Err(anyhow!(err.to_string()));
+            }
         }
     }
 
+    heartbeat_stop.set(true);
     let _ = pump_handle.shutdown().await;
     Ok(SessionEnd::TransportLost)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn run_web_heartbeat(
+    client: WebUsbControl,
+    initial_session_id: u64,
+    interval: Duration,
+    stop: Rc<Cell<bool>>,
+) {
+    while !stop.get() {
+        sleep(interval).await;
+        if stop.get() {
+            break;
+        }
+        match heartbeat_once(&client).await {
+            Ok(status) => {
+                if status.session_id != initial_session_id {
+                    warn!(
+                        previous = format!("0x{initial_session_id:016x}"),
+                        current = format!("0x{:016x}", status.session_id),
+                        "web smoo heartbeat session changed"
+                    );
+                    break;
+                }
+            }
+            Err(err) => {
+                warn!(%err, "web smoo heartbeat transfer failed");
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -538,7 +597,6 @@ async fn fetch_status_with_retry(
     loop {
         match read_status(client).await {
             Ok(status) => {
-                let _ = heartbeat_once(client).await;
                 return Ok(status.session_id);
             }
             Err(err) => {
@@ -564,18 +622,38 @@ async fn open_webusb_transport(
     }
 
     let devices = authorized_usb_devices().await?;
+    let mut errors = Vec::new();
     for device in devices {
-        if let Ok(pair) = try_open_transport_for_device(&device).await {
-            return Ok(pair);
+        match try_open_transport_for_device(&device).await {
+            Ok(pair) => return Ok(pair),
+            Err(err) => {
+                let serial = Reflect::get(device.as_ref(), &JsValue::from_str("serialNumber"))
+                    .ok()
+                    .and_then(|v| v.as_string())
+                    .unwrap_or_else(|| "<none>".to_string());
+                errors.push(format!(
+                    "{:04x}:{:04x} serial={serial}: {err}",
+                    device.vendor_id(),
+                    device.product_id()
+                ));
+            }
         }
     }
-    Err(anyhow!("no authorized smoo webusb gadget found"))
+    if errors.is_empty() {
+        Err(anyhow!("no authorized smoo webusb gadget found"))
+    } else {
+        Err(anyhow!(
+            "no authorized smoo webusb gadget found; candidates: {}",
+            errors.join(" | ")
+        ))
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 async fn try_open_transport_for_device(
     device: &web_sys::UsbDevice,
 ) -> Result<(WebUsbTransport, WebUsbControl)> {
+    let mut last_err = None;
     for interface in 0..=7u8 {
         let config = WebUsbTransportConfig {
             interface,
@@ -590,10 +668,14 @@ async fn try_open_transport_for_device(
                 debug!(interface, "connected to smoo webusb transport");
                 return Ok((transport, control));
             }
-            Err(_) => continue,
+            Err(err) => {
+                last_err = Some(format!("iface {interface}: {err}"));
+                continue;
+            }
         }
     }
-    Err(anyhow!("device is not a compatible smoo gadget"))
+    let detail = last_err.unwrap_or_else(|| "no interface probe attempts".to_string());
+    Err(anyhow!("device is not a compatible smoo gadget ({detail})"))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -615,6 +697,7 @@ async fn authorized_usb_devices() -> Result<Vec<web_sys::UsbDevice>> {
             out.push(device);
         }
     }
+    debug!(count = out.len(), "authorized webusb devices enumerated");
     Ok(out)
 }
 

@@ -50,9 +50,8 @@ impl<'a> MakeWriter<'a> for KmsgMakeWriter {
     }
 }
 
-const SMOO_CLASS: u8 = 0xFF;
-const SMOO_SUBCLASS: u8 = 0x53;
-const SMOO_PROTOCOL: u8 = 0x4D;
+const SMOO_SUBCLASS: u8 = 0x42;
+const SMOO_PROTOCOL: u8 = 0x03;
 const STAGE0_ROLE_ENV: &str = "FASTBOOP_STAGE0_ROLE";
 const STAGE0_ROLE_GADGET_CHILD: &str = "gadget-child";
 const STAGE0_ROLE_KMSG_CHILD: &str = "kmsg-child";
@@ -1283,7 +1282,7 @@ fn setup_pid1_configfs(args: &Args) -> Result<GadgetGuard> {
     builder.ffs_no_init = true;
     let (mut custom, handle) = builder.build();
 
-    let klass = Class::new(SMOO_CLASS, SMOO_SUBCLASS, SMOO_PROTOCOL);
+    let klass = Class::interface_specific();
     let (vendor_id, product_id, serial) = gadget_usb_identity(args);
     let id = Id::new(vendor_id, product_id);
     let strings = Strings::new("smoo", "smoo gadget", serial.as_str());
