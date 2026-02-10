@@ -3347,10 +3347,12 @@ dependencies = [
 name = "gibblox-cache"
 version = "0.0.1"
 dependencies = [
+ "async-lock",
  "async-trait",
  "futures-channel",
  "futures-util",
  "gibblox-core",
+ "serde",
  "tokio",
  "tracing",
 ]

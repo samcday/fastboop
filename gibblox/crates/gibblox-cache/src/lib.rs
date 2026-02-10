@@ -4,12 +4,7 @@ extern crate alloc;
 
 use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
-use core::{
-    cell::UnsafeCell,
-    fmt,
-    hint::spin_loop,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::fmt;
 use futures_channel::oneshot;
 use gibblox_core::{
     BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
@@ -24,6 +19,33 @@ const CACHE_VERSION: u8 = 2;
 const CACHE_PREFIX_LEN: usize = 28;
 const DEFAULT_FLUSH_BLOCKS: u32 = 64;
 const ZERO_CHUNK_LEN: usize = 4096;
+
+/// Snapshot of cache behavior and population.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(target_arch = "wasm32", derive(serde::Serialize))]
+pub struct CacheStats {
+    pub total_hits: u64,
+    pub total_misses: u64,
+    pub cached_blocks: u64,
+    pub total_blocks: u64,
+}
+
+impl CacheStats {
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.total_hits + self.total_misses;
+        if total == 0 {
+            return 0.0;
+        }
+        (self.total_hits as f64 / total as f64) * 100.0
+    }
+
+    pub fn fill_rate(&self) -> f64 {
+        if self.total_blocks == 0 {
+            return 0.0;
+        }
+        (self.cached_blocks as f64 / self.total_blocks as f64) * 100.0
+    }
+}
 
 /// Backend I/O abstraction for a single cache file.
 ///
@@ -82,9 +104,9 @@ pub struct CachedBlockReader<S, C> {
     bitmap_offset: u64,
     data_offset: u64,
     flush_every_blocks: u32,
-    state: SpinLock<CacheState>,
-    in_flight: SpinLock<InFlight>,
-    mutation_lock: AsyncLock,
+    state: async_lock::Mutex<CacheState>,
+    in_flight: async_lock::Mutex<InFlight>,
+    mutation_lock: async_lock::Mutex<()>,
 }
 
 impl<S, C> CachedBlockReader<S, C>
@@ -124,7 +146,7 @@ where
         let layout = CacheLayout::new(block_size, total_blocks)?;
         let identity = cached_reader_identity_string(&inner);
         let opened = open_or_initialize_cache(&cache, &layout, &identity).await?;
-        let valid_blocks = opened.valid.iter().map(|b| b.count_ones()).sum::<u32>();
+        let valid_blocks = count_set_bits(&opened.valid);
         debug!(
             block_size,
             total_blocks,
@@ -150,15 +172,16 @@ where
             bitmap_offset: opened.mapping.bitmap_offset,
             data_offset: opened.mapping.data_offset,
             flush_every_blocks,
-            state: SpinLock::new(CacheState {
+            state: async_lock::Mutex::new(CacheState {
                 valid: opened.valid,
                 blocks_since_flush: 0,
                 total_hits: 0,
                 total_misses: 0,
                 last_stats_log: 0,
+                cached_blocks: valid_blocks,
             }),
-            in_flight: SpinLock::new(InFlight::new()),
-            mutation_lock: AsyncLock::new(),
+            in_flight: async_lock::Mutex::new(InFlight::new()),
+            mutation_lock: async_lock::Mutex::new(()),
         })
     }
 
@@ -210,8 +233,8 @@ where
         })
     }
 
-    fn snapshot_segments(&self, lba: u64, blocks: u64) -> Vec<(u64, u64, bool)> {
-        let guard = self.state.lock();
+    async fn snapshot_segments(&self, lba: u64, blocks: u64) -> Vec<(u64, u64, bool)> {
+        let guard = self.state.lock().await;
         let mut segments = Vec::new();
         let mut block = lba;
         while block < lba + blocks {
@@ -226,9 +249,24 @@ where
         segments
     }
 
-    fn invalidate_range(&self, start_block: u64, blocks: u64) {
-        let mut guard = self.state.lock();
-        clear_bits(&mut guard.valid, start_block, blocks);
+    async fn invalidate_range(&self, start_block: u64, blocks: u64) {
+        if blocks == 0 {
+            return;
+        }
+        let mut guard = self.state.lock().await;
+        let removed = clear_bits_and_count_removed(&mut guard.valid, start_block, blocks);
+        guard.cached_blocks = guard.cached_blocks.saturating_sub(removed);
+    }
+
+    /// Return a snapshot of cache statistics.
+    pub async fn get_stats(&self) -> CacheStats {
+        let guard = self.state.lock().await;
+        CacheStats {
+            total_hits: guard.total_hits,
+            total_misses: guard.total_misses,
+            cached_blocks: guard.cached_blocks,
+            total_blocks: self.total_blocks,
+        }
     }
 
     async fn fill_from_cache(
@@ -239,7 +277,7 @@ where
     ) -> GibbloxResult<Vec<u64>> {
         let mut missing = Vec::new();
         let bs = self.block_size_usize();
-        let segments = self.snapshot_segments(lba, blocks);
+        let segments = self.snapshot_segments(lba, blocks).await;
 
         for (start_block, len_blocks, hit) in segments {
             if !hit {
@@ -262,7 +300,7 @@ where
             let data_offset = self.data_offset_for_block(start_block)?;
             let full = read_exact_at(&self.cache, data_offset, out).await?;
             if !full {
-                self.invalidate_range(start_block, len_blocks);
+                self.invalidate_range(start_block, len_blocks).await;
                 missing.extend(start_block..start_block + len_blocks);
             }
         }
@@ -277,10 +315,10 @@ where
         Ok(missing)
     }
 
-    fn mark_in_flight(&self, blocks: &[u64]) -> (Vec<u64>, Vec<oneshot::Receiver<()>>) {
+    async fn mark_in_flight(&self, blocks: &[u64]) -> (Vec<u64>, Vec<oneshot::Receiver<()>>) {
         let mut to_fetch = Vec::new();
         let mut waiters = Vec::new();
-        let mut guard = self.in_flight.lock();
+        let mut guard = self.in_flight.lock().await;
         for block in blocks {
             match guard.waiters.get_mut(block) {
                 Some(pending) => {
@@ -303,8 +341,8 @@ where
         (to_fetch, waiters)
     }
 
-    fn take_waiters(&self, start_block: u64, len_blocks: u64) -> Vec<oneshot::Sender<()>> {
-        let mut guard = self.in_flight.lock();
+    async fn take_waiters(&self, start_block: u64, len_blocks: u64) -> Vec<oneshot::Sender<()>> {
+        let mut guard = self.in_flight.lock().await;
         let mut senders = Vec::new();
         for block in start_block..(start_block + len_blocks) {
             if let Some(mut pending) = guard.waiters.remove(&block) {
@@ -336,7 +374,7 @@ where
         ranges
     }
 
-    fn mark_valid_and_collect_bitmap_write(
+    async fn mark_valid_and_collect_bitmap_write(
         &self,
         start_block: u64,
         blocks: u64,
@@ -347,8 +385,9 @@ where
         let first_byte = (start_block / 8) as usize;
         let last_byte = ((end_block - 1) / 8) as usize;
 
-        let mut guard = self.state.lock();
-        set_bits(&mut guard.valid, start_block, blocks);
+        let mut guard = self.state.lock().await;
+        let newly_cached = set_bits_and_count_new(&mut guard.valid, start_block, blocks);
+        guard.cached_blocks = guard.cached_blocks.saturating_add(newly_cached);
         guard.blocks_since_flush = guard.blocks_since_flush.saturating_add(blocks as u32);
         let should_flush = guard.blocks_since_flush >= self.flush_every_blocks;
         let chunk = guard.valid[first_byte..=last_byte].to_vec();
@@ -358,10 +397,9 @@ where
 
     async fn flush_locked_if_needed(&self, force: bool) -> GibbloxResult<()> {
         let (should_flush, blocks_written, valid_blocks) = {
-            let guard = self.state.lock();
-            let valid = guard.valid.iter().map(|b| b.count_ones()).sum::<u32>();
+            let guard = self.state.lock().await;
             let should = force || guard.blocks_since_flush >= self.flush_every_blocks;
-            (should, guard.blocks_since_flush, valid)
+            (should, guard.blocks_since_flush, guard.cached_blocks)
         };
         if !should_flush {
             return Ok(());
@@ -376,7 +414,7 @@ where
 
         self.cache.flush().await?;
 
-        let mut guard = self.state.lock();
+        let mut guard = self.state.lock().await;
         guard.blocks_since_flush = 0;
         debug!("cache flush completed successfully");
         Ok(())
@@ -411,8 +449,9 @@ where
                 let data_offset = self.data_offset_for_block(*start_block)?;
                 self.cache.write_at(data_offset, &buf).await?;
 
-                let (bitmap_offset, bitmap_chunk, should_flush) =
-                    self.mark_valid_and_collect_bitmap_write(*start_block, *len_blocks)?;
+                let (bitmap_offset, bitmap_chunk, should_flush) = self
+                    .mark_valid_and_collect_bitmap_write(*start_block, *len_blocks)
+                    .await?;
                 self.cache.write_at(bitmap_offset, &bitmap_chunk).await?;
                 trace!(
                     start_block,
@@ -429,7 +468,7 @@ where
             }
             .await;
 
-            let senders = self.take_waiters(*start_block, *len_blocks);
+            let senders = self.take_waiters(*start_block, *len_blocks).await;
             for sender in senders {
                 let _ = sender.send(());
             }
@@ -471,7 +510,7 @@ where
         }
 
         // Mark in-flight for deduplication
-        let (to_fetch, waiters) = self.mark_in_flight(&missing);
+        let (to_fetch, waiters) = self.mark_in_flight(&missing).await;
 
         // Fetch missing ranges if we're the first to request them
         if !to_fetch.is_empty() {
@@ -523,7 +562,7 @@ where
 
         // Update hit/miss statistics and log periodically
         {
-            let mut guard = self.state.lock();
+            let mut guard = self.state.lock().await;
             if missing.is_empty() {
                 guard.total_hits += blocks;
             } else {
@@ -550,7 +589,7 @@ where
 
         trace!(lba, blocks, missing = missing.len(), "cache miss");
 
-        let (to_fetch, waiters) = self.mark_in_flight(&missing);
+        let (to_fetch, waiters) = self.mark_in_flight(&missing).await;
         if !to_fetch.is_empty() {
             self.fetch_and_populate(&Self::coalesce(&to_fetch), ctx)
                 .await?;
@@ -873,6 +912,7 @@ struct CacheState {
     total_hits: u64,
     total_misses: u64,
     last_stats_log: u64,
+    cached_blocks: u64,
 }
 
 fn bit_is_set(bits: &[u8], idx: u64) -> bool {
@@ -881,31 +921,67 @@ fn bit_is_set(bits: &[u8], idx: u64) -> bool {
     bits[byte_idx] & mask != 0
 }
 
-fn set_bits(bits: &mut [u8], start: u64, len: u64) {
-    for idx in start..start + len {
-        let byte_idx = (idx / 8) as usize;
-        let mask = 1u8 << (idx % 8);
-        bits[byte_idx] |= mask;
-    }
+fn bit_mask(start_bit: u8, end_bit: u8) -> u8 {
+    let width = (end_bit - start_bit + 1) as u16;
+    let ones = if width >= 8 {
+        u16::from(u8::MAX)
+    } else {
+        (1u16 << width) - 1
+    };
+    (ones as u8) << start_bit
 }
 
-fn clear_bits(bits: &mut [u8], start: u64, len: u64) {
-    for idx in start..start + len {
+fn set_bits_and_count_new(bits: &mut [u8], start: u64, len: u64) -> u64 {
+    let mut idx = start;
+    let end = start + len;
+    let mut newly_set = 0u64;
+    while idx < end {
         let byte_idx = (idx / 8) as usize;
-        let mask = 1u8 << (idx % 8);
-        bits[byte_idx] &= !mask;
+        let start_bit = (idx % 8) as u8;
+        let span = ((8 - start_bit as u64).min(end - idx)) as u8;
+        let end_bit = start_bit + span - 1;
+        let mask = bit_mask(start_bit, end_bit);
+        let before = bits[byte_idx];
+        let after = before | mask;
+        bits[byte_idx] = after;
+        newly_set += (after.count_ones() - before.count_ones()) as u64;
+        idx += span as u64;
     }
+    newly_set
+}
+
+fn clear_bits_and_count_removed(bits: &mut [u8], start: u64, len: u64) -> u64 {
+    let mut idx = start;
+    let end = start + len;
+    let mut removed = 0u64;
+    while idx < end {
+        let byte_idx = (idx / 8) as usize;
+        let start_bit = (idx % 8) as u8;
+        let span = ((8 - start_bit as u64).min(end - idx)) as u8;
+        let end_bit = start_bit + span - 1;
+        let mask = bit_mask(start_bit, end_bit);
+        let before = bits[byte_idx];
+        let after = before & !mask;
+        bits[byte_idx] = after;
+        removed += (before.count_ones() - after.count_ones()) as u64;
+        idx += span as u64;
+    }
+    removed
+}
+
+fn count_set_bits(bits: &[u8]) -> u64 {
+    bits.iter().map(|byte| byte.count_ones() as u64).sum()
 }
 
 /// In-memory cache file implementation useful for tests and embedded callers.
 pub struct MemoryCacheOps {
-    state: SpinLock<Vec<u8>>,
+    state: async_lock::Mutex<Vec<u8>>,
 }
 
 impl MemoryCacheOps {
     pub fn new() -> Self {
         Self {
-            state: SpinLock::new(Vec::new()),
+            state: async_lock::Mutex::new(Vec::new()),
         }
     }
 }
@@ -922,7 +998,7 @@ impl CacheOps for MemoryCacheOps {
         if out.is_empty() {
             return Ok(0);
         }
-        let guard = self.state.lock();
+        let guard = self.state.lock().await;
         let start = match usize::try_from(offset) {
             Ok(v) => v,
             Err(_) => return Ok(0),
@@ -940,7 +1016,7 @@ impl CacheOps for MemoryCacheOps {
         if data.is_empty() {
             return Ok(());
         }
-        let mut guard = self.state.lock();
+        let mut guard = self.state.lock().await;
         let start = usize::try_from(offset).map_err(|_| {
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset exceeds memory cache")
         })?;
@@ -958,144 +1034,12 @@ impl CacheOps for MemoryCacheOps {
         let len = usize::try_from(len).map_err(|_| {
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "length exceeds memory cache")
         })?;
-        let mut guard = self.state.lock();
+        let mut guard = self.state.lock().await;
         guard.resize(len, 0);
         Ok(())
     }
 
     async fn flush(&self) -> GibbloxResult<()> {
         Ok(())
-    }
-}
-
-/// Minimal spin-based lock suitable for short critical sections in `no_std + alloc`.
-pub struct SpinLock<T> {
-    locked: AtomicBool,
-    value: UnsafeCell<T>,
-}
-
-unsafe impl<T: Send> Send for SpinLock<T> {}
-unsafe impl<T: Send> Sync for SpinLock<T> {}
-
-impl<T> SpinLock<T> {
-    pub const fn new(value: T) -> Self {
-        Self {
-            locked: AtomicBool::new(false),
-            value: UnsafeCell::new(value),
-        }
-    }
-
-    pub fn lock(&self) -> SpinLockGuard<'_, T> {
-        while self
-            .locked
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            while self.locked.load(Ordering::Relaxed) {
-                spin_loop();
-            }
-        }
-        SpinLockGuard { lock: self }
-    }
-}
-
-pub struct SpinLockGuard<'a, T> {
-    lock: &'a SpinLock<T>,
-}
-
-impl<T> core::ops::Deref for SpinLockGuard<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        // SAFETY: protected by `SpinLock::lock` and released in guard drop.
-        unsafe { &*self.lock.value.get() }
-    }
-}
-
-impl<T> core::ops::DerefMut for SpinLockGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: protected by `SpinLock::lock` and released in guard drop.
-        unsafe { &mut *self.lock.value.get() }
-    }
-}
-
-impl<T> Drop for SpinLockGuard<'_, T> {
-    fn drop(&mut self) {
-        self.lock.locked.store(false, Ordering::Release);
-    }
-}
-
-/// A tiny async lock built on top of `SpinLock` and oneshot waiters.
-pub struct AsyncLock {
-    state: SpinLock<AsyncLockState>,
-}
-
-struct AsyncLockState {
-    locked: bool,
-    waiters: Vec<oneshot::Sender<()>>,
-}
-
-impl AsyncLock {
-    pub fn new() -> Self {
-        Self {
-            state: SpinLock::new(AsyncLockState {
-                locked: false,
-                waiters: Vec::new(),
-            }),
-        }
-    }
-
-    pub async fn lock(&self) -> AsyncLockGuard<'_> {
-        loop {
-            let waiter = {
-                let mut guard = self.state.lock();
-                if !guard.locked {
-                    guard.locked = true;
-                    None
-                } else {
-                    let (tx, rx) = oneshot::channel();
-                    guard.waiters.push(tx);
-                    Some(rx)
-                }
-            };
-
-            if let Some(waiter) = waiter {
-                let _ = waiter.await;
-                continue;
-            }
-
-            return AsyncLockGuard { lock: self };
-        }
-    }
-
-    fn unlock(&self) {
-        let maybe_next = {
-            let mut guard = self.state.lock();
-            if let Some(next) = guard.waiters.pop() {
-                Some(next)
-            } else {
-                guard.locked = false;
-                None
-            }
-        };
-        if let Some(next) = maybe_next {
-            let _ = next.send(());
-        }
-    }
-}
-
-impl Default for AsyncLock {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub struct AsyncLockGuard<'a> {
-    lock: &'a AsyncLock,
-}
-
-impl Drop for AsyncLockGuard<'_> {
-    fn drop(&mut self) {
-        self.lock.unlock();
     }
 }

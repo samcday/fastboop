@@ -154,48 +154,7 @@
       color: var(--text);
       font-family: monospace;
     }
-    #log {
-      max-height: 500px;
-      overflow-y: auto;
-      font-family: "Fira Code", "Consolas", monospace;
-      font-size: 0.8rem;
-      line-height: 1.5;
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 12px;
-    }
-    .log-line {
-      margin: 0;
-      padding: 2px 0;
-      word-break: break-all;
-    }
-    .log-line:hover {
-      background: rgba(86, 241, 197, 0.05);
-    }
-    /* Log level colors */
-    .log-trace { color: var(--muted); }
-    .log-debug { color: #8be9fd; }
-    .log-info { color: var(--accent); }
-    .log-warn { color: var(--accent-2); }
-    .log-error { color: var(--warning); }
-    
-    /* Scrollbar styling */
-    #log::-webkit-scrollbar {
-      width: 8px;
-    }
-    #log::-webkit-scrollbar-track {
-      background: rgba(0, 0, 0, 0.2);
-      border-radius: 4px;
-    }
-    #log::-webkit-scrollbar-thumb {
-      background: var(--border);
-      border-radius: 4px;
-    }
-    #log::-webkit-scrollbar-thumb:hover {
-      background: var(--muted);
-    }
-    
+
     .hidden {
       display: none;
     }
@@ -216,7 +175,6 @@
       <input type="text" id="url-input" placeholder="https://...">
       <div class="actions">
         <button id="load-btn">Load & Start Workers</button>
-        <button id="clear-logs-btn">Clear Logs</button>
       </div>
     </div>
     
@@ -234,15 +192,26 @@
           <div class="info-value" id="elapsed-time">-</div>
         </div>
         <div class="info-item">
-          <div class="info-label">Log Lines</div>
-          <div class="info-value" id="log-count">0</div>
+          <div class="info-label">Cached Blocks</div>
+          <div class="info-value" id="cached-blocks">-</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Cache Fill</div>
+          <div class="info-value" id="cache-fill">-</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Total Hits</div>
+          <div class="info-value" id="total-hits">-</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Total Misses</div>
+          <div class="info-value" id="total-misses">-</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Hit Rate</div>
+          <div class="info-value" id="hit-rate">-</div>
         </div>
       </div>
-    </div>
-    
-    <div class="panel">
-      <h3>Worker Activity Log</h3>
-      <div id="log"></div>
     </div>
   </div>
   
@@ -250,13 +219,10 @@
     import init, * as wasm from "./pkg/cache_visualizer.js";
     
     let rafId = null;
-    let logElement = null;
-    let autoScroll = true;
+    let statsPollId = null;
     
     async function main() {
       await init();
-      
-      logElement = document.getElementById("log");
       
       // Parse URL fragment
       const fragment = window.location.hash.slice(1);
@@ -283,6 +249,14 @@
           await wasm.load_url(url);
           document.getElementById("stats-panel").classList.remove("hidden");
           document.getElementById("status").textContent = "Workers spawned, observing activity...";
+          if (rafId !== null) {
+            cancelAnimationFrame(rafId);
+            rafId = null;
+          }
+          if (statsPollId !== null) {
+            clearInterval(statsPollId);
+            statsPollId = null;
+          }
           startVisualization();
           loadBtn.textContent = "Loaded";
         } catch (e) {
@@ -292,50 +266,37 @@
           loadBtn.textContent = "Load & Start Workers";
         }
       });
-      
-      // Clear logs button
-      document.getElementById("clear-logs-btn").addEventListener("click", () => {
-        logElement.innerHTML = "";
-      });
-      
-      // Detect if user scrolls up (disable auto-scroll)
-      logElement.addEventListener("scroll", () => {
-        const isScrolledToBottom = logElement.scrollHeight - logElement.clientHeight <= logElement.scrollTop + 1;
-        autoScroll = isScrolledToBottom;
-      });
     }
     
     function startVisualization() {
-      let lastLogCount = 0;
-      
-      function tick() {
-        // Get log lines
-        const lines = wasm.get_log_lines(500);
-        const logCount = lines.length;
-        
-        // Only update if new logs arrived
-        if (logCount !== lastLogCount) {
-          const fragment = document.createDocumentFragment();
-          
-          for (let i = lines.length - 1; i >= 0; i--) {
-            const line = lines[i];
-            const div = document.createElement("div");
-            div.className = "log-line " + getLogClass(line);
-            div.textContent = line;
-            fragment.appendChild(div);
+      async function pollCacheStats() {
+        try {
+          const stats = await wasm.get_cache_stats();
+          if (!stats) {
+            return;
           }
-          
-          logElement.innerHTML = "";
-          logElement.appendChild(fragment);
-          
-          if (autoScroll) {
-            logElement.scrollTop = logElement.scrollHeight;
-          }
-          
-          lastLogCount = logCount;
-          document.getElementById("log-count").textContent = logCount;
+
+          document.getElementById("cached-blocks").textContent =
+            stats.cached_blocks.toLocaleString();
+          const fillRate = stats.total_blocks === 0
+            ? 0
+            : (stats.cached_blocks / stats.total_blocks) * 100;
+          document.getElementById("cache-fill").textContent =
+            formatPercent(fillRate);
+          document.getElementById("total-hits").textContent =
+            stats.total_hits.toLocaleString();
+          document.getElementById("total-misses").textContent =
+            stats.total_misses.toLocaleString();
+
+          const totalReads = stats.total_hits + stats.total_misses;
+          const hitRate = totalReads === 0 ? 0 : (stats.total_hits / totalReads) * 100;
+          document.getElementById("hit-rate").textContent = formatPercent(hitRate);
+        } catch (e) {
+          console.error("Failed to poll cache stats", e);
         }
-        
+      }
+
+      function tick() {
         // Update info
         const info = wasm.get_info();
         if (info) {
@@ -348,16 +309,18 @@
         rafId = requestAnimationFrame(tick);
       }
       
+      void pollCacheStats();
+      statsPollId = setInterval(() => {
+        void pollCacheStats();
+      }, 500);
       rafId = requestAnimationFrame(tick);
     }
-    
-    function getLogClass(line) {
-      if (line.includes("TRACE")) return "log-trace";
-      if (line.includes("DEBUG")) return "log-debug";
-      if (line.includes("INFO")) return "log-info";
-      if (line.includes("WARN")) return "log-warn";
-      if (line.includes("ERROR")) return "log-error";
-      return "";
+
+    function formatPercent(value) {
+      if (!Number.isFinite(value)) {
+        return "0.0%";
+      }
+      return `${value.toFixed(1)}%`;
     }
     
     function formatElapsed(ms) {

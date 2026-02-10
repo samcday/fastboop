@@ -2,13 +2,18 @@ extern crate alloc;
 
 use alloc::{boxed::Box, sync::Arc};
 use async_trait::async_trait;
-use core::{fmt, future::Future, pin::Pin};
+use core::{
+    fmt,
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 use futures_channel::mpsc::{self, Receiver, Sender};
 use futures_util::stream::StreamExt;
 use gibblox_core::{BlockReader, GibbloxResult, ReadContext};
 use tracing::{debug, trace};
 
-use crate::CachedBlockReader;
+use crate::{CacheStats, CachedBlockReader};
 
 /// Configuration for greedy prefetch behavior.
 #[derive(Clone, Copy, Debug)]
@@ -143,6 +148,11 @@ where
 
         Ok((reader, workers))
     }
+
+    /// Return a snapshot of cache statistics.
+    pub async fn get_stats(&self) -> GibbloxResult<CacheStats> {
+        Ok(self.inner.get_stats().await)
+    }
 }
 
 #[async_trait]
@@ -179,6 +189,33 @@ where
             .read_blocks(lba, buf, ReadContext::FOREGROUND)
             .await
     }
+}
+
+/// Yield control to the async executor.
+///
+/// This is critical for cooperative multitasking (wasm32) where workers must
+/// explicitly yield to prevent monopolizing the single-threaded event loop.
+/// On native runtimes (tokio), this still helps maintain fairness.
+async fn yield_now() {
+    struct YieldNow {
+        yielded: bool,
+    }
+
+    impl Future for YieldNow {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.yielded {
+                Poll::Ready(())
+            } else {
+                self.yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+
+    YieldNow { yielded: false }.await
 }
 
 /// Compute starting positions for 4 sweep workers.
@@ -273,6 +310,9 @@ async fn hot_worker_loop<S, C>(
 
             cursor += batch;
 
+            // Yield to executor after every batch (critical for cooperative runtimes)
+            yield_now().await;
+
             // Break early if new hint arrived (react to fresh access)
             match rx.try_next() {
                 Ok(Some(_)) | Ok(None) => {
@@ -362,5 +402,8 @@ async fn sweep_worker_loop<S, C>(
         } else {
             cursor.saturating_sub(batch)
         };
+
+        // Yield to executor after every batch (critical for cooperative runtimes)
+        yield_now().await;
     }
 }

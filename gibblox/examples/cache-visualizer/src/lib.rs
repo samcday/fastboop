@@ -1,16 +1,15 @@
 use std::cell::RefCell;
-use std::io::Write;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
-use gibblox_cache::greedy::{GreedyCachedBlockReader, GreedyConfig};
+use anyhow::{Result, anyhow};
 use gibblox_cache::CachedBlockReader;
+use gibblox_cache::greedy::{GreedyCachedBlockReader, GreedyConfig};
 use gibblox_cache_store_opfs::OpfsCacheOps;
 use gibblox_http::HttpBlockReader;
-use tracing::{info, Level};
+use tracing::{Level, info};
 use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::registry;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, registry, Layer};
 use tracing_wasm::{WASMLayer, WASMLayerConfigBuilder};
 use url::Url;
 use wasm_bindgen::prelude::*;
@@ -21,11 +20,9 @@ const DEFAULT_URL: &str = "https://bleeding.fastboop.win/sdm845-live-fedora/2026
 // Thread-local state for the visualizer
 thread_local! {
     static VISUALIZER_STATE: RefCell<Option<VisualizerState>> = RefCell::new(None);
-    static LOG_BUFFER: RefCell<Vec<String>> = RefCell::new(Vec::new());
 }
 
 struct VisualizerState {
-    #[allow(dead_code)]
     reader: Arc<GreedyCachedBlockReader<HttpBlockReader, OpfsCacheOps>>,
     total_blocks: u64,
     start_time_ms: f64,
@@ -39,53 +36,14 @@ pub fn main() {
 }
 
 fn init_tracing() {
-    // Custom writer that captures logs to thread-local buffer
-    struct LogCapturingWriter;
-
-    impl Write for LogCapturingWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            let line = String::from_utf8_lossy(buf).into_owned();
-            LOG_BUFFER.with(|cell| {
-                let mut logs = cell.borrow_mut();
-                logs.push(line.trim_end().to_string());
-                // Keep only last 1000 lines
-                if logs.len() > 1000 {
-                    let excess = logs.len() - 1000;
-                    logs.drain(0..excess);
-                }
-            });
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    struct LogCapturingMakeWriter;
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapturingMakeWriter {
-        type Writer = LogCapturingWriter;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            LogCapturingWriter
-        }
-    }
-
-    // Setup tracing with both console and log capture
+    // Setup tracing with console output only
     let wasm_layer = WASMLayer::new(
         WASMLayerConfigBuilder::default()
             .set_max_level(Level::TRACE)
             .build(),
     );
 
-    let fmt_layer = fmt::layer()
-        .with_ansi(false)
-        .without_time() // SystemTime not available in wasm32
-        .with_writer(LogCapturingMakeWriter)
-        .with_filter(tracing_subscriber::filter::LevelFilter::TRACE);
-
-    registry().with(wasm_layer).with(fmt_layer).init();
+    registry().with(wasm_layer).init();
 }
 
 #[wasm_bindgen]
@@ -125,13 +83,14 @@ pub async fn load_url(url: String) -> Result<(), JsValue> {
 
         // Create greedy config optimized for web
         let config = GreedyConfig {
-            yield_every_n_batches: Some(4), // Yield every 4 batches for cooperative multitasking
-            hot_batch_size: 1024,            // ~512KB @ 512B blocks
-            sweep_chunk_size: 2048,          // ~1MB @ 512B blocks
+            hot_batch_size: 1024,   // ~512KB @ 512B blocks
+            sweep_chunk_size: 2048, // ~1MB @ 512B blocks
             ..Default::default()
         };
-        info!("Greedy config: yield_every={:?}, hot_batch={}, sweep_chunk={}", 
-            config.yield_every_n_batches, config.hot_batch_size, config.sweep_chunk_size);
+        info!(
+            "Greedy config: hot_batch={}, sweep_chunk={}",
+            config.hot_batch_size, config.sweep_chunk_size
+        );
 
         // Create greedy reader and workers
         info!("Creating greedy cached block reader...");
@@ -178,20 +137,28 @@ pub async fn load_url(url: String) -> Result<(), JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn get_log_lines(max: usize) -> Vec<JsValue> {
-    LOG_BUFFER.with(|cell| {
-        let logs = cell.borrow();
-        logs.iter()
-            .rev()
-            .take(max)
-            .map(|s| JsValue::from_str(s))
-            .collect()
-    })
+pub fn get_default_url() -> String {
+    DEFAULT_URL.to_string()
 }
 
 #[wasm_bindgen]
-pub fn get_default_url() -> String {
-    DEFAULT_URL.to_string()
+pub async fn get_cache_stats() -> Result<JsValue, JsValue> {
+    let reader = VISUALIZER_STATE.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|state| Arc::clone(&state.reader))
+    });
+    let Some(reader) = reader else {
+        return Ok(JsValue::NULL);
+    };
+
+    let stats = reader
+        .get_stats()
+        .await
+        .map_err(|e| JsValue::from_str(&format!("failed to fetch cache stats: {}", e)))?;
+
+    serde_wasm_bindgen::to_value(&stats)
+        .map_err(|e| JsValue::from_str(&format!("failed to serialize cache stats: {}", e)))
 }
 
 #[wasm_bindgen]

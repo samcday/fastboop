@@ -10,11 +10,15 @@ default = ["std"]
 std = ["futures-channel/std"]
 
 [dependencies]
+async-lock = "3.3"
 async-trait = "0.1.89"
 futures-channel = { version = "0.3.31", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
 gibblox-core = { path = "../gibblox-core", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync"] }
