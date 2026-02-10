@@ -11,17 +11,18 @@ use fastboop_stage0_generator::{build_stage0, Stage0Options};
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::sleep;
 #[cfg(target_arch = "wasm32")]
-use js_sys::{Array, Reflect};
+use js_sys::{Array, Date, Reflect};
 #[cfg(target_arch = "wasm32")]
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 #[cfg(target_arch = "wasm32")]
 use smoo_host_core::{
     control::{read_status, ConfigExportsV0},
     heartbeat_once, register_export, start_host_io_pump, BlockSource, BlockSourceHandle,
-    HostErrorKind, SmooHost, TransportError, TransportErrorKind,
+    ControlTransport, CountingTransport, HostErrorKind, SmooHost, TransportCounterSnapshot,
+    TransportError, TransportErrorKind,
 };
 #[cfg(target_arch = "wasm32")]
-use smoo_host_webusb::{WebUsbControl, WebUsbTransport, WebUsbTransportConfig};
+use smoo_host_webusb::{WebUsbTransport, WebUsbTransportConfig};
 #[cfg(target_arch = "wasm32")]
 use std::collections::BTreeMap;
 #[cfg(target_arch = "wasm32")]
@@ -31,7 +32,10 @@ use std::future::Future;
 use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use std::{cell::Cell, rc::Rc};
-use ui::{oneplus_fajita_dtbo_overlays, CacheStatsPanel, CacheStatsViewModel};
+use ui::{
+    oneplus_fajita_dtbo_overlays, CacheStatsPanel, CacheStatsViewModel, SmooStatsHandle,
+    SmooStatsPanel, SmooStatsViewModel,
+};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::closure::Closure;
 #[cfg(target_arch = "wasm32")]
@@ -162,9 +166,12 @@ fn BootedDevice(session_id: String) -> Element {
         return rsx! {};
     };
     let mut kickoff = use_signal(|| false);
-    let stats = use_signal(|| Option::<CacheStatsViewModel>::None);
+    let cache_stats = use_signal(|| Option::<CacheStatsViewModel>::None);
+    let smoo_stats = use_signal(|| Option::<SmooStatsViewModel>::None);
     #[cfg(target_arch = "wasm32")]
-    let stats_stop = use_signal(|| Option::<Rc<Cell<bool>>>::None);
+    let cache_stats_stop = use_signal(|| Option::<Rc<Cell<bool>>>::None);
+    #[cfg(target_arch = "wasm32")]
+    let smoo_stats_stop = use_signal(|| Option::<Rc<Cell<bool>>>::None);
     let runtime_for_kickoff = runtime.clone();
 
     #[cfg(target_arch = "wasm32")]
@@ -222,6 +229,7 @@ fn BootedDevice(session_id: String) -> Element {
                         runtime_for_host.reader,
                         runtime_for_host.size_bytes,
                         runtime_for_host.identity,
+                        runtime_for_host.smoo_stats,
                         sessions,
                         session_id.clone(),
                     )
@@ -243,27 +251,27 @@ fn BootedDevice(session_id: String) -> Element {
 
     #[cfg(target_arch = "wasm32")]
     {
-        let mut stats = stats;
-        let mut stats_stop = stats_stop;
-        let cache_stats = runtime.cache_stats.clone();
+        let mut cache_stats = cache_stats;
+        let mut cache_stats_stop = cache_stats_stop;
+        let cache_stats_handle = runtime.cache_stats.clone();
         use_effect(move || {
-            let Some(cache_stats) = cache_stats.clone() else {
+            let Some(cache_stats_handle) = cache_stats_handle.clone() else {
                 return;
             };
-            if stats_stop().is_some() {
+            if cache_stats_stop().is_some() {
                 return;
             }
 
             let stop = Rc::new(Cell::new(false));
-            stats_stop.set(Some(stop.clone()));
+            cache_stats_stop.set(Some(stop.clone()));
             spawn_detached(async move {
                 loop {
                     if stop.get() {
                         break;
                     }
-                    match cache_stats.snapshot().await {
+                    match cache_stats_handle.snapshot().await {
                         Ok(snapshot) => {
-                            stats.set(Some(CacheStatsViewModel {
+                            cache_stats.set(Some(CacheStatsViewModel {
                                 total_blocks: snapshot.total_blocks,
                                 cached_blocks: snapshot.cached_blocks,
                                 total_hits: snapshot.total_hits,
@@ -282,15 +290,90 @@ fn BootedDevice(session_id: String) -> Element {
 
     #[cfg(target_arch = "wasm32")]
     {
-        let mut stats_stop = stats_stop;
+        let mut smoo_stats = smoo_stats;
+        let mut smoo_stats_stop = smoo_stats_stop;
+        let smoo_stats_handle = runtime.smoo_stats.clone();
+        use_effect(move || {
+            if smoo_stats_stop().is_some() {
+                return;
+            }
+            let smoo_stats_handle = smoo_stats_handle.clone();
+
+            let stop = Rc::new(Cell::new(false));
+            smoo_stats_stop.set(Some(stop.clone()));
+            spawn_detached(async move {
+                let mut previous = smoo_stats_handle.snapshot();
+                let mut previous_ts = Date::now();
+                let mut ewma_iops = 0.0f64;
+                let mut ewma_up_bps = 0.0f64;
+                let mut ewma_down_bps = 0.0f64;
+                loop {
+                    if stop.get() {
+                        break;
+                    }
+                    sleep(CACHE_STATS_POLL_INTERVAL).await;
+                    let now_ts = Date::now();
+                    let dt = ((now_ts - previous_ts) / 1000.0).max(0.001);
+                    let snapshot = smoo_stats_handle.snapshot();
+
+                    let io_delta = snapshot.total_ios.saturating_sub(previous.total_ios) as f64;
+                    let up_delta = snapshot
+                        .total_bytes_up
+                        .saturating_sub(previous.total_bytes_up)
+                        as f64;
+                    let down_delta = snapshot
+                        .total_bytes_down
+                        .saturating_sub(previous.total_bytes_down)
+                        as f64;
+
+                    let inst_iops = io_delta / dt;
+                    let inst_up_bps = up_delta / dt;
+                    let inst_down_bps = down_delta / dt;
+                    let alpha = 1.0 - (-dt / 5.0).exp();
+
+                    ewma_iops += alpha * (inst_iops - ewma_iops);
+                    ewma_up_bps += alpha * (inst_up_bps - ewma_up_bps);
+                    ewma_down_bps += alpha * (inst_down_bps - ewma_down_bps);
+
+                    smoo_stats.set(Some(SmooStatsViewModel {
+                        connected: snapshot.connected,
+                        total_ios: snapshot.total_ios,
+                        total_bytes_up: snapshot.total_bytes_up,
+                        total_bytes_down: snapshot.total_bytes_down,
+                        ewma_iops,
+                        ewma_up_bps,
+                        ewma_down_bps,
+                    }));
+
+                    previous = snapshot;
+                    previous_ts = now_ts;
+                }
+            });
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut cache_stats_stop = cache_stats_stop;
         use_drop(move || {
-            if let Some(stop) = stats_stop.write().take() {
+            if let Some(stop) = cache_stats_stop.write().take() {
                 stop.set(true);
             }
         });
     }
 
-    let cache_stats = stats();
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut smoo_stats_stop = smoo_stats_stop;
+        use_drop(move || {
+            if let Some(stop) = smoo_stats_stop.write().take() {
+                stop.set(true);
+            }
+        });
+    }
+
+    let cache_stats = cache_stats();
+    let smoo_stats = smoo_stats();
 
     rsx! {
         section { id: "landing",
@@ -299,6 +382,9 @@ fn BootedDevice(session_id: String) -> Element {
                 h1 { "We're live." }
                 p { class: "landing__lede", "Please don't close this page while the session is active." }
                 p { class: "landing__note", "Rootfs: {ROOTFS_URL}" }
+                if let Some(smoo_stats) = smoo_stats {
+                    SmooStatsPanel { stats: smoo_stats }
+                }
                 if let Some(cache_stats) = cache_stats {
                     CacheStatsPanel { stats: cache_stats }
                 }
@@ -1049,6 +1135,7 @@ async fn boot_selected_device(
         size_bytes: runtime.size_bytes,
         identity: runtime.identity,
         cache_stats: runtime.cache_stats,
+        smoo_stats: runtime.smoo_stats,
     })
 }
 
@@ -1088,6 +1175,7 @@ async fn build_stage0_artifacts(
                     size_bytes: opened.size_bytes,
                     identity: opened.identity,
                     cache_stats: opened.cache_stats,
+                    smoo_stats: SmooStatsHandle::new(),
                 },
             ))
         }
@@ -1110,12 +1198,13 @@ async fn run_web_host_daemon(
     reader: std::sync::Arc<dyn gibblox_core::BlockReader>,
     size_bytes: u64,
     identity: String,
+    smoo_stats: SmooStatsHandle,
     mut sessions: SessionStore,
     session_id: String,
 ) -> Result<()> {
     update_session_active_host_state(&mut sessions, &session_id, Some(true), Some(false));
     loop {
-        let (transport, control) = match open_webusb_transport(&initial_device).await {
+        let transport = match open_webusb_transport(&initial_device).await {
             Ok(pair) => pair,
             Err(err) => {
                 warn!(%err, "waiting for smoo webusb gadget");
@@ -1127,10 +1216,10 @@ async fn run_web_host_daemon(
 
         match run_web_session(
             transport,
-            control,
             reader.clone(),
             size_bytes,
             identity.clone(),
+            smoo_stats.clone(),
         )
         .await
         {
@@ -1154,11 +1243,14 @@ enum SessionEnd {
 #[cfg(target_arch = "wasm32")]
 async fn run_web_session(
     transport: WebUsbTransport,
-    control: WebUsbControl,
     reader: std::sync::Arc<dyn gibblox_core::BlockReader>,
     size_bytes: u64,
     identity: String,
+    smoo_stats: SmooStatsHandle,
 ) -> Result<SessionEnd> {
+    let transport = CountingTransport::new(transport);
+    let counters = transport.counters();
+    let control = transport.clone();
     let source = GibbloxBlockSource::new(reader, identity.clone());
     let block_size = source.block_size();
     ensure!(block_size > 0, "block size must be non-zero");
@@ -1200,9 +1292,12 @@ async fn run_web_session(
             Err(err) => {
                 warn!(%err, "SMOO_STATUS failed after CONFIG_EXPORTS");
                 let _ = pump_handle.shutdown().await;
+                smoo_stats.set_connected(false);
                 return Ok(SessionEnd::TransportLost);
             }
         };
+    smoo_stats.set_connected(true);
+    let mut counter_snapshot = counters.snapshot();
 
     let heartbeat_stop = Rc::new(Cell::new(false));
     let heartbeat_client = control.clone();
@@ -1220,24 +1315,37 @@ async fn run_web_session(
     loop {
         match host.run_once().await {
             Ok(()) => {
+                update_smoo_stats_from_transport(
+                    &smoo_stats,
+                    &mut counter_snapshot,
+                    counters.snapshot(),
+                );
                 sleep(IDLE_POLL).await;
             }
             Err(err) if err.kind() == HostErrorKind::Transport => break,
             Err(err) => {
                 heartbeat_stop.set(true);
+                update_smoo_stats_from_transport(
+                    &smoo_stats,
+                    &mut counter_snapshot,
+                    counters.snapshot(),
+                );
+                smoo_stats.set_connected(false);
                 return Err(anyhow!(err.to_string()));
             }
         }
     }
 
     heartbeat_stop.set(true);
+    update_smoo_stats_from_transport(&smoo_stats, &mut counter_snapshot, counters.snapshot());
+    smoo_stats.set_connected(false);
     let _ = pump_handle.shutdown().await;
     Ok(SessionEnd::TransportLost)
 }
 
 #[cfg(target_arch = "wasm32")]
 async fn run_web_heartbeat(
-    client: WebUsbControl,
+    client: impl ControlTransport,
     initial_session_id: u64,
     interval: Duration,
     stop: Rc<Cell<bool>>,
@@ -1268,7 +1376,7 @@ async fn run_web_heartbeat(
 
 #[cfg(target_arch = "wasm32")]
 async fn fetch_status_with_retry(
-    client: &WebUsbControl,
+    client: &impl ControlTransport,
     attempts: usize,
     delay: Duration,
 ) -> std::result::Result<u64, TransportError> {
@@ -1293,9 +1401,7 @@ async fn fetch_status_with_retry(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn open_webusb_transport(
-    initial_device: &web_sys::UsbDevice,
-) -> Result<(WebUsbTransport, WebUsbControl)> {
+async fn open_webusb_transport(initial_device: &web_sys::UsbDevice) -> Result<WebUsbTransport> {
     if let Ok(pair) = try_open_transport_for_device(initial_device).await {
         return Ok(pair);
     }
@@ -1329,9 +1435,7 @@ async fn open_webusb_transport(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn try_open_transport_for_device(
-    device: &web_sys::UsbDevice,
-) -> Result<(WebUsbTransport, WebUsbControl)> {
+async fn try_open_transport_for_device(device: &web_sys::UsbDevice) -> Result<WebUsbTransport> {
     let mut last_err = None;
     for interface in 0..=7u8 {
         let config = WebUsbTransportConfig {
@@ -1343,9 +1447,8 @@ async fn try_open_transport_for_device(
         };
         match WebUsbTransport::new(device.clone(), config).await {
             Ok(transport) => {
-                let control = transport.control_handle();
                 debug!(interface, "connected to smoo webusb transport");
-                return Ok((transport, control));
+                return Ok(transport);
             }
             Err(err) => {
                 last_err = Some(format!("iface {interface}: {err}"));
@@ -1378,6 +1481,24 @@ async fn authorized_usb_devices() -> Result<Vec<web_sys::UsbDevice>> {
     }
     debug!(count = out.len(), "authorized webusb devices enumerated");
     Ok(out)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn update_smoo_stats_from_transport(
+    smoo_stats: &SmooStatsHandle,
+    previous: &mut TransportCounterSnapshot,
+    current: TransportCounterSnapshot,
+) {
+    let bytes_up_delta = current.bytes_up.saturating_sub(previous.bytes_up);
+    let bytes_down_delta = current.bytes_down.saturating_sub(previous.bytes_down);
+    let ios_up_delta = current.ios_up.saturating_sub(previous.ios_up);
+    let ios_down_delta = current.ios_down.saturating_sub(previous.ios_down);
+    smoo_stats.add_deltas(
+        ios_up_delta.saturating_add(ios_down_delta),
+        bytes_up_delta,
+        bytes_down_delta,
+    );
+    *previous = current;
 }
 
 fn join_cmdline(left: Option<&str>, right: Option<&str>) -> String {

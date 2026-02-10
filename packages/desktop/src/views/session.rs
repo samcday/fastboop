@@ -6,6 +6,7 @@ use fastboop_core::DeviceProfile;
 use fastboop_erofs_rootfs::CacheStatsHandle;
 use fastboop_fastboot_rusb::RusbDeviceHandle;
 use gibblox_core::BlockReader;
+use ui::SmooStatsHandle;
 
 #[derive(Clone)]
 pub struct ProbedDevice {
@@ -22,6 +23,7 @@ pub struct BootRuntime {
     pub size_bytes: u64,
     pub identity: String,
     pub cache_stats: Option<CacheStatsHandle>,
+    pub smoo_stats: SmooStatsHandle,
 }
 
 #[derive(Clone)]

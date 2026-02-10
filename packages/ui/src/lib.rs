@@ -6,6 +6,8 @@ mod dtbo;
 pub use dtbo::oneplus_fajita_dtbo_overlays;
 mod cache_stats;
 pub use cache_stats::{CacheStatsPanel, CacheStatsViewModel};
+mod smoo_stats;
+pub use smoo_stats::{SmooStatsHandle, SmooStatsPanel, SmooStatsSnapshot, SmooStatsViewModel};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportKind {

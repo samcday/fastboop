@@ -117,6 +117,10 @@ pub struct TransportCounterSnapshot {
     pub bytes_up: u64,
     /// Bytes received gadget → host.
     pub bytes_down: u64,
+    /// Transfer operations sent from host → gadget.
+    pub ios_up: u64,
+    /// Transfer operations received from gadget → host.
+    pub ios_down: u64,
 }
 
 /// Shared counters for a transport instance.
@@ -124,6 +128,8 @@ pub struct TransportCounterSnapshot {
 pub struct TransportCounters {
     bytes_up: Arc<CounterAtomic>,
     bytes_down: Arc<CounterAtomic>,
+    ios_up: Arc<CounterAtomic>,
+    ios_down: Arc<CounterAtomic>,
 }
 
 impl TransportCounters {
@@ -131,6 +137,8 @@ impl TransportCounters {
         Self {
             bytes_up: Arc::new(CounterAtomic::new(0)),
             bytes_down: Arc::new(CounterAtomic::new(0)),
+            ios_up: Arc::new(CounterAtomic::new(0)),
+            ios_down: Arc::new(CounterAtomic::new(0)),
         }
     }
 
@@ -144,10 +152,22 @@ impl TransportCounters {
         self.bytes_down.load(Ordering::Relaxed)
     }
 
+    /// Transfer operations sent from host → gadget so far.
+    pub fn ios_up(&self) -> u64 {
+        self.ios_up.load(Ordering::Relaxed)
+    }
+
+    /// Transfer operations received from gadget → host so far.
+    pub fn ios_down(&self) -> u64 {
+        self.ios_down.load(Ordering::Relaxed)
+    }
+
     /// Reset both counters back to zero.
     pub fn reset(&self) {
         self.bytes_up.store(0, Ordering::Relaxed);
         self.bytes_down.store(0, Ordering::Relaxed);
+        self.ios_up.store(0, Ordering::Relaxed);
+        self.ios_down.store(0, Ordering::Relaxed);
     }
 
     /// Obtain a point-in-time view of both counters.
@@ -155,6 +175,8 @@ impl TransportCounters {
         TransportCounterSnapshot {
             bytes_up: self.bytes_up(),
             bytes_down: self.bytes_down(),
+            ios_up: self.ios_up(),
+            ios_down: self.ios_down(),
         }
     }
 
@@ -164,6 +186,14 @@ impl TransportCounters {
 
     fn add_down(&self, bytes: usize) {
         self.add_to_counter(&self.bytes_down, bytes);
+    }
+
+    fn add_io_up(&self) {
+        self.add_to_counter(&self.ios_up, 1);
+    }
+
+    fn add_io_down(&self) {
+        self.add_to_counter(&self.ios_down, 1);
     }
 
     fn add_to_counter(&self, counter: &CounterAtomic, bytes: usize) {
@@ -218,7 +248,10 @@ where
     ) -> TransportResult<usize> {
         let res = self.inner.control_in(request_type, request, buf).await;
         if let Ok(len) = res {
-            self.counters.add_down(len);
+            if len > 0 {
+                self.counters.add_down(len);
+                self.counters.add_io_down();
+            }
         }
         res
     }
@@ -232,6 +265,7 @@ where
         let res = self.inner.control_out(request_type, request, data).await;
         if res.is_ok() {
             self.counters.add_up(data.len());
+            self.counters.add_io_up();
         }
         res
     }
@@ -245,7 +279,10 @@ where
     async fn read_interrupt(&self, buf: &mut [u8]) -> TransportResult<usize> {
         let res = self.inner.read_interrupt(buf).await;
         if let Ok(len) = res {
-            self.counters.add_down(len);
+            if len > 0 {
+                self.counters.add_down(len);
+                self.counters.add_io_down();
+            }
         }
         res
     }
@@ -254,6 +291,7 @@ where
         let res = self.inner.write_interrupt(buf).await;
         if res.is_ok() {
             self.counters.add_up(buf.len());
+            self.counters.add_io_up();
         }
         res
     }
@@ -261,7 +299,10 @@ where
     async fn read_bulk(&self, buf: &mut [u8]) -> TransportResult<usize> {
         let res = self.inner.read_bulk(buf).await;
         if let Ok(len) = res {
-            self.counters.add_down(len);
+            if len > 0 {
+                self.counters.add_down(len);
+                self.counters.add_io_down();
+            }
         }
         res
     }
@@ -270,6 +311,7 @@ where
         let res = self.inner.write_bulk(buf).await;
         if res.is_ok() {
             self.counters.add_up(buf.len());
+            self.counters.add_io_up();
         }
         res
     }

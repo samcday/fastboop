@@ -6,7 +6,6 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use fastboop_core::RootfsProvider;
 use gibblox_cache::CachedBlockReader;
-#[cfg(not(target_arch = "wasm32"))]
 use gibblox_cache::greedy::GreedyCachedBlockReader;
 #[cfg(target_arch = "wasm32")]
 use gibblox_cache_store_opfs::OpfsCacheOps;
@@ -97,15 +96,20 @@ impl CacheStatsSource for GreedyCacheStatsSource {
 }
 
 #[cfg(target_arch = "wasm32")]
-struct CachedCacheStatsSource {
-    reader: Arc<CachedBlockReader<HttpBlockReader, OpfsCacheOps>>,
+struct GreedyCacheStatsSource {
+    reader: Arc<GreedyCachedBlockReader<HttpBlockReader, OpfsCacheOps>>,
 }
 
 #[cfg(target_arch = "wasm32")]
 #[async_trait]
-impl CacheStatsSource for CachedCacheStatsSource {
+impl CacheStatsSource for GreedyCacheStatsSource {
     async fn snapshot(&self) -> Result<RootfsCacheStats> {
-        Ok(self.reader.get_stats().await.into())
+        let stats = self
+            .reader
+            .get_stats()
+            .await
+            .map_err(|err| anyhow!("read greedy cache stats: {err}"))?;
+        Ok(stats.into())
     }
 }
 
@@ -207,25 +211,22 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
         let cached = CachedBlockReader::new(http_reader, cache)
             .await
             .map_err(|err| anyhow!("initialize OPFS cache for HTTP rootfs: {err}"))?;
-        let cached = Arc::new(cached);
+        let (greedy, workers) = GreedyCachedBlockReader::new(cached, Default::default())
+            .await
+            .map_err(|err| anyhow!("initialize greedy cache for HTTP rootfs: {err}"))?;
+        let greedy = Arc::new(greedy);
 
-        // // Wrap in greedy reader and spawn workers
-        // let (greedy, workers) = GreedyCachedBlockReader::new(cached, Default::default())
-        //     .await
-        //     .map_err(|err| anyhow!("initialize greedy cache for HTTP rootfs: {err}"))?;
-
-        // // Spawn background workers using wasm-bindgen-futures
-        // wasm_bindgen_futures::spawn_local(workers.hot_worker);
-        // for worker in workers.sweep_workers {
-        //     wasm_bindgen_futures::spawn_local(worker);
-        // }
+        wasm_bindgen_futures::spawn_local(workers.hot_worker);
+        for worker in workers.sweep_workers {
+            wasm_bindgen_futures::spawn_local(worker);
+        }
 
         let reader = Arc::new(
-            PagedLruBlockReader::new(cached.clone(), Default::default())
+            PagedLruBlockReader::new(greedy.clone(), Default::default())
                 .await
                 .map_err(|err| anyhow!("initialize paged LRU for HTTP rootfs: {err}"))?,
         );
-        let cache_stats = Arc::new(CachedCacheStatsSource { reader: cached }) as CacheStatsHandle;
+        let cache_stats = Arc::new(GreedyCacheStatsSource { reader: greedy }) as CacheStatsHandle;
         (reader, Some(cache_stats))
     };
 
