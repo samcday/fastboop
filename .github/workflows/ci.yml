@@ -79,30 +79,26 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-      - name: Dioxus build (web)
-        run: dx build -p fastboop-web --release
+      - name: Dioxus build (web release)
+        run: dx build -p fastboop-web --release --debug-symbols false --base-path "/commit/${GITHUB_SHA}/"
 
-      - name: Dump stage0 nested build log (web)
-        if: failure()
+      - name: Dioxus build (desktop release)
+        run: dx build -p fastboop-desktop --release
+
+      - name: Upload bleeding snapshot to R2
+        if: github.ref == 'refs/heads/main'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_REGION: auto
+          AWS_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
         run: |
-          if [ -f target/stage0-subbuild.log ]; then
-            cat target/stage0-subbuild.log
-          else
-            echo "target/stage0-subbuild.log not found"
-          fi
-
-      - name: Re-run cargo web build directly (debug diagnostics)
-        if: failure()
-        run: |
-          cargo build \
-            -p fastboop-web \
-            --target wasm32-unknown-unknown \
-            --features "web js_cfg" \
-            --locked \
-            -vv || true
-
-      - name: Dioxus build (desktop)
-        run: dx build -p fastboop-desktop
+          set -euo pipefail
+          build_dir="target/dx/fastboop-web/release/web/public"
+          dest_prefix="commit/${GITHUB_SHA}"
+          aws s3 sync "$build_dir" "s3://fastboop-bleeding/$dest_prefix/" --endpoint-url "$AWS_ENDPOINT_URL"
+          printf '%s' "$GITHUB_SHA" > latest.txt
+          aws s3 cp latest.txt "s3://fastboop-bleeding/latest.txt" --endpoint-url "$AWS_ENDPOINT_URL" --cache-control "no-store"
 
   build:
     runs-on: ${{ matrix.runner }}
@@ -177,83 +173,3 @@ jobs:
         with:
           name: ${{ github.event.release.name }}
           files: fastboop-${{ matrix.name }}
-
-  deploy-bleeding:
-    runs-on: ubuntu-latest
-    needs: check
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools linux-libc-dev
-
-      - name: Set up musl kernel headers
-        run: |
-          sudo mkdir -p /usr/include/$(uname -m)-linux-musl
-          sudo ln -sf /usr/include/linux /usr/include/$(uname -m)-linux-musl/linux
-          sudo ln -sf /usr/include/asm-generic /usr/include/$(uname -m)-linux-musl/asm-generic
-          if [ -d /usr/include/$(uname -m)-linux-gnu/asm ]; then
-            sudo ln -sf /usr/include/$(uname -m)-linux-gnu/asm /usr/include/$(uname -m)-linux-musl/asm
-          elif [ -d /usr/include/asm ]; then
-            sudo ln -sf /usr/include/asm /usr/include/$(uname -m)-linux-musl/asm
-          fi
-          if [ ! -e /usr/include/asm ]; then
-            sudo ln -sf /usr/include/asm-generic /usr/include/asm
-          fi
-
-      - name: Set up Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          target: aarch64-unknown-linux-musl
-          rustflags: "--cfg=web_sys_unstable_apis"
-
-      - name: Install cargo-binstall
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-binstall
-
-      - name: Install Dioxus CLI
-        run: cargo binstall dioxus-cli --force --no-confirm
-
-      - name: Dioxus build (web release)
-        run: dx build -p fastboop-web --release --debug-symbols false --base-path "/commit/${GITHUB_SHA}/"
-
-      - name: Dump stage0 nested build log (web release)
-        if: failure()
-        run: |
-          if [ -f target/stage0-subbuild.log ]; then
-            cat target/stage0-subbuild.log
-          else
-            echo "target/stage0-subbuild.log not found"
-          fi
-
-      - name: Re-run cargo web build directly (release diagnostics)
-        if: failure()
-        run: |
-          cargo build \
-            -p fastboop-web \
-            --target wasm32-unknown-unknown \
-            --release \
-            --features "web js_cfg" \
-            --locked \
-            -vv || true
-
-      - name: Upload snapshot to R2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_REGION: auto
-          AWS_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-        run: |
-          set -euo pipefail
-          build_dir="target/dx/fastboop-web/release/web/public"
-          dest_prefix="commit/${GITHUB_SHA}"
-          aws s3 sync "$build_dir" "s3://fastboop-bleeding/$dest_prefix/" --endpoint-url "$AWS_ENDPOINT_URL"
-          printf '%s' "$GITHUB_SHA" > latest.txt
-          aws s3 cp latest.txt "s3://fastboop-bleeding/latest.txt" --endpoint-url "$AWS_ENDPOINT_URL" --cache-control "no-store"
