@@ -80,7 +80,7 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Dioxus build (web release)
-        run: dx build -p fastboop-web --release --debug-symbols false --base-path "/commit/${GITHUB_SHA}/"
+        run: dx build -p fastboop-web --release --base-path "/commit/${GITHUB_SHA}/"
 
       - name: Dioxus build (desktop release)
         run: dx build -p fastboop-desktop --release
