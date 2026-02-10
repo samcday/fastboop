@@ -31,6 +31,7 @@ pub enum SessionPhase {
     Active {
         runtime: BootRuntime,
         host_started: bool,
+        host_connected: bool,
     },
     Error {
         summary: String,
@@ -56,5 +57,29 @@ pub fn next_session_id() -> String {
 pub fn update_session_phase(store: &mut SessionStore, session_id: &str, phase: SessionPhase) {
     if let Some(session) = store.write().iter_mut().find(|s| s.id == session_id) {
         session.phase = phase;
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn update_session_active_host_state(
+    store: &mut SessionStore,
+    session_id: &str,
+    host_started: Option<bool>,
+    host_connected: Option<bool>,
+) {
+    if let Some(session) = store.write().iter_mut().find(|s| s.id == session_id) {
+        if let SessionPhase::Active {
+            host_started: started,
+            host_connected: connected,
+            ..
+        } = &mut session.phase
+        {
+            if let Some(v) = host_started {
+                *started = v;
+            }
+            if let Some(v) = host_connected {
+                *connected = v;
+            }
+        }
     }
 }

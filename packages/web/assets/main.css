@@ -28,3 +28,98 @@ body {
 a {
     color: inherit;
 }
+
+.serial-logs {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 0.8rem;
+    background: rgba(8, 13, 16, 0.72);
+}
+
+.serial-logs__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.serial-logs__title {
+    margin: 0;
+    font-weight: 700;
+}
+
+.serial-logs__status {
+    margin: 0;
+    color: var(--color-text-subtle);
+}
+
+.serial-logs__status--ok {
+    color: #8dd9a5;
+}
+
+.serial-logs__status--warn {
+    color: #eecf7d;
+}
+
+.serial-logs__status--err {
+    color: #f49d9d;
+}
+
+.serial-logs__hint {
+    margin: 0.5rem 0;
+    color: var(--color-text-muted);
+}
+
+.serial-logs__connect,
+.serial-logs__disconnect,
+.serial-logs__clear {
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 0.75rem;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--color-text);
+    font: inherit;
+    cursor: pointer;
+}
+
+.serial-logs__connect {
+    width: 100%;
+    margin-top: 0.5rem;
+    padding: 0.85rem 1rem;
+    font-size: 1.05rem;
+    font-weight: 700;
+    background: linear-gradient(120deg, rgba(95, 178, 166, 0.95), rgba(83, 130, 170, 0.9));
+    color: #081014;
+}
+
+.serial-logs__disconnect,
+.serial-logs__clear {
+    padding: 0.5rem 0.75rem;
+}
+
+.serial-logs__actions {
+    display: flex;
+    justify-content: flex-end;
+    margin: 0.5rem 0;
+}
+
+.serial-logs__error {
+    margin: 0.5rem 0;
+    color: #f49d9d;
+}
+
+.serial-logs__output {
+    margin: 0;
+    min-height: 14rem;
+    max-height: 22rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.45;
+}
