@@ -6,6 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use fastboop_core::RootfsProvider;
 use gibblox_cache::CachedBlockReader;
+#[cfg(not(target_arch = "wasm32"))]
 use gibblox_cache::greedy::GreedyCachedBlockReader;
 #[cfg(target_arch = "wasm32")]
 use gibblox_cache_store_opfs::OpfsCacheOps;
@@ -31,6 +32,81 @@ pub struct OpenedRootfs {
     pub reader: Arc<dyn BlockReader>,
     pub size_bytes: u64,
     pub identity: String,
+    pub cache_stats: Option<CacheStatsHandle>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RootfsCacheStats {
+    pub total_hits: u64,
+    pub total_misses: u64,
+    pub cached_blocks: u64,
+    pub total_blocks: u64,
+}
+
+impl RootfsCacheStats {
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.total_hits + self.total_misses;
+        if total == 0 {
+            return 0.0;
+        }
+        (self.total_hits as f64 / total as f64) * 100.0
+    }
+
+    pub fn fill_rate(&self) -> f64 {
+        if self.total_blocks == 0 {
+            return 0.0;
+        }
+        (self.cached_blocks as f64 / self.total_blocks as f64) * 100.0
+    }
+}
+
+#[async_trait]
+pub trait CacheStatsSource: Send + Sync {
+    async fn snapshot(&self) -> Result<RootfsCacheStats>;
+}
+
+pub type CacheStatsHandle = Arc<dyn CacheStatsSource>;
+
+impl From<gibblox_cache::CacheStats> for RootfsCacheStats {
+    fn from(value: gibblox_cache::CacheStats) -> Self {
+        Self {
+            total_hits: value.total_hits,
+            total_misses: value.total_misses,
+            cached_blocks: value.cached_blocks,
+            total_blocks: value.total_blocks,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct GreedyCacheStatsSource {
+    reader: Arc<GreedyCachedBlockReader<HttpBlockReader, StdCacheOps>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait]
+impl CacheStatsSource for GreedyCacheStatsSource {
+    async fn snapshot(&self) -> Result<RootfsCacheStats> {
+        let stats = self
+            .reader
+            .get_stats()
+            .await
+            .map_err(|err| anyhow!("read greedy cache stats: {err}"))?;
+        Ok(stats.into())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct CachedCacheStatsSource {
+    reader: Arc<CachedBlockReader<HttpBlockReader, OpfsCacheOps>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait]
+impl CacheStatsSource for CachedCacheStatsSource {
+    async fn snapshot(&self) -> Result<RootfsCacheStats> {
+        Ok(self.reader.get_stats().await.into())
+    }
 }
 
 impl ErofsRootfs {
@@ -94,7 +170,7 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
     let identity = url.to_string();
 
     #[cfg(not(target_arch = "wasm32"))]
-    let reader: Arc<dyn BlockReader> = {
+    let (reader, cache_stats): (Arc<dyn BlockReader>, Option<CacheStatsHandle>) = {
         let cache = StdCacheOps::open_default_for_reader(&http_reader)
             .await
             .map_err(|err| anyhow!("open std cache for HTTP rootfs: {err}"))?;
@@ -106,6 +182,7 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
         let (greedy, workers) = GreedyCachedBlockReader::new(cached, Default::default())
             .await
             .map_err(|err| anyhow!("initialize greedy cache for HTTP rootfs: {err}"))?;
+        let greedy = Arc::new(greedy);
 
         // Spawn background workers using tokio
         tokio::spawn(workers.hot_worker);
@@ -113,21 +190,24 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
             tokio::spawn(worker);
         }
 
-        Arc::new(
-            PagedLruBlockReader::new(greedy, Default::default())
+        let reader = Arc::new(
+            PagedLruBlockReader::new(greedy.clone(), Default::default())
                 .await
                 .map_err(|err| anyhow!("initialize paged LRU for HTTP rootfs: {err}"))?,
-        )
+        );
+        let cache_stats = Arc::new(GreedyCacheStatsSource { reader: greedy }) as CacheStatsHandle;
+        (reader, Some(cache_stats))
     };
 
     #[cfg(target_arch = "wasm32")]
-    let reader: Arc<dyn BlockReader> = {
+    let (reader, cache_stats): (Arc<dyn BlockReader>, Option<CacheStatsHandle>) = {
         let cache = OpfsCacheOps::open_for_reader(&http_reader)
             .await
             .map_err(|err| anyhow!("open OPFS cache for HTTP rootfs: {err}"))?;
         let cached = CachedBlockReader::new(http_reader, cache)
             .await
             .map_err(|err| anyhow!("initialize OPFS cache for HTTP rootfs: {err}"))?;
+        let cached = Arc::new(cached);
 
         // // Wrap in greedy reader and spawn workers
         // let (greedy, workers) = GreedyCachedBlockReader::new(cached, Default::default())
@@ -140,11 +220,13 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
         //     wasm_bindgen_futures::spawn_local(worker);
         // }
 
-        Arc::new(
-            PagedLruBlockReader::new(cached, Default::default())
+        let reader = Arc::new(
+            PagedLruBlockReader::new(cached.clone(), Default::default())
                 .await
                 .map_err(|err| anyhow!("initialize paged LRU for HTTP rootfs: {err}"))?,
-        )
+        );
+        let cache_stats = Arc::new(CachedCacheStatsSource { reader: cached }) as CacheStatsHandle;
+        (reader, Some(cache_stats))
     };
 
     let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
@@ -153,6 +235,7 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
         reader,
         size_bytes,
         identity,
+        cache_stats,
     })
 }
 
@@ -171,6 +254,7 @@ async fn open_local_erofs(image_path: &Path) -> Result<OpenedRootfs> {
         reader,
         size_bytes,
         identity,
+        cache_stats: None,
     })
 }
 

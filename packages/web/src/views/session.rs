@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use dioxus::prelude::{Signal, WritableExt};
 use fastboop_core::DeviceProfile;
+use fastboop_erofs_rootfs::CacheStatsHandle;
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 use gibblox_core::BlockReader;
 
@@ -21,6 +22,7 @@ pub struct BootRuntime {
     pub reader: Arc<dyn BlockReader>,
     pub size_bytes: u64,
     pub identity: String,
+    pub cache_stats: Option<CacheStatsHandle>,
 }
 
 #[derive(Clone)]

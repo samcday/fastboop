@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, ensure, Context, Result};
@@ -22,7 +24,7 @@ use smoo_host_transport_rusb::RusbTransport;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{error, info};
-use ui::oneplus_fajita_dtbo_overlays;
+use ui::{oneplus_fajita_dtbo_overlays, CacheStatsPanel, CacheStatsViewModel};
 
 use super::session::{update_session_phase, BootRuntime, SessionPhase, SessionStore};
 
@@ -38,6 +40,7 @@ const IDLE_POLL: Duration = Duration::from_millis(5);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 const STATUS_RETRY_ATTEMPTS: usize = 5;
+const CACHE_STATS_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 #[component]
 pub fn DevicePage(session_id: String) -> Element {
@@ -125,6 +128,9 @@ fn BootedDevice(session_id: String) -> Element {
         return rsx! {};
     };
     let mut kickoff = use_signal(|| false);
+    let stats = use_signal(|| Option::<CacheStatsViewModel>::None);
+    let stats_stop = use_signal(|| Option::<Arc<AtomicBool>>::None);
+    let runtime_for_kickoff = runtime.clone();
     use_effect(move || {
         if host_started || kickoff() {
             return;
@@ -134,11 +140,11 @@ fn BootedDevice(session_id: String) -> Element {
             &mut sessions,
             &session_id,
             SessionPhase::Active {
-                runtime: runtime.clone(),
+                runtime: runtime_for_kickoff.clone(),
                 host_started: true,
             },
         );
-        let runtime_for_host = runtime.clone();
+        let runtime_for_host = runtime_for_kickoff.clone();
         std::thread::Builder::new()
             .name(format!("fastboop-smoo-{session_id}"))
             .spawn(move || {
@@ -153,6 +159,55 @@ fn BootedDevice(session_id: String) -> Element {
             .ok();
     });
 
+    {
+        let mut stats = stats;
+        let mut stats_stop = stats_stop;
+        let cache_stats = runtime.cache_stats.clone();
+        use_effect(move || {
+            let Some(cache_stats) = cache_stats.clone() else {
+                return;
+            };
+            if stats_stop().is_some() {
+                return;
+            }
+
+            let stop = Arc::new(AtomicBool::new(false));
+            stats_stop.set(Some(stop.clone()));
+            spawn(async move {
+                loop {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    match cache_stats.snapshot().await {
+                        Ok(snapshot) => {
+                            stats.set(Some(CacheStatsViewModel {
+                                total_blocks: snapshot.total_blocks,
+                                cached_blocks: snapshot.cached_blocks,
+                                total_hits: snapshot.total_hits,
+                                total_misses: snapshot.total_misses,
+                            }));
+                        }
+                        Err(err) => {
+                            tracing::debug!("cache stats poll failed: {err}");
+                        }
+                    }
+                    tokio::time::sleep(CACHE_STATS_POLL_INTERVAL).await;
+                }
+            });
+        });
+    }
+
+    {
+        let mut stats_stop = stats_stop;
+        use_drop(move || {
+            if let Some(stop) = stats_stop.write().take() {
+                stop.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+
+    let cache_stats = stats();
+
     rsx! {
         section { id: "landing",
             div { class: "landing__panel",
@@ -160,6 +215,9 @@ fn BootedDevice(session_id: String) -> Element {
                 h1 { "We're live." }
                 p { class: "landing__lede", "Please don't close this window while the session is active." }
                 p { class: "landing__note", "Rootfs: {ROOTFS_URL}" }
+                if let Some(cache_stats) = cache_stats {
+                    CacheStatsPanel { stats: cache_stats }
+                }
             }
         }
     }
@@ -308,6 +366,7 @@ async fn boot_selected_device(
         reader: runtime.reader,
         size_bytes: runtime.size_bytes,
         identity: runtime.identity,
+        cache_stats: runtime.cache_stats,
     })
 }
 
@@ -343,6 +402,7 @@ async fn build_stage0_artifacts(
                             reader: opened.reader,
                             size_bytes: opened.size_bytes,
                             identity: opened.identity,
+                            cache_stats: opened.cache_stats,
                         },
                     ))
                 })

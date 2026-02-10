@@ -31,7 +31,7 @@ use std::future::Future;
 use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use std::{cell::Cell, rc::Rc};
-use ui::oneplus_fajita_dtbo_overlays;
+use ui::{oneplus_fajita_dtbo_overlays, CacheStatsPanel, CacheStatsViewModel};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::closure::Closure;
 #[cfg(target_arch = "wasm32")]
@@ -59,6 +59,8 @@ const STATUS_RETRY_ATTEMPTS: usize = 5;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(target_arch = "wasm32")]
 const IDLE_POLL: Duration = Duration::from_millis(5);
+#[cfg(target_arch = "wasm32")]
+const CACHE_STATS_POLL_INTERVAL: Duration = Duration::from_millis(500);
 #[cfg(target_arch = "wasm32")]
 const SERIAL_LOG_MAX_LINES: usize = 2000;
 #[cfg(target_arch = "wasm32")]
@@ -160,6 +162,10 @@ fn BootedDevice(session_id: String) -> Element {
         return rsx! {};
     };
     let mut kickoff = use_signal(|| false);
+    let stats = use_signal(|| Option::<CacheStatsViewModel>::None);
+    #[cfg(target_arch = "wasm32")]
+    let stats_stop = use_signal(|| Option::<Rc<Cell<bool>>>::None);
+    let runtime_for_kickoff = runtime.clone();
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -198,7 +204,7 @@ fn BootedDevice(session_id: String) -> Element {
                 &mut sessions,
                 &session_id,
                 SessionPhase::Active {
-                    runtime: runtime.clone(),
+                    runtime: runtime_for_kickoff.clone(),
                     host_started: true,
                     host_connected: false,
                 },
@@ -208,7 +214,7 @@ fn BootedDevice(session_id: String) -> Element {
             {
                 let mut sessions = sessions;
                 let session_id = session_id.clone();
-                let runtime_for_host = runtime.clone();
+                let runtime_for_host = runtime_for_kickoff.clone();
                 spawn_detached(async move {
                     let device = _session.device.handle.device();
                     if let Err(err) = run_web_host_daemon(
@@ -235,6 +241,57 @@ fn BootedDevice(session_id: String) -> Element {
         }
     });
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut stats = stats;
+        let mut stats_stop = stats_stop;
+        let cache_stats = runtime.cache_stats.clone();
+        use_effect(move || {
+            let Some(cache_stats) = cache_stats.clone() else {
+                return;
+            };
+            if stats_stop().is_some() {
+                return;
+            }
+
+            let stop = Rc::new(Cell::new(false));
+            stats_stop.set(Some(stop.clone()));
+            spawn_detached(async move {
+                loop {
+                    if stop.get() {
+                        break;
+                    }
+                    match cache_stats.snapshot().await {
+                        Ok(snapshot) => {
+                            stats.set(Some(CacheStatsViewModel {
+                                total_blocks: snapshot.total_blocks,
+                                cached_blocks: snapshot.cached_blocks,
+                                total_hits: snapshot.total_hits,
+                                total_misses: snapshot.total_misses,
+                            }));
+                        }
+                        Err(err) => {
+                            tracing::debug!("cache stats poll failed: {err}");
+                        }
+                    }
+                    sleep(CACHE_STATS_POLL_INTERVAL).await;
+                }
+            });
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut stats_stop = stats_stop;
+        use_drop(move || {
+            if let Some(stop) = stats_stop.write().take() {
+                stop.set(true);
+            }
+        });
+    }
+
+    let cache_stats = stats();
+
     rsx! {
         section { id: "landing",
             div { class: "landing__panel",
@@ -242,6 +299,9 @@ fn BootedDevice(session_id: String) -> Element {
                 h1 { "We're live." }
                 p { class: "landing__lede", "Please don't close this page while the session is active." }
                 p { class: "landing__note", "Rootfs: {ROOTFS_URL}" }
+                if let Some(cache_stats) = cache_stats {
+                    CacheStatsPanel { stats: cache_stats }
+                }
                 if host_connected {
                     SerialLogPanel { device_vid, device_pid }
                 }
@@ -988,6 +1048,7 @@ async fn boot_selected_device(
         reader: runtime.reader,
         size_bytes: runtime.size_bytes,
         identity: runtime.identity,
+        cache_stats: runtime.cache_stats,
     })
 }
 
@@ -1026,6 +1087,7 @@ async fn build_stage0_artifacts(
                     reader: opened.reader,
                     size_bytes: opened.size_bytes,
                     identity: opened.identity,
+                    cache_stats: opened.cache_stats,
                 },
             ))
         }
