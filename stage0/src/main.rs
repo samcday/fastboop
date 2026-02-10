@@ -1,12 +1,13 @@
 use anyhow::{Context, Result, anyhow, ensure};
 use clap::{Parser, ValueEnum};
+use drm::{ClientCapability, Device as _, buffer::Buffer as _, control::Device as _};
 use std::io::{Read, Write};
 use std::{
     collections::{HashMap, HashSet},
     ffi::{CString, OsStr, OsString},
     fs::File,
     io,
-    os::fd::AsRawFd,
+    os::fd::{AsFd, AsRawFd, BorrowedFd},
     os::unix::fs::{FileTypeExt, symlink},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
@@ -55,12 +56,14 @@ const SMOO_PROTOCOL: u8 = 0x03;
 const STAGE0_ROLE_ENV: &str = "FASTBOOP_STAGE0_ROLE";
 const STAGE0_ROLE_GADGET_CHILD: &str = "gadget-child";
 const STAGE0_ROLE_KMSG_CHILD: &str = "kmsg-child";
+const STAGE0_ROLE_FRAMEBUFFER_CHILD: &str = "framebuffer-child";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Stage0Role {
     Pid1,
     GadgetChild,
     KmsgChild,
+    FramebufferChild,
 }
 
 #[derive(Debug, Parser)]
@@ -124,6 +127,11 @@ fn main() -> Result<()> {
             warn!("pid1: kmsg forwarder starting");
             run_kmsg_daemon().context("kmsg daemon")
         }
+        Stage0Role::FramebufferChild => {
+            init_logging(true);
+            info!(role = "framebuffer-child", "stage0 startup role selected");
+            run_framebuffer_child().context("framebuffer worker")
+        }
         Stage0Role::GadgetChild => {
             init_logging(true);
             info!(role = "gadget-child", "stage0 startup role selected");
@@ -146,6 +154,7 @@ fn parse_stage0_role(value: Option<&OsStr>) -> Stage0Role {
     match value {
         Some(v) if v == OsStr::new(STAGE0_ROLE_GADGET_CHILD) => Stage0Role::GadgetChild,
         Some(v) if v == OsStr::new(STAGE0_ROLE_KMSG_CHILD) => Stage0Role::KmsgChild,
+        Some(v) if v == OsStr::new(STAGE0_ROLE_FRAMEBUFFER_CHILD) => Stage0Role::FramebufferChild,
         _ => Stage0Role::Pid1,
     }
 }
@@ -232,6 +241,11 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
     mount_fs(Some("devtmpfs"), "/dev", Some("devtmpfs"), 0, None).context("mount devtmpfs")?;
     mount_fs(Some("tmpfs"), "/run", Some("tmpfs"), 0, None).context("mount tmpfs /run")?;
     debug!("pid1: mounted proc/sys/dev/run");
+    if cmdline_bool("stage0.fb") {
+        if let Err(err) = spawn_framebuffer_child() {
+            warn!(error = ?err, "pid1: failed to spawn framebuffer child");
+        }
+    }
 
     let default_modules = [
         "configfs",
@@ -1065,6 +1079,171 @@ fn spawn_kmsg_daemon() -> Result<std::process::Child> {
     cmd.spawn().context("spawn kmsg forwarder")
 }
 
+struct DrmCard {
+    file: File,
+}
+
+impl AsFd for DrmCard {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.file.as_fd()
+    }
+}
+
+impl drm::Device for DrmCard {}
+impl drm::control::Device for DrmCard {}
+
+struct FramebufferSession {
+    card: DrmCard,
+    dumb: drm::control::dumbbuffer::DumbBuffer,
+    fb: drm::control::framebuffer::Handle,
+    connector: drm::control::connector::Handle,
+    crtc: drm::control::crtc::Handle,
+}
+
+impl FramebufferSession {
+    fn open_and_paint() -> Result<Self> {
+        let mut last_err: Option<anyhow::Error> = None;
+        for idx in 0..8u8 {
+            let path = format!("/dev/dri/card{idx}");
+            if !Path::new(&path).exists() {
+                continue;
+            }
+            match Self::open_card(&path) {
+                Ok(session) => return Ok(session),
+                Err(err) => {
+                    last_err = Some(err.context(format!("probe {path}")));
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("no DRM card nodes found")))
+    }
+
+    fn open_card(path: &str) -> Result<Self> {
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .open(path)
+            .with_context(|| format!("open {path}"))?;
+        let card = DrmCard { file };
+
+        let _ = card.set_client_capability(ClientCapability::UniversalPlanes, true);
+        card.acquire_master_lock().context("set DRM master")?;
+
+        let resources = card.resource_handles().context("get DRM resources")?;
+        let (connector, mode) = pick_connector_and_mode(&card, &resources)?;
+        let crtc = *resources
+            .crtcs()
+            .first()
+            .ok_or_else(|| anyhow!("DRM has no CRTC"))?;
+
+        let (width, height) = mode.size();
+        let mut dumb = card
+            .create_dumb_buffer(
+                (u32::from(width), u32::from(height)),
+                drm::buffer::DrmFourcc::Xrgb8888,
+                32,
+            )
+            .context("create dumb buffer")?;
+        let fb = card
+            .add_framebuffer(&dumb, 24, 32)
+            .context("add framebuffer")?;
+
+        let pitch = dumb.pitch() as usize;
+        {
+            let mut map = card.map_dumb_buffer(&mut dumb).context("map dumb buffer")?;
+            fill_hot_pink(map.as_mut(), pitch, width as usize, height as usize);
+        }
+
+        card.set_crtc(crtc, Some(fb), (0, 0), &[connector], Some(mode))
+            .context("set CRTC")?;
+
+        Ok(Self {
+            card,
+            dumb,
+            fb,
+            connector,
+            crtc,
+        })
+    }
+}
+
+impl Drop for FramebufferSession {
+    fn drop(&mut self) {
+        let _ = self
+            .card
+            .set_crtc(self.crtc, None, (0, 0), &[self.connector], None);
+        let _ = self.card.destroy_framebuffer(self.fb);
+        let _ = self.card.destroy_dumb_buffer(self.dumb);
+        let _ = self.card.release_master_lock();
+    }
+}
+
+fn pick_connector_and_mode(
+    card: &DrmCard,
+    resources: &drm::control::ResourceHandles,
+) -> Result<(drm::control::connector::Handle, drm::control::Mode)> {
+    for connector in resources.connectors() {
+        let info = card
+            .get_connector(*connector, false)
+            .with_context(|| format!("get connector {connector:?}"))?;
+        if info.state() != drm::control::connector::State::Connected {
+            continue;
+        }
+        let mode = match info.modes().first() {
+            Some(mode) => *mode,
+            None => continue,
+        };
+        return Ok((*connector, mode));
+    }
+    Err(anyhow!("no connected connector with display mode"))
+}
+
+fn fill_hot_pink(buf: &mut [u8], stride: usize, width: usize, height: usize) {
+    let pixel = [0x80u8, 0x00u8, 0xFFu8, 0x00u8];
+    for y in 0..height {
+        let row_start = y.saturating_mul(stride);
+        let row_end = row_start.saturating_add(width.saturating_mul(4));
+        if row_end > buf.len() {
+            break;
+        }
+        let row = &mut buf[row_start..row_end];
+        for px in row.chunks_exact_mut(4) {
+            px.copy_from_slice(&pixel);
+        }
+    }
+}
+
+fn spawn_framebuffer_child() -> Result<std::process::Child> {
+    let exe = std::env::current_exe().context("locate self")?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.env(STAGE0_ROLE_ENV, STAGE0_ROLE_FRAMEBUFFER_CHILD);
+    if let Some(log_level) = cmdline_value("smoo.log") {
+        cmd.env("RUST_LOG", log_level);
+        info!("pid1: set RUST_LOG from smoo.log for framebuffer worker");
+    }
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    cmd.spawn().context("spawn framebuffer worker")
+}
+
+fn run_framebuffer_child() -> Result<()> {
+    loop {
+        match FramebufferSession::open_and_paint() {
+            Ok(_session) => {
+                info!("fb: hot-pink framebuffer active");
+                loop {
+                    std::thread::sleep(Duration::from_secs(5));
+                }
+            }
+            Err(err) => {
+                warn!(error = ?err, "fb: DRM setup failed; retrying");
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+    }
+}
+
 fn run_kmsg_daemon() -> Result<()> {
     const KMSG_PATH: &str = "/dev/kmsg";
     const TTY_PATH: &str = "/dev/ttyGS0";
@@ -1403,6 +1582,10 @@ mod tests {
         assert_eq!(
             parse_stage0_role(Some(OsStr::new(STAGE0_ROLE_KMSG_CHILD))),
             Stage0Role::KmsgChild
+        );
+        assert_eq!(
+            parse_stage0_role(Some(OsStr::new(STAGE0_ROLE_FRAMEBUFFER_CHILD))),
+            Stage0Role::FramebufferChild
         );
         assert_eq!(
             parse_stage0_role(Some(OsStr::new("weird-value"))),
