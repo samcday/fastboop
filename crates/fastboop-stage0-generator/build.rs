@@ -43,9 +43,9 @@ fn main() {
         .arg(&target_dir)
         .arg("--locked");
 
-    if env::var_os("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER").is_none() {
-        cmd.env("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER", "rust-lld");
-    }
+    // Always force rust-lld for the embedded cross-build so CI/user shell
+    // linker environment does not silently break the stage0 sub-build.
+    cmd.env("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER", "rust-lld");
     if env::var_os("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS").is_none() {
         cmd.env(
             "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS",
@@ -65,9 +65,17 @@ fn main() {
         }
     };
 
-    let status = cmd.status().expect("spawn cargo sub-build");
-    if !status.success() {
-        panic!("failed building embedded stage0 binary");
+    let output = cmd.output().expect("spawn cargo sub-build");
+    if !output.status.success() {
+        panic!(
+            "failed building embedded stage0 binary\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+            output.status.code().map_or_else(
+                || "terminated by signal".to_string(),
+                |code| code.to_string()
+            ),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     let artifact = target_dir
