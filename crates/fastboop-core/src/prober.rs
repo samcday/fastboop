@@ -339,4 +339,96 @@ mod tests {
             .unwrap();
         assert!(mismatch.result.is_err());
     }
+
+    #[test]
+    fn probe_not_equals_succeeds_when_different() {
+        use crate::FastbootGetvarNotEq;
+        let mut responses = BTreeMap::new();
+        responses.insert("product".to_string(), "pinephone".to_string());
+        let candidates = vec![MockCandidate::new(0x1234, 0x5678, responses)];
+
+        let profile = dummy_profile(
+            "test",
+            0x1234,
+            0x5678,
+            vec![ProbeStep::FastbootGetvarNotEq(FastbootGetvarNotEq {
+                name: "product".to_string(),
+                not_equals: "fajita".to_string(),
+            })],
+        );
+
+        let reports = block_on(probe_candidates(&[profile], &candidates));
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].attempts[0].result.is_ok());
+    }
+
+    #[test]
+    fn probe_not_equals_fails_when_same() {
+        use crate::FastbootGetvarNotEq;
+        let mut responses = BTreeMap::new();
+        responses.insert("product".to_string(), "pinephone".to_string());
+        let candidates = vec![MockCandidate::new(0x1234, 0x5678, responses)];
+
+        let profile = dummy_profile(
+            "test",
+            0x1234,
+            0x5678,
+            vec![ProbeStep::FastbootGetvarNotEq(FastbootGetvarNotEq {
+                name: "product".to_string(),
+                not_equals: "pinephone".to_string(),
+            })],
+        );
+
+        let reports = block_on(probe_candidates(&[profile], &candidates));
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].attempts[0].result.is_err());
+    }
+
+    #[test]
+    fn probe_not_exists_succeeds_when_missing() {
+        use crate::{FastbootGetvarNotExists, NotExistsFlag};
+        let mut responses = BTreeMap::new();
+        responses.insert("product".to_string(), "pinephone".to_string());
+        let candidates = vec![MockCandidate::new(0x1234, 0x5678, responses)];
+
+        let profile = dummy_profile(
+            "test",
+            0x1234,
+            0x5678,
+            vec![ProbeStep::FastbootGetvarNotExists(
+                FastbootGetvarNotExists {
+                    name: "parallel-download-flash".to_string(),
+                    not_exists: Some(NotExistsFlag),
+                },
+            )],
+        );
+
+        let reports = block_on(probe_candidates(&[profile], &candidates));
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].attempts[0].result.is_ok());
+    }
+
+    #[test]
+    fn probe_not_exists_fails_when_present() {
+        use crate::{FastbootGetvarNotExists, NotExistsFlag};
+        let mut responses = BTreeMap::new();
+        responses.insert("product".to_string(), "pinephone".to_string());
+        let candidates = vec![MockCandidate::new(0x1234, 0x5678, responses)];
+
+        let profile = dummy_profile(
+            "test",
+            0x1234,
+            0x5678,
+            vec![ProbeStep::FastbootGetvarNotExists(
+                FastbootGetvarNotExists {
+                    name: "product".to_string(),
+                    not_exists: Some(NotExistsFlag),
+                },
+            )],
+        );
+
+        let reports = block_on(probe_candidates(&[profile], &candidates));
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].attempts[0].result.is_err());
+    }
 }

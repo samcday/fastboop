@@ -4,8 +4,8 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Boot, DeviceProfile, ExistsFlag, FastbootGetvarEq, FastbootGetvarExists, InjectMac, MatchRule,
-    ProbeStep, Stage0,
+    Boot, DeviceProfile, ExistsFlag, FastbootGetvarEq, FastbootGetvarExists, FastbootGetvarNotEq,
+    FastbootGetvarNotExists, InjectMac, MatchRule, NotExistsFlag, ProbeStep, Stage0,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -22,7 +22,9 @@ pub struct DeviceProfileBin {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ProbeStepBin {
     FastbootGetvarEq { name: String, equals: String },
+    FastbootGetvarNotEq { name: String, not_equals: String },
     FastbootGetvarExists { name: String },
+    FastbootGetvarNotExists { name: String },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -71,8 +73,14 @@ impl From<ProbeStep> for ProbeStepBin {
             ProbeStep::FastbootGetvarEq(FastbootGetvarEq { name, equals }) => {
                 ProbeStepBin::FastbootGetvarEq { name, equals }
             }
+            ProbeStep::FastbootGetvarNotEq(FastbootGetvarNotEq { name, not_equals }) => {
+                ProbeStepBin::FastbootGetvarNotEq { name, not_equals }
+            }
             ProbeStep::FastbootGetvarExists(FastbootGetvarExists { name, .. }) => {
                 ProbeStepBin::FastbootGetvarExists { name }
+            }
+            ProbeStep::FastbootGetvarNotExists(FastbootGetvarNotExists { name, .. }) => {
+                ProbeStepBin::FastbootGetvarNotExists { name }
             }
         }
     }
@@ -84,10 +92,19 @@ impl From<ProbeStepBin> for ProbeStep {
             ProbeStepBin::FastbootGetvarEq { name, equals } => {
                 ProbeStep::FastbootGetvarEq(FastbootGetvarEq { name, equals })
             }
+            ProbeStepBin::FastbootGetvarNotEq { name, not_equals } => {
+                ProbeStep::FastbootGetvarNotEq(FastbootGetvarNotEq { name, not_equals })
+            }
             ProbeStepBin::FastbootGetvarExists { name } => {
                 ProbeStep::FastbootGetvarExists(FastbootGetvarExists {
                     name,
                     exists: Some(ExistsFlag),
+                })
+            }
+            ProbeStepBin::FastbootGetvarNotExists { name } => {
+                ProbeStep::FastbootGetvarNotExists(FastbootGetvarNotExists {
+                    name,
+                    not_exists: Some(NotExistsFlag),
                 })
             }
         }

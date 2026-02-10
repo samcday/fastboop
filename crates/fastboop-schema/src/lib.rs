@@ -41,7 +41,11 @@ pub enum ProbeStep {
     #[serde(untagged)]
     FastbootGetvarEq(FastbootGetvarEq),
     #[serde(untagged)]
+    FastbootGetvarNotEq(FastbootGetvarNotEq),
+    #[serde(untagged)]
     FastbootGetvarExists(FastbootGetvarExists),
+    #[serde(untagged)]
+    FastbootGetvarNotExists(FastbootGetvarNotExists),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -50,6 +54,14 @@ pub struct FastbootGetvarEq {
     #[serde(rename = "fastboot.getvar")]
     pub name: String,
     pub equals: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct FastbootGetvarNotEq {
+    #[serde(rename = "fastboot.getvar")]
+    pub name: String,
+    pub not_equals: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -64,7 +76,21 @@ pub struct FastbootGetvarExists {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct FastbootGetvarNotExists {
+    #[serde(rename = "fastboot.getvar")]
+    pub name: String,
+    /// presence of the key means "not_exists" check
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_exists: Option<NotExistsFlag>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct ExistsFlag;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct NotExistsFlag;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]

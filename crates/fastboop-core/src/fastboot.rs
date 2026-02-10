@@ -240,6 +240,33 @@ pub async fn probe_profile_with_cache<F: FastbootWire>(
                     });
                 }
             }
+            ProbeStep::FastbootGetvarNotEq(check) => {
+                let mut cached = true;
+                let value = if let Some(value) = cache.get(&check.name) {
+                    value.clone()
+                } else {
+                    cached = false;
+                    let value = getvar(fastboot, &check.name)
+                        .await
+                        .map_err(ProbeError::Transport)?;
+                    cache.insert(check.name.clone(), value.clone());
+                    value
+                };
+                debug!(
+                    profile_id = %profile.id,
+                    name = %check.name,
+                    cached = cached,
+                    value = %value,
+                    "fastboot getvar (not_equals)"
+                );
+                if value == check.not_equals {
+                    return Err(ProbeError::Mismatch {
+                        name: check.name.clone(),
+                        expected: format!("not {}", check.not_equals),
+                        actual: value,
+                    });
+                }
+            }
             ProbeStep::FastbootGetvarExists(check) => {
                 let mut cached = true;
                 let value = if let Some(value) = cache.get(&check.name) {
@@ -261,6 +288,33 @@ pub async fn probe_profile_with_cache<F: FastbootWire>(
                 );
                 if is_missing_getvar(&value) {
                     return Err(ProbeError::MissingVar(check.name.clone()));
+                }
+            }
+            ProbeStep::FastbootGetvarNotExists(check) => {
+                let mut cached = true;
+                let value = if let Some(value) = cache.get(&check.name) {
+                    value.clone()
+                } else {
+                    cached = false;
+                    let value = getvar(fastboot, &check.name)
+                        .await
+                        .map_err(ProbeError::Transport)?;
+                    cache.insert(check.name.clone(), value.clone());
+                    value
+                };
+                debug!(
+                    profile_id = %profile.id,
+                    name = %check.name,
+                    cached = cached,
+                    value = %value,
+                    "fastboot getvar (not_exists)"
+                );
+                if !is_missing_getvar(&value) {
+                    return Err(ProbeError::Mismatch {
+                        name: check.name.clone(),
+                        expected: "missing".to_string(),
+                        actual: value,
+                    });
                 }
             }
         }

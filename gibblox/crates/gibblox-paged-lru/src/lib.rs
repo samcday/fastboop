@@ -255,13 +255,11 @@ where
             return Ok(());
         }
 
-        if state.pages.len() >= self.config.max_pages {
-            if !state.lru.is_empty() {
-                let evicted = state.lru.remove(0);
-                state.pages.remove(&evicted);
-                state.evictions = state.evictions.saturating_add(1);
-                trace!(evicted_page = evicted, "paged LRU evicted page");
-            }
+        if state.pages.len() >= self.config.max_pages && !state.lru.is_empty() {
+            let evicted = state.lru.remove(0);
+            state.pages.remove(&evicted);
+            state.evictions = state.evictions.saturating_add(1);
+            trace!(evicted_page = evicted, "paged LRU evicted page");
         }
 
         state.pages.insert(page_idx, PageEntry { data });
