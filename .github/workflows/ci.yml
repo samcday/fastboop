@@ -91,6 +91,16 @@ jobs:
             echo "target/stage0-subbuild.log not found"
           fi
 
+      - name: Re-run cargo web build directly (debug diagnostics)
+        if: failure()
+        run: |
+          cargo build \
+            -p fastboop-web \
+            --target wasm32-unknown-unknown \
+            --features "web js_cfg" \
+            --locked \
+            -vv || true
+
       - name: Dioxus build (desktop)
         run: dx build -p fastboop-desktop
 
@@ -222,6 +232,17 @@ jobs:
           else
             echo "target/stage0-subbuild.log not found"
           fi
+
+      - name: Re-run cargo web build directly (release diagnostics)
+        if: failure()
+        run: |
+          cargo build \
+            -p fastboop-web \
+            --target wasm32-unknown-unknown \
+            --release \
+            --features "web js_cfg" \
+            --locked \
+            -vv || true
 
       - name: Upload snapshot to R2
         env:
