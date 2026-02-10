@@ -80,7 +80,7 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Dioxus build (web)
-        run: dx build -p fastboop-web
+        run: dx build -p fastboop-web --release
 
       - name: Dump stage0 nested build log (web)
         if: failure()
