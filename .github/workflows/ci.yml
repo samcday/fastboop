@@ -82,6 +82,15 @@ jobs:
       - name: Dioxus build (web)
         run: dx build -p fastboop-web
 
+      - name: Dump stage0 nested build log (web)
+        if: failure()
+        run: |
+          if [ -f target/stage0-subbuild.log ]; then
+            cat target/stage0-subbuild.log
+          else
+            echo "target/stage0-subbuild.log not found"
+          fi
+
       - name: Dioxus build (desktop)
         run: dx build -p fastboop-desktop
 
@@ -204,6 +213,15 @@ jobs:
 
       - name: Dioxus build (web release)
         run: dx build -p fastboop-web --release --debug-symbols false --base-path "/commit/${GITHUB_SHA}/"
+
+      - name: Dump stage0 nested build log (web release)
+        if: failure()
+        run: |
+          if [ -f target/stage0-subbuild.log ]; then
+            cat target/stage0-subbuild.log
+          else
+            echo "target/stage0-subbuild.log not found"
+          fi
 
       - name: Upload snapshot to R2
         env:

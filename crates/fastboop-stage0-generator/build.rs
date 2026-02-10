@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -66,9 +67,23 @@ fn main() {
     };
 
     let output = cmd.output().expect("spawn cargo sub-build");
+    let stage0_log = workspace_root.join("target/stage0-subbuild.log");
+    if let Some(parent) = stage0_log.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = fs::File::create(&stage0_log) {
+        let _ = writeln!(f, "status: {:?}", output.status);
+        let _ = writeln!(f, "stdout:\n{}", String::from_utf8_lossy(&output.stdout));
+        let _ = writeln!(f, "stderr:\n{}", String::from_utf8_lossy(&output.stderr));
+    }
+    println!(
+        "cargo:warning=fastboop-stage0 nested build log: {}",
+        stage0_log.display()
+    );
     if !output.status.success() {
         panic!(
-            "failed building embedded stage0 binary\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+            "failed building embedded stage0 binary (see {})\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+            stage0_log.display(),
             output.status.code().map_or_else(
                 || "terminated by signal".to_string(),
                 |code| code.to_string()
