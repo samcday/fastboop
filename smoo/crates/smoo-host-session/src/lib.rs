@@ -13,11 +13,9 @@ use core::marker::PhantomData;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll};
-use futures_util::future::FutureExt;
 use smoo_host_core::control::{ConfigExportsV0, read_status};
 use smoo_host_core::{
-    BlockSource, BlockSourceHandle, ControlTransport, HostErrorKind, HostIoPumpTask, SmooHost,
-    Transport, TransportErrorKind, start_host_io_pump,
+    BlockSource, BlockSourceHandle, ControlTransport, HostErrorKind, SmooHost, Transport,
 };
 use smoo_proto::{ConfigExport, SmooStatusV0};
 
@@ -70,27 +68,16 @@ impl HostSession {
         T: Transport + Clone + Send + Sync + 'static,
         C: ControlTransport + Sync,
     {
-        let (pump_handle, request_rx, pump_task) = start_host_io_pump(transport.clone());
-        let mut host = SmooHost::new(pump_handle.clone(), request_rx, self.sources.clone());
+        let mut host = SmooHost::new(transport, self.sources.clone());
 
         let setup_result = setup_session(&mut host, control, &self.sources, &self.config).await;
         let session_id = match setup_result {
             Ok(session_id) => session_id,
-            Err(err) => {
-                let _ = pump_handle.shutdown().await;
-                let _ = pump_task.await;
-                return Err(err);
-            }
+            Err(err) => return Err(err),
         };
 
         let state = Arc::new(SessionState::new(session_id));
-        let driver = Box::pin(run_session(
-            self,
-            host,
-            pump_handle,
-            pump_task,
-            state.clone(),
-        ));
+        let driver = Box::pin(run_session(self, host, state.clone()));
 
         Ok(HostSessionTask {
             state,
@@ -227,13 +214,14 @@ impl SessionState {
     }
 }
 
-async fn run_session(
+async fn run_session<T>(
     session: HostSession,
-    mut host: SmooHost<BlockSourceHandle>,
-    pump_handle: smoo_host_core::HostIoPumpHandle,
-    mut pump_task: HostIoPumpTask,
+    mut host: SmooHost<T, BlockSourceHandle>,
     state: Arc<SessionState>,
-) -> HostSessionFinish {
+) -> HostSessionFinish
+where
+    T: Transport + Clone + Send + Sync + 'static,
+{
     let outcome = loop {
         if state.stop_requested.load(Ordering::Relaxed) {
             break Ok(HostSessionOutcome::Stopped);
@@ -245,47 +233,36 @@ async fn run_session(
             break Ok(HostSessionOutcome::SessionChanged { previous, current });
         }
 
-        let next_host = host.run_until_event().fuse();
-        let next_pump = poll_pump_task(&mut pump_task).fuse();
-        futures_util::pin_mut!(next_host, next_pump);
-        futures_util::select_biased! {
-            host_result = next_host => {
-                match host_result {
-                    Ok(()) => {}
-                    Err(err) => match err.kind() {
-                        HostErrorKind::Transport => break Ok(HostSessionOutcome::TransportLost),
-                        HostErrorKind::Unsupported | HostErrorKind::InvalidRequest => {}
-                        _ => break Err(map_host_error(err)),
-                    }
-                }
-            }
-            pump_result = next_pump => {
-                match pump_result {
-                    Ok(()) => break Ok(HostSessionOutcome::TransportLost),
-                    Err(err) => {
-                        if err.kind() == TransportErrorKind::Disconnected {
-                            break Ok(HostSessionOutcome::TransportLost);
-                        }
-                        break Err(map_transport_error(err));
-                    }
-                }
-            }
+        match host.run_until_event().await {
+            Ok(()) => {}
+            Err(err) => match err.kind() {
+                HostErrorKind::Transport => break Ok(HostSessionOutcome::TransportLost),
+                HostErrorKind::Unsupported | HostErrorKind::InvalidRequest => {}
+                _ => break Err(map_host_error(err)),
+            },
+        }
+
+        if state.stop_requested.load(Ordering::Relaxed) {
+            break Ok(HostSessionOutcome::Stopped);
+        }
+        if state.session_changed.load(Ordering::Relaxed) {
+            let previous = state.expected_session_id.load(Ordering::Relaxed);
+            let current = state.observed_session_id.load(Ordering::Relaxed);
+            break Ok(HostSessionOutcome::SessionChanged { previous, current });
         }
     };
-
-    let _ = pump_handle.shutdown().await;
-    let _ = pump_task.await;
 
     HostSessionFinish { session, outcome }
 }
 
-async fn setup_session<C>(
-    host: &mut SmooHost<BlockSourceHandle>,
+async fn setup_session<T, C>(
+    host: &mut SmooHost<T, BlockSourceHandle>,
     control: &mut C,
     sources: &BTreeMap<u32, BlockSourceHandle>,
     config: &HostSessionConfig,
 ) -> Result<u64, HostSessionError>
 where
+    T: Transport + Send + Sync,
     C: ControlTransport + Sync,
 {
     let _ident = host.setup(control).await.map_err(map_host_error)?;
@@ -366,8 +343,4 @@ fn map_host_error(err: smoo_host_core::HostError) -> HostSessionError {
         HostErrorKind::NotReady => HostSessionErrorKind::NotReady,
     };
     HostSessionError::with_message(kind, err.to_string())
-}
-
-async fn poll_pump_task(task: &mut HostIoPumpTask) -> smoo_host_core::TransportResult<()> {
-    futures_util::future::poll_fn(|cx| Pin::new(&mut *task).poll(cx)).await
 }

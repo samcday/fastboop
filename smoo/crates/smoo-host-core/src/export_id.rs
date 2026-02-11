@@ -89,6 +89,7 @@ mod tests {
         ExportHasher32, ExportIdentity, derive_export_id, derive_export_id_from_source,
         derive_export_id_with,
     };
+    use alloc::boxed::Box;
     use core::hash::Hasher;
 
     #[test]

@@ -17,7 +17,9 @@ use tracing::{debug, trace, warn};
 
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DEFAULT_QUEUE_DEPTH: usize = 32;
-const DEFAULT_TRANSFER_TIMEOUT: Duration = Duration::from_millis(200);
+// libusb requires a finite timeout. Keep it short so cancellation/teardown
+// can make progress while heartbeat policy decides link liveness.
+const DEFAULT_TRANSFER_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Configuration for [`RusbTransport`].
 #[derive(Clone, Debug)]

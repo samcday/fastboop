@@ -11,6 +11,7 @@ use smoo_host_webusb::WebUsbTransport;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::{debug, info, warn};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{MessagePort, UsbDevice};
 
@@ -42,6 +43,8 @@ pub(crate) struct RuntimeConfig {
     pub(crate) reader: Arc<dyn BlockReader>,
     pub(crate) host_cfg: HostWorkerConfig,
 }
+
+const HEARTBEAT_MISS_BUDGET: u32 = 5;
 
 pub(crate) async fn init_runtime(
     runtime: &mut WorkerRuntime,
@@ -83,19 +86,23 @@ pub(crate) async fn start_session(
         .ok_or_else(|| "worker is not initialized".to_string())?;
 
     runtime.busy = true;
+    info!("host worker session start requested");
     emit(HostWorkerEvent::Starting);
 
     let transport = match WebUsbTransport::new(device, cfg.host_cfg.transport).await {
         Ok(transport) => transport,
         Err(err) => {
             runtime.busy = false;
+            warn!(error = %err, "host worker failed to open transport");
             return Err(err.to_string());
         }
     };
+    info!("host worker transport connected");
     emit(HostWorkerEvent::TransportConnected);
 
     let mut control = transport.control_handle();
     let counting = CountingTransport::new(transport);
+    let counters = counting.counters();
 
     let source = GibbloxBlockSource::new(cfg.reader.clone(), cfg.host_cfg.identity.clone());
     let block_size = source.block_size();
@@ -138,7 +145,9 @@ pub(crate) async fn start_session(
         runtime.busy = false;
         err.to_string()
     })?;
+    info!("host worker session configured");
     emit(HostWorkerEvent::Configured);
+    emit_counters(&emit, counters.snapshot());
 
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
     runtime.stop_tx = Some(stop_tx);
@@ -148,7 +157,8 @@ pub(crate) async fn start_session(
     spawn_local(async move {
         let mut stop_rx = stop_rx.fuse();
         let interval = Duration::from_millis(cfg.host_cfg.heartbeat_interval_ms as u64);
-        let mut heartbeat = sleep(interval).fuse();
+        let mut counters_tick = sleep(interval).fuse();
+        let mut missed_heartbeats: u32 = 0;
 
         loop {
             select_biased! {
@@ -166,23 +176,35 @@ pub(crate) async fn start_session(
                     on_exit();
                     break;
                 }
-                _ = heartbeat => {
+                _ = counters_tick => {
+                    emit_counters(&emit_for_task, counters.snapshot());
                     match task.heartbeat(&mut control).await {
                         Ok(_status) => {
-                            heartbeat = sleep(interval).fuse();
+                            if missed_heartbeats > 0 {
+                                info!(missed_heartbeats, "host worker heartbeat recovered");
+                            }
+                            missed_heartbeats = 0;
                         }
                         Err(err) => {
-                            emit_for_task(HostWorkerEvent::Error {
-                                message: format!("heartbeat failed: {err}"),
-                            });
-                            task.stop();
-                            let _ = task.await;
-                            emit_for_task(HostWorkerEvent::TransportLost);
-                            emit_for_task(HostWorkerEvent::Stopped);
-                            on_exit();
-                            break;
+                            missed_heartbeats = missed_heartbeats.saturating_add(1);
+                            warn!(
+                                error = %err,
+                                missed_heartbeats,
+                                budget = HEARTBEAT_MISS_BUDGET,
+                                "host worker heartbeat failed"
+                            );
+                            if missed_heartbeats >= HEARTBEAT_MISS_BUDGET {
+                                warn!("host worker heartbeat miss budget exhausted");
+                                task.stop();
+                                let finish = task.await;
+                                emit_finish(&emit_for_task, finish.outcome);
+                                emit_for_task(HostWorkerEvent::Stopped);
+                                on_exit();
+                                break;
+                            }
                         }
                     }
+                    counters_tick = sleep(interval).fuse();
                 }
             }
         }
@@ -211,13 +233,34 @@ fn emit_finish(
     outcome: Result<HostSessionOutcome, smoo_host_session::HostSessionError>,
 ) {
     match outcome {
-        Ok(HostSessionOutcome::Stopped) => {}
-        Ok(HostSessionOutcome::TransportLost) => emit(HostWorkerEvent::TransportLost),
+        Ok(HostSessionOutcome::Stopped) => {
+            debug!("host worker session stopped");
+        }
+        Ok(HostSessionOutcome::TransportLost) => {
+            warn!("host worker session transport lost");
+            emit(HostWorkerEvent::TransportLost)
+        }
         Ok(HostSessionOutcome::SessionChanged { previous, current }) => {
+            warn!(previous, current, "host worker session changed");
             emit(HostWorkerEvent::SessionChanged { previous, current });
         }
-        Err(err) => emit(HostWorkerEvent::Error {
-            message: err.to_string(),
-        }),
+        Err(err) => {
+            warn!(error = %err, "host worker session failed");
+            emit(HostWorkerEvent::Error {
+                message: err.to_string(),
+            })
+        }
     }
+}
+
+fn emit_counters(
+    emit: &impl Fn(HostWorkerEvent),
+    snapshot: smoo_host_core::TransportCounterSnapshot,
+) {
+    emit(HostWorkerEvent::Counters {
+        ios_up: snapshot.ios_up,
+        ios_down: snapshot.ios_down,
+        bytes_up: snapshot.bytes_up,
+        bytes_down: snapshot.bytes_down,
+    });
 }

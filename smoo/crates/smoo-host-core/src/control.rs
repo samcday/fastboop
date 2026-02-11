@@ -63,6 +63,7 @@ fn protocol_error(message: impl Into<String>) -> TransportError {
 #[cfg(test)]
 mod tests {
     use super::ConfigExportsV0;
+    use alloc::vec;
 
     #[test]
     fn config_exports_single_encodes_fields() {

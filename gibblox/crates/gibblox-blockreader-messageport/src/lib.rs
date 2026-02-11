@@ -12,6 +12,7 @@ mod wasm {
         sync::atomic::{AtomicBool, AtomicU32, Ordering},
         sync::{Arc, Mutex},
     };
+    use tracing::trace;
     use wasm_bindgen::{JsCast, JsValue, closure::Closure};
     use web_sys::{Event, MessageEvent, MessagePort};
 
@@ -123,6 +124,11 @@ mod wasm {
         async fn request(&self, mut message: RpcMessage) -> GibbloxResult<SendJsValue> {
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             message.set_id(id)?;
+            let op = Reflect::get(message.value().as_js_value(), &JsValue::from_str("op"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            trace!(id, op = %op, "messageport client request send");
 
             let (tx, rx) = oneshot::channel();
             {
@@ -156,7 +162,10 @@ mod wasm {
             }
 
             match rx.await {
-                Ok(result) => result,
+                Ok(result) => {
+                    trace!(id, op = %op, "messageport client request complete");
+                    result
+                }
                 Err(_) => Err(GibbloxError::with_message(
                     GibbloxErrorKind::Io,
                     "MessagePort response channel closed",
@@ -354,10 +363,18 @@ mod wasm {
                 length,
                 priority,
             } => {
+                trace!(
+                    id,
+                    lba,
+                    length,
+                    ?priority,
+                    "messageport server read_blocks begin"
+                );
                 let mut buf = vec![0u8; length as usize];
                 let read = reader
                     .read_blocks(lba, &mut buf, ReadContext { priority })
                     .await?;
+                trace!(id, lba, read, "messageport server read_blocks complete");
                 if read > buf.len() {
                     return Err(GibbloxError::with_message(
                         GibbloxErrorKind::OutOfRange,

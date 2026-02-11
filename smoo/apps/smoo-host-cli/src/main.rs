@@ -27,6 +27,7 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 1;
 const DISCOVERY_DELAY_INITIAL: Duration = Duration::from_millis(500);
 const DISCOVERY_DELAY_MAX: Duration = Duration::from_secs(5);
 const STATUS_RETRY_ATTEMPTS: usize = 5;
+const HEARTBEAT_MISS_BUDGET: u32 = 5;
 const RECONNECT_PAUSE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Parser)]
@@ -235,6 +236,7 @@ async fn run_session(
     };
 
     let heartbeat_interval = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
+    let mut missed_heartbeats: u32 = 0;
     info!("connected to smoo gadget");
 
     let outcome = loop {
@@ -261,8 +263,33 @@ async fn run_session(
                 }
             }
             _ = time::sleep(heartbeat_interval), if !shutdown.is_cancelled() => {
-                if let Err(err) = task.heartbeat(&mut control).await {
-                    warn!(error = %err, "heartbeat transfer failed");
+                match time::timeout(heartbeat_interval, task.heartbeat(&mut control)).await {
+                    Ok(Ok(_status)) => {
+                        if missed_heartbeats > 0 {
+                            info!(missed_heartbeats, "heartbeat recovered");
+                        }
+                        missed_heartbeats = 0;
+                    }
+                    Ok(Err(err)) => {
+                        missed_heartbeats = missed_heartbeats.saturating_add(1);
+                        warn!(
+                            error = %err,
+                            missed_heartbeats,
+                            budget = HEARTBEAT_MISS_BUDGET,
+                            "heartbeat transfer failed"
+                        );
+                    }
+                    Err(_) => {
+                        missed_heartbeats = missed_heartbeats.saturating_add(1);
+                        warn!(
+                            missed_heartbeats,
+                            budget = HEARTBEAT_MISS_BUDGET,
+                            "heartbeat transfer timed out"
+                        );
+                    }
+                }
+                if missed_heartbeats >= HEARTBEAT_MISS_BUDGET {
+                    warn!("heartbeat miss budget exhausted; treating transport as lost");
                     break SessionEnd::TransportLost;
                 }
             }

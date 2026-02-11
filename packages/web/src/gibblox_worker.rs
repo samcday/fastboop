@@ -125,7 +125,7 @@ mod wasm {
     async fn start_gibblox_worker_channel(
         rootfs_url: &str,
     ) -> Result<(Worker, MessageChannel, StartAck)> {
-        let script_url = current_module_script_url()?;
+        let script_url = append_current_query_to_script_url(current_module_script_url()?);
         tracing::info!(%script_url, "starting gibblox web worker");
 
         let opts = WorkerOptions::new();
@@ -379,6 +379,12 @@ mod wasm {
                     let server = MessagePortBlockReaderServer::serve(port, state.reader.clone())
                         .map_err(|err| anyhow!("attach MessagePort block reader server: {err}"))?;
                     state.servers.push(server);
+                    tracing::info!(
+                        size_bytes = state.size_bytes,
+                        identity = %state.identity,
+                        servers = state.servers.len(),
+                        "gibblox worker attached MessagePort block reader server"
+                    );
                     post_state_response(scope, "attached", state.size_bytes, &state.identity)
                 })
             }
@@ -491,6 +497,34 @@ mod wasm {
         }
 
         candidate.ok_or_else(|| anyhow!("failed to determine fastboop web module script URL"))
+    }
+
+    fn append_current_query_to_script_url(mut script_url: String) -> String {
+        if script_url.contains('?') {
+            return script_url;
+        }
+        if let Some(level) = crate::global_log_level_hint() {
+            script_url.push_str("?log=");
+            script_url.push_str(match level {
+                tracing::Level::TRACE => "trace",
+                tracing::Level::DEBUG => "debug",
+                tracing::Level::INFO => "info",
+                tracing::Level::WARN => "warn",
+                tracing::Level::ERROR => "error",
+            });
+            return script_url;
+        }
+        let Some(window) = web_sys::window() else {
+            return script_url;
+        };
+        let Ok(search) = window.location().search() else {
+            return script_url;
+        };
+        if search.is_empty() {
+            return script_url;
+        }
+        script_url.push_str(&search);
+        script_url
     }
 
     fn set_prop(target: &Object, key: &str, value: JsValue, context: &str) -> Result<()> {

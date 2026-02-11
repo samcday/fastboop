@@ -13,9 +13,10 @@ use tokio_util::sync::CancellationToken;
 const SMOO_INTERFACE_CLASS: u8 = 0xFF;
 const SMOO_INTERFACE_SUBCLASS: u8 = 0x53;
 const SMOO_INTERFACE_PROTOCOL: u8 = 0x4D;
-const TRANSFER_TIMEOUT: Duration = Duration::from_millis(200);
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(1);
 const DISCOVERY_RETRY: Duration = Duration::from_millis(500);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+const HEARTBEAT_MISS_BUDGET: u32 = 5;
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 
 pub(crate) fn run_host_daemon(
@@ -140,6 +141,7 @@ async fn run_session(
         .start(transport, &mut control)
         .await
         .map_err(|err| anyhow!(err.to_string()))?;
+    let mut missed_heartbeats: u32 = 0;
 
     loop {
         tokio::select! {
@@ -152,8 +154,28 @@ async fn run_session(
                 return map_finish(finish);
             }
             _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
-                if let Err(err) = task.heartbeat(&mut control).await {
-                    eprintln!("smoo heartbeat failed: {err}");
+                match tokio::time::timeout(HEARTBEAT_INTERVAL, task.heartbeat(&mut control)).await {
+                    Ok(Ok(_status)) => {
+                        if missed_heartbeats > 0 {
+                            eprintln!("smoo heartbeat recovered after {missed_heartbeats} missed ticks");
+                        }
+                        missed_heartbeats = 0;
+                    }
+                    Ok(Err(err)) => {
+                        missed_heartbeats = missed_heartbeats.saturating_add(1);
+                        eprintln!(
+                            "smoo heartbeat failed ({missed_heartbeats}/{HEARTBEAT_MISS_BUDGET}): {err}"
+                        );
+                    }
+                    Err(_) => {
+                        missed_heartbeats = missed_heartbeats.saturating_add(1);
+                        eprintln!(
+                            "smoo heartbeat timed out ({missed_heartbeats}/{HEARTBEAT_MISS_BUDGET})"
+                        );
+                    }
+                }
+                if missed_heartbeats >= HEARTBEAT_MISS_BUDGET {
+                    eprintln!("smoo heartbeat budget exhausted; treating transport as lost");
                     return Ok(SessionEnd::TransportLost);
                 }
             }

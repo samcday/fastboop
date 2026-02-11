@@ -32,9 +32,20 @@ pub enum HostWorkerEvent {
     Starting,
     TransportConnected,
     Configured,
-    SessionChanged { previous: u64, current: u64 },
+    Counters {
+        ios_up: u64,
+        ios_down: u64,
+        bytes_up: u64,
+        bytes_down: u64,
+    },
+    SessionChanged {
+        previous: u64,
+        current: u64,
+    },
     TransportLost,
-    Error { message: String },
+    Error {
+        message: String,
+    },
     Stopped,
 }
 
@@ -44,6 +55,7 @@ impl HostWorkerEvent {
             Self::Starting => "starting",
             Self::TransportConnected => "transport_connected",
             Self::Configured => "configured",
+            Self::Counters { .. } => "counters",
             Self::SessionChanged { .. } => "session_changed",
             Self::TransportLost => "transport_lost",
             Self::Error { .. } => "error",

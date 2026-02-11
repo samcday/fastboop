@@ -10,7 +10,7 @@ use smoo_gadget_core::{
     LinkState, PersistedExportRecord, RuntimeTunables, SetupCommand, SetupPacket, SmooGadget,
     SmooUblk, SmooUblkDevice, StateStore, UblkIoRequest, UblkOp, UblkQueueRuntime,
 };
-use smoo_proto::{Ident, OpCode, Request, Response, SMOO_STATUS_REQUEST, SMOO_STATUS_REQ_TYPE};
+use smoo_proto::{Ident, OpCode, Request, SMOO_STATUS_REQUEST, SMOO_STATUS_REQ_TYPE};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     convert::Infallible,
@@ -26,13 +26,12 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::AsyncReadExt,
     signal,
     signal::unix::{signal as unix_signal, SignalKind},
     sync::{
         mpsc,
         mpsc::error::{TryRecvError, TrySendError},
-        oneshot, watch, Mutex, Notify, RwLock,
+        watch, Mutex, Notify, RwLock,
     },
     task::JoinHandle,
 };
@@ -176,7 +175,7 @@ async fn run_impl(args: Args) -> Result<()> {
         adopt_prepare(&mut ublk, &mut state_store).await?;
     }
 
-    let (custom, endpoints, _gadget_guard, ffs_dir) =
+    let (custom, endpoints, _gadget_guard, _ffs_dir) =
         setup_configfs(&args).context("setup ConfigFS")?;
 
     let ident = Ident::new(0, 1);
@@ -237,8 +236,6 @@ async fn run_impl(args: Args) -> Result<()> {
         io_pump: None,
         io_pump_task: None,
         io_pump_capacity,
-        gadget_config,
-        ffs_dir,
         reconcile_queue: VecDeque::new(),
         data_plane_epoch: 0,
     };
@@ -414,8 +411,6 @@ struct RuntimeState {
     io_pump: Option<IoPumpHandle>,
     io_pump_task: Option<JoinHandle<()>>,
     io_pump_capacity: usize,
-    gadget_config: GadgetConfig,
-    ffs_dir: PathBuf,
     reconcile_queue: VecDeque<u32>,
     data_plane_epoch: u64,
 }
@@ -480,86 +475,6 @@ struct OutstandingRequest {
     dev_id: u32,
     request: UblkIoRequest,
     queues: Arc<UblkQueueRuntime>,
-}
-
-#[derive(Clone)]
-struct InflightRequest {
-    export_id: u32,
-    request_id: u32,
-    request: UblkIoRequest,
-    queues: Arc<UblkQueueRuntime>,
-    req_len: usize,
-    block_size: usize,
-    sent: bool,
-    response_seen: bool,
-}
-
-fn update_request_gauges(map: &HashMap<u32, HashMap<u32, InflightRequest>>) {
-    let pending = map.values().map(|m| m.len()).sum::<usize>();
-    let inflight = map
-        .values()
-        .map(|m| m.values().filter(|req| req.sent).count())
-        .sum::<usize>();
-    smoo_gadget_core::record_pending_requests(pending);
-    smoo_gadget_core::record_inflight_requests(inflight);
-}
-
-async fn take_inflight_entry(
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
-    export_id: u32,
-    request_id: u32,
-) -> Option<InflightRequest> {
-    let mut guard = inflight.lock().await;
-    let entry = guard
-        .get_mut(&export_id)
-        .and_then(|map| map.remove(&request_id));
-    if let Some(map) = guard.get(&export_id) {
-        if map.is_empty() {
-            guard.remove(&export_id);
-        }
-    }
-    update_request_gauges(&guard);
-    entry
-}
-
-enum ResponseLookup {
-    Unknown,
-    Duplicate,
-    Fresh(InflightRequest),
-}
-
-async fn mark_response_seen(
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
-    export_id: u32,
-    request_id: u32,
-) -> ResponseLookup {
-    let mut guard = inflight.lock().await;
-    let Some(entry) = guard
-        .get_mut(&export_id)
-        .and_then(|map| map.get_mut(&request_id))
-    else {
-        return ResponseLookup::Unknown;
-    };
-    if entry.response_seen {
-        return ResponseLookup::Duplicate;
-    }
-    entry.response_seen = true;
-    ResponseLookup::Fresh(entry.clone())
-}
-
-async fn mark_request_sent(
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
-    export_id: u32,
-    request_id: u32,
-) {
-    let mut guard = inflight.lock().await;
-    if let Some(entry) = guard
-        .get_mut(&export_id)
-        .and_then(|map| map.get_mut(&request_id))
-    {
-        entry.sent = true;
-    }
-    update_request_gauges(&guard);
 }
 
 fn build_initial_exports(state_store: &StateStore) -> HashMap<u32, ExportController> {
@@ -695,12 +610,7 @@ async fn stop_all_queue_tasks(runtime: &mut RuntimeState) {
     }
 }
 
-async fn ensure_data_plane(
-    runtime: &mut RuntimeState,
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
-    response_task: &mut Option<JoinHandle<()>>,
-    data_plane_tx: &mpsc::UnboundedSender<DataPlaneEvent>,
-) {
+async fn ensure_data_plane(runtime: &mut RuntimeState) {
     if runtime.gadget.is_none() {
         if let Some(pump) = runtime.io_pump.take() {
             drop(pump);
@@ -708,10 +618,6 @@ async fn ensure_data_plane(
         if let Some(task) = runtime.io_pump_task.take() {
             task.abort();
             let _ = task.await;
-        }
-        if let Some(handle) = response_task.take() {
-            handle.abort();
-            let _ = handle.await;
         }
         return;
     }
@@ -721,19 +627,6 @@ async fn ensure_data_plane(
             let (handle, task) = IoPumpHandle::spawn(gadget, runtime.io_pump_capacity);
             runtime.io_pump = Some(handle);
             runtime.io_pump_task = Some(task);
-        }
-    }
-    if response_task.is_none() {
-        if let Some(gadget) = runtime.gadget.clone() {
-            let inflight_map = inflight.clone();
-            let interrupt_out = gadget.response_reader();
-            *response_task = Some(tokio::spawn(response_loop(
-                gadget,
-                interrupt_out,
-                inflight_map,
-                data_plane_tx.clone(),
-                runtime.data_plane_epoch,
-            )));
         }
     }
 }
@@ -761,7 +654,6 @@ async fn drain_ep0_signals(
 async fn drain_queue_batch(
     runtime: &mut RuntimeState,
     link: &mut LinkController,
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
     outstanding: &mut HashMap<u32, HashMap<(u16, u16), OutstandingRequest>>,
     data_plane_tx: &mpsc::UnboundedSender<DataPlaneEvent>,
     queue_rx: &mut mpsc::Receiver<QueueEvent>,
@@ -770,8 +662,7 @@ async fn drain_queue_batch(
     while processed < QUEUE_BATCH_MAX.saturating_sub(1) {
         match queue_rx.try_recv() {
             Ok(evt) => {
-                handle_queue_event(runtime, link, inflight, outstanding, data_plane_tx, evt)
-                    .await?;
+                handle_queue_event(runtime, link, outstanding, data_plane_tx, evt).await?;
                 processed += 1;
             }
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
@@ -805,9 +696,7 @@ fn pop_next_outstanding(
 async fn drain_outstanding_bounded(
     runtime: &mut RuntimeState,
     link: &mut LinkController,
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
     outstanding: &mut HashMap<u32, HashMap<(u16, u16), OutstandingRequest>>,
-    data_plane_tx: &mpsc::UnboundedSender<DataPlaneEvent>,
     deadline: Instant,
 ) -> Result<()> {
     if outstanding.is_empty() {
@@ -884,17 +773,7 @@ async fn drain_outstanding_bounded(
             tag = req.tag,
             "replaying outstanding IO to host"
         );
-        if let Err(err) = handle_request(
-            pump.clone(),
-            data_plane_tx.clone(),
-            runtime.data_plane_epoch,
-            inflight,
-            export_id,
-            queues.clone(),
-            req,
-        )
-        .await
-        {
+        if let Err(err) = handle_request(pump.clone(), export_id, queues.clone(), req).await {
             let io_err = io_error_from_anyhow(&err);
             link.on_io_error(&io_err);
             park_request(
@@ -993,29 +872,18 @@ async fn drive_runtime(
     ublk: &mut SmooUblk,
     runtime: &mut RuntimeState,
     link: &mut LinkController,
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
     outstanding: &mut HashMap<u32, HashMap<(u16, u16), OutstandingRequest>>,
     queue_tx: Option<&QueueSender>,
-    response_task: &mut Option<JoinHandle<()>>,
-    data_plane_tx: &mpsc::UnboundedSender<DataPlaneEvent>,
     allow_reconcile: bool,
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_millis(MAINTENANCE_SLICE_MS);
     link.tick(Instant::now());
-    process_link_commands(runtime, link, inflight, outstanding, response_task).await?;
-    ensure_data_plane(runtime, inflight, response_task, data_plane_tx).await;
+    process_link_commands(runtime, link).await?;
+    ensure_data_plane(runtime).await;
     if let Some(tx) = queue_tx {
         sync_queue_tasks(runtime, tx).await;
     }
-    drain_outstanding_bounded(
-        runtime,
-        link,
-        inflight,
-        outstanding,
-        data_plane_tx,
-        deadline,
-    )
-    .await?;
+    drain_outstanding_bounded(runtime, link, outstanding, deadline).await?;
     if allow_reconcile {
         run_reconcile_slice(ublk, runtime, deadline).await?;
     }
@@ -1029,14 +897,11 @@ async fn handle_config_message(
     runtime: &mut RuntimeState,
     link: &mut LinkController,
     outstanding: &mut HashMap<u32, HashMap<(u16, u16), OutstandingRequest>>,
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
-    response_task: &mut Option<JoinHandle<()>>,
     config: ConfigExportsV0,
 ) -> Result<()> {
-    park_inflight_requests(inflight, outstanding).await;
     apply_config(ublk, runtime, config).await?;
     prune_outstanding_for_missing_exports(outstanding, &runtime.exports);
-    process_link_commands(runtime, link, inflight, outstanding, response_task).await?;
+    process_link_commands(runtime, link).await?;
     Ok(())
 }
 
@@ -1069,9 +934,6 @@ async fn run_event_loop(
     let mut outstanding: HashMap<u32, HashMap<(u16, u16), OutstandingRequest>> = HashMap::new();
     let (queue_tx_init, mut queue_rx) = mpsc::channel::<QueueEvent>(QUEUE_CHANNEL_DEPTH);
     let mut queue_tx: Option<QueueSender> = Some(queue_tx_init);
-    let inflight: Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-    let mut response_task: Option<JoinHandle<()>> = None;
     let (data_plane_tx, mut data_plane_rx) = mpsc::unbounded_channel::<DataPlaneEvent>();
     let ep0_notify = ep0_signals.notifier();
 
@@ -1093,31 +955,9 @@ async fn run_event_loop(
             &mut link,
         )
         .await;
-        process_link_commands(
-            &mut runtime,
-            &mut link,
-            &inflight,
-            &mut outstanding,
-            &mut response_task,
-        )
-        .await?;
-        // Make sure the data plane (io pump + response reader) is up before we
-        // start draining queue events so early responses can't be missed.
-        ensure_data_plane(&mut runtime, &inflight, &mut response_task, &data_plane_tx).await;
+        process_link_commands(&mut runtime, &mut link).await?;
+        ensure_data_plane(&mut runtime).await;
 
-        if response_task
-            .as_ref()
-            .is_some_and(|task| task.is_finished())
-        {
-            if let Some(task) = response_task.take() {
-                let _ = task.await;
-            }
-            notify_data_plane_error(
-                &data_plane_tx,
-                runtime.data_plane_epoch,
-                io::Error::other("response loop exited"),
-            );
-        }
         if runtime
             .io_pump_task
             .as_ref()
@@ -1182,9 +1022,6 @@ async fn run_event_loop(
                     if let Err(err) = handle_data_plane_event(
                         &mut runtime,
                         &mut link,
-                        &inflight,
-                        &mut outstanding,
-                        &mut response_task,
                         event,
                     )
                     .await
@@ -1200,8 +1037,6 @@ async fn run_event_loop(
                     &mut runtime,
                     &mut link,
                     &mut outstanding,
-                    &inflight,
-                    &mut response_task,
                     config,
                 )
                 .await
@@ -1217,7 +1052,6 @@ async fn run_event_loop(
                     if let Err(err) = handle_queue_event(
                         &mut runtime,
                         &mut link,
-                        &inflight,
                         &mut outstanding,
                         &data_plane_tx,
                         evt,
@@ -1230,7 +1064,6 @@ async fn run_event_loop(
                     if let Err(err) = drain_queue_batch(
                         &mut runtime,
                         &mut link,
-                        &inflight,
                         &mut outstanding,
                         &data_plane_tx,
                         &mut queue_rx,
@@ -1244,11 +1077,8 @@ async fn run_event_loop(
                         ublk,
                         &mut runtime,
                         &mut link,
-                        &inflight,
                         &mut outstanding,
                         queue_tx.as_ref(),
-                        &mut response_task,
-                        &data_plane_tx,
                         false,
                     ).await {
                         io_error = Some(err);
@@ -1261,11 +1091,8 @@ async fn run_event_loop(
                     ublk,
                     &mut runtime,
                     &mut link,
-                    &inflight,
                     &mut outstanding,
                     queue_tx.as_ref(),
-                    &mut response_task,
-                    &data_plane_tx,
                     false,
                 ).await {
                     io_error = Some(err);
@@ -1278,11 +1105,8 @@ async fn run_event_loop(
                     ublk,
                     &mut runtime,
                     &mut link,
-                    &inflight,
                     &mut outstanding,
                     queue_tx.as_ref(),
-                    &mut response_task,
-                    &data_plane_tx,
                     allow_reconcile,
                 ).await {
                     io_error = Some(err);
@@ -1296,11 +1120,8 @@ async fn run_event_loop(
                 ublk,
                 &mut runtime,
                 &mut link,
-                &inflight,
                 &mut outstanding,
                 queue_tx.as_ref(),
-                &mut response_task,
-                &data_plane_tx,
                 false,
             )
             .await
@@ -1308,10 +1129,9 @@ async fn run_event_loop(
                 io_error = Some(err);
                 break;
             }
-            let inflight_empty = inflight.lock().await.is_empty();
             let outstanding_empty = outstanding.is_empty();
             let queue_drained = queue_rx.is_closed() && queue_rx.is_empty();
-            if inflight_empty && outstanding_empty && queue_drained {
+            if outstanding_empty && queue_drained {
                 info!("graceful shutdown complete; exiting");
                 break;
             }
@@ -1330,11 +1150,6 @@ async fn run_event_loop(
         task.abort();
         let _ = task.await;
     }
-    if let Some(handle) = response_task.take() {
-        handle.abort();
-        let _ = handle.await;
-    }
-    drain_inflight(&inflight).await;
 
     if recovery_exit {
         return Ok(());
@@ -1364,9 +1179,6 @@ async fn run_event_loop(
 
 async fn handle_request(
     pump: IoPumpHandle,
-    data_plane_tx: mpsc::UnboundedSender<DataPlaneEvent>,
-    data_plane_epoch: u64,
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
     export_id: u32,
     queues: Arc<UblkQueueRuntime>,
     req: UblkIoRequest,
@@ -1438,25 +1250,6 @@ async fn handle_request(
         .context("request block count exceeds protocol limit")?;
     let request_id = make_request_id(req.queue_id, req.tag);
     let proto_req = Request::new(export_id, request_id, opcode, req.sector, num_blocks, 0);
-    {
-        // Track the request before sending it so early Responses can't be dropped as unknown.
-        let mut guard = inflight.lock().await;
-        let entry = InflightRequest {
-            export_id,
-            request_id,
-            request: req,
-            queues: queues.clone(),
-            req_len,
-            block_size,
-            sent: false,
-            response_seen: false,
-        };
-        guard
-            .entry(export_id)
-            .or_default()
-            .insert(request_id, entry);
-        update_request_gauges(&guard);
-    }
     trace!(
         export_id,
         dev_id = queues.dev_id(),
@@ -1465,44 +1258,19 @@ async fn handle_request(
         op = ?opcode,
         num_blocks,
         req_bytes = req_len,
-        "queueing smoo Request through pump"
+        "dispatching smoo Request through pump"
     );
-
-    let inflight_for_sent = inflight.clone();
-    let (sent_tx, sent_rx) = oneshot::channel();
-    let sent_marker = tokio::spawn(async move {
-        if sent_rx.await.is_ok() {
-            mark_request_sent(&inflight_for_sent, export_id, request_id).await;
-        }
-    });
-    tokio::spawn(async move {
-        let work = IoWork {
-            request: proto_req,
-            req_len,
-            queue_id: req.queue_id,
-            tag: req.tag,
-            op: opcode,
-            queues: queues.clone(),
-            on_request_sent: Some(sent_tx),
-        };
-        if let Err(err) = pump.submit(work).await {
-            notify_data_plane_error(
-                &data_plane_tx,
-                data_plane_epoch,
-                io::Error::other(format!("io pump submit failed: {err:#}")),
-            );
-            warn!(
-                export_id,
-                queue = req.queue_id,
-                tag = req.tag,
-                error = ?err,
-                "io pump error dispatching request"
-            );
-        }
-        let _ = sent_marker.await;
-    });
-
-    Ok(())
+    let work = IoWork {
+        ublk_request: req,
+        request: proto_req,
+        req_len,
+        block_size,
+        queue_id: req.queue_id,
+        tag: req.tag,
+        op: opcode,
+        queues: queues.clone(),
+    };
+    pump.submit(work).await
 }
 
 async fn control_loop(
@@ -1605,226 +1373,6 @@ fn opcode_from_ublk(op: UblkOp) -> Option<OpCode> {
 
 fn make_request_id(queue_id: u16, tag: u16) -> u32 {
     ((queue_id as u32) << 16) | tag as u32
-}
-
-fn response_status(resp: &Response, expected_len: usize, block_size: usize) -> Result<i32> {
-    if resp.status != 0 {
-        let errno = i32::from(resp.status);
-        return Ok(-errno);
-    }
-    let len = resp.num_blocks as usize * block_size;
-    i32::try_from(len)
-        .or_else(|_| i32::try_from(expected_len))
-        .map_err(|_| anyhow!("response length exceeds i32"))
-}
-
-struct BulkOutWork {
-    entry: InflightRequest,
-    read_len: usize,
-    status: i32,
-    completion: oneshot::Sender<BulkOutResult>,
-}
-
-struct BulkOutResult {
-    entry: InflightRequest,
-    status: i32,
-    result: Result<()>,
-}
-
-async fn response_loop(
-    gadget: Arc<SmooGadget>,
-    interrupt_out: Arc<Mutex<tokio::fs::File>>,
-    inflight: Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
-    data_plane_tx: mpsc::UnboundedSender<DataPlaneEvent>,
-    data_plane_epoch: u64,
-) {
-    let (bulk_tx, mut bulk_rx) = mpsc::channel::<BulkOutWork>(64);
-    let bulk_gadget = gadget.clone();
-    let bulk_task = tokio::spawn(async move {
-        while let Some(work) = bulk_rx.recv().await {
-            let result = async {
-                let mut buffer = work
-                    .entry
-                    .queues
-                    .checkout_buffer(work.entry.request.queue_id, work.entry.request.tag)
-                    .map_err(|err| anyhow!("checkout buffer for bulk out: {err:#}"))?;
-                bulk_gadget
-                    .read_bulk_buffer(&mut buffer.as_mut_slice()[..work.read_len])
-                    .await
-                    .map_err(|err| anyhow!("bulk OUT read failed: {err:#}"))?;
-                Ok(())
-            }
-            .await;
-            let _ = work.completion.send(BulkOutResult {
-                entry: work.entry,
-                status: work.status,
-                result,
-            });
-        }
-    });
-    loop {
-        let response = {
-            let mut buf = [0u8; smoo_proto::RESPONSE_LEN];
-            let start = Instant::now();
-            let read_res = {
-                let mut lock = interrupt_out.lock().await;
-                lock.read_exact(&mut buf).await
-            };
-            if let Err(err) = read_res {
-                warn!(error = ?err, "response reader exiting after error");
-                notify_data_plane_error(
-                    &data_plane_tx,
-                    data_plane_epoch,
-                    io::Error::new(err.kind(), format!("interrupt OUT read failed: {err}")),
-                );
-                break;
-            }
-            smoo_gadget_core::observe_interrupt_out(buf.len(), start.elapsed());
-            match Response::try_from(buf.as_slice()) {
-                Ok(resp) => resp,
-                Err(err) => {
-                    warn!(error = ?err, "response reader failed to decode Response");
-                    continue;
-                }
-            }
-        };
-        let entry =
-            match mark_response_seen(&inflight, response.export_id, response.request_id).await {
-                ResponseLookup::Unknown => {
-                    warn!(
-                        request_id = response.request_id,
-                        export_id = response.export_id,
-                        op = ?response.op,
-                        "response for unknown request; dropping"
-                    );
-                    continue;
-                }
-                ResponseLookup::Duplicate => {
-                    trace!(
-                        request_id = response.request_id,
-                        export_id = response.export_id,
-                        op = ?response.op,
-                        "duplicate response; dropping"
-                    );
-                    continue;
-                }
-                ResponseLookup::Fresh(entry) => entry,
-            };
-        let status = match response_status(&response, entry.req_len, entry.block_size) {
-            Ok(status) => status,
-            Err(err) => {
-                warn!(
-                    request_id = response.request_id,
-                    export_id = response.export_id,
-                    error = %err,
-                    "failed to interpret response"
-                );
-                -libc::EIO
-            }
-        };
-        if status >= 0 && (status as usize) != entry.req_len {
-            warn!(
-                request_id = response.request_id,
-                export_id = response.export_id,
-                expected = entry.req_len,
-                reported = status,
-                "response byte count mismatch"
-            );
-        }
-        if response.op == OpCode::Read && status > 0 {
-            let read_len = usize::try_from(status).unwrap_or(entry.req_len);
-            let read_len = read_len.min(entry.req_len);
-            let (completion_tx, completion_rx) = oneshot::channel();
-            if bulk_tx
-                .send(BulkOutWork {
-                    entry,
-                    read_len,
-                    status,
-                    completion: completion_tx,
-                })
-                .await
-                .is_err()
-            {
-                warn!(
-                    request_id = response.request_id,
-                    export_id = response.export_id,
-                    "bulk OUT worker stopped"
-                );
-                notify_data_plane_error(
-                    &data_plane_tx,
-                    data_plane_epoch,
-                    io::Error::other("bulk OUT worker stopped"),
-                );
-                continue;
-            }
-            let inflight_for_complete = inflight.clone();
-            let data_plane_tx = data_plane_tx.clone();
-            tokio::spawn(async move {
-                match completion_rx.await {
-                    Ok(result) => match result.result {
-                        Ok(()) => {
-                            if let Some(entry) = take_inflight_entry(
-                                &inflight_for_complete,
-                                result.entry.export_id,
-                                result.entry.request_id,
-                            )
-                            .await
-                            {
-                                if let Err(err) =
-                                    entry.queues.complete_io(entry.request, result.status)
-                                {
-                                    warn!(
-                                        request_id = entry.request_id,
-                                        export_id = entry.export_id,
-                                        error = ?err,
-                                        "failed to complete ublk request after bulk OUT"
-                                    );
-                                }
-                            } else {
-                                trace!(
-                                    request_id = result.entry.request_id,
-                                    export_id = result.entry.export_id,
-                                    "inflight entry cleared before bulk OUT completion"
-                                );
-                            }
-                        }
-                        Err(err) => {
-                            warn!(error = ?err, "bulk OUT worker error");
-                            notify_data_plane_error(
-                                &data_plane_tx,
-                                data_plane_epoch,
-                                io::Error::other(format!("bulk OUT read failed: {err:#}")),
-                            );
-                        }
-                    },
-                    Err(_) => {
-                        warn!("bulk OUT completion channel dropped");
-                    }
-                }
-            });
-            continue;
-        }
-        if let Some(entry) =
-            take_inflight_entry(&inflight, response.export_id, response.request_id).await
-        {
-            if let Err(err) = entry.queues.complete_io(entry.request, status) {
-                warn!(
-                    request_id = response.request_id,
-                    export_id = response.export_id,
-                    error = ?err,
-                    "failed to complete ublk request from response"
-                );
-            }
-        } else {
-            trace!(
-                request_id = response.request_id,
-                export_id = response.export_id,
-                "inflight entry cleared before response completion"
-            );
-        }
-    }
-    drop(bulk_tx);
-    let _ = bulk_task.await;
 }
 
 fn request_byte_len(req: &UblkIoRequest, block_size: usize) -> io::Result<usize> {
@@ -2376,85 +1924,13 @@ async fn begin_user_recovery(ublk: &mut SmooUblk, runtime: &mut RuntimeState) ->
     Ok(())
 }
 
-async fn park_inflight_requests(
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
-    outstanding: &mut HashMap<u32, HashMap<(u16, u16), OutstandingRequest>>,
-) {
-    let mut guard = inflight.lock().await;
-    let mut drained = Vec::new();
-    for (export_id, mut requests) in guard.drain() {
-        for (_req_id, req) in requests.drain() {
-            drained.push((export_id, req));
-        }
-    }
-    update_request_gauges(&guard);
-    drop(guard);
-
-    for (export_id, req) in drained {
-        park_request(
-            outstanding,
-            export_id,
-            req.request.dev_id,
-            req.queues,
-            req.request,
-        );
-    }
-}
-
 async fn process_link_commands(
     runtime: &mut RuntimeState,
     link: &mut LinkController,
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
-    outstanding: &mut HashMap<u32, HashMap<(u16, u16), OutstandingRequest>>,
-    response_task: &mut Option<JoinHandle<()>>,
 ) -> Result<()> {
-    while let Some(cmd) = link.take_command() {
-        match cmd {
-            LinkCommand::DropLink => {
-                if runtime.gadget.is_none() {
-                    continue;
-                }
-                park_inflight_requests(inflight, outstanding).await;
-                if let Some(pump) = runtime.io_pump.take() {
-                    drop(pump);
-                }
-                if let Some(task) = runtime.io_pump_task.take() {
-                    task.abort();
-                    let _ = task.await;
-                }
-                if let Some(task) = response_task.take() {
-                    task.abort();
-                    let _ = task.await;
-                }
-                runtime.gadget = None;
-                runtime.data_plane_epoch = runtime.data_plane_epoch.wrapping_add(1);
-                warn!("link controller requested drop; data plane closed");
-            }
-            LinkCommand::Reopen => {
-                if runtime.gadget.is_some() {
-                    continue;
-                }
-                match open_data_endpoints(&runtime.ffs_dir) {
-                    Ok(endpoints) => match SmooGadget::new(endpoints, runtime.gadget_config) {
-                        Ok(gadget) => {
-                            let gadget = Arc::new(gadget);
-                            let (handle, task) =
-                                IoPumpHandle::spawn(gadget.clone(), runtime.io_pump_capacity);
-                            runtime.io_pump = Some(handle);
-                            runtime.io_pump_task = Some(task);
-                            runtime.gadget = Some(gadget);
-                            warn!("link controller reopened data plane");
-                        }
-                        Err(err) => {
-                            warn!(error = ?err, "reopen data plane failed");
-                        }
-                    },
-                    Err(err) => {
-                        warn!(error = ?err, "open endpoints failed during reopen");
-                    }
-                }
-            }
-        }
+    if let Some(LinkCommand::Fatal) = link.take_command() {
+        let _ = runtime;
+        anyhow::bail!("link controller entered offline state");
     }
     Ok(())
 }
@@ -2462,9 +1938,6 @@ async fn process_link_commands(
 async fn handle_data_plane_event(
     runtime: &mut RuntimeState,
     link: &mut LinkController,
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
-    outstanding: &mut HashMap<u32, HashMap<(u16, u16), OutstandingRequest>>,
-    response_task: &mut Option<JoinHandle<()>>,
     event: DataPlaneEvent,
 ) -> Result<()> {
     match event {
@@ -2481,16 +1954,15 @@ async fn handle_data_plane_event(
             link.on_io_error(&error);
         }
     }
-    process_link_commands(runtime, link, inflight, outstanding, response_task).await?;
+    process_link_commands(runtime, link).await?;
     Ok(())
 }
 
 async fn handle_queue_event(
     runtime: &mut RuntimeState,
     link: &mut LinkController,
-    inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>,
     outstanding: &mut HashMap<u32, HashMap<(u16, u16), OutstandingRequest>>,
-    data_plane_tx: &mpsc::UnboundedSender<DataPlaneEvent>,
+    _data_plane_tx: &mpsc::UnboundedSender<DataPlaneEvent>,
     event: QueueEvent,
 ) -> Result<()> {
     match event {
@@ -2542,16 +2014,7 @@ async fn handle_queue_event(
                 num_sectors = request.num_sectors,
                 "dispatch ublk request to host"
             );
-            if let Err(err) = handle_request(
-                pump.clone(),
-                data_plane_tx.clone(),
-                runtime.data_plane_epoch,
-                inflight,
-                export_id,
-                queues.clone(),
-                request,
-            )
-            .await
+            if let Err(err) = handle_request(pump.clone(), export_id, queues.clone(), request).await
             {
                 let io_err = io_error_from_anyhow(&err);
                 link.on_io_error(&io_err);
@@ -2613,16 +2076,6 @@ fn prune_outstanding_for_missing_exports(
             }
         }
     }
-}
-
-async fn drain_inflight(inflight: &Arc<Mutex<HashMap<u32, HashMap<u32, InflightRequest>>>>) {
-    let mut guard = inflight.lock().await;
-    for (_export, mut requests) in guard.drain() {
-        for (_req_id, req) in requests.drain() {
-            let _ = req.queues.complete_io(req.request, -libc::ENOLINK);
-        }
-    }
-    update_request_gauges(&guard);
 }
 
 fn io_error_from_anyhow(err: &anyhow::Error) -> io::Error {

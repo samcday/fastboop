@@ -1326,6 +1326,10 @@ async fn run_web_host_daemon(
     let mut events = host
         .take_event_receiver()
         .ok_or_else(|| anyhow::anyhow!("host worker events receiver unavailable"))?;
+    let mut prev_ios_up = 0u64;
+    let mut prev_ios_down = 0u64;
+    let mut prev_bytes_up = 0u64;
+    let mut prev_bytes_down = 0u64;
 
     update_session_active_host_state(&mut sessions, &session_id, Some(true), Some(false));
     loop {
@@ -1358,6 +1362,23 @@ async fn run_web_host_daemon(
                     Some(true),
                 );
                 smoo_stats.set_connected(true);
+            }
+            HostWorkerEvent::Counters {
+                ios_up,
+                ios_down,
+                bytes_up,
+                bytes_down,
+            } => {
+                let ios_delta = ios_up
+                    .saturating_sub(prev_ios_up)
+                    .saturating_add(ios_down.saturating_sub(prev_ios_down));
+                let bytes_up_delta = bytes_up.saturating_sub(prev_bytes_up);
+                let bytes_down_delta = bytes_down.saturating_sub(prev_bytes_down);
+                smoo_stats.add_deltas(ios_delta, bytes_up_delta, bytes_down_delta);
+                prev_ios_up = ios_up;
+                prev_ios_down = ios_down;
+                prev_bytes_up = bytes_up;
+                prev_bytes_down = bytes_down;
             }
             HostWorkerEvent::SessionChanged { previous, current } => {
                 warn!(

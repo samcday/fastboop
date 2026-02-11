@@ -17,6 +17,7 @@ use web_sys::{
 };
 
 use crate::api::HostWorkerState;
+use tracing::{debug, info, warn};
 
 const WORKER_NAME: &str = "fastboop-smoo-host-worker";
 const READY_CMD: &str = "smoo_host_worker_ready";
@@ -38,7 +39,7 @@ impl HostWorker {
         block_source: MessagePortBlockReaderClient,
         cfg: HostWorkerConfig,
     ) -> Result<Self, String> {
-        let script_url = current_module_script_url()?;
+        let script_url = append_current_query_to_script_url(current_module_script_url()?);
         let worker_opts = WorkerOptions::new();
         worker_opts.set_type(WorkerType::Module);
         worker_opts.set_name(WORKER_NAME);
@@ -112,6 +113,12 @@ impl HostWorker {
                 "starting" => Some(HostWorkerEvent::Starting),
                 "transport_connected" => Some(HostWorkerEvent::TransportConnected),
                 "configured" => Some(HostWorkerEvent::Configured),
+                "counters" => Some(HostWorkerEvent::Counters {
+                    ios_up: get_u64_field(&data, "ios_up").unwrap_or(0),
+                    ios_down: get_u64_field(&data, "ios_down").unwrap_or(0),
+                    bytes_up: get_u64_field(&data, "bytes_up").unwrap_or(0),
+                    bytes_down: get_u64_field(&data, "bytes_down").unwrap_or(0),
+                }),
                 "session_changed" => Some(HostWorkerEvent::SessionChanged {
                     previous: get_u64_field(&data, "previous").unwrap_or(0),
                     current: get_u64_field(&data, "current").unwrap_or(0),
@@ -304,6 +311,7 @@ pub fn run_if_worker() -> bool {
     if scope.name() != WORKER_NAME {
         return false;
     }
+    info!("smoo host worker mode: installing RPC handler");
 
     let runtime = Rc::new(RefCell::new(WorkerRuntime::new()));
     let runtime_for_handler = runtime.clone();
@@ -401,6 +409,7 @@ async fn handle_worker_command(
     transfer_port: Option<MessagePort>,
     event_port: MessagePort,
 ) -> Result<(), String> {
+    debug!(command = %cmd, "smoo host worker received command");
     match cmd.as_str() {
         "init" => {
             let gibblox_port = transfer_port
@@ -590,6 +599,37 @@ fn post_event(port: &MessagePort, event: HostWorkerEvent) -> Result<(), String> 
         "build worker event",
     )?;
     match event {
+        HostWorkerEvent::Counters {
+            ios_up,
+            ios_down,
+            bytes_up,
+            bytes_down,
+        } => {
+            set_prop(
+                &value,
+                "ios_up",
+                JsValue::from_str(&ios_up.to_string()),
+                "build worker event",
+            )?;
+            set_prop(
+                &value,
+                "ios_down",
+                JsValue::from_str(&ios_down.to_string()),
+                "build worker event",
+            )?;
+            set_prop(
+                &value,
+                "bytes_up",
+                JsValue::from_str(&bytes_up.to_string()),
+                "build worker event",
+            )?;
+            set_prop(
+                &value,
+                "bytes_down",
+                JsValue::from_str(&bytes_down.to_string()),
+                "build worker event",
+            )?;
+        }
         HostWorkerEvent::SessionChanged { previous, current } => {
             set_prop(
                 &value,
@@ -674,6 +714,7 @@ fn post_ready_to_scope(scope: &DedicatedWorkerGlobalScope) -> Result<(), String>
 }
 
 fn post_error_to_scope(scope: &DedicatedWorkerGlobalScope, message: &str) -> Result<(), String> {
+    warn!(%message, "smoo host worker bootstrap error");
     let response = Object::new();
     set_prop(
         &response,
@@ -714,6 +755,40 @@ fn current_module_script_url() -> Result<String, String> {
     }
 
     candidate.ok_or_else(|| "failed to determine fastboop web module script URL".to_string())
+}
+
+fn append_current_query_to_script_url(mut script_url: String) -> String {
+    if script_url.contains('?') {
+        return script_url;
+    }
+    if let Some(level) = global_log_level_hint_text() {
+        script_url.push_str("?log=");
+        script_url.push_str(&level);
+        return script_url;
+    }
+    let Some(window) = web_sys::window() else {
+        return script_url;
+    };
+    let Ok(location) = Reflect::get(window.as_ref(), &JsValue::from_str("location")) else {
+        return script_url;
+    };
+    let Ok(search_value) = Reflect::get(&location, &JsValue::from_str("search")) else {
+        return script_url;
+    };
+    let Some(search) = search_value.as_string() else {
+        return script_url;
+    };
+    if search.is_empty() {
+        return script_url;
+    }
+    script_url.push_str(&search);
+    script_url
+}
+
+fn global_log_level_hint_text() -> Option<String> {
+    let global = js_sys::global();
+    let value = Reflect::get(&global, &JsValue::from_str("__FASTBOOP_LOG_LEVEL")).ok()?;
+    value.as_string()
 }
 
 fn put_optional_u8(obj: &Object, key: &str, value: Option<u8>) -> Result<(), String> {

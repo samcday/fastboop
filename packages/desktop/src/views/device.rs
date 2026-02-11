@@ -37,9 +37,10 @@ const SMOO_INTERFACE_SUBCLASS: u8 = 0x53;
 const SMOO_INTERFACE_PROTOCOL: u8 = 0x4D;
 const FASTBOOT_INTERFACE_SUBCLASS: u8 = 0x42;
 const FASTBOOT_INTERFACE_PROTOCOL: u8 = 0x03;
-const TRANSFER_TIMEOUT: Duration = Duration::from_millis(200);
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(1);
 const DISCOVERY_RETRY: Duration = Duration::from_millis(500);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+const HEARTBEAT_MISS_BUDGET: u32 = 5;
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 const CACHE_STATS_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -688,6 +689,7 @@ async fn run_rusb_session(
         .map_err(|err| anyhow!(err.to_string()))?;
     smoo_stats.set_connected(true);
     let mut counter_snapshot = counters.snapshot();
+    let mut missed_heartbeats: u32 = 0;
 
     loop {
         tokio::select! {
@@ -713,8 +715,33 @@ async fn run_rusb_session(
                 }
             }
             _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
-                if let Err(err) = task.heartbeat(&mut control).await {
-                    error!(%err, "desktop smoo heartbeat ended");
+                match tokio::time::timeout(HEARTBEAT_INTERVAL, task.heartbeat(&mut control)).await {
+                    Ok(Ok(_status)) => {
+                        if missed_heartbeats > 0 {
+                            info!(missed_heartbeats, "desktop smoo heartbeat recovered");
+                        }
+                        missed_heartbeats = 0;
+                    }
+                    Ok(Err(err)) => {
+                        missed_heartbeats = missed_heartbeats.saturating_add(1);
+                        warn!(
+                            %err,
+                            missed_heartbeats,
+                            budget = HEARTBEAT_MISS_BUDGET,
+                            "desktop smoo heartbeat failed"
+                        );
+                    }
+                    Err(_) => {
+                        missed_heartbeats = missed_heartbeats.saturating_add(1);
+                        warn!(
+                            missed_heartbeats,
+                            budget = HEARTBEAT_MISS_BUDGET,
+                            "desktop smoo heartbeat timed out"
+                        );
+                    }
+                }
+                if missed_heartbeats >= HEARTBEAT_MISS_BUDGET {
+                    error!("desktop smoo heartbeat budget exhausted");
                     update_smoo_stats_from_transport(
                         &smoo_stats,
                         &mut counter_snapshot,

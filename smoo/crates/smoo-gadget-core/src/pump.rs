@@ -1,6 +1,6 @@
-//! The IoPump
+//! Serialized gadget-side I/O pump.
 
-use crate::{SmooGadget, UblkQueueRuntime};
+use crate::{SmooGadget, UblkIoRequest, UblkQueueRuntime};
 use anyhow::{Result, anyhow};
 use smoo_proto::{OpCode, Request};
 use std::sync::Arc;
@@ -8,17 +8,18 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
-use tracing::trace;
+use tracing::{trace, warn};
 
 /// Work item executed by the I/O pump.
 pub struct IoWork {
+    pub ublk_request: UblkIoRequest,
     pub request: Request,
     pub req_len: usize,
+    pub block_size: usize,
     pub queue_id: u16,
     pub tag: u16,
     pub op: OpCode,
     pub queues: Arc<UblkQueueRuntime>,
-    pub on_request_sent: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 struct IoCommand {
@@ -59,39 +60,16 @@ impl IoPumpHandle {
 }
 
 async fn run_pump(gadget: Arc<SmooGadget>, mut rx: mpsc::Receiver<IoCommand>) {
-    let (bulk_tx, mut bulk_rx) =
-        mpsc::channel::<(IoWork, oneshot::Sender<Result<()>>)>(rx.capacity());
-
-    let bulk_gadget = gadget.clone();
-    let bulk_task = tokio::spawn(async move {
-        while let Some((work, completion)) = bulk_rx.recv().await {
-            let result = process_bulk(&bulk_gadget, work).await;
-            if completion.send(result).is_err() {
-                trace!("io pump: completion receiver dropped");
-            }
-        }
-    });
-
-    while let Some(mut cmd) = rx.recv().await {
-        let send_result = process_send(&gadget, &mut cmd.work).await;
-        if let Err(err) = send_result {
-            if cmd.completion.send(Err(err)).is_err() {
-                trace!("io pump: completion receiver dropped");
-            }
-            continue;
-        }
-        if bulk_tx.send((cmd.work, cmd.completion)).await.is_err() {
-            trace!("io pump: bulk worker closed; exiting");
-            break;
+    while let Some(cmd) = rx.recv().await {
+        let result = process_one(&gadget, cmd.work).await;
+        if cmd.completion.send(result).is_err() {
+            trace!("io pump: completion receiver dropped");
         }
     }
-
-    drop(bulk_tx);
-    let _ = bulk_task.await;
     trace!("io pump: channel closed; exiting");
 }
 
-async fn process_send(gadget: &SmooGadget, work: &mut IoWork) -> Result<()> {
+async fn process_one(gadget: &SmooGadget, work: IoWork) -> Result<()> {
     trace!(
         export_id = work.request.export_id,
         request_id = work.request.request_id,
@@ -99,35 +77,15 @@ async fn process_send(gadget: &SmooGadget, work: &mut IoWork) -> Result<()> {
         tag = work.tag,
         op = ?work.op,
         bytes = work.req_len,
-        "io pump: dispatch request"
+        "io pump: begin"
     );
+
     gadget
         .send_request(work.request)
         .await
         .map_err(|err| anyhow!("send smoo request: {err:#}"))?;
 
-    if let Some(sent) = work.on_request_sent.take() {
-        let _ = sent.send(());
-    }
-    Ok(())
-}
-
-async fn process_bulk(gadget: &SmooGadget, work: IoWork) -> Result<()> {
-    trace!(
-        export_id = work.request.export_id,
-        request_id = work.request.request_id,
-        queue = work.queue_id,
-        tag = work.tag,
-        op = ?work.op,
-        bytes = work.req_len,
-        "io pump: process bulk"
-    );
-
-    if work.req_len == 0 {
-        return Ok(());
-    }
-
-    if work.op == OpCode::Write {
+    if work.op == OpCode::Write && work.req_len > 0 {
         let mut buffer = work
             .queues
             .checkout_buffer(work.queue_id, work.tag)
@@ -135,7 +93,76 @@ async fn process_bulk(gadget: &SmooGadget, work: IoWork) -> Result<()> {
         gadget
             .write_bulk_buffer(&mut buffer.as_mut_slice()[..work.req_len])
             .await
-            .map_err(|err| anyhow!("bulk write payload: {err:#}"))?;
+            .map_err(|err| anyhow!("bulk IN write failed: {err:#}"))?;
+    }
+
+    let response = gadget
+        .read_response()
+        .await
+        .map_err(|err| anyhow!("read response failed: {err:#}"))?;
+    if response.export_id != work.request.export_id
+        || response.request_id != work.request.request_id
+    {
+        return Err(anyhow!(
+            "response mismatch: expected ({}, {}), got ({}, {})",
+            work.request.export_id,
+            work.request.request_id,
+            response.export_id,
+            response.request_id
+        ));
+    }
+    if response.op != work.op {
+        return Err(anyhow!(
+            "response opcode mismatch: expected {:?}, got {:?}",
+            work.op,
+            response.op
+        ));
+    }
+
+    let mut status = if response.status == 0 {
+        if matches!(response.op, OpCode::Read | OpCode::Write) {
+            let reported = (response.num_blocks as usize).saturating_mul(work.block_size);
+            i32::try_from(reported.min(work.req_len)).unwrap_or(i32::MAX)
+        } else {
+            0
+        }
+    } else {
+        -i32::from(response.status)
+    };
+
+    if response.op == OpCode::Read && status > 0 && work.req_len > 0 {
+        let read_len = usize::try_from(status)
+            .unwrap_or(work.req_len)
+            .min(work.req_len);
+        let mut buffer = work
+            .queues
+            .checkout_buffer(work.queue_id, work.tag)
+            .map_err(|err| anyhow!("checkout buffer for read: {err:#}"))?;
+        gadget
+            .read_bulk_buffer(&mut buffer.as_mut_slice()[..read_len])
+            .await
+            .map_err(|err| anyhow!("bulk OUT read failed: {err:#}"))?;
+        status = i32::try_from(read_len).unwrap_or(i32::MAX);
+    }
+
+    work.queues
+        .complete_io(work.ublk_request, status)
+        .map_err(|err| anyhow!("complete ublk io failed: {err:#}"))?;
+
+    if status < 0 {
+        warn!(
+            export_id = work.request.export_id,
+            request_id = work.request.request_id,
+            status,
+            "io pump: request completed with error"
+        );
+    } else {
+        trace!(
+            export_id = work.request.export_id,
+            request_id = work.request.request_id,
+            status,
+            "io pump: request completed"
+        );
     }
 
     Ok(())

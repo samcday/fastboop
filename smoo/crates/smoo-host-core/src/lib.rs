@@ -3,7 +3,6 @@
 extern crate alloc;
 
 pub mod block;
-mod channel;
 pub mod control;
 pub mod export_id;
 pub mod exports;
@@ -11,7 +10,6 @@ pub mod heartbeat;
 pub mod host;
 #[cfg(feature = "metrics")]
 pub mod metrics;
-pub mod pump;
 pub mod transport;
 
 pub use block::{
@@ -26,9 +24,6 @@ pub use heartbeat::heartbeat_once;
 pub use host::{HostError, HostErrorKind, HostResult, SmooHost};
 #[cfg(feature = "metrics")]
 pub use metrics::{MetricsSnapshot, QueueSnapshot, StatSnapshot};
-pub use pump::{
-    BulkReadHandle, HostIoPumpHandle, HostIoPumpRequestRx, HostIoPumpTask, start_host_io_pump,
-};
 pub use transport::{
     ControlTransport, CountingTransport, Transport, TransportCounterSnapshot, TransportCounters,
     TransportError, TransportErrorKind, TransportResult,
