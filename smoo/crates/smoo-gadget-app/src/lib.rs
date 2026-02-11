@@ -47,8 +47,10 @@ use usb_gadget::{
 };
 
 const SMOO_CLASS: u8 = 0xFF;
-const SMOO_SUBCLASS: u8 = 0x42;
-const SMOO_PROTOCOL: u8 = 0x03;
+const SMOO_SUBCLASS: u8 = 0x53;
+const SMOO_PROTOCOL: u8 = 0x4D;
+const FASTBOOT_SUBCLASS: u8 = 0x42;
+const FASTBOOT_PROTOCOL: u8 = 0x03;
 const DEFAULT_MAX_IO_BYTES: usize = 4 * 1024 * 1024;
 const CONFIG_CHANNEL_DEPTH: usize = 32;
 const QUEUE_CHANNEL_DEPTH: usize = 128;
@@ -97,6 +99,9 @@ pub struct Args {
     /// Use an existing FunctionFS directory and skip configfs management.
     #[arg(long, value_name = "PATH")]
     pub ffs_dir: Option<PathBuf>,
+    /// Use fastboot-style interface subclass/protocol for restrictive WebUSB flows.
+    #[arg(long)]
+    pub mimic_fastboot: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -130,6 +135,7 @@ impl Default for Args {
             adopt: false,
             metrics_port: 0,
             ffs_dir: None,
+            mimic_fastboot: false,
         }
     }
 }
@@ -2165,7 +2171,7 @@ fn setup_configfs(
             ffs_dir = %ffs_dir.display(),
             "using existing FunctionFS directory; skipping configfs setup"
         );
-        let custom = configfs_builder()
+        let custom = configfs_builder(args)
             .existing(ffs_dir)
             .context("initialize FunctionFS in existing directory")?;
         let endpoints = open_data_endpoints(ffs_dir)?;
@@ -2173,9 +2179,10 @@ fn setup_configfs(
     }
 
     usb_gadget::remove_all().context("remove existing USB gadgets")?;
-    let (mut custom, handle) = configfs_builder().build();
+    let (mut custom, handle) = configfs_builder(args).build();
 
-    let klass = Class::new(SMOO_CLASS, SMOO_SUBCLASS, SMOO_PROTOCOL);
+    let (subclass, protocol) = interface_identity(args);
+    let klass = Class::new(SMOO_CLASS, subclass, protocol);
     let id = Id::new(args.vendor_id, args.product_id);
     let strings = Strings::new("smoo", "smoo gadget", "0001");
     let udc = usb_gadget::default_udc().context("locate UDC")?;
@@ -2196,14 +2203,23 @@ fn setup_configfs(
     ))
 }
 
-fn configfs_builder() -> CustomBuilder {
+fn configfs_builder(args: &Args) -> CustomBuilder {
+    let (subclass, protocol) = interface_identity(args);
     Custom::builder().with_interface(
-        Interface::new(Class::vendor_specific(SMOO_SUBCLASS, SMOO_PROTOCOL), "smoo")
+        Interface::new(Class::vendor_specific(subclass, protocol), "smoo")
             .with_endpoint(interrupt_in_ep())
             .with_endpoint(interrupt_out_ep())
             .with_endpoint(bulk_in_ep())
             .with_endpoint(bulk_out_ep()),
     )
+}
+
+fn interface_identity(args: &Args) -> (u8, u8) {
+    if args.mimic_fastboot {
+        (FASTBOOT_SUBCLASS, FASTBOOT_PROTOCOL)
+    } else {
+        (SMOO_SUBCLASS, SMOO_PROTOCOL)
+    }
 }
 
 fn open_data_endpoints(ffs_dir: &Path) -> Result<FunctionfsEndpoints> {

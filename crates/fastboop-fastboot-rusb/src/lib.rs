@@ -324,6 +324,18 @@ impl RusbDeviceHandle {
     pub fn device(&self) -> &rusb::Device<Context> {
         &self.device
     }
+
+    pub fn usb_serial_number(&self) -> Option<String> {
+        let descriptor = self.device.device_descriptor().ok()?;
+        let handle = self.device.open().ok()?;
+        let serial = handle.read_serial_number_string_ascii(&descriptor).ok()?;
+        let serial = serial.trim();
+        if serial.is_empty() {
+            None
+        } else {
+            Some(serial.to_string())
+        }
+    }
 }
 
 impl DeviceHandleTrait for RusbDeviceHandle {

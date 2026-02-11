@@ -71,6 +71,7 @@ pub fn run_stage0(args: Stage0Args) -> Result<()> {
         dtbo_overlays,
 
         enable_serial: args.serial,
+        mimic_fastboot: false,
         smoo_vendor: None,
         smoo_product: None,
         smoo_serial: None,

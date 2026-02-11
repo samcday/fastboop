@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use gibblox_cache::CachedBlockReader;
-use gibblox_cache::greedy::{GreedyCachedBlockReader, GreedyConfig};
 use gibblox_cache_store_opfs::OpfsCacheOps;
 use gibblox_http::HttpBlockReader;
 use tracing::{Level, info};
@@ -23,7 +22,7 @@ thread_local! {
 }
 
 struct VisualizerState {
-    reader: Arc<GreedyCachedBlockReader<HttpBlockReader, OpfsCacheOps>>,
+    reader: Arc<CachedBlockReader<HttpBlockReader, OpfsCacheOps>>,
     total_blocks: u64,
     start_time_ms: f64,
 }
@@ -81,35 +80,7 @@ pub async fn load_url(url: String) -> Result<(), JsValue> {
             .map_err(|e| anyhow!("failed to create cached block reader: {}", e))?;
         info!("Cached block reader created");
 
-        // Create greedy config optimized for web
-        let config = GreedyConfig {
-            hot_batch_size: 1024,   // ~512KB @ 512B blocks
-            sweep_chunk_size: 2048, // ~1MB @ 512B blocks
-            ..Default::default()
-        };
-        info!(
-            "Greedy config: hot_batch={}, sweep_chunk={}",
-            config.hot_batch_size, config.sweep_chunk_size
-        );
-
-        // Create greedy reader and workers
-        info!("Creating greedy cached block reader...");
-        let (greedy, workers) = GreedyCachedBlockReader::new(cached, config)
-            .await
-            .map_err(|e| anyhow!("failed to create greedy cached block reader: {}", e))?;
-        info!("Greedy reader created, spawning workers...");
-
-        // Spawn workers
-        info!("Spawning hot worker...");
-        wasm_bindgen_futures::spawn_local(workers.hot_worker);
-
-        info!("Spawning 4 sweep workers...");
-        for (i, worker) in workers.sweep_workers.into_iter().enumerate() {
-            info!("Spawning sweep worker {}...", i);
-            wasm_bindgen_futures::spawn_local(worker);
-        }
-
-        info!("All workers spawned successfully");
+        let cached = Arc::new(cached);
 
         // Get current time
         let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
@@ -121,7 +92,7 @@ pub async fn load_url(url: String) -> Result<(), JsValue> {
         // Store state
         VISUALIZER_STATE.with(|cell| {
             *cell.borrow_mut() = Some(VisualizerState {
-                reader: Arc::new(greedy),
+                reader: cached,
                 total_blocks,
                 start_time_ms,
             });
@@ -152,10 +123,7 @@ pub async fn get_cache_stats() -> Result<JsValue, JsValue> {
         return Ok(JsValue::NULL);
     };
 
-    let stats = reader
-        .get_stats()
-        .await
-        .map_err(|e| JsValue::from_str(&format!("failed to fetch cache stats: {}", e)))?;
+    let stats = reader.get_stats().await;
 
     serde_wasm_bindgen::to_value(&stats)
         .map_err(|e| JsValue::from_str(&format!("failed to serialize cache stats: {}", e)))

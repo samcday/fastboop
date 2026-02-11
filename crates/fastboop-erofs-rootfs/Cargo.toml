@@ -16,11 +16,9 @@ url = "2.5.4"
 gibblox-core = { path = "../../gibblox/crates/gibblox-core" }
 gibblox-http = { path = "../../gibblox/crates/gibblox-http", default-features = false, features = ["wasm-client"] }
 gibblox-cache-store-opfs = { path = "../../gibblox/crates/gibblox-cache-store-opfs" }
-wasm-bindgen-futures = "0.4"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 gibblox-core = { path = "../../gibblox/crates/gibblox-core", features = ["std"] }
 gibblox-http = { path = "../../gibblox/crates/gibblox-http", default-features = false, features = ["native-client"] }
 gibblox-file = { path = "../../gibblox/crates/gibblox-file" }
 gibblox-cache-store-std = { path = "../../gibblox/crates/gibblox-cache-store-std" }
-tokio = { version = "1.48.0", features = ["rt"] }

@@ -15,6 +15,7 @@ pub struct ProbedDevice {
     pub name: String,
     pub vid: u16,
     pub pid: u16,
+    pub serial: Option<String>,
 }
 
 #[derive(Clone)]

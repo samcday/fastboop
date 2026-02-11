@@ -38,6 +38,8 @@ const EXTRA_CMDLINE: &str =
 const SMOO_INTERFACE_CLASS: u8 = 0xFF;
 const SMOO_INTERFACE_SUBCLASS: u8 = 0x53;
 const SMOO_INTERFACE_PROTOCOL: u8 = 0x4D;
+const FASTBOOT_INTERFACE_SUBCLASS: u8 = 0x42;
+const FASTBOOT_INTERFACE_PROTOCOL: u8 = 0x03;
 const TRANSFER_TIMEOUT: Duration = Duration::from_millis(200);
 const DISCOVERY_RETRY: Duration = Duration::from_millis(500);
 const IDLE_POLL: Duration = Duration::from_millis(5);
@@ -368,9 +370,10 @@ async fn boot_selected_device(
         dtb_override: None,
         dtbo_overlays,
         enable_serial: true,
+        mimic_fastboot: true,
         smoo_vendor: Some(session.device.vid),
         smoo_product: Some(session.device.pid),
-        smoo_serial: None,
+        smoo_serial: session.device.serial.clone(),
         personalization: Some(personalization_from_host()),
     };
     let (build, runtime) = build_stage0_artifacts(
@@ -582,16 +585,7 @@ fn run_rusb_host_daemon(
         .context("create tokio runtime for smoo host")?;
     runtime.block_on(async move {
         loop {
-            let (transport, _) = match RusbTransport::open_matching(
-                None,
-                None,
-                SMOO_INTERFACE_CLASS,
-                SMOO_INTERFACE_SUBCLASS,
-                SMOO_INTERFACE_PROTOCOL,
-                TRANSFER_TIMEOUT,
-            )
-            .await
-            {
+            let (transport, _) = match open_matching_rusb_transport().await {
                 Ok(pair) => pair,
                 Err(err) => {
                     info!(%err, "desktop smoo gadget not ready yet");
@@ -619,6 +613,35 @@ fn run_rusb_host_daemon(
             tokio::time::sleep(DISCOVERY_RETRY).await;
         }
     })
+}
+
+async fn open_matching_rusb_transport() -> std::result::Result<
+    (RusbTransport, smoo_host_transport_rusb::RusbControl),
+    smoo_host_core::TransportError,
+> {
+    match RusbTransport::open_matching(
+        None,
+        None,
+        SMOO_INTERFACE_CLASS,
+        SMOO_INTERFACE_SUBCLASS,
+        SMOO_INTERFACE_PROTOCOL,
+        TRANSFER_TIMEOUT,
+    )
+    .await
+    {
+        Ok(pair) => Ok(pair),
+        Err(_) => {
+            RusbTransport::open_matching(
+                None,
+                None,
+                SMOO_INTERFACE_CLASS,
+                FASTBOOT_INTERFACE_SUBCLASS,
+                FASTBOOT_INTERFACE_PROTOCOL,
+                TRANSFER_TIMEOUT,
+            )
+            .await
+        }
+    }
 }
 
 enum SessionEnd {

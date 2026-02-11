@@ -54,7 +54,7 @@ use super::session::{update_session_phase, BootRuntime, SessionPhase, SessionSto
 
 const ROOTFS_URL: &str = "https://bleeding.fastboop.win/sdm845-live-fedora/20260208.ero";
 const EXTRA_CMDLINE: &str =
-    "selinux=0 sysrq_always_enabled=1 panic=5 smoo.max_io_bytes=1048576 init_on_alloc=0 rhgb drm.panic_screen=kmsg smoo.queue_count=1 smoo.queue_depth=1 regulator_ignore_unused";
+    "selinux=0 sysrq_always_enabled=1 panic=5 smoo.max_io_bytes=1048576 init_on_alloc=0 rhgb drm.panic_screen=kmsg smoo.queue_count=1 smoo.queue_depth=1 regulator_ignore_unused smoo.log=trace";
 #[cfg(target_arch = "wasm32")]
 const STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 #[cfg(target_arch = "wasm32")]
@@ -1050,6 +1050,7 @@ async fn boot_selected_device(
         dtb_override: None,
         dtbo_overlays,
         enable_serial: true,
+        mimic_fastboot: true,
         smoo_vendor: Some(session.device.vid),
         smoo_product: Some(session.device.pid),
         smoo_serial: webusb_serial_number(&session.device.handle),

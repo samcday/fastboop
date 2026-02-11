@@ -22,6 +22,13 @@ use super::{Stage0Args, format_probe_error, read_dtbo_overlays, read_existing_in
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+struct DetectedFastbootDevice {
+    fastboot: FastbootRusb,
+    vid: u16,
+    pid: u16,
+    serial: Option<String>,
+}
+
 #[derive(Args)]
 pub struct BootArgs {
     #[command(flatten)]
@@ -59,7 +66,7 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         )
     })?;
 
-    let mut fastboot = if args.output.is_none() {
+    let mut detected_device = if args.output.is_none() {
         let wait = Duration::from_secs(args.wait);
         Some(wait_for_fastboot_device(profile, wait)?)
     } else {
@@ -80,9 +87,12 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         dtbo_overlays,
 
         enable_serial: args.stage0.serial,
-        smoo_vendor: None,
-        smoo_product: None,
-        smoo_serial: None,
+        mimic_fastboot: false,
+        smoo_vendor: detected_device.as_ref().map(|device| device.vid),
+        smoo_product: detected_device.as_ref().map(|device| device.pid),
+        smoo_serial: detected_device
+            .as_ref()
+            .and_then(|device| device.serial.clone()),
         personalization: args.systemd_firstboot.then(personalization_from_host),
     };
 
@@ -181,13 +191,13 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         return Ok(());
     }
 
-    let mut fastboot = fastboot
+    let mut fastboot = detected_device
         .take()
         .expect("fastboot device probed when no --output");
 
-    pollster::block_on(download(&mut fastboot, &bootimg))
+    pollster::block_on(download(&mut fastboot.fastboot, &bootimg))
         .map_err(|e| anyhow::anyhow!("fastboot download failed: {e}"))?;
-    pollster::block_on(boot(&mut fastboot))
+    pollster::block_on(boot(&mut fastboot.fastboot))
         .map_err(|e| anyhow::anyhow!("fastboot boot failed: {e}"))?;
 
     run_host_daemon(block_reader, image_size_bytes, image_identity)
@@ -195,7 +205,10 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
     Ok(())
 }
 
-fn wait_for_fastboot_device(profile: &DeviceProfile, wait: Duration) -> Result<FastbootRusb> {
+fn wait_for_fastboot_device(
+    profile: &DeviceProfile,
+    wait: Duration,
+) -> Result<DetectedFastbootDevice> {
     let filters = profile_filters(std::slice::from_ref(profile));
     let mut watcher = DeviceWatcher::new(&filters).context("starting USB hotplug watcher")?;
     let deadline = if wait.is_zero() {
@@ -254,12 +267,13 @@ fn wait_for_fastboot_device(profile: &DeviceProfile, wait: Duration) -> Result<F
 fn probe_arrived_device(
     profile: &DeviceProfile,
     device: RusbDeviceHandle,
-) -> Result<Option<FastbootRusb>> {
+) -> Result<Option<DetectedFastbootDevice>> {
     let vid = device.vid();
     let pid = device.pid();
     if !profile_matches_vid_pid(profile, vid, pid) {
         return Ok(None);
     }
+    let serial = device.usb_serial_number();
 
     let mut fastboot = match pollster::block_on(device.open_fastboot()) {
         Ok(fastboot) => fastboot,
@@ -271,7 +285,14 @@ fn probe_arrived_device(
 
     let mut session = FastbootSession::new(&mut fastboot);
     match pollster::block_on(session.probe_profile(profile)) {
-        Ok(()) => return Ok(Some(fastboot)),
+        Ok(()) => {
+            return Ok(Some(DetectedFastbootDevice {
+                fastboot,
+                vid,
+                pid,
+                serial,
+            }));
+        }
         Err(err) => {
             debug!(
                 profile_id = %profile.id,

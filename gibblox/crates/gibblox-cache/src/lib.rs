@@ -496,15 +496,10 @@ where
         }
         self.validate_range(lba, blocks)?;
 
-        // Allocate temporary buffer for fetching
-        let bs = self.block_size_usize();
-        let total_bytes = (blocks as usize).checked_mul(bs).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "buffer size overflow")
-        })?;
-        let mut temp_buf = vec![0u8; total_bytes];
-
-        // Check cache, identify missing blocks
-        let missing = self.fill_from_cache(lba, blocks, &mut temp_buf).await?;
+        // Fast-path cache probe for readahead/background callers.
+        // This avoids large temporary allocations and cache file reads when
+        // all requested blocks are already marked valid.
+        let missing = self.missing_blocks_from_bitmap(lba, blocks).await;
         if missing.is_empty() {
             return Ok(()); // All cached, early return
         }
@@ -523,8 +518,18 @@ where
             let _ = waiter.await;
         }
 
-        // temp_buf dropped here (no copy-out needed)
         Ok(())
+    }
+
+    async fn missing_blocks_from_bitmap(&self, lba: u64, blocks: u64) -> Vec<u64> {
+        let mut missing = Vec::new();
+        let guard = self.state.lock().await;
+        for block in lba..(lba + blocks) {
+            if !bit_is_set(&guard.valid, block) {
+                missing.push(block);
+            }
+        }
+        missing
     }
 }
 

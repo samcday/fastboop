@@ -51,8 +51,10 @@ impl<'a> MakeWriter<'a> for KmsgMakeWriter {
     }
 }
 
-const SMOO_SUBCLASS: u8 = 0x42;
-const SMOO_PROTOCOL: u8 = 0x03;
+const SMOO_SUBCLASS: u8 = 0x53;
+const SMOO_PROTOCOL: u8 = 0x4D;
+const FASTBOOT_SUBCLASS: u8 = 0x42;
+const FASTBOOT_PROTOCOL: u8 = 0x03;
 const STAGE0_ROLE_ENV: &str = "FASTBOOP_STAGE0_ROLE";
 const STAGE0_ROLE_GADGET_CHILD: &str = "gadget-child";
 const STAGE0_ROLE_KMSG_CHILD: &str = "kmsg-child";
@@ -106,6 +108,9 @@ struct Args {
     /// Use an existing FunctionFS directory and skip configfs management.
     #[arg(long, value_name = "PATH")]
     ffs_dir: Option<PathBuf>,
+    /// Use fastboot-style interface subclass/protocol for restrictive WebUSB flows.
+    #[arg(long)]
+    mimic_fastboot: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -183,6 +188,7 @@ fn run_gadget_child(args: Args) -> Result<()> {
         adopt: args.adopt,
         metrics_port: args.metrics_port,
         ffs_dir: args.ffs_dir,
+        mimic_fastboot: args.mimic_fastboot,
     };
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1025,6 +1031,10 @@ fn spawn_gadget_child(
             info!("pid1: using USB serial from cmdline");
         }
     }
+    if cmdline_bool("smoo.mimic_fastboot") {
+        child_args.push(OsStr::new("--mimic-fastboot").to_os_string());
+        info!("pid1: enabling fastboot-mimic USB interface identity");
+    }
     if let Some(ffs_dir) = ffs_dir {
         child_args.push(OsStr::new("--ffs-dir").to_os_string());
         child_args.push(ffs_dir.as_os_str().to_os_string());
@@ -1499,13 +1509,23 @@ fn gadget_usb_identity(args: &Args) -> (u16, u16, String) {
 }
 
 fn configfs_builder() -> CustomBuilder {
+    let (subclass, protocol) = gadget_interface_identity();
     Custom::builder().with_interface(
-        Interface::new(Class::vendor_specific(SMOO_SUBCLASS, SMOO_PROTOCOL), "smoo")
+        Interface::new(Class::vendor_specific(subclass, protocol), "smoo")
             .with_endpoint(interrupt_in_ep())
             .with_endpoint(interrupt_out_ep())
             .with_endpoint(bulk_in_ep())
             .with_endpoint(bulk_out_ep()),
     )
+}
+
+fn gadget_interface_identity() -> (u8, u8) {
+    if cmdline_bool("smoo.mimic_fastboot") {
+        info!("pid1: using fastboot-mimic USB interface identity");
+        (FASTBOOT_SUBCLASS, FASTBOOT_PROTOCOL)
+    } else {
+        (SMOO_SUBCLASS, SMOO_PROTOCOL)
+    }
 }
 
 fn interrupt_in_ep() -> Endpoint {

@@ -171,6 +171,9 @@ async fn probe_fastboot_devices(candidates: Vec<RusbDeviceHandle>) -> ProbeSnaps
             name,
             vid: report.vid,
             pid: report.pid,
+            serial: candidates
+                .get(report.candidate_index)
+                .and_then(RusbDeviceHandle::usb_serial_number),
         });
     }
 

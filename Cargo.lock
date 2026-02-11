@@ -2819,9 +2819,7 @@ dependencies = [
  "gibblox-file",
  "gibblox-http",
  "gibblox-paged-lru",
- "tokio",
  "url",
- "wasm-bindgen-futures",
 ]
 
 [[package]]

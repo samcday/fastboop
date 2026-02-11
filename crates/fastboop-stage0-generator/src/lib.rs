@@ -43,6 +43,7 @@ pub struct Stage0Options {
     pub dtb_override: Option<Vec<u8>>,
     pub dtbo_overlays: Vec<Vec<u8>>,
     pub enable_serial: bool,
+    pub mimic_fastboot: bool,
     pub smoo_vendor: Option<u16>,
     pub smoo_product: Option<u16>,
     pub smoo_serial: Option<String>,
@@ -167,6 +168,9 @@ pub async fn build_stage0<P: RootfsProvider>(
     if opts.enable_serial {
         cmdline_parts.push("smoo.acm=1".to_string());
         cmdline_parts.push("plymouth.ignore-serial-consoles".to_string());
+    }
+    if opts.mimic_fastboot {
+        cmdline_parts.push("smoo.mimic_fastboot=1".to_string());
     }
     if let Some(vendor) = opts.smoo_vendor {
         cmdline_parts.push(format!("smoo.vendor=0x{vendor:04x}"));

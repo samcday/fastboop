@@ -25,14 +25,57 @@ fn main() {
 }
 
 fn init_tracing() {
+    let max_level = requested_log_level().unwrap_or(Level::INFO);
     let _ = tracing_subscriber::registry()
         .with(WASMLayer::new(
             WASMLayerConfigBuilder::default()
-                .set_max_level(Level::TRACE)
+                .set_max_level(max_level)
                 .set_report_logs_in_timings(true)
                 .build(),
         ))
         .try_init();
+}
+
+fn requested_log_level() -> Option<Level> {
+    let window = web_sys::window()?;
+
+    if let Ok(search) = window.location().search() {
+        if let Some(level) = parse_level_from_query(&search) {
+            return Some(level);
+        }
+    }
+
+    None
+}
+
+fn parse_level_from_query(search: &str) -> Option<Level> {
+    let query = search.strip_prefix('?').unwrap_or(search);
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=')?;
+        if key == "log" {
+            return parse_level_str(value);
+        }
+    }
+    None
+}
+
+fn parse_level_str(input: &str) -> Option<Level> {
+    if input.eq_ignore_ascii_case("trace") {
+        return Some(Level::TRACE);
+    }
+    if input.eq_ignore_ascii_case("debug") {
+        return Some(Level::DEBUG);
+    }
+    if input.eq_ignore_ascii_case("info") {
+        return Some(Level::INFO);
+    }
+    if input.eq_ignore_ascii_case("warn") {
+        return Some(Level::WARN);
+    }
+    if input.eq_ignore_ascii_case("error") {
+        return Some(Level::ERROR);
+    }
+    None
 }
 
 #[component]
