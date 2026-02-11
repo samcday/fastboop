@@ -124,6 +124,7 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
     let (_provider, block_reader, image_size_bytes, image_identity, build) =
         rootfs_rt.block_on(async {
             let opened = open_erofs_rootfs(&args.stage0.rootfs.to_string_lossy()).await?;
+            let image_identity = opened.identity();
             let build = build_stage0(
                 profile,
                 &opened.provider,
@@ -136,7 +137,7 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
                 opened.provider,
                 opened.reader,
                 opened.size_bytes,
-                opened.identity,
+                image_identity,
                 build,
             ))
         })?;

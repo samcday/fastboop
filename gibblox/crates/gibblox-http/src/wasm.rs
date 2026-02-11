@@ -12,7 +12,7 @@ use std::{
 use url::Url;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{Headers, Request, RequestInit, RequestMode, Response};
+use web_sys::{Headers, Request, RequestInit, RequestMode, Response, WorkerGlobalScope};
 
 /// Wrapper to mark `JsFuture` as `Send` on wasm targets.
 struct SendJsFuture(JsFuture);
@@ -159,7 +159,6 @@ fn build_request_promise(
     method: &str,
     ctx: ReadContext,
 ) -> Result<Promise, HttpError> {
-    let window = web_sys::window().ok_or_else(|| HttpError::Msg("window unavailable".into()))?;
     let init = RequestInit::new();
     init.set_method(method);
     init.set_mode(RequestMode::Cors);
@@ -180,7 +179,13 @@ fn build_request_promise(
     );
     let request = Request::new_with_str_and_init(url.as_str(), &init)
         .map_err(|err| HttpError::Msg(format!("build request: {err:?}")))?;
-    Ok(window.fetch_with_request(&request))
+    if let Some(window) = web_sys::window() {
+        return Ok(window.fetch_with_request(&request));
+    }
+    if let Ok(worker) = js_sys::global().dyn_into::<WorkerGlobalScope>() {
+        return Ok(worker.fetch_with_request(&request));
+    }
+    Err(HttpError::Msg("no fetch-capable web global scope".into()))
 }
 
 fn priority_header_value(ctx: ReadContext) -> &'static str {

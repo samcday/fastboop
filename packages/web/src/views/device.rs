@@ -6,8 +6,13 @@ use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
+#[cfg(not(target_arch = "wasm32"))]
 use fastboop_erofs_rootfs::open_erofs_rootfs;
+#[cfg(target_arch = "wasm32")]
+use fastboop_erofs_rootfs::open_erofs_rootfs_from_reader;
 use fastboop_stage0_generator::{build_stage0, Stage0Options};
+#[cfg(target_arch = "wasm32")]
+use futures_util::FutureExt;
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::sleep;
 #[cfg(target_arch = "wasm32")]
@@ -16,11 +21,10 @@ use js_sys::{Array, Date, Reflect};
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 #[cfg(target_arch = "wasm32")]
 use smoo_host_core::{
-    control::{read_status, ConfigExportsV0},
-    heartbeat_once, register_export, start_host_io_pump, BlockSource, BlockSourceHandle,
-    ControlTransport, CountingTransport, HostErrorKind, SmooHost, TransportCounterSnapshot,
-    TransportError, TransportErrorKind,
+    register_export, BlockSource, BlockSourceHandle, CountingTransport, TransportCounterSnapshot,
 };
+#[cfg(target_arch = "wasm32")]
+use smoo_host_session::{HostSession, HostSessionConfig, HostSessionOutcome};
 #[cfg(target_arch = "wasm32")]
 use smoo_host_webusb::{WebUsbTransport, WebUsbTransportConfig};
 #[cfg(target_arch = "wasm32")]
@@ -51,6 +55,8 @@ use web_sys::{
 #[cfg(target_arch = "wasm32")]
 use super::session::update_session_active_host_state;
 use super::session::{update_session_phase, BootRuntime, SessionPhase, SessionStore};
+#[cfg(target_arch = "wasm32")]
+use crate::gibblox_worker::start_gibblox_worker_rootfs;
 
 const ROOTFS_URL: &str = "https://bleeding.fastboop.win/sdm845-live-fedora/20260208.ero";
 const EXTRA_CMDLINE: &str =
@@ -61,8 +67,6 @@ const STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 #[cfg(target_arch = "wasm32")]
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
-#[cfg(target_arch = "wasm32")]
-const IDLE_POLL: Duration = Duration::from_millis(5);
 #[cfg(target_arch = "wasm32")]
 const CACHE_STATS_POLL_INTERVAL: Duration = Duration::from_millis(500);
 #[cfg(target_arch = "wasm32")]
@@ -1155,6 +1159,8 @@ async fn boot_selected_device(
         reader: runtime.reader,
         size_bytes: runtime.size_bytes,
         identity: runtime.identity,
+        #[cfg(target_arch = "wasm32")]
+        gibblox_worker: runtime.gibblox_worker,
         cache_stats: runtime.cache_stats,
         smoo_stats: runtime.smoo_stats,
     })
@@ -1179,7 +1185,27 @@ async fn build_stage0_artifacts(
         tracing::info!("build_stage0_artifacts: task started");
         let result: Result<_> = async {
             tracing::info!(profile = %profile.id, "opening rootfs for web boot");
-            let opened = open_erofs_rootfs(ROOTFS_URL).await?;
+            #[cfg(target_arch = "wasm32")]
+            let (opened, gibblox_worker, rootfs_identity) = {
+                let worker_rootfs = start_gibblox_worker_rootfs(ROOTFS_URL).await?;
+                let opened = open_erofs_rootfs_from_reader(
+                    worker_rootfs.reader.clone(),
+                    worker_rootfs.size_bytes,
+                    None,
+                )
+                .await?;
+                (opened, Some(worker_rootfs.lease), worker_rootfs.identity)
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let (opened, gibblox_worker, rootfs_identity) = {
+                let opened = open_erofs_rootfs(ROOTFS_URL).await?;
+                let identity = opened.identity();
+                (
+                    opened,
+                    None::<crate::gibblox_worker::GibbloxWorkerLease>,
+                    identity,
+                )
+            };
             #[cfg(target_arch = "wasm32")]
             let cache_stats_stop = Rc::new(Cell::new(false));
             #[cfg(not(target_arch = "wasm32"))]
@@ -1234,13 +1260,17 @@ async fn build_stage0_artifacts(
             cache_stats_stop.set(true);
             #[cfg(not(target_arch = "wasm32"))]
             cache_stats_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = gibblox_worker;
             tracing::info!("build_stage0_artifacts: stage0 build completed");
             Ok((
                 build,
                 BootRuntime {
                     reader: opened.reader,
                     size_bytes: opened.size_bytes,
-                    identity: opened.identity,
+                    identity: rootfs_identity,
+                    #[cfg(target_arch = "wasm32")]
+                    gibblox_worker,
                     cache_stats: opened.cache_stats,
                     smoo_stats: SmooStatsHandle::new(),
                 },
@@ -1317,7 +1347,7 @@ async fn run_web_session(
 ) -> Result<SessionEnd> {
     let transport = CountingTransport::new(transport);
     let counters = transport.counters();
-    let control = transport.clone();
+    let mut control = transport.clone();
     let source = GibbloxBlockSource::new(reader, identity.clone());
     let block_size = source.block_size();
     ensure!(block_size > 0, "block size must be non-zero");
@@ -1338,132 +1368,56 @@ async fn run_web_session(
         size_bytes,
     )
     .map_err(|err| anyhow!(err.to_string()))?;
-    let payload = ConfigExportsV0::from_slice(&entries)
-        .map_err(|err| anyhow!("build CONFIG_EXPORTS payload: {err:?}"))?;
-
-    let (pump_handle, request_rx, pump_task) = start_host_io_pump(transport.clone());
-    wasm_bindgen_futures::spawn_local(async move {
-        let _ = pump_task.await;
-    });
-
-    let mut host = SmooHost::new(pump_handle.clone(), request_rx, sources);
-    host.setup(&control).await.context("IDENT handshake")?;
-    host.configure_exports_v0(&control, &payload)
+    let session = HostSession::new(
+        sources,
+        HostSessionConfig {
+            status_retry_attempts: STATUS_RETRY_ATTEMPTS,
+        },
+    )
+    .map_err(|err| anyhow!(err.to_string()))?;
+    let mut task = session
+        .start(transport, &mut control)
         .await
-        .context("send CONFIG_EXPORTS")?;
-
-    let initial_session_id =
-        match fetch_status_with_retry(&control, STATUS_RETRY_ATTEMPTS, STATUS_RETRY_INTERVAL).await
-        {
-            Ok(session_id) => session_id,
-            Err(err) => {
-                warn!(%err, "SMOO_STATUS failed after CONFIG_EXPORTS");
-                let _ = pump_handle.shutdown().await;
-                smoo_stats.set_connected(false);
-                return Ok(SessionEnd::TransportLost);
-            }
-        };
+        .map_err(|err| anyhow!(err.to_string()))?;
     smoo_stats.set_connected(true);
     let mut counter_snapshot = counters.snapshot();
 
-    let heartbeat_stop = Rc::new(Cell::new(false));
-    let heartbeat_client = control.clone();
-    let heartbeat_stop_task = heartbeat_stop.clone();
-    wasm_bindgen_futures::spawn_local(async move {
-        run_web_heartbeat(
-            heartbeat_client,
-            initial_session_id,
-            HEARTBEAT_INTERVAL,
-            heartbeat_stop_task,
-        )
-        .await;
-    });
-
     loop {
-        match host.run_once().await {
-            Ok(()) => {
-                update_smoo_stats_from_transport(
-                    &smoo_stats,
-                    &mut counter_snapshot,
-                    counters.snapshot(),
-                );
-                sleep(IDLE_POLL).await;
-            }
-            Err(err) if err.kind() == HostErrorKind::Transport => break,
-            Err(err) => {
-                heartbeat_stop.set(true);
-                update_smoo_stats_from_transport(
-                    &smoo_stats,
-                    &mut counter_snapshot,
-                    counters.snapshot(),
-                );
-                smoo_stats.set_connected(false);
-                return Err(anyhow!(err.to_string()));
-            }
-        }
-    }
-
-    heartbeat_stop.set(true);
-    update_smoo_stats_from_transport(&smoo_stats, &mut counter_snapshot, counters.snapshot());
-    smoo_stats.set_connected(false);
-    let _ = pump_handle.shutdown().await;
-    Ok(SessionEnd::TransportLost)
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn run_web_heartbeat(
-    client: impl ControlTransport,
-    initial_session_id: u64,
-    interval: Duration,
-    stop: Rc<Cell<bool>>,
-) {
-    while !stop.get() {
-        sleep(interval).await;
-        if stop.get() {
-            break;
-        }
-        match heartbeat_once(&client).await {
-            Ok(status) => {
-                if status.session_id != initial_session_id {
+        if let Some(finish) = (&mut task).now_or_never() {
+            update_smoo_stats_from_transport(
+                &smoo_stats,
+                &mut counter_snapshot,
+                counters.snapshot(),
+            );
+            smoo_stats.set_connected(false);
+            return match finish.outcome {
+                Ok(HostSessionOutcome::Stopped) => Ok(SessionEnd::TransportLost),
+                Ok(HostSessionOutcome::TransportLost) => Ok(SessionEnd::TransportLost),
+                Ok(HostSessionOutcome::SessionChanged { previous, current }) => {
                     warn!(
-                        previous = format!("0x{initial_session_id:016x}"),
-                        current = format!("0x{:016x}", status.session_id),
-                        "web smoo heartbeat session changed"
+                        previous = format!("0x{previous:016x}"),
+                        current = format!("0x{current:016x}"),
+                        "web smoo session changed; reconnecting"
                     );
-                    break;
+                    Ok(SessionEnd::TransportLost)
                 }
-            }
-            Err(err) => {
-                warn!(%err, "web smoo heartbeat transfer failed");
-                break;
-            }
+                Err(err) => Err(anyhow!(err.to_string())),
+            };
         }
-    }
-}
 
-#[cfg(target_arch = "wasm32")]
-async fn fetch_status_with_retry(
-    client: &impl ControlTransport,
-    attempts: usize,
-    delay: Duration,
-) -> std::result::Result<u64, TransportError> {
-    let mut attempt = 0;
-    loop {
-        match read_status(client).await {
-            Ok(status) => {
-                return Ok(status.session_id);
-            }
-            Err(err) => {
-                attempt += 1;
-                if attempt >= attempts {
-                    return Err(err);
-                }
-                if err.kind() != TransportErrorKind::Timeout || attempt > 1 {
-                    warn!(attempt, attempts, %err, "SMOO_STATUS retry");
-                }
-                sleep(delay).await;
-            }
+        sleep(HEARTBEAT_INTERVAL).await;
+        if let Err(err) = task.heartbeat(&mut control).await {
+            warn!(%err, "web smoo heartbeat transfer failed");
+            update_smoo_stats_from_transport(
+                &smoo_stats,
+                &mut counter_snapshot,
+                counters.snapshot(),
+            );
+            smoo_stats.set_connected(false);
+            return Ok(SessionEnd::TransportLost);
         }
+
+        update_smoo_stats_from_transport(&smoo_stats, &mut counter_snapshot, counters.snapshot());
     }
 }
 

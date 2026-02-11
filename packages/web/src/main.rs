@@ -5,6 +5,7 @@ use tracing_wasm::{WASMLayer, WASMLayerConfigBuilder};
 
 use views::{DevicePage, Home, SessionStore};
 
+mod gibblox_worker;
 mod views;
 
 #[derive(Debug, Clone, Routable, PartialEq)]
@@ -21,6 +22,12 @@ const MAIN_CSS: Asset = asset!("/assets/main.css");
 
 fn main() {
     init_tracing();
+
+    #[cfg(target_arch = "wasm32")]
+    if gibblox_worker::run_if_worker() {
+        return;
+    }
+
     dioxus::launch(App);
 }
 
