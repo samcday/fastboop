@@ -293,6 +293,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-blockreader-messageport"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures-channel",
+ "gibblox-core",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "gibblox-cache"
 version = "0.0.1"
 dependencies = [

@@ -9,6 +9,7 @@ members = [
     "crates/gibblox-paged-lru",
     "crates/gibblox-cache-store-std",
     "crates/gibblox-cache-store-opfs",
+    "crates/gibblox-blockreader-messageport",
 ]
 
 [workspace.package]
