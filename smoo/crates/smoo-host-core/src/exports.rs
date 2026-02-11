@@ -1,5 +1,5 @@
 use crate::{BlockSource, ExportIdentity, derive_export_id_from_source};
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use core::fmt;
 use smoo_proto::ConfigExport;
 
@@ -54,8 +54,7 @@ impl fmt::Display for ExportConfigError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for ExportConfigError {}
+impl core::error::Error for ExportConfigError {}
 
 /// Validate and register a backing source, producing a `ConfigExport` entry.
 ///

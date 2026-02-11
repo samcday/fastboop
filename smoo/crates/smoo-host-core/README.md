@@ -1,6 +1,6 @@
 # smoo-host-core
 
-This is a no-std crate that handles the main "host driver loop".
+This is a freestanding + alloc crate that handles the main "host driver loop".
 
 The `Transport` trait provides a generic interface to push/pull data to/from the USB device (there is a
 `RusbTransport` impl in `smoo-host-transport-rusb` and a `WebUsbTransport` in `smoo-host-transport-webusb`).
@@ -12,5 +12,5 @@ composed with `smoo-host-blocksource-indexeddb` to keep the downloaded blocks ca
 
 `SmooHost` is the core driver that ties both traits together. It performs the USB Ident handshake through the selected
 `Transport`, pulls `Request` messages, issues the matching operations on a `BlockSource`, and responds with protocol
-`Response`s. The implementation is fully async + `no_std`, so it can run on WASM (with `bindgen-futures`) or on
-desktop CLIs using Tokio/async-std runtimes.
+`Response`s. The implementation is fully async + freestanding, so it can run on WASM (with
+`bindgen-futures`) or on desktop CLIs using Tokio runtimes.

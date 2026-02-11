@@ -1,6 +1,5 @@
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
-use metrics::{counter, gauge, histogram};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default)]
 struct Stat {
@@ -111,44 +110,26 @@ pub struct MetricsSnapshot {
 }
 
 pub fn observe_bulk_out(bytes: usize, dur: Duration) {
-    let ns = dur.as_nanos().min(u64::MAX as u128) as u64;
-    counter!("smoo_bulk_out_count").increment(1);
-    counter!("smoo_bulk_out_bytes").increment(bytes as u64);
-    histogram!("smoo_bulk_out_latency_ns").record(ns as f64);
     BULK_OUT.observe(bytes, dur);
 }
 
 pub fn observe_bulk_in(bytes: usize, dur: Duration) {
-    let ns = dur.as_nanos().min(u64::MAX as u128) as u64;
-    counter!("smoo_bulk_in_count").increment(1);
-    counter!("smoo_bulk_in_bytes").increment(bytes as u64);
-    histogram!("smoo_bulk_in_latency_ns").record(ns as f64);
     BULK_IN.observe(bytes, dur);
 }
 
 pub fn observe_interrupt_out(bytes: usize, dur: Duration) {
-    let ns = dur.as_nanos().min(u64::MAX as u128) as u64;
-    counter!("smoo_interrupt_out_count").increment(1);
-    counter!("smoo_interrupt_out_bytes").increment(bytes as u64);
-    histogram!("smoo_interrupt_out_latency_ns").record(ns as f64);
     INTR_OUT.observe(bytes, dur);
 }
 
 pub fn observe_interrupt_in(bytes: usize, dur: Duration) {
-    let ns = dur.as_nanos().min(u64::MAX as u128) as u64;
-    counter!("smoo_interrupt_in_count").increment(1);
-    counter!("smoo_interrupt_in_bytes").increment(bytes as u64);
-    histogram!("smoo_interrupt_in_latency_ns").record(ns as f64);
     INTR_IN.observe(bytes, dur);
 }
 
 pub fn record_bulk_out_queue(depth: usize) {
-    gauge!("smoo_bulk_out_queue_depth").set(depth as f64);
     BULK_OUT_QUEUE.record(depth);
 }
 
 pub fn record_bulk_in_queue(depth: usize) {
-    gauge!("smoo_bulk_in_queue_depth").set(depth as f64);
     BULK_IN_QUEUE.record(depth);
 }
 

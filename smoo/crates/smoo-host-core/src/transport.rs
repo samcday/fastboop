@@ -65,8 +65,7 @@ impl fmt::Display for TransportError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for TransportError {}
+impl core::error::Error for TransportError {}
 
 /// Provides access to vendor control transfers used by the smoo protocol.
 #[async_trait]

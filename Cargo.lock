@@ -2765,6 +2765,7 @@ dependencies = [
  "serde_yaml",
  "smoo-host-blocksource-gibblox",
  "smoo-host-core",
+ "smoo-host-session",
  "smoo-host-transport-rusb",
  "tokio",
  "tokio-util",
@@ -7633,9 +7634,17 @@ dependencies = [
  "async-trait",
  "futures-channel",
  "futures-util",
- "metrics",
  "smoo-proto",
  "tracing",
+]
+
+[[package]]
+name = "smoo-host-session"
+version = "0.0.1"
+dependencies = [
+ "futures-util",
+ "smoo-host-core",
+ "smoo-proto",
 ]
 
 [[package]]

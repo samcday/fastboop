@@ -5,13 +5,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, ensure};
 use gibblox_core::BlockReader;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
-use smoo_host_core::control::{ConfigExportsV0, read_status};
-use smoo_host_core::{
-    BlockSource, BlockSourceHandle, HostErrorKind, SmooHost, TransportError, TransportErrorKind,
-    heartbeat_once, register_export, start_host_io_pump,
-};
+use smoo_host_core::{BlockSource, BlockSourceHandle, register_export};
+use smoo_host_session::{HostSession, HostSessionConfig, HostSessionOutcome};
 use smoo_host_transport_rusb::RusbTransport;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 const SMOO_INTERFACE_CLASS: u8 = 0xFF;
@@ -19,9 +15,7 @@ const SMOO_INTERFACE_SUBCLASS: u8 = 0x53;
 const SMOO_INTERFACE_PROTOCOL: u8 = 0x4D;
 const TRANSFER_TIMEOUT: Duration = Duration::from_millis(200);
 const DISCOVERY_RETRY: Duration = Duration::from_millis(500);
-const IDLE_POLL: Duration = Duration::from_millis(5);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
-const STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 
 pub(crate) fn run_host_daemon(
@@ -109,7 +103,7 @@ enum SessionEnd {
 
 async fn run_session(
     transport: RusbTransport,
-    control: smoo_host_transport_rusb::RusbControl,
+    mut control: smoo_host_transport_rusb::RusbControl,
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,
     identity: String,
@@ -135,150 +129,46 @@ async fn run_session(
         size_bytes,
     )
     .map_err(|err| anyhow!(err.to_string()))?;
-    let payload = ConfigExportsV0::from_slice(&entries)
-        .map_err(|err| anyhow!("build CONFIG_EXPORTS payload: {err:?}"))?;
-
-    let (pump_handle, request_rx, pump_task) = start_host_io_pump(transport.clone());
-    let pump_task = tokio::spawn(pump_task);
-
-    let mut host = SmooHost::new(pump_handle.clone(), request_rx, sources);
-    host.setup(&control).await.context("IDENT handshake")?;
-    host.configure_exports_v0(&control, &payload)
+    let session = HostSession::new(
+        sources,
+        HostSessionConfig {
+            status_retry_attempts: STATUS_RETRY_ATTEMPTS,
+        },
+    )
+    .map_err(|err| anyhow!(err.to_string()))?;
+    let mut task = session
+        .start(transport, &mut control)
         .await
-        .context("send CONFIG_EXPORTS")?;
+        .map_err(|err| anyhow!(err.to_string()))?;
 
-    let initial_session_id =
-        match fetch_status_with_retry(&control, STATUS_RETRY_ATTEMPTS, STATUS_RETRY_INTERVAL).await
-        {
-            Ok(session_id) => session_id,
-            Err(err) => {
-                eprintln!("SMOO_STATUS failed after CONFIG_EXPORTS: {err}");
-                shutdown_pump(pump_handle, pump_task).await;
-                return Ok(SessionEnd::TransportLost);
-            }
-        };
-
-    let (heartbeat_tx, mut heartbeat_rx) = tokio::sync::mpsc::unbounded_channel();
-    let heartbeat_client = control.clone();
-    let heartbeat_task = tokio::spawn(async move {
-        if let Err(err) =
-            run_heartbeat(heartbeat_client, initial_session_id, HEARTBEAT_INTERVAL).await
-        {
-            let _ = heartbeat_tx.send(err);
-        }
-    });
-
-    let mut pump_task = pump_task;
-    let result = loop {
+    loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                break Ok(SessionEnd::Shutdown);
+                task.stop();
+                let _ = task.await;
+                return Ok(SessionEnd::Shutdown);
             }
-            pump_result = &mut pump_task => {
-                match pump_result {
-                    Ok(Ok(())) | Ok(Err(_)) | Err(_) => break Ok(SessionEnd::TransportLost),
-                }
+            finish = &mut task => {
+                return map_finish(finish);
             }
-            event = heartbeat_rx.recv() => {
-                if let Some(event) = event {
-                    eprintln!("smoo heartbeat ended: {event}");
-                }
-                break Ok(SessionEnd::TransportLost);
-            }
-            _ = tokio::time::sleep(IDLE_POLL) => {
-                match host.run_once().await {
-                    Ok(()) => {}
-                    Err(err) if err.kind() == HostErrorKind::Transport => break Ok(SessionEnd::TransportLost),
-                    Err(err) => break Err(anyhow!(err.to_string())),
+            _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
+                if let Err(err) = task.heartbeat(&mut control).await {
+                    eprintln!("smoo heartbeat failed: {err}");
+                    return Ok(SessionEnd::TransportLost);
                 }
             }
         }
-    };
-
-    if !heartbeat_task.is_finished() {
-        heartbeat_task.abort();
     }
-    let _ = heartbeat_task.await;
-
-    shutdown_pump(pump_handle, pump_task).await;
-    result
 }
 
-#[derive(Debug, Clone)]
-enum HeartbeatEvent {
-    SessionChanged { previous: u64, current: u64 },
-    TransferFailed(String),
-}
-
-impl std::fmt::Display for HeartbeatEvent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HeartbeatEvent::SessionChanged { previous, current } => {
-                write!(
-                    f,
-                    "gadget session changed (0x{previous:016x} -> 0x{current:016x})"
-                )
-            }
-            HeartbeatEvent::TransferFailed(err) => write!(f, "heartbeat transfer failed: {err}"),
+fn map_finish(
+    finish: smoo_host_session::HostSessionFinish,
+) -> std::result::Result<SessionEnd, anyhow::Error> {
+    match finish.outcome {
+        Ok(HostSessionOutcome::Stopped) => Ok(SessionEnd::Shutdown),
+        Ok(HostSessionOutcome::TransportLost) | Ok(HostSessionOutcome::SessionChanged { .. }) => {
+            Ok(SessionEnd::TransportLost)
         }
+        Err(err) => Err(anyhow!(err.to_string())),
     }
-}
-
-async fn run_heartbeat(
-    client: smoo_host_transport_rusb::RusbControl,
-    initial_session_id: u64,
-    interval: Duration,
-) -> std::result::Result<(), HeartbeatEvent> {
-    let mut ticker = tokio::time::interval(interval);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        ticker.tick().await;
-        match heartbeat_once(&client).await {
-            Ok(status) => {
-                if status.session_id != initial_session_id {
-                    return Err(HeartbeatEvent::SessionChanged {
-                        previous: initial_session_id,
-                        current: status.session_id,
-                    });
-                }
-            }
-            Err(err) => {
-                return Err(HeartbeatEvent::TransferFailed(err.to_string()));
-            }
-        }
-    }
-}
-
-async fn fetch_status_with_retry(
-    client: &smoo_host_transport_rusb::RusbControl,
-    attempts: usize,
-    delay: Duration,
-) -> std::result::Result<u64, TransportError> {
-    let mut attempt = 0;
-    loop {
-        match read_status(client).await {
-            Ok(status) => return Ok(status.session_id),
-            Err(err) => {
-                attempt += 1;
-                if attempt >= attempts {
-                    return Err(err);
-                }
-                if err.kind() != TransportErrorKind::Timeout || attempt > 1 {
-                    eprintln!("SMOO_STATUS attempt {attempt}/{attempts} failed: {err}; retrying");
-                }
-                tokio::time::sleep(delay).await;
-            }
-        }
-    }
-}
-
-async fn shutdown_pump(
-    pump_handle: smoo_host_core::HostIoPumpHandle,
-    pump_task: JoinHandle<smoo_host_core::TransportResult<()>>,
-) {
-    let _ = pump_handle.shutdown().await;
-    if !pump_task.is_finished() {
-        pump_task.abort();
-    }
-    let _ = pump_task.await;
 }

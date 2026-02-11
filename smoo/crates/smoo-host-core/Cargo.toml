@@ -6,9 +6,8 @@ rust-version = { workspace = true }
 license = "GPL-3.0-only"
 
 [features]
-default = ["std"]
-std = ["futures-channel/std", "futures-util/std"]
-metrics = ["std", "dep:metrics"]
+default = []
+metrics = []
 
 [dependencies]
 async-trait = "0.1.89"
@@ -16,4 +15,3 @@ smoo-proto = { path = "../smoo-proto" }
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc", "async-await"] }
 futures-channel = { version = "0.3.31", default-features = false, features = ["alloc"] }
 tracing = { version = "0.1.40", default-features = false, features = ["attributes"] }
-metrics = { version = "0.22", optional = true }

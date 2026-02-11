@@ -1,19 +1,21 @@
-use crate::{Transport, TransportError, TransportErrorKind, TransportResult};
-use alloc::{collections::VecDeque, format, vec::Vec};
+use crate::{
+    Transport, TransportError, TransportErrorKind, TransportResult,
+    channel::{self, UnboundedReceiver, UnboundedSender},
+};
+use alloc::{collections::VecDeque, format, string::String, vec, vec::Vec};
+#[cfg(feature = "metrics")]
+use core::time::Duration;
 use core::{
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
-use futures_channel::{mpsc, oneshot};
-use futures_util::{
-    future::{BoxFuture, Fuse, FusedFuture, FutureExt, OptionFuture, poll_fn},
-    stream::{Fuse as StreamFuse, StreamExt},
-};
+use futures_channel::oneshot;
+use futures_util::future::{BoxFuture, Fuse, FusedFuture, FutureExt, OptionFuture, poll_fn};
 use smoo_proto::{REQUEST_LEN, RESPONSE_LEN, Request, Response};
 
 /// Stream of Requests produced by the pump.
-pub type HostIoPumpRequestRx = mpsc::UnboundedReceiver<Request>;
+pub type HostIoPumpRequestRx = UnboundedReceiver<Request>;
 
 /// Handle to an ordered bulk read queued on the pump.
 pub struct BulkReadHandle {
@@ -29,7 +31,7 @@ impl BulkReadHandle {
 /// Handle used by workers to issue bulk + interrupt OUT operations through the pump.
 #[derive(Clone)]
 pub struct HostIoPumpHandle {
-    cmd_tx: mpsc::UnboundedSender<PumpCmd>,
+    cmd_tx: UnboundedSender<PumpCmd>,
 }
 
 /// Future that drives the pump. Callers should spawn this on their executor of choice.
@@ -55,8 +57,8 @@ pub fn start_host_io_pump<T>(
 where
     T: Transport + Clone + Send + Sync + 'static,
 {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded();
-    let (req_tx, req_rx) = mpsc::unbounded();
+    let (cmd_tx, cmd_rx) = channel::unbounded();
+    let (req_tx, req_rx) = channel::unbounded();
     let task = HostIoPumpTask {
         inner: run_pump(transport, cmd_rx, req_tx).boxed(),
     };
@@ -85,8 +87,6 @@ impl HostIoPumpHandle {
             response,
             bulk_out,
             reply: reply_tx,
-            #[cfg(feature = "metrics")]
-            start: std::time::Instant::now(),
         })
         .await?;
         reply_rx.await.unwrap_or_else(|_| Err(disconnected_err()))
@@ -99,8 +99,6 @@ impl HostIoPumpHandle {
         self.send_cmd(PumpCmd::ReadBulk {
             buf: vec![0u8; len],
             reply: reply_tx,
-            #[cfg(feature = "metrics")]
-            start: std::time::Instant::now(),
         })
         .await?;
         Ok(BulkReadHandle { rx: reply_rx })
@@ -118,8 +116,6 @@ impl HostIoPumpHandle {
         self.send_cmd(PumpCmd::WriteBulk {
             buf,
             reply: reply_tx,
-            #[cfg(feature = "metrics")]
-            start: std::time::Instant::now(),
         })
         .await?;
         reply_rx.await.unwrap_or_else(|_| Err(disconnected_err()))
@@ -144,20 +140,14 @@ enum PumpCmd {
         response: Response,
         bulk_out: Option<Vec<u8>>,
         reply: oneshot::Sender<TransportResult<()>>,
-        #[cfg(feature = "metrics")]
-        start: std::time::Instant,
     },
     ReadBulk {
         buf: Vec<u8>,
         reply: oneshot::Sender<TransportResult<Vec<u8>>>,
-        #[cfg(feature = "metrics")]
-        start: std::time::Instant,
     },
     WriteBulk {
         buf: Vec<u8>,
         reply: oneshot::Sender<TransportResult<()>>,
-        #[cfg(feature = "metrics")]
-        start: std::time::Instant,
     },
     Shutdown,
 }
@@ -165,22 +155,16 @@ enum PumpCmd {
 struct InterruptOutOp {
     response: Response,
     reply: oneshot::Sender<TransportResult<()>>,
-    #[cfg(feature = "metrics")]
-    start: std::time::Instant,
 }
 
 struct BulkInOp {
     buf: Vec<u8>,
     reply: oneshot::Sender<TransportResult<Vec<u8>>>,
-    #[cfg(feature = "metrics")]
-    start: std::time::Instant,
 }
 
 struct BulkOutOp {
     buf: Vec<u8>,
     reply: Option<oneshot::Sender<TransportResult<()>>>,
-    #[cfg(feature = "metrics")]
-    start: std::time::Instant,
 }
 
 type InterruptInFuture = Fuse<OptionFuture<BoxFuture<'static, TransportResult<Request>>>>;
@@ -225,13 +209,13 @@ enum PumpProgress {
 
 async fn run_pump<T>(
     transport: T,
-    cmd_rx: mpsc::UnboundedReceiver<PumpCmd>,
-    req_tx: mpsc::UnboundedSender<Request>,
+    cmd_rx: UnboundedReceiver<PumpCmd>,
+    req_tx: UnboundedSender<Request>,
 ) -> TransportResult<()>
 where
     T: Transport + Clone + Send + Sync + 'static,
 {
-    let mut cmd_rx: StreamFuse<mpsc::UnboundedReceiver<PumpCmd>> = cmd_rx.fuse();
+    let mut cmd_rx = cmd_rx;
     let mut interrupt_in: InterruptInFuture = arm_interrupt_in(transport.clone());
     let mut interrupt_out: InterruptOutFuture = OptionFuture::from(None).fuse();
     let mut bulk_in_inflight: VecDeque<InFlightBulkIn> = VecDeque::new();
@@ -270,7 +254,7 @@ where
 fn poll_pump<T>(
     cx: &mut Context<'_>,
     transport: &T,
-    cmd_rx: &mut StreamFuse<mpsc::UnboundedReceiver<PumpCmd>>,
+    cmd_rx: &mut UnboundedReceiver<PumpCmd>,
     interrupt_in: &mut InterruptInFuture,
     interrupt_out: &mut InterruptOutFuture,
     bulk_in_inflight: &mut VecDeque<InFlightBulkIn>,
@@ -279,7 +263,7 @@ fn poll_pump<T>(
     bulk_in_queue: &mut VecDeque<BulkInOp>,
     bulk_out_queue: &mut VecDeque<BulkOutOp>,
     cmd_closed: &mut bool,
-    req_tx: &mpsc::UnboundedSender<Request>,
+    req_tx: &UnboundedSender<Request>,
 ) -> Poll<TransportResult<PumpProgress>>
 where
     T: Transport + Clone + Send + Sync + 'static,
@@ -319,14 +303,12 @@ where
         }
     }
 
-    if let Poll::Ready(cmd) = cmd_rx.poll_next_unpin(cx) {
+    if let Poll::Ready(cmd) = cmd_rx.poll_recv(cx) {
         match cmd {
             Some(PumpCmd::SendResponseWithBulk {
                 response,
                 bulk_out,
                 reply,
-                #[cfg(feature = "metrics")]
-                start,
                 ..
             }) => {
                 tracing::trace!(
@@ -334,55 +316,26 @@ where
                     request_id = response.request_id,
                     "pump: enqueue response"
                 );
-                interrupt_out_queue.push_back(InterruptOutOp {
-                    response,
-                    reply,
-                    #[cfg(feature = "metrics")]
-                    start,
-                });
+                interrupt_out_queue.push_back(InterruptOutOp { response, reply });
                 if let Some(buf) = bulk_out {
                     #[cfg(feature = "metrics")]
                     crate::metrics::record_bulk_out_queue(bulk_out_queue.len() + 1);
-                    bulk_out_queue.push_back(BulkOutOp {
-                        buf,
-                        reply: None,
-                        #[cfg(feature = "metrics")]
-                        start: std::time::Instant::now(),
-                    });
+                    bulk_out_queue.push_back(BulkOutOp { buf, reply: None });
                 }
             }
-            Some(PumpCmd::ReadBulk {
-                buf,
-                reply,
-                #[cfg(feature = "metrics")]
-                start,
-                ..
-            }) => {
+            Some(PumpCmd::ReadBulk { buf, reply, .. }) => {
                 tracing::trace!(bytes = buf.len(), "pump: enqueue bulk-in");
                 #[cfg(feature = "metrics")]
                 crate::metrics::record_bulk_in_queue(bulk_in_queue.len() + 1);
-                bulk_in_queue.push_back(BulkInOp {
-                    buf,
-                    reply,
-                    #[cfg(feature = "metrics")]
-                    start,
-                });
+                bulk_in_queue.push_back(BulkInOp { buf, reply });
             }
-            Some(PumpCmd::WriteBulk {
-                buf,
-                reply,
-                #[cfg(feature = "metrics")]
-                start,
-                ..
-            }) => {
+            Some(PumpCmd::WriteBulk { buf, reply, .. }) => {
                 tracing::trace!(bytes = buf.len(), "pump: enqueue bulk-out");
                 #[cfg(feature = "metrics")]
                 crate::metrics::record_bulk_out_queue(bulk_out_queue.len() + 1);
                 bulk_out_queue.push_back(BulkOutOp {
                     buf,
                     reply: Some(reply),
-                    #[cfg(feature = "metrics")]
-                    start,
                 });
             }
             Some(PumpCmd::Shutdown) => return Poll::Ready(Ok(PumpProgress::Finished(Ok(())))),
@@ -477,8 +430,6 @@ where
 {
     OptionFuture::from(Some(
         async move {
-            #[cfg(feature = "metrics")]
-            let start = std::time::Instant::now();
             let mut buf = [0u8; REQUEST_LEN];
             let len = transport.read_interrupt(&mut buf).await?;
             if len != REQUEST_LEN {
@@ -487,7 +438,7 @@ where
                 )));
             }
             #[cfg(feature = "metrics")]
-            crate::metrics::observe_interrupt_in(len, start.elapsed());
+            crate::metrics::observe_interrupt_in(len, Duration::ZERO);
             Request::decode(buf).map_err(|err| protocol_error(format!("decode request: {err}")))
         }
         .boxed(),
@@ -501,8 +452,6 @@ where
 {
     OptionFuture::from(Some(
         async move {
-            #[cfg(feature = "metrics")]
-            let start = op.start;
             let data = op.response.encode();
             let reply = op.reply;
             let result = match transport.write_interrupt(&data).await {
@@ -514,7 +463,7 @@ where
             };
             #[cfg(feature = "metrics")]
             if result.is_ok() {
-                crate::metrics::observe_interrupt_out(data.len(), start.elapsed());
+                crate::metrics::observe_interrupt_out(data.len(), Duration::ZERO);
             }
             (reply, result)
         }
@@ -528,8 +477,6 @@ where
     T: Transport + Clone + Send + Sync + 'static,
 {
     async move {
-        #[cfg(feature = "metrics")]
-        let start = op.start;
         let mut buf = op.buf;
         let reply = op.reply;
         let len = transport.read_bulk(&mut buf).await;
@@ -543,7 +490,7 @@ where
         };
         #[cfg(feature = "metrics")]
         if let Ok(ref data) = result {
-            crate::metrics::observe_bulk_in(data.len(), start.elapsed());
+            crate::metrics::observe_bulk_in(data.len(), Duration::ZERO);
         }
         (reply, result)
     }
@@ -555,8 +502,6 @@ where
     T: Transport + Clone + Send + Sync + 'static,
 {
     async move {
-        #[cfg(feature = "metrics")]
-        let start = op.start;
         let reply = op.reply;
         let len = op.buf.len();
         tracing::trace!(bytes = len, "pump: bulk-out transport write start");
@@ -573,7 +518,7 @@ where
         }
         #[cfg(feature = "metrics")]
         if result.is_ok() {
-            crate::metrics::observe_bulk_out(len, start.elapsed());
+            crate::metrics::observe_bulk_out(len, Duration::ZERO);
         }
         (reply, result)
     }

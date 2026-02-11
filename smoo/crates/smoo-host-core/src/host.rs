@@ -4,6 +4,7 @@ use crate::{
     control::{ConfigExportsV0, fetch_ident, send_config_exports_v0},
 };
 use alloc::{
+    boxed::Box,
     collections::BTreeMap,
     string::{String, ToString},
     vec,
@@ -12,7 +13,7 @@ use alloc::{
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
-use futures_util::{StreamExt, future::FutureExt, stream::FuturesUnordered};
+use futures_util::{future::FutureExt, stream::FuturesUnordered, stream::StreamExt};
 use smoo_proto::{Ident, OpCode, Request, Response};
 use tracing::trace;
 
@@ -66,8 +67,7 @@ impl fmt::Display for HostError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for HostError {}
+impl core::error::Error for HostError {}
 
 impl From<TransportError> for HostError {
     fn from(err: TransportError) -> Self {
@@ -162,11 +162,51 @@ where
             self.send_response_with_bulk(response).await?;
         }
 
-        let request = match self.requests.next().now_or_never() {
+        let request = match self.requests.recv().now_or_never() {
             Some(Some(req)) => req,
             Some(None) => return Err(TransportError::new(TransportErrorKind::Disconnected).into()),
             None => return Ok(()),
         };
+        self.enqueue_request(request).await
+    }
+
+    /// Wait until either one in-flight response completes or one request arrives.
+    pub async fn run_until_event(&mut self) -> HostResult<()> {
+        while let Some(resp) = self.in_flight.next().now_or_never().flatten() {
+            let response = resp?;
+            self.send_response_with_bulk(response).await?;
+        }
+
+        if self.in_flight.is_empty() {
+            let request = self
+                .requests
+                .recv()
+                .await
+                .ok_or_else(|| TransportError::new(TransportErrorKind::Disconnected))?;
+            return self.enqueue_request(request).await;
+        }
+
+        let mut next_response = self.in_flight.next().fuse();
+        let mut next_request = self.requests.recv().fuse();
+        futures_util::select_biased! {
+            response = next_response => {
+                if let Some(response) = response {
+                    let response = response?;
+                    self.send_response_with_bulk(response).await?;
+                    Ok(())
+                } else {
+                    Err(TransportError::new(TransportErrorKind::Disconnected).into())
+                }
+            }
+            request = next_request => {
+                let request = request
+                    .ok_or_else(|| TransportError::new(TransportErrorKind::Disconnected))?;
+                self.enqueue_request(request).await
+            }
+        }
+    }
+
+    async fn enqueue_request(&mut self, request: Request) -> HostResult<()> {
         trace!(
             request_id = request.request_id,
             export_id = request.export_id,

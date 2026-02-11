@@ -55,8 +55,7 @@ impl fmt::Display for BlockSourceError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for BlockSourceError {}
+impl core::error::Error for BlockSourceError {}
 
 /// Abstraction over a readable/writable block storage source.
 ///

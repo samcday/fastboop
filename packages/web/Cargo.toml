@@ -13,7 +13,7 @@ fastboop-erofs-rootfs = { path = "../../crates/fastboop-erofs-rootfs" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
 gibblox-core = { path = "../../gibblox/crates/gibblox-core" }
-smoo-host-core = { path = "../../smoo/crates/smoo-host-core", features = ["std"] }
+smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }
 smoo-host-webusb = { path = "../../smoo/crates/smoo-host-webusb" }
 smoo-host-blocksource-gibblox = { path = "../../crates/smoo-host-blocksource-gibblox" }
 tracing = "0.1.41"

@@ -9,19 +9,15 @@ use smoo_host_blocksources::device::DeviceBlockSource;
 use smoo_host_blocksources::file::FileBlockSource;
 use smoo_host_blocksources::random::RandomBlockSource;
 use smoo_host_core::{
-    control::{fetch_ident, read_status, send_config_exports_v0, ConfigExportsV0},
-    heartbeat::heartbeat_once,
-    register_export, start_host_io_pump, BlockSource, BlockSourceHandle, BlockSourceResult,
-    ExportIdentity, HostErrorKind, SmooHost, TransportError, TransportErrorKind,
+    register_export, BlockSource, BlockSourceHandle, BlockSourceResult, ExportIdentity,
 };
-use smoo_host_transport_rusb::{RusbControl, RusbTransport};
-use smoo_proto::SmooStatusV0;
+use smoo_host_session::{HostSession, HostSessionConfig, HostSessionOutcome};
+use smoo_host_transport_rusb::RusbTransport;
 use std::{
-    collections::BTreeMap, convert::Infallible, fmt, fs, net::SocketAddr, path::PathBuf,
-    time::Duration,
+    collections::BTreeMap, convert::Infallible, fs, net::SocketAddr, path::PathBuf, time::Duration,
 };
 use tokio::task::JoinHandle;
-use tokio::{signal, sync::mpsc, time};
+use tokio::{signal, time};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -31,7 +27,6 @@ const SMOO_INTERFACE_PROTOCOL: u8 = 0x4D;
 const HEARTBEAT_INTERVAL_SECS: u64 = 1;
 const DISCOVERY_DELAY_INITIAL: Duration = Duration::from_millis(500);
 const DISCOVERY_DELAY_MAX: Duration = Duration::from_secs(5);
-const STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 const RECONNECT_PAUSE: Duration = Duration::from_secs(1);
 
@@ -184,18 +179,10 @@ pub async fn run_with_args(args: Args) -> Result<()> {
         shutdown_watch.cancel();
     });
     let _metrics_task = spawn_metrics_listener(args.metrics_port, shutdown.clone())?;
-    let (sources, config_payload) = open_sources(&args).await.context("open block sources")?;
+    let sources = open_sources(&args).await.context("open block sources")?;
     let mut has_connected = false;
     while !shutdown.is_cancelled() {
-        match run_session(
-            &args,
-            sources.clone(),
-            &config_payload,
-            has_connected,
-            shutdown.clone(),
-        )
-        .await?
-        {
+        match run_session(&args, sources.clone(), has_connected, shutdown.clone()).await? {
             SessionEnd::Shutdown => break,
             SessionEnd::TransportLost => {
                 info!("gadget disconnected; waiting for reconnection");
@@ -221,14 +208,13 @@ enum SessionEnd {
 async fn run_session(
     args: &Args,
     sources: BTreeMap<u32, BlockSourceHandle>,
-    config_payload: &ConfigExportsV0,
     has_connected: bool,
     shutdown: CancellationToken,
 ) -> Result<SessionEnd> {
     let mut attempts = 0usize;
     let mut delay = DISCOVERY_DELAY_INITIAL;
     let transfer_timeout = Duration::from_millis(args.timeout_ms.min(200));
-    let (transport, control) = loop {
+    let (transport, mut control) = loop {
         match RusbTransport::open_matching(
             args.vendor_id,
             args.product_id,
@@ -258,97 +244,37 @@ async fn run_session(
             }
         }
     };
-    let ident = fetch_ident(&control)
-        .await
-        .context("IDENT control transfer")?;
-    debug!(
-        major = ident.major,
-        minor = ident.minor,
-        "gadget IDENT response"
-    );
-    send_config_exports_v0(&control, config_payload)
-        .await
-        .context("CONFIG_EXPORTS control transfer")?;
-    info!(
-        exports = config_payload.entries().len(),
-        "configured gadget exports"
-    );
-    let initial_status =
-        match fetch_status_with_retry(&control, STATUS_RETRY_ATTEMPTS, STATUS_RETRY_INTERVAL).await
-        {
-            Ok(status) => status,
-            Err(err) => {
-                warn!(error = %err, "SMOO_STATUS failed after reconnect; gadget not ready");
-                return Ok(SessionEnd::TransportLost);
-            }
-        };
-    debug!(
-        session_id = initial_status.session_id,
-        export_count = initial_status.export_count,
-        "initial gadget status"
-    );
-    let heartbeat_interval = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
-    let (heartbeat_tx, mut heartbeat_rx) = mpsc::unbounded_channel();
-    let heartbeat_client = control.clone();
-    let session_id = initial_status.session_id;
-    let heartbeat_task = tokio::spawn(async move {
-        if let Err(err) = run_heartbeat(heartbeat_client, session_id, heartbeat_interval).await {
-            let _ = heartbeat_tx.send(err);
+    let session = HostSession::new(
+        sources,
+        HostSessionConfig {
+            status_retry_attempts: STATUS_RETRY_ATTEMPTS,
+        },
+    )
+    .map_err(|err| anyhow!(err.to_string()))?;
+    let mut task = match session.start(transport, &mut control).await {
+        Ok(task) => task,
+        Err(err) => {
+            warn!(error = %err, "host session setup failed");
+            return Ok(SessionEnd::TransportLost);
         }
-    });
-    let (pump_handle, request_rx, pump_task) = start_host_io_pump(transport);
-    let mut pump_task = tokio::spawn(pump_task);
-    let mut host = SmooHost::new(pump_handle.clone(), request_rx, sources);
-    host.record_ident(ident);
-    info!(
-        major = ident.major,
-        minor = ident.minor,
-        "connected to smoo gadget"
-    );
+    };
+
+    let heartbeat_interval = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
+    info!("connected to smoo gadget");
 
     let outcome = loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
                 info!("shutdown requested");
+                task.stop();
+                let _ = (&mut task).await;
                 break SessionEnd::Shutdown;
             }
-            res = host.run_once() => {
-                match res {
-                    Ok(()) => {}
-                    Err(err) => match err.kind() {
-                        HostErrorKind::Unsupported | HostErrorKind::InvalidRequest => {
-                            warn!(error = %err, "request handling failed");
-                        }
-                        HostErrorKind::Transport => {
-                            warn!(error = %err, "transport failure");
-                            break SessionEnd::TransportLost;
-                        }
-                        _ => {
-                            return Err(anyhow!(err.to_string()));
-                        }
-                    },
-                }
-            }
-            pump_res = &mut pump_task => {
-                match pump_res {
-                    Ok(Ok(())) => break SessionEnd::TransportLost,
-                    Ok(Err(err)) => {
-                        warn!(error = %err, "pump task exited");
-                        break SessionEnd::TransportLost;
-                    }
-                    Err(join_err) => {
-                        warn!(error = %join_err, "pump task join failed");
-                        break SessionEnd::TransportLost;
-                    }
-                }
-            }
-            event = heartbeat_rx.recv(), if !shutdown.is_cancelled() => {
-                match event {
-                    Some(HeartbeatEvent::TransferFailed(reason)) => {
-                        warn!(reason = %reason, "heartbeat transfer failed");
-                        break SessionEnd::TransportLost;
-                    }
-                    Some(HeartbeatEvent::SessionChanged { previous, current }) => {
+            finish = &mut task => {
+                match finish.outcome {
+                    Ok(HostSessionOutcome::Stopped) => break SessionEnd::Shutdown,
+                    Ok(HostSessionOutcome::TransportLost) => break SessionEnd::TransportLost,
+                    Ok(HostSessionOutcome::SessionChanged { previous, current }) => {
                         info!(
                             previous = format_args!("0x{previous:016x}"),
                             current = format_args!("0x{current:016x}"),
@@ -356,30 +282,22 @@ async fn run_session(
                         );
                         break SessionEnd::SessionRestart;
                     }
-                    None => {
-                        break SessionEnd::TransportLost;
-                    }
+                    Err(err) => return Err(anyhow!(err.to_string())),
+                }
+            }
+            _ = time::sleep(heartbeat_interval), if !shutdown.is_cancelled() => {
+                if let Err(err) = task.heartbeat(&mut control).await {
+                    warn!(error = %err, "heartbeat transfer failed");
+                    break SessionEnd::TransportLost;
                 }
             }
         }
     };
 
-    if !heartbeat_task.is_finished() {
-        heartbeat_task.abort();
-    }
-    let _ = heartbeat_task.await;
-
-    // Gracefully stop the pump.
-    let _ = pump_handle.shutdown().await;
-    if !pump_task.is_finished() {
-        pump_task.abort();
-    }
-    let _ = pump_task.await;
-
     Ok(outcome)
 }
 
-async fn open_sources(args: &Args) -> Result<(BTreeMap<u32, BlockSourceHandle>, ConfigExportsV0)> {
+async fn open_sources(args: &Args) -> Result<BTreeMap<u32, BlockSourceHandle>> {
     let mut sources = BTreeMap::new();
     let mut entries: Vec<smoo_proto::ConfigExport> = Vec::new();
     let block_size = args.block_size;
@@ -522,92 +440,11 @@ async fn open_sources(args: &Args) -> Result<(BTreeMap<u32, BlockSourceHandle>, 
         .map_err(|err| anyhow!(err.to_string()))?;
     }
 
-    let payload = ConfigExportsV0::from_slice(&entries)
-        .map_err(|err| anyhow!("build CONFIG_EXPORTS payload: {err:?}"))?;
-    Ok((sources, payload))
+    Ok(sources)
 }
 
 fn canonicalize_path(path: &PathBuf) -> Result<PathBuf> {
     fs::canonicalize(path).with_context(|| format!("canonicalize {}", path.display()))
-}
-
-#[derive(Debug, Clone)]
-enum HeartbeatEvent {
-    SessionChanged { previous: u64, current: u64 },
-    TransferFailed(String),
-}
-
-impl fmt::Display for HeartbeatEvent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HeartbeatEvent::SessionChanged { previous, current } => write!(
-                f,
-                "gadget session changed (0x{previous:016x} → 0x{current:016x})"
-            ),
-            HeartbeatEvent::TransferFailed(err) => {
-                write!(f, "heartbeat control transfer failed: {err}")
-            }
-        }
-    }
-}
-
-async fn run_heartbeat(
-    client: RusbControl,
-    initial_session_id: u64,
-    interval: Duration,
-) -> Result<(), HeartbeatEvent> {
-    let mut ticker = time::interval(interval);
-    ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-    loop {
-        ticker.tick().await;
-        match heartbeat_once(&client).await {
-            Ok(status) => {
-                if status.session_id != initial_session_id {
-                    return Err(HeartbeatEvent::SessionChanged {
-                        previous: initial_session_id,
-                        current: status.session_id,
-                    });
-                }
-                debug!(
-                    session_id = status.session_id,
-                    export_count = status.export_count,
-                    "heartbeat successful"
-                );
-            }
-            Err(err) => {
-                return Err(HeartbeatEvent::TransferFailed(err.to_string()));
-            }
-        }
-    }
-}
-
-async fn fetch_status_with_retry(
-    client: &RusbControl,
-    attempts: usize,
-    delay: Duration,
-) -> Result<SmooStatusV0, TransportError> {
-    let mut attempt = 0;
-    loop {
-        match read_status(client).await {
-            Ok(status) => return Ok(status),
-            Err(err) => {
-                if err.kind() == TransportErrorKind::Timeout && attempt == 0 {
-                    debug!(error = %err, "SMOO_STATUS timeout before retry");
-                }
-                attempt += 1;
-                if attempt >= attempts {
-                    return Err(err);
-                }
-                warn!(
-                    attempt,
-                    attempts,
-                    error = %err,
-                    "SMOO_STATUS attempt failed; retrying"
-                );
-                time::sleep(delay).await;
-            }
-        }
-    }
 }
 
 fn parse_hex_u16(s: &str) -> Result<u16, std::num::ParseIntError> {

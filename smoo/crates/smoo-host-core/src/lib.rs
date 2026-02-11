@@ -1,17 +1,16 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 extern crate alloc;
 
 pub mod block;
+mod channel;
 pub mod control;
 pub mod export_id;
 pub mod exports;
 pub mod heartbeat;
-#[cfg(feature = "std")]
 pub mod host;
 #[cfg(feature = "metrics")]
 pub mod metrics;
-#[cfg(feature = "std")]
 pub mod pump;
 pub mod transport;
 
@@ -24,11 +23,9 @@ pub use export_id::{
 };
 pub use exports::{ExportConfigError, ExportConfigErrorKind, register_export};
 pub use heartbeat::heartbeat_once;
-#[cfg(feature = "std")]
 pub use host::{HostError, HostErrorKind, HostResult, SmooHost};
 #[cfg(feature = "metrics")]
 pub use metrics::{MetricsSnapshot, QueueSnapshot, StatSnapshot};
-#[cfg(feature = "std")]
 pub use pump::{
     BulkReadHandle, HostIoPumpHandle, HostIoPumpRequestRx, HostIoPumpTask, start_host_io_pump,
 };

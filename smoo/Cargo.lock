@@ -1938,6 +1938,7 @@ dependencies = [
  "smoo-host-blocksource-http",
  "smoo-host-blocksources",
  "smoo-host-core",
+ "smoo-host-session",
  "smoo-host-transport-rusb",
  "smoo-proto",
  "tokio",
@@ -2016,9 +2017,17 @@ dependencies = [
  "async-trait",
  "futures-channel",
  "futures-util",
- "metrics",
  "smoo-proto",
  "tracing",
+]
+
+[[package]]
+name = "smoo-host-session"
+version = "0.0.1"
+dependencies = [
+ "futures-util",
+ "smoo-host-core",
+ "smoo-proto",
 ]
 
 [[package]]
