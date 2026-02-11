@@ -1926,29 +1926,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "smoo-host-app"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "hyper 0.14.32",
- "metrics-exporter-prometheus",
- "smoo-host-blocksource-cached",
- "smoo-host-blocksource-http",
- "smoo-host-blocksources",
- "smoo-host-core",
- "smoo-host-session",
- "smoo-host-transport-rusb",
- "smoo-proto",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
 name = "smoo-host-blocksource-cached"
 version = "0.0.1"
 dependencies = [
@@ -2006,8 +1983,22 @@ name = "smoo-host-cli"
 version = "0.0.1"
 dependencies = [
  "anyhow",
- "smoo-host-app",
+ "async-trait",
+ "clap",
+ "hyper 0.14.32",
+ "metrics-exporter-prometheus",
+ "smoo-host-blocksource-cached",
+ "smoo-host-blocksource-http",
+ "smoo-host-blocksources",
+ "smoo-host-core",
+ "smoo-host-session",
+ "smoo-host-transport-rusb",
+ "smoo-proto",
  "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
