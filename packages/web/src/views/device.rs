@@ -92,14 +92,20 @@ pub fn DevicePage(session_id: String) -> Element {
     };
 
     match session.phase {
-        SessionPhase::Booting { step } => rsx! { BootingDevice { session_id, step } },
+        SessionPhase::Booting { step, cache_stats } => {
+            rsx! { BootingDevice { session_id, step, cache_stats } }
+        }
         SessionPhase::Active { .. } => rsx! { BootedDevice { session_id } },
         SessionPhase::Error { summary } => rsx! { BootError { summary } },
     }
 }
 
 #[component]
-fn BootingDevice(session_id: String, step: String) -> Element {
+fn BootingDevice(
+    session_id: String,
+    step: String,
+    cache_stats: Option<CacheStatsViewModel>,
+) -> Element {
     let sessions = use_context::<SessionStore>();
     let mut started = use_signal(|| false);
 
@@ -141,6 +147,9 @@ fn BootingDevice(session_id: String, step: String) -> Element {
                 p { class: "landing__eyebrow", "Booting" }
                 h1 { "Working on it..." }
                 p { class: "landing__lede", "{step}" }
+                if let Some(cache_stats) = cache_stats {
+                    CacheStatsPanel { stats: cache_stats }
+                }
             }
         }
     }
@@ -1020,6 +1029,7 @@ async fn boot_selected_device(
                 "Opening rootfs {} for {} ({:04x}:{:04x})",
                 ROOTFS_URL, session.device.name, session.device.vid, session.device.pid
             ),
+            cache_stats: None,
         },
     );
     update_session_phase(
@@ -1027,6 +1037,7 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Building stage0".to_string(),
+            cache_stats: None,
         },
     );
     let dtbo_overlays = if session.device.profile.id == "oneplus-fajita" {
@@ -1045,17 +1056,23 @@ async fn boot_selected_device(
         personalization: Some(personalization_from_browser()),
     };
     let profile_id = session.device.profile.id.clone();
-    let (build, runtime) = build_stage0_artifacts(session.device.profile.clone(), stage0_opts)
-        .await
-        .with_context(|| {
-            format!("open rootfs and build stage0 (profile={profile_id}, rootfs={ROOTFS_URL})")
-        })?;
+    let (build, runtime) = build_stage0_artifacts(
+        session.device.profile.clone(),
+        stage0_opts,
+        *sessions,
+        session_id.to_string(),
+    )
+    .await
+    .with_context(|| {
+        format!("open rootfs and build stage0 (profile={profile_id}, rootfs={ROOTFS_URL})")
+    })?;
 
     update_session_phase(
         sessions,
         session_id,
         SessionPhase::Booting {
             step: "Assembling android boot image".to_string(),
+            cache_stats: None,
         },
     );
     let cmdline = join_cmdline(
@@ -1099,6 +1116,7 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Opening fastboot transport".to_string(),
+            cache_stats: None,
         },
     );
     let mut fastboot = session
@@ -1113,6 +1131,7 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Downloading boot image".to_string(),
+            cache_stats: None,
         },
     );
     download(&mut fastboot, &bootimg)
@@ -1124,6 +1143,7 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Issuing fastboot boot".to_string(),
+            cache_stats: None,
         },
     );
     boot(&mut fastboot)
@@ -1142,11 +1162,15 @@ async fn boot_selected_device(
 async fn build_stage0_artifacts(
     profile: fastboop_core::DeviceProfile,
     stage0_opts: Stage0Options,
+    sessions: SessionStore,
+    session_id: String,
 ) -> Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
     use futures_channel::oneshot;
 
     tracing::info!("build_stage0_artifacts: creating channel");
     let (tx, rx) = oneshot::channel();
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = (&sessions, &session_id);
 
     // Spawn the stage0 build outside the Dioxus context using raw spawn_local
     tracing::info!("build_stage0_artifacts: spawning task");
@@ -1155,6 +1179,44 @@ async fn build_stage0_artifacts(
         let result: Result<_> = async {
             tracing::info!(profile = %profile.id, "opening rootfs for web boot");
             let opened = open_erofs_rootfs(ROOTFS_URL).await?;
+            #[cfg(target_arch = "wasm32")]
+            let cache_stats_stop = Rc::new(Cell::new(false));
+            #[cfg(not(target_arch = "wasm32"))]
+            let cache_stats_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            #[cfg(target_arch = "wasm32")]
+            if let Some(cache_stats) = opened.cache_stats.clone() {
+                let cache_stats_stop = cache_stats_stop.clone();
+                let mut sessions = sessions;
+                let session_id = session_id.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    loop {
+                        if cache_stats_stop.get() {
+                            break;
+                        }
+                        match cache_stats.snapshot().await {
+                            Ok(snapshot) => {
+                                update_session_phase(
+                                    &mut sessions,
+                                    &session_id,
+                                    SessionPhase::Booting {
+                                        step: "Building stage0".to_string(),
+                                        cache_stats: Some(CacheStatsViewModel {
+                                            total_blocks: snapshot.total_blocks,
+                                            cached_blocks: snapshot.cached_blocks,
+                                            total_hits: snapshot.total_hits,
+                                            total_misses: snapshot.total_misses,
+                                        }),
+                                    },
+                                );
+                            }
+                            Err(err) => {
+                                tracing::debug!("boot-stage cache stats poll failed: {err}");
+                            }
+                        }
+                        gloo_timers::future::sleep(CACHE_STATS_POLL_INTERVAL).await;
+                    }
+                });
+            }
             tracing::info!(profile = %profile.id, "building stage0 payload");
             // Yield to allow cache workers to make progress
             gloo_timers::future::sleep(std::time::Duration::from_millis(100)).await;
@@ -1167,6 +1229,10 @@ async fn build_stage0_artifacts(
             )
             .await
             .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
+            #[cfg(target_arch = "wasm32")]
+            cache_stats_stop.set(true);
+            #[cfg(not(target_arch = "wasm32"))]
+            cache_stats_stop.store(true, std::sync::atomic::Ordering::Relaxed);
             tracing::info!("build_stage0_artifacts: stage0 build completed");
             Ok((
                 build,

@@ -6,7 +6,7 @@ use fastboop_core::DeviceProfile;
 use fastboop_erofs_rootfs::CacheStatsHandle;
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 use gibblox_core::BlockReader;
-use ui::SmooStatsHandle;
+use ui::{CacheStatsViewModel, SmooStatsHandle};
 
 #[derive(Clone)]
 pub struct ProbedDevice {
@@ -31,6 +31,7 @@ pub struct BootRuntime {
 pub enum SessionPhase {
     Booting {
         step: String,
+        cache_stats: Option<CacheStatsViewModel>,
     },
     Active {
         runtime: BootRuntime,

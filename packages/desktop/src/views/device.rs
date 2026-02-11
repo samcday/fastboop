@@ -64,14 +64,20 @@ pub fn DevicePage(session_id: String) -> Element {
     };
 
     match session.phase {
-        SessionPhase::Booting { step } => rsx! { BootingDevice { session_id, step } },
+        SessionPhase::Booting { step, cache_stats } => {
+            rsx! { BootingDevice { session_id, step, cache_stats } }
+        }
         SessionPhase::Active { .. } => rsx! { BootedDevice { session_id } },
         SessionPhase::Error { summary } => rsx! { BootError { summary } },
     }
 }
 
 #[component]
-fn BootingDevice(session_id: String, step: String) -> Element {
+fn BootingDevice(
+    session_id: String,
+    step: String,
+    cache_stats: Option<CacheStatsViewModel>,
+) -> Element {
     let sessions = use_context::<SessionStore>();
     let mut started = use_signal(|| false);
 
@@ -109,6 +115,9 @@ fn BootingDevice(session_id: String, step: String) -> Element {
                 p { class: "landing__eyebrow", "Booting" }
                 h1 { "Working on it..." }
                 p { class: "landing__lede", "{step}" }
+                if let Some(cache_stats) = cache_stats {
+                    CacheStatsPanel { stats: cache_stats }
+                }
             }
         }
     }
@@ -338,6 +347,7 @@ async fn boot_selected_device(
                 "Opening rootfs {} for {} ({:04x}:{:04x})",
                 ROOTFS_URL, session.device.name, session.device.vid, session.device.pid
             ),
+            cache_stats: None,
         },
     );
     update_session_phase(
@@ -345,6 +355,7 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Building stage0".to_string(),
+            cache_stats: None,
         },
     );
     let dtbo_overlays = if session.device.profile.id == "oneplus-fajita" {
@@ -362,15 +373,21 @@ async fn boot_selected_device(
         smoo_serial: None,
         personalization: Some(personalization_from_host()),
     };
-    let (build, runtime) = build_stage0_artifacts(session.device.profile.clone(), stage0_opts)
-        .await
-        .context("open rootfs and build stage0")?;
+    let (build, runtime) = build_stage0_artifacts(
+        session.device.profile.clone(),
+        stage0_opts,
+        *sessions,
+        session_id.to_string(),
+    )
+    .await
+    .context("open rootfs and build stage0")?;
 
     update_session_phase(
         sessions,
         session_id,
         SessionPhase::Booting {
             step: "Assembling android boot image".to_string(),
+            cache_stats: None,
         },
     );
     let cmdline = join_cmdline(
@@ -414,6 +431,7 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Opening fastboot transport".to_string(),
+            cache_stats: None,
         },
     );
     let mut fastboot = session
@@ -428,6 +446,7 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Downloading boot image".to_string(),
+            cache_stats: None,
         },
     );
     download(&mut fastboot, &bootimg)
@@ -439,6 +458,7 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Issuing fastboot boot".to_string(),
+            cache_stats: None,
         },
     );
     boot(&mut fastboot)
@@ -457,8 +477,11 @@ async fn boot_selected_device(
 async fn build_stage0_artifacts(
     profile: fastboop_core::DeviceProfile,
     stage0_opts: Stage0Options,
+    mut sessions: SessionStore,
+    session_id: String,
 ) -> Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
     let (tx, rx) = oneshot::channel();
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<CacheStatsViewModel>();
     std::thread::Builder::new()
         .name("fastboop-stage0-build".to_string())
         .spawn(move || {
@@ -470,6 +493,34 @@ async fn build_stage0_artifacts(
                 runtime.block_on(async move {
                     info!(profile = %profile.id, "opening rootfs for desktop boot");
                     let opened = open_erofs_rootfs(ROOTFS_URL).await?;
+                    let cache_stats_stop = Arc::new(AtomicBool::new(false));
+                    if let Some(cache_stats) = opened.cache_stats.clone() {
+                        let cache_stats_stop = cache_stats_stop.clone();
+                        let progress_tx = progress_tx.clone();
+                        tokio::spawn(async move {
+                            loop {
+                                if cache_stats_stop.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                match cache_stats.snapshot().await {
+                                    Ok(snapshot) => {
+                                        let _ = progress_tx.send(CacheStatsViewModel {
+                                            total_blocks: snapshot.total_blocks,
+                                            cached_blocks: snapshot.cached_blocks,
+                                            total_hits: snapshot.total_hits,
+                                            total_misses: snapshot.total_misses,
+                                        });
+                                    }
+                                    Err(err) => {
+                                        tracing::debug!(
+                                            "boot-stage cache stats poll failed: {err}"
+                                        );
+                                    }
+                                }
+                                tokio::time::sleep(CACHE_STATS_POLL_INTERVAL).await;
+                            }
+                        });
+                    }
                     info!(profile = %profile.id, "building stage0 payload");
                     let build = build_stage0(
                         &profile,
@@ -480,6 +531,7 @@ async fn build_stage0_artifacts(
                     )
                     .await
                     .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
+                    cache_stats_stop.store(true, Ordering::Relaxed);
                     Ok((
                         build,
                         BootRuntime {
@@ -496,8 +548,26 @@ async fn build_stage0_artifacts(
         })
         .context("spawn stage0 build worker thread")?;
 
-    rx.await
-        .map_err(|_| anyhow!("stage0 build worker thread exited unexpectedly"))?
+    let mut rx = rx;
+    loop {
+        tokio::select! {
+            maybe_stats = progress_rx.recv() => {
+                if let Some(cache_stats) = maybe_stats {
+                    update_session_phase(
+                        &mut sessions,
+                        &session_id,
+                        SessionPhase::Booting {
+                            step: "Building stage0".to_string(),
+                            cache_stats: Some(cache_stats),
+                        },
+                    );
+                }
+            }
+            result = &mut rx => {
+                return result.map_err(|_| anyhow!("stage0 build worker thread exited unexpectedly"))?;
+            }
+        }
+    }
 }
 
 fn run_rusb_host_daemon(

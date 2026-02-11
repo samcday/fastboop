@@ -176,6 +176,7 @@ pub fn Home() -> Element {
                 device,
                 phase: SessionPhase::Booting {
                     step: "Queued".to_string(),
+                    cache_stats: None,
                 },
             });
             navigator.push(Route::DevicePage { session_id });
