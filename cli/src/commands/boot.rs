@@ -1,6 +1,8 @@
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, Sender};
 use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{io::IsTerminal, thread};
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
@@ -12,11 +14,14 @@ use fastboop_core::fastboot::{boot, download};
 use fastboop_erofs_rootfs::open_erofs_rootfs;
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
+use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
 use crate::personalization::personalization_from_host;
 use crate::smoo_host::run_host_daemon;
+use crate::tui::{TuiOutcome, run_boot_tui};
 
 use super::{Stage0Args, format_probe_error, read_dtbo_overlays, read_existing_initrd};
 
@@ -45,9 +50,68 @@ pub struct BootArgs {
     /// Wait up to N seconds for a matching device (0 = infinite).
     #[arg(long, default_value_t = 0)]
     pub wait: u64,
+    /// Use plain line-oriented logs (disable TUI view).
+    #[arg(long, default_value_t = false)]
+    pub plain: bool,
 }
 
 pub fn run_boot(args: BootArgs) -> Result<()> {
+    let use_tui = !args.plain && std::io::stdout().is_terminal() && std::io::stderr().is_terminal();
+    let (tx, rx) = std::sync::mpsc::channel::<BootEvent>();
+    let shutdown = CancellationToken::new();
+
+    if use_tui {
+        crate::setup_tui_tracing(tx.clone());
+    } else {
+        crate::setup_default_tracing();
+    }
+
+    let worker_shutdown = shutdown.clone();
+    let worker = thread::spawn(move || run_boot_worker(args, tx, worker_shutdown));
+
+    if use_tui {
+        match run_boot_tui(&rx)? {
+            TuiOutcome::Completed => {}
+            TuiOutcome::Quit => {
+                shutdown.cancel();
+                eprintln!("Shutting down...");
+            }
+        }
+    } else {
+        run_plain_event_loop(&rx);
+    }
+
+    worker
+        .join()
+        .map_err(|_| anyhow::anyhow!("boot worker thread panicked"))?
+}
+
+fn run_boot_worker(args: BootArgs, events: Sender<BootEvent>, shutdown: CancellationToken) -> Result<()> {
+    emit(
+        &events,
+        BootEvent::Phase {
+            phase: BootPhase::Preparing,
+            detail: "loading profiles".to_string(),
+        },
+    );
+    let result = run_boot_inner(args, events.clone(), shutdown);
+    match &result {
+        Ok(()) => emit(&events, BootEvent::Finished),
+        Err(err) => {
+            emit(
+                &events,
+                BootEvent::Phase {
+                    phase: BootPhase::Failed,
+                    detail: err.to_string(),
+                },
+            );
+            emit(&events, BootEvent::Failed(err.to_string()));
+        }
+    }
+    result
+}
+
+fn run_boot_inner(args: BootArgs, events: Sender<BootEvent>, shutdown: CancellationToken) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
     let profiles = load_device_profiles(&devpro_dirs)?;
     let profile = profiles
@@ -67,11 +131,37 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
     })?;
 
     let mut detected_device = if args.output.is_none() {
+        emit(
+            &events,
+            BootEvent::Phase {
+                phase: BootPhase::WaitingForDevice,
+                detail: format!("profile={}", profile.id),
+            },
+        );
         let wait = Duration::from_secs(args.wait);
-        Some(wait_for_fastboot_device(profile, wait)?)
+        Some(wait_for_fastboot_device(profile, wait, &events)?)
     } else {
         None
     };
+
+    if let Some(device) = &detected_device {
+        emit(
+            &events,
+            BootEvent::Phase {
+                phase: BootPhase::DeviceDetected,
+                detail: format!(
+                    "{:04x}:{:04x} {}",
+                    device.vid,
+                    device.pid,
+                    device
+                        .serial
+                        .as_deref()
+                        .map(|s| format!("serial={s}"))
+                        .unwrap_or_else(|| "serial=unknown".to_string())
+                ),
+            },
+        );
+    }
 
     let dtb_override = match &args.stage0.dtb {
         Some(path) => {
@@ -117,14 +207,23 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         Some(extra_parts.join(" "))
     };
 
+    emit(
+        &events,
+        BootEvent::Phase {
+            phase: BootPhase::BuildingStage0,
+            detail: "building stage0 payload".to_string(),
+        },
+    );
+
     let rootfs_rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("create tokio runtime for rootfs reads")?;
-    let (_provider, block_reader, image_size_bytes, image_identity, build) =
-        rootfs_rt.block_on(async {
+    let (_provider, block_reader, image_size_bytes, image_identity, cache_stats, build) = rootfs_rt
+        .block_on(async {
             let opened = open_erofs_rootfs(&args.stage0.rootfs.to_string_lossy()).await?;
             let image_identity = opened.identity();
+            let cache_stats = opened.cache_stats;
             let build = build_stage0(
                 profile,
                 &opened.provider,
@@ -138,6 +237,7 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
                 opened.reader,
                 opened.size_bytes,
                 image_identity,
+                cache_stats,
                 build,
             ))
         })?;
@@ -185,10 +285,21 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
     )
     .map_err(|e| anyhow::anyhow!("bootimg build failed: {e}"))?;
 
+    emit(
+        &events,
+        BootEvent::Phase {
+            phase: BootPhase::BuildingBootImage,
+            detail: format!("boot image built ({} bytes)", bootimg.len()),
+        },
+    );
+
     if let Some(path) = args.output {
         std::fs::write(&path, &bootimg)
             .with_context(|| format!("writing bootimg to {}", path.display()))?;
-        eprintln!("Wrote boot image to {}", path.display());
+        emit(
+            &events,
+            BootEvent::Log(format!("Wrote boot image to {}", path.display())),
+        );
         return Ok(());
     }
 
@@ -196,19 +307,44 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         .take()
         .expect("fastboot device probed when no --output");
 
+    emit(
+        &events,
+        BootEvent::Phase {
+            phase: BootPhase::Downloading,
+            detail: format!("sending {} bytes", bootimg.len()),
+        },
+    );
+
     pollster::block_on(download(&mut fastboot.fastboot, &bootimg))
         .map_err(|e| anyhow::anyhow!("fastboot download failed: {e}"))?;
+
+    emit(
+        &events,
+        BootEvent::Phase {
+            phase: BootPhase::Booting,
+            detail: "issuing fastboot boot".to_string(),
+        },
+    );
+
     pollster::block_on(boot(&mut fastboot.fastboot))
         .map_err(|e| anyhow::anyhow!("fastboot boot failed: {e}"))?;
 
-    run_host_daemon(block_reader, image_size_bytes, image_identity)
-        .context("running smoo host daemon after boot")?;
+    run_host_daemon(
+        block_reader,
+        image_size_bytes,
+        image_identity,
+        cache_stats,
+        events,
+        shutdown,
+    )
+    .context("running smoo host daemon after boot")?;
     Ok(())
 }
 
 fn wait_for_fastboot_device(
     profile: &DeviceProfile,
     wait: Duration,
+    events: &Sender<BootEvent>,
 ) -> Result<DetectedFastbootDevice> {
     let filters = profile_filters(std::slice::from_ref(profile));
     let mut watcher = DeviceWatcher::new(&filters).context("starting USB hotplug watcher")?;
@@ -222,7 +358,7 @@ fn wait_for_fastboot_device(
     loop {
         match watcher.try_next_event() {
             Poll::Ready(Ok(DeviceEvent::Arrived { device })) => {
-                if let Some(fastboot) = probe_arrived_device(profile, device)? {
+                if let Some(fastboot) = probe_arrived_device(profile, device, events)? {
                     return Ok(fastboot);
                 }
             }
@@ -234,15 +370,21 @@ fn wait_for_fastboot_device(
                 if !waiting {
                     waiting = true;
                     if wait.is_zero() {
-                        eprintln!(
-                            "Waiting for fastboot device matching profile {}...",
-                            profile.id
+                        emit(
+                            events,
+                            BootEvent::Log(format!(
+                                "Waiting for fastboot device matching profile {}...",
+                                profile.id
+                            )),
                         );
                     } else {
-                        eprintln!(
-                            "Waiting up to {}s for fastboot device matching profile {}...",
-                            wait.as_secs(),
-                            profile.id
+                        emit(
+                            events,
+                            BootEvent::Log(format!(
+                                "Waiting up to {}s for fastboot device matching profile {}...",
+                                wait.as_secs(),
+                                profile.id
+                            )),
                         );
                     }
                 }
@@ -268,6 +410,7 @@ fn wait_for_fastboot_device(
 fn probe_arrived_device(
     profile: &DeviceProfile,
     device: RusbDeviceHandle,
+    events: &Sender<BootEvent>,
 ) -> Result<Option<DetectedFastbootDevice>> {
     let vid = device.vid();
     let pid = device.pid();
@@ -279,7 +422,10 @@ fn probe_arrived_device(
     let mut fastboot = match pollster::block_on(device.open_fastboot()) {
         Ok(fastboot) => fastboot,
         Err(err) => {
-            eprintln!("Skipping {vid:04x}:{pid:04x}: open failed: {err}");
+            emit(
+                events,
+                BootEvent::Log(format!("Skipping {vid:04x}:{pid:04x}: open failed: {err}")),
+            );
             return Ok(None);
         }
     };
@@ -306,6 +452,62 @@ fn probe_arrived_device(
     }
 
     Ok(None)
+}
+
+fn run_plain_event_loop(rx: &Receiver<BootEvent>) {
+    while let Ok(event) = rx.recv() {
+        print_plain_event(event);
+    }
+}
+
+fn print_plain_event(event: BootEvent) {
+    match event {
+        BootEvent::Phase { phase, detail } => {
+            eprintln!("[{}] phase={} {}", timestamp_hms(), phase.label(), detail);
+        }
+        BootEvent::Log(line) => {
+            eprintln!("[{}] {line}", timestamp_hms());
+        }
+        BootEvent::SmooStatus {
+            active,
+            export_count,
+            session_id,
+        } => {
+            let status = if active { "up" } else { "down" };
+            eprintln!(
+                "[{}] smoo status={} exports={} sid={}",
+                timestamp_hms(),
+                status,
+                export_count,
+                session_id
+            );
+        }
+        BootEvent::GibbloxStats {
+            hit_rate_pct,
+            fill_rate_pct,
+            cached_blocks,
+            total_blocks,
+        } => {
+            eprintln!(
+                "[{}] gibblox hit={}%% fill={}%% cache={}/{}",
+                timestamp_hms(),
+                hit_rate_pct,
+                fill_rate_pct,
+                cached_blocks,
+                total_blocks
+            );
+        }
+        BootEvent::Finished => {
+            eprintln!("[{}] boot flow finished", timestamp_hms());
+        }
+        BootEvent::Failed(message) => {
+            eprintln!("[{}] boot flow failed: {message}", timestamp_hms());
+        }
+    }
+}
+
+fn emit(events: &Sender<BootEvent>, event: BootEvent) {
+    let _ = events.send(event);
 }
 
 fn join_cmdline(left: Option<&str>, right: Option<&str>) -> String {

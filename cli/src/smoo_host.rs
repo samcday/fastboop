@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, ensure};
+use fastboop_erofs_rootfs::CacheStatsHandle;
 use gibblox_core::BlockReader;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{BlockSource, BlockSourceHandle, register_export};
@@ -10,40 +12,63 @@ use smoo_host_session::{HostSession, HostSessionConfig, HostSessionOutcome};
 use smoo_host_transport_rusb::RusbTransport;
 use tokio_util::sync::CancellationToken;
 
+use crate::boot_ui::{BootEvent, BootPhase};
+
 const SMOO_INTERFACE_CLASS: u8 = 0xFF;
 const SMOO_INTERFACE_SUBCLASS: u8 = 0x53;
 const SMOO_INTERFACE_PROTOCOL: u8 = 0x4D;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(1);
 const DISCOVERY_RETRY: Duration = Duration::from_millis(500);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
-const HEARTBEAT_MISS_BUDGET: u32 = 5;
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 
 pub(crate) fn run_host_daemon(
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,
     identity: String,
+    cache_stats: Option<CacheStatsHandle>,
+    events: Sender<BootEvent>,
+    shutdown: CancellationToken,
 ) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("create tokio runtime for smoo host")?;
-    runtime.block_on(run_host_daemon_async(reader, size_bytes, identity))
+    runtime.block_on(run_host_daemon_async(
+        reader,
+        size_bytes,
+        identity,
+        cache_stats,
+        events,
+        shutdown,
+    ))
 }
 
 async fn run_host_daemon_async(
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,
     identity: String,
+    cache_stats: Option<CacheStatsHandle>,
+    events: Sender<BootEvent>,
+    shutdown: CancellationToken,
 ) -> Result<()> {
-    let shutdown = CancellationToken::new();
     let shutdown_watch = shutdown.clone();
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
         shutdown_watch.cancel();
     });
 
-    eprintln!("Waiting for smoo gadget and starting host daemon...");
+    emit(
+        &events,
+        BootEvent::Phase {
+            phase: BootPhase::WaitingForSmoo,
+            detail: "waiting for smoo gadget".to_string(),
+        },
+    );
+    emit(
+        &events,
+        BootEvent::Log("Waiting for smoo gadget and starting host daemon...".to_string()),
+    );
     while !shutdown.is_cancelled() {
         let (transport, control) = match RusbTransport::open_matching(
             None,
@@ -60,20 +85,37 @@ async fn run_host_daemon_async(
                 if shutdown.is_cancelled() {
                     break;
                 }
-                eprintln!("smoo gadget not ready: {err}");
+                emit(
+                    &events,
+                    BootEvent::Log(format!("smoo gadget not ready: {err}")),
+                );
                 tokio::time::sleep(DISCOVERY_RETRY).await;
                 continue;
             }
         };
 
-        eprintln!("smoo gadget connected; serving export...");
+        emit(
+            &events,
+            BootEvent::Phase {
+                phase: BootPhase::Serving,
+                detail: "smoo gadget connected".to_string(),
+            },
+        );
+        emit(
+            &events,
+            BootEvent::Log("smoo gadget connected; serving export...".to_string()),
+        );
         let outcome = run_session(
             transport,
             control,
             reader.clone(),
             size_bytes,
             identity.clone(),
-            shutdown.clone(),
+            SessionRuntime {
+                shutdown: shutdown.clone(),
+                cache_stats: cache_stats.clone(),
+                events: events.clone(),
+            },
         )
         .await;
         match outcome {
@@ -82,13 +124,19 @@ async fn run_host_daemon_async(
                 if shutdown.is_cancelled() {
                     break;
                 }
-                eprintln!("smoo gadget disconnected; waiting to reconnect...");
+                emit(
+                    &events,
+                    BootEvent::Log("smoo gadget disconnected; waiting to reconnect...".to_string()),
+                );
             }
             Err(err) => {
                 if shutdown.is_cancelled() {
                     break;
                 }
-                eprintln!("smoo host session ended with error: {err}");
+                emit(
+                    &events,
+                    BootEvent::Log(format!("smoo host session ended with error: {err}")),
+                );
                 tokio::time::sleep(DISCOVERY_RETRY).await;
             }
         }
@@ -102,13 +150,20 @@ enum SessionEnd {
     TransportLost,
 }
 
+#[derive(Clone)]
+struct SessionRuntime {
+    shutdown: CancellationToken,
+    cache_stats: Option<CacheStatsHandle>,
+    events: Sender<BootEvent>,
+}
+
 async fn run_session(
     transport: RusbTransport,
     mut control: smoo_host_transport_rusb::RusbControl,
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,
     identity: String,
-    shutdown: CancellationToken,
+    runtime: SessionRuntime,
 ) -> Result<SessionEnd> {
     let source = GibbloxBlockSource::new(reader, identity.clone());
     let block_size = source.block_size();
@@ -141,11 +196,10 @@ async fn run_session(
         .start(transport, &mut control)
         .await
         .map_err(|err| anyhow!(err.to_string()))?;
-    let mut missed_heartbeats: u32 = 0;
 
     loop {
         tokio::select! {
-            _ = shutdown.cancelled() => {
+            _ = runtime.shutdown.cancelled() => {
                 task.stop();
                 let _ = task.await;
                 return Ok(SessionEnd::Shutdown);
@@ -154,33 +208,60 @@ async fn run_session(
                 return map_finish(finish);
             }
             _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
-                match tokio::time::timeout(HEARTBEAT_INTERVAL, task.heartbeat(&mut control)).await {
-                    Ok(Ok(_status)) => {
-                        if missed_heartbeats > 0 {
-                            eprintln!("smoo heartbeat recovered after {missed_heartbeats} missed ticks");
-                        }
-                        missed_heartbeats = 0;
-                    }
-                    Ok(Err(err)) => {
-                        missed_heartbeats = missed_heartbeats.saturating_add(1);
-                        eprintln!(
-                            "smoo heartbeat failed ({missed_heartbeats}/{HEARTBEAT_MISS_BUDGET}): {err}"
+                match task.heartbeat(&mut control).await {
+                    Ok(status) => {
+                        emit(
+                            &runtime.events,
+                            BootEvent::SmooStatus {
+                                active: status.export_active(),
+                                export_count: status.export_count,
+                                session_id: status.session_id,
+                            },
                         );
                     }
-                    Err(_) => {
-                        missed_heartbeats = missed_heartbeats.saturating_add(1);
-                        eprintln!(
-                            "smoo heartbeat timed out ({missed_heartbeats}/{HEARTBEAT_MISS_BUDGET})"
+                    Err(err) => {
+                        emit(
+                            &runtime.events,
+                            BootEvent::Log(format!("smoo heartbeat failed: {err}")),
                         );
+                        return Ok(SessionEnd::TransportLost);
                     }
                 }
-                if missed_heartbeats >= HEARTBEAT_MISS_BUDGET {
-                    eprintln!("smoo heartbeat budget exhausted; treating transport as lost");
+
+                if let Some(cache_stats) = &runtime.cache_stats {
+                    match cache_stats.snapshot().await {
+                        Ok(stats) => {
+                            let hit_rate_pct = stats.hit_rate().round().clamp(0.0, 100.0) as u64;
+                            let fill_rate_pct = stats.fill_rate().round().clamp(0.0, 100.0) as u64;
+                            emit(
+                                &runtime.events,
+                                BootEvent::GibbloxStats {
+                                    hit_rate_pct,
+                                    fill_rate_pct,
+                                    cached_blocks: stats.cached_blocks,
+                                    total_blocks: stats.total_blocks,
+                                },
+                            );
+                        }
+                        Err(err) => {
+                            emit(
+                                &runtime.events,
+                                BootEvent::Log(format!("gibblox cache stats failed: {err}")),
+                            );
+                        }
+                    }
+                }
+
+                if runtime.shutdown.is_cancelled() {
                     return Ok(SessionEnd::TransportLost);
                 }
             }
         }
     }
+}
+
+fn emit(events: &Sender<BootEvent>, event: BootEvent) {
+    let _ = events.send(event);
 }
 
 fn map_finish(
