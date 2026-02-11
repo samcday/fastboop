@@ -1,5 +1,30 @@
 # fastboop development tasks
 
+# Unified target-aware validation for developers, CI, and automation.
+check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo "==> rustfmt"
+    cargo fmt --all --check
+
+    echo "==> root workspace (host target)"
+    cargo check --workspace
+
+    echo "==> root wasm targets"
+    cargo check -p fastboop-fastboot-webusb --target wasm32-unknown-unknown
+    cargo check -p fastboop-web --target wasm32-unknown-unknown
+
+    echo "==> smoo workspace (host target, excluding wasm-only crates)"
+    cargo check --manifest-path smoo/Cargo.toml --workspace \
+        --exclude smoo-host-webusb
+
+    echo "==> smoo wasm-only crates"
+    cargo check --manifest-path smoo/Cargo.toml -p smoo-host-webusb --target wasm32-unknown-unknown
+
+    echo "==> gibblox workspace (host target)"
+    cargo check --manifest-path gibblox/Cargo.toml --workspace
+
 # Bump version across all packaging files
 bump version:
     #!/usr/bin/env bash

@@ -1926,15 +1926,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "smoo-host-blocksource-cached"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "futures-channel",
- "smoo-host-core",
-]
-
-[[package]]
 name = "smoo-host-blocksource-http"
 version = "0.0.1"
 dependencies = [
@@ -1966,19 +1957,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "smoo-host-cache-store-idb"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "js-sys",
- "smoo-host-blocksource-cached",
- "smoo-host-core",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "smoo-host-cli"
 version = "0.0.1"
 dependencies = [
@@ -1987,7 +1965,6 @@ dependencies = [
  "clap",
  "hyper 0.14.32",
  "metrics-exporter-prometheus",
- "smoo-host-blocksource-cached",
  "smoo-host-blocksource-http",
  "smoo-host-blocksources",
  "smoo-host-core",

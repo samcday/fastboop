@@ -11,7 +11,6 @@ async-trait = "0.1.89"
 clap = { version = "4.5.20", features = ["derive"] }
 hyper = { version = "0.14", features = ["server", "http1", "tcp"] }
 metrics-exporter-prometheus = { version = "0.13", default-features = false, features = ["http-listener"] }
-smoo-host-blocksource-cached = { path = "../../crates/smoo-host-blocksource-cached" }
 smoo-host-blocksource-http = { path = "../../crates/smoo-host-blocksource-http" }
 smoo-host-blocksources = { path = "../../crates/smoo-host-blocksources" }
 smoo-host-core = { path = "../../crates/smoo-host-core", features = ["metrics"] }

@@ -1,8 +1,10 @@
 //! WebUSB-backed smoo host transport.
 //!
 //! This crate provides a [`Transport`](smoo_host_core::transport::Transport) implementation
-//! suitable for use from WebAssembly targets where WebUSB is available. On non-wasm targets
-//! the types compile but always return `TransportErrorKind::Unsupported`.
+//! suitable for use from WebAssembly targets where WebUSB is available.
+
+#[cfg(not(target_arch = "wasm32"))]
+compile_error!("smoo-host-webusb is only available on wasm32 targets");
 
 /// Transport configuration for WebUSB.
 #[derive(Clone, Copy, Debug, Default)]
@@ -19,14 +21,6 @@ pub struct WebUsbTransportConfig {
     pub bulk_out: Option<u8>,
 }
 
-#[cfg(target_arch = "wasm32")]
 mod webusb;
 
-#[cfg(target_arch = "wasm32")]
 pub use webusb::{WebUsbControl, WebUsbTransport};
-
-#[cfg(not(target_arch = "wasm32"))]
-mod unsupported;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub use unsupported::{WebUsbControl, WebUsbTransport};

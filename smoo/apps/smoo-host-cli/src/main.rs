@@ -3,7 +3,6 @@ use clap::{ArgGroup, Parser};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
 use metrics_exporter_prometheus::PrometheusBuilder;
-use smoo_host_blocksource_cached::{CachedBlockSource, MemoryCacheStore};
 use smoo_host_blocksource_http::HttpBlockSource;
 use smoo_host_blocksources::device::DeviceBlockSource;
 use smoo_host_blocksources::file::FileBlockSource;
@@ -38,7 +37,7 @@ const RECONNECT_PAUSE: Duration = Duration::from_secs(1);
 )]
 #[command(
     group = ArgGroup::new("backing")
-        .args(["files", "devices", "http", "cached_http", "random"])
+        .args(["files", "devices", "http", "random"])
         .required(true)
 )]
 struct Args {
@@ -52,8 +51,6 @@ struct Args {
     devices: Vec<PathBuf>,
     #[arg(long = "http", value_name = "URL")]
     http: Vec<String>,
-    #[arg(long = "cached-http", value_name = "URL")]
-    cached_http: Vec<String>,
     #[arg(long = "random", value_name = "BLOCKS")]
     random: Vec<u64>,
     #[arg(long, default_value_t = 0)]
@@ -70,7 +67,6 @@ enum HostSource {
     File(FileBlockSource),
     Device(DeviceBlockSource),
     Http(HttpBlockSource),
-    CachedHttp(CachedBlockSource<HttpBlockSource, MemoryCacheStore>),
     Random(RandomBlockSource),
 }
 
@@ -81,7 +77,6 @@ impl BlockSource for HostSource {
             HostSource::File(inner) => inner.block_size(),
             HostSource::Device(inner) => inner.block_size(),
             HostSource::Http(inner) => inner.block_size(),
-            HostSource::CachedHttp(inner) => inner.block_size(),
             HostSource::Random(inner) => inner.block_size(),
         }
     }
@@ -91,7 +86,6 @@ impl BlockSource for HostSource {
             HostSource::File(inner) => inner.total_blocks().await,
             HostSource::Device(inner) => inner.total_blocks().await,
             HostSource::Http(inner) => inner.total_blocks().await,
-            HostSource::CachedHttp(inner) => inner.total_blocks().await,
             HostSource::Random(inner) => inner.total_blocks().await,
         }
     }
@@ -101,7 +95,6 @@ impl BlockSource for HostSource {
             HostSource::File(inner) => inner.read_blocks(lba, buf).await,
             HostSource::Device(inner) => inner.read_blocks(lba, buf).await,
             HostSource::Http(inner) => inner.read_blocks(lba, buf).await,
-            HostSource::CachedHttp(inner) => inner.read_blocks(lba, buf).await,
             HostSource::Random(inner) => inner.read_blocks(lba, buf).await,
         }
     }
@@ -111,7 +104,6 @@ impl BlockSource for HostSource {
             HostSource::File(inner) => inner.write_blocks(lba, buf).await,
             HostSource::Device(inner) => inner.write_blocks(lba, buf).await,
             HostSource::Http(inner) => inner.write_blocks(lba, buf).await,
-            HostSource::CachedHttp(inner) => inner.write_blocks(lba, buf).await,
             HostSource::Random(inner) => inner.write_blocks(lba, buf).await,
         }
     }
@@ -121,7 +113,6 @@ impl BlockSource for HostSource {
             HostSource::File(inner) => inner.flush().await,
             HostSource::Device(inner) => inner.flush().await,
             HostSource::Http(inner) => inner.flush().await,
-            HostSource::CachedHttp(inner) => inner.flush().await,
             HostSource::Random(inner) => inner.flush().await,
         }
     }
@@ -131,7 +122,6 @@ impl BlockSource for HostSource {
             HostSource::File(inner) => inner.discard(lba, num_blocks).await,
             HostSource::Device(inner) => inner.discard(lba, num_blocks).await,
             HostSource::Http(inner) => inner.discard(lba, num_blocks).await,
-            HostSource::CachedHttp(inner) => inner.discard(lba, num_blocks).await,
             HostSource::Random(inner) => inner.discard(lba, num_blocks).await,
         }
     }
@@ -143,7 +133,6 @@ impl smoo_host_core::ExportIdentity for HostSource {
             HostSource::File(inner) => ExportIdentity::write_export_id(inner, state),
             HostSource::Device(inner) => ExportIdentity::write_export_id(inner, state),
             HostSource::Http(inner) => ExportIdentity::write_export_id(inner, state),
-            HostSource::CachedHttp(inner) => ExportIdentity::write_export_id(inner, state),
             HostSource::Random(inner) => ExportIdentity::write_export_id(inner, state),
         }
     }
@@ -364,41 +353,6 @@ async fn open_sources(args: &Args) -> Result<BTreeMap<u32, BlockSourceHandle>> {
             &mut entries,
             shared,
             format!("http:{url}"),
-            block_size,
-            size_bytes,
-        )
-        .map_err(|err| anyhow!(err.to_string()))?;
-    }
-
-    for url_str in &args.cached_http {
-        let url = url::Url::parse(url_str)
-            .with_context(|| format!("parse cached-http backing URL {url_str}"))?;
-        ensure!(
-            url.scheme() == "http" || url.scheme() == "https",
-            "unsupported URL scheme {}",
-            url.scheme()
-        );
-        let source = HttpBlockSource::new(url.clone(), block_size)
-            .await
-            .context("init HTTP block source")?;
-        let size_bytes = source.size_bytes();
-        ensure!(
-            size_bytes % block_size as u64 == 0,
-            "HTTP backing size must align to block size"
-        );
-        let total_blocks = size_bytes / block_size as u64;
-        let cache = MemoryCacheStore::new(block_size, total_blocks)
-            .context("allocate HTTP cache backing")?;
-        let cached = CachedBlockSource::new(source, cache)
-            .await
-            .context("init cached HTTP block source")?;
-        let source_id = format!("cached-http:{url}");
-        let shared = BlockSourceHandle::new(HostSource::CachedHttp(cached), source_id);
-        register_export(
-            &mut sources,
-            &mut entries,
-            shared,
-            format!("cached-http:{url}"),
             block_size,
             size_bytes,
         )

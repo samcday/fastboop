@@ -10,7 +10,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 smoo-host-core = { path = "../../crates/smoo-host-core" }
-smoo-host-webusb = { path = "../../crates/smoo-host-webusb" }
 smoo-host-blocksource-http = { path = "../../crates/smoo-host-blocksource-http", default-features = false, features = ["wasm-client"] }
 wasm-bindgen = "0.2.95"
 wasm-bindgen-futures = "0.4.45"
@@ -45,6 +44,9 @@ tracing-subscriber = { version = "0.3.18", default-features = false, features = 
     "std",
 ] }
 futures-util = "0.3.31"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+smoo-host-webusb = { path = "../../crates/smoo-host-webusb" }
 
 [package.metadata.wasm-pack.profile.dev]
 wasm-opt = false
