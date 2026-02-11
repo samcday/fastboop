@@ -29,6 +29,7 @@ js-sys = { version = "0.3.82", optional = true }
 futures-util = { version = "0.3.31", default-features = false, features = ["std"], optional = true }
 web-sys = { version = "0.3.72", optional = true, features = [
     "Window",
+    "WorkerGlobalScope",
     "Request",
     "RequestInit",
     "RequestMode",

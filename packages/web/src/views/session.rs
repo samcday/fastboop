@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+#[cfg(target_arch = "wasm32")]
+use crate::gibblox_worker::GibbloxWorkerLease;
 use dioxus::prelude::{Signal, WritableExt};
 use fastboop_core::DeviceProfile;
 use fastboop_erofs_rootfs::CacheStatsHandle;
@@ -23,6 +25,8 @@ pub struct BootRuntime {
     pub reader: Arc<dyn BlockReader>,
     pub size_bytes: u64,
     pub identity: String,
+    #[cfg(target_arch = "wasm32")]
+    pub gibblox_worker: Option<GibbloxWorkerLease>,
     pub cache_stats: Option<CacheStatsHandle>,
     pub smoo_stats: SmooStatsHandle,
 }

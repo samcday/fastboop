@@ -2798,6 +2798,7 @@ dependencies = [
  "gibblox-core",
  "smoo-host-blocksource-gibblox",
  "smoo-host-core",
+ "smoo-host-session",
  "smoo-host-transport-rusb",
  "tokio",
  "tokio-util",
@@ -2903,11 +2904,14 @@ dependencies = [
  "fastboop-fastboot-webusb",
  "fastboop-stage0-generator",
  "futures-channel",
+ "futures-util",
+ "gibblox-blockreader-messageport",
  "gibblox-core",
  "gloo-timers",
  "js-sys",
  "smoo-host-blocksource-gibblox",
  "smoo-host-core",
+ "smoo-host-session",
  "smoo-host-webusb",
  "tracing",
  "tracing-subscriber",
@@ -3381,6 +3385,19 @@ dependencies = [
  "r-efi",
  "wasip2",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "gibblox-blockreader-messageport"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures-channel",
+ "gibblox-core",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

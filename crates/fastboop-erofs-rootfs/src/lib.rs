@@ -10,7 +10,7 @@ use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_opfs::OpfsCacheOps;
 #[cfg(not(target_arch = "wasm32"))]
 use gibblox_cache_store_std::StdCacheOps;
-use gibblox_core::{BlockReader, GibbloxErrorKind, ReadContext};
+use gibblox_core::{BlockReader, GibbloxErrorKind, ReadContext, block_identity_string};
 #[cfg(not(target_arch = "wasm32"))]
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
@@ -29,8 +29,13 @@ pub struct OpenedRootfs {
     pub provider: ErofsRootfs,
     pub reader: Arc<dyn BlockReader>,
     pub size_bytes: u64,
-    pub identity: String,
     pub cache_stats: Option<CacheStatsHandle>,
+}
+
+impl OpenedRootfs {
+    pub fn identity(&self) -> String {
+        block_identity_string(self.reader.as_ref())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -162,7 +167,6 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
         .await
         .map_err(|err| anyhow!("open HTTP EROFS image {url}: {err}"))?;
     let size_bytes = http_reader.size_bytes();
-    let identity = url.to_string();
 
     #[cfg(not(target_arch = "wasm32"))]
     let (reader, cache_stats): (Arc<dyn BlockReader>, Option<CacheStatsHandle>) = {
@@ -196,19 +200,7 @@ async fn open_http_erofs(rootfs_url: &str) -> Result<OpenedRootfs> {
         (reader, Some(cache_stats))
     };
 
-    let erofs_reader = Arc::new(
-        PagedLruBlockReader::new(reader.clone(), Default::default())
-            .await
-            .map_err(|err| anyhow!("initialize paged LRU for HTTP rootfs: {err}"))?,
-    );
-    let provider = ErofsRootfs::new(erofs_reader, size_bytes).await?;
-    Ok(OpenedRootfs {
-        provider,
-        reader,
-        size_bytes,
-        identity,
-        cache_stats,
-    })
+    open_erofs_rootfs_from_reader(reader, size_bytes, cache_stats).await
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -218,15 +210,26 @@ async fn open_local_erofs(image_path: &Path) -> Result<OpenedRootfs> {
     let file_reader = StdFileBlockReader::open(&canonical, DEFAULT_IMAGE_BLOCK_SIZE)
         .map_err(|err| anyhow!("open EROFS image {}: {err}", canonical.display()))?;
     let size_bytes = file_reader.size_bytes();
-    let identity = format!("file:{}", canonical.display());
     let reader: Arc<dyn BlockReader> = Arc::new(file_reader);
-    let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
+    open_erofs_rootfs_from_reader(reader, size_bytes, None).await
+}
+
+pub async fn open_erofs_rootfs_from_reader(
+    reader: Arc<dyn BlockReader>,
+    size_bytes: u64,
+    cache_stats: Option<CacheStatsHandle>,
+) -> Result<OpenedRootfs> {
+    let erofs_reader = Arc::new(
+        PagedLruBlockReader::new(reader.clone(), Default::default())
+            .await
+            .map_err(|err| anyhow!("initialize paged LRU for provided rootfs reader: {err}"))?,
+    );
+    let provider = ErofsRootfs::new(erofs_reader, size_bytes).await?;
     Ok(OpenedRootfs {
         provider,
         reader,
         size_bytes,
-        identity,
-        cache_stats: None,
+        cache_stats,
     })
 }
 
