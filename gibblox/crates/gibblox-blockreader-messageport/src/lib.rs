@@ -30,7 +30,7 @@ mod wasm {
     }
 
     pub struct MessagePortBlockReaderClient {
-        port: MessagePort,
+        port: Option<MessagePort>,
         pending: PendingMap,
         next_id: AtomicU32,
         block_size: u32,
@@ -84,7 +84,7 @@ mod wasm {
             port.start();
 
             let mut client = Self {
-                port,
+                port: Some(port),
                 pending,
                 next_id: AtomicU32::new(1),
                 block_size: 0,
@@ -106,6 +106,20 @@ mod wasm {
             Ok(client)
         }
 
+        pub fn into_port(mut self) -> MessagePort {
+            let port = self
+                .port
+                .take()
+                .expect("MessagePortBlockReaderClient port already moved");
+            port.set_onmessage(None);
+            port.set_onmessageerror(None);
+            reject_all_pending(
+                &self.pending,
+                GibbloxError::with_message(GibbloxErrorKind::Io, "MessagePort client transferred"),
+            );
+            port
+        }
+
         async fn request(&self, mut message: RpcMessage) -> GibbloxResult<SendJsValue> {
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             message.set_id(id)?;
@@ -122,13 +136,16 @@ mod wasm {
             }
 
             {
+                let port = self.port.as_ref().ok_or_else(|| {
+                    GibbloxError::with_message(GibbloxErrorKind::Io, "MessagePort client is closed")
+                })?;
                 let post_result = if let Some(transfer) = message.transfer() {
-                    self.port.post_message_with_transferable(
+                    port.post_message_with_transferable(
                         message.value().as_js_value(),
                         transfer.as_ref(),
                     )
                 } else {
-                    self.port.post_message(message.value().as_js_value())
+                    port.post_message(message.value().as_js_value())
                 };
                 if let Err(err) = post_result {
                     if let Ok(mut pending) = self.pending.lock() {
@@ -150,14 +167,17 @@ mod wasm {
 
     impl Drop for MessagePortBlockReaderClient {
         fn drop(&mut self) {
+            let Some(port) = self.port.as_ref() else {
+                return;
+            };
             if let Ok(mut close) = RpcMessage::new().and_then(|msg| msg.with_op("close")) {
                 if close.set_id(0).is_ok() {
-                    let _ = self.port.post_message(close.value().as_js_value());
+                    let _ = port.post_message(close.value().as_js_value());
                 }
             }
-            self.port.set_onmessage(None);
-            self.port.set_onmessageerror(None);
-            self.port.close();
+            port.set_onmessage(None);
+            port.set_onmessageerror(None);
+            port.close();
             reject_all_pending(
                 &self.pending,
                 GibbloxError::with_message(GibbloxErrorKind::Io, "MessagePort client dropped"),

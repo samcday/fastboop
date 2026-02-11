@@ -33,4 +33,5 @@ default = ["web"]
 web = ["dioxus/web"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+smoo-host-web-worker = { path = "../../smoo/crates/smoo-host-web-worker" }
 smoo-host-webusb = { path = "../../smoo/crates/smoo-host-webusb" }

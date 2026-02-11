@@ -45,6 +45,10 @@ impl FastbootWebUsb {
     pub fn new() -> Self {
         Self
     }
+
+    pub async fn shutdown(&mut self) -> Result<(), FastbootWebUsbError> {
+        Ok(())
+    }
 }
 
 impl Default for FastbootWebUsb {

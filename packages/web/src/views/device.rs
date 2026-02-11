@@ -1,6 +1,5 @@
 #[cfg(target_arch = "wasm32")]
-use anyhow::ensure;
-use anyhow::{anyhow, Context, Result};
+use anyhow::Context;
 use dioxus::prelude::*;
 use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
@@ -12,23 +11,13 @@ use fastboop_erofs_rootfs::open_erofs_rootfs;
 use fastboop_erofs_rootfs::open_erofs_rootfs_from_reader;
 use fastboop_stage0_generator::{build_stage0, Stage0Options};
 #[cfg(target_arch = "wasm32")]
-use futures_util::FutureExt;
+use futures_util::StreamExt;
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::sleep;
 #[cfg(target_arch = "wasm32")]
 use js_sys::{Array, Date, Reflect};
 #[cfg(target_arch = "wasm32")]
-use smoo_host_blocksource_gibblox::GibbloxBlockSource;
-#[cfg(target_arch = "wasm32")]
-use smoo_host_core::{
-    register_export, BlockSource, BlockSourceHandle, CountingTransport, TransportCounterSnapshot,
-};
-#[cfg(target_arch = "wasm32")]
-use smoo_host_session::{HostSession, HostSessionConfig, HostSessionOutcome};
-#[cfg(target_arch = "wasm32")]
-use smoo_host_webusb::{WebUsbTransport, WebUsbTransportConfig};
-#[cfg(target_arch = "wasm32")]
-use std::collections::BTreeMap;
+use smoo_host_web_worker::{HostWorker, HostWorkerConfig, HostWorkerEvent, HostWorkerState};
 #[cfg(target_arch = "wasm32")]
 use std::collections::VecDeque;
 use std::future::Future;
@@ -56,7 +45,9 @@ use web_sys::{
 use super::session::update_session_active_host_state;
 use super::session::{update_session_phase, BootRuntime, SessionPhase, SessionStore};
 #[cfg(target_arch = "wasm32")]
-use crate::gibblox_worker::start_gibblox_worker_rootfs;
+use crate::gibblox_worker::{
+    attach_gibblox_worker_blockreader_client, start_gibblox_worker_rootfs,
+};
 
 const ROOTFS_URL: &str = "https://bleeding.fastboop.win/sdm845-live-fedora/20260208.ero";
 const EXTRA_CMDLINE: &str =
@@ -239,7 +230,7 @@ fn BootedDevice(session_id: String) -> Element {
                     let device = _session.device.handle.device();
                     if let Err(err) = run_web_host_daemon(
                         device,
-                        runtime_for_host.reader,
+                        runtime_for_host.gibblox_worker,
                         runtime_for_host.size_bytes,
                         runtime_for_host.identity,
                         runtime_for_host.smoo_stats,
@@ -662,7 +653,7 @@ fn SerialLogPanel(device_vid: u16, device_pid: u16) -> Element {
             let access_denied_for_task = access_denied_hint;
             let serial = serial_api()
                 .or_else(|| navigator_serial().ok())
-                .ok_or_else(|| anyhow!("WebSerial API unavailable"));
+                .ok_or_else(|| anyhow::anyhow!("WebSerial API unavailable"));
             spawn_detached(async move {
                 let serial = match serial {
                     Ok(serial) => serial,
@@ -812,7 +803,7 @@ async fn request_serial_port(
     serial: &Serial,
     device_vid: u16,
     device_pid: u16,
-) -> Result<SerialPort> {
+) -> anyhow::Result<SerialPort> {
     let filters = Array::new();
     let filter = SerialPortFilter::new();
     filter.set_usb_vendor_id(device_vid);
@@ -823,12 +814,12 @@ async fn request_serial_port(
     options.set_filters(filters.as_ref());
     let value = JsFuture::from(serial.request_port_with_options(&options))
         .await
-        .map_err(|err| anyhow!("requestPort failed: {err:?}"))?;
+        .map_err(|err| anyhow::anyhow!("requestPort failed: {err:?}"))?;
     let port = value
         .dyn_into::<SerialPort>()
-        .map_err(|_| anyhow!("requestPort did not return SerialPort"))?;
+        .map_err(|_| anyhow::anyhow!("requestPort did not return SerialPort"))?;
     if !serial_port_matches_device(&port, device_vid, device_pid) {
-        return Err(anyhow!(
+        return Err(anyhow::anyhow!(
             "requestPort returned a serial device that did not match {:04x}:{:04x}",
             device_vid,
             device_pid
@@ -838,19 +829,19 @@ async fn request_serial_port(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn open_serial_port(port: &SerialPort) -> Result<()> {
+async fn open_serial_port(port: &SerialPort) -> anyhow::Result<()> {
     let options = SerialOptions::new(115_200);
     JsFuture::from(port.open(&options))
         .await
-        .map_err(|err| anyhow!("open() failed: {err:?}"))?;
+        .map_err(|err| anyhow::anyhow!("open() failed: {err:?}"))?;
     Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn close_serial_port(port: &SerialPort) -> Result<()> {
+async fn close_serial_port(port: &SerialPort) -> anyhow::Result<()> {
     JsFuture::from(port.close())
         .await
-        .map_err(|err| anyhow!("close() failed: {err:?}"))?;
+        .map_err(|err| anyhow::anyhow!("close() failed: {err:?}"))?;
     Ok(())
 }
 
@@ -859,9 +850,9 @@ async fn stream_serial_port(
     port: &SerialPort,
     stop: Rc<Cell<bool>>,
     logs: &mut Signal<SerialLogBuffer>,
-) -> Result<()> {
+) -> anyhow::Result<()> {
     let reader = ReadableStreamDefaultReader::new(&port.readable())
-        .map_err(|err| anyhow!("failed to create stream reader: {err:?}"))?;
+        .map_err(|err| anyhow::anyhow!("failed to create stream reader: {err:?}"))?;
     loop {
         if stop.get() {
             break;
@@ -869,7 +860,7 @@ async fn stream_serial_port(
 
         let value = JsFuture::from(reader.read())
             .await
-            .map_err(|err| anyhow!("reader.read() failed: {err:?}"))?;
+            .map_err(|err| anyhow::anyhow!("reader.read() failed: {err:?}"))?;
         let done = Reflect::get(value.as_ref(), &JsValue::from_str("done"))
             .ok()
             .and_then(|v| v.as_bool())
@@ -879,7 +870,7 @@ async fn stream_serial_port(
         }
 
         let chunk = Reflect::get(value.as_ref(), &JsValue::from_str("value"))
-            .map_err(|err| anyhow!("reader result missing value: {err:?}"))?;
+            .map_err(|err| anyhow::anyhow!("reader result missing value: {err:?}"))?;
         if chunk.is_null() || chunk.is_undefined() {
             continue;
         }
@@ -979,10 +970,10 @@ async fn matching_authorized_port(
     serial: &Serial,
     device_vid: u16,
     device_pid: u16,
-) -> Result<Option<SerialPort>> {
+) -> anyhow::Result<Option<SerialPort>> {
     let values = JsFuture::from(serial.get_ports())
         .await
-        .map_err(|err| anyhow!("navigator.serial.getPorts failed: {err:?}"))?;
+        .map_err(|err| anyhow::anyhow!("navigator.serial.getPorts failed: {err:?}"))?;
     let ports = Array::from(&values);
     for value in ports.iter() {
         let Ok(port) = value.dyn_into::<SerialPort>() else {
@@ -996,12 +987,12 @@ async fn matching_authorized_port(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn navigator_serial() -> Result<Serial> {
-    let window = web_sys::window().ok_or_else(|| anyhow!("window unavailable"))?;
+fn navigator_serial() -> anyhow::Result<Serial> {
+    let window = web_sys::window().ok_or_else(|| anyhow::anyhow!("window unavailable"))?;
     Reflect::get(window.navigator().as_ref(), &JsValue::from_str("serial"))
-        .map_err(|err| anyhow!("navigator.serial unavailable: {err:?}"))?
+        .map_err(|err| anyhow::anyhow!("navigator.serial unavailable: {err:?}"))?
         .dyn_into::<Serial>()
-        .map_err(|_| anyhow!("navigator.serial has unexpected type"))
+        .map_err(|_| anyhow::anyhow!("navigator.serial has unexpected type"))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1017,13 +1008,13 @@ fn spawn_detached(fut: impl Future<Output = ()> + 'static) {
 async fn boot_selected_device(
     sessions: &mut SessionStore,
     session_id: &str,
-) -> Result<BootRuntime> {
+) -> anyhow::Result<BootRuntime> {
     let session = sessions
         .read()
         .iter()
         .find(|s| s.id == session_id)
         .cloned()
-        .ok_or_else(|| anyhow!("session not found"))?;
+        .ok_or_else(|| anyhow::anyhow!("session not found"))?;
 
     update_session_phase(
         sessions,
@@ -1114,7 +1105,7 @@ async fn boot_selected_device(
         Some(&build.dtb),
         &cmdline,
     )
-    .map_err(|err| anyhow!("bootimg build failed: {err}"))?;
+    .map_err(|err| anyhow::anyhow!("bootimg build failed: {err}"))?;
 
     update_session_phase(
         sessions,
@@ -1129,7 +1120,7 @@ async fn boot_selected_device(
         .handle
         .open_fastboot()
         .await
-        .map_err(|err| anyhow!("open fastboot failed: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("open fastboot failed: {err}"))?;
 
     update_session_phase(
         sessions,
@@ -1141,7 +1132,7 @@ async fn boot_selected_device(
     );
     download(&mut fastboot, &bootimg)
         .await
-        .map_err(|err| anyhow!("fastboot download failed: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("fastboot download failed: {err}"))?;
 
     update_session_phase(
         sessions,
@@ -1153,10 +1144,10 @@ async fn boot_selected_device(
     );
     boot(&mut fastboot)
         .await
-        .map_err(|err| anyhow!("fastboot boot failed: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("fastboot boot failed: {err}"))?;
+    let _ = fastboot.shutdown().await;
 
     Ok(BootRuntime {
-        reader: runtime.reader,
         size_bytes: runtime.size_bytes,
         identity: runtime.identity,
         #[cfg(target_arch = "wasm32")]
@@ -1171,7 +1162,7 @@ async fn build_stage0_artifacts(
     stage0_opts: Stage0Options,
     sessions: SessionStore,
     session_id: String,
-) -> Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
+) -> anyhow::Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
     use futures_channel::oneshot;
 
     tracing::info!("build_stage0_artifacts: creating channel");
@@ -1183,7 +1174,7 @@ async fn build_stage0_artifacts(
     tracing::info!("build_stage0_artifacts: spawning task");
     wasm_bindgen_futures::spawn_local(async move {
         tracing::info!("build_stage0_artifacts: task started");
-        let result: Result<_> = async {
+        let result: anyhow::Result<_> = async {
             tracing::info!(profile = %profile.id, "opening rootfs for web boot");
             #[cfg(target_arch = "wasm32")]
             let (opened, gibblox_worker, rootfs_identity) = {
@@ -1255,7 +1246,7 @@ async fn build_stage0_artifacts(
                 None,
             )
             .await
-            .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
+            .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?;
             #[cfg(target_arch = "wasm32")]
             cache_stats_stop.set(true);
             #[cfg(not(target_arch = "wasm32"))]
@@ -1266,7 +1257,6 @@ async fn build_stage0_artifacts(
             Ok((
                 build,
                 BootRuntime {
-                    reader: opened.reader,
                     size_bytes: opened.size_bytes,
                     identity: rootfs_identity,
                     #[cfg(target_arch = "wasm32")]
@@ -1284,7 +1274,7 @@ async fn build_stage0_artifacts(
     tracing::info!("build_stage0_artifacts: awaiting result");
     let result = rx
         .await
-        .map_err(|_| anyhow!("stage0 build task was cancelled"))?;
+        .map_err(|_| anyhow::anyhow!("stage0 build task was cancelled"))?;
     tracing::info!("build_stage0_artifacts: got result");
     result
 }
@@ -1292,234 +1282,122 @@ async fn build_stage0_artifacts(
 #[cfg(target_arch = "wasm32")]
 async fn run_web_host_daemon(
     initial_device: web_sys::UsbDevice,
-    reader: std::sync::Arc<dyn gibblox_core::BlockReader>,
+    gibblox_worker: Option<crate::gibblox_worker::GibbloxWorkerLease>,
     size_bytes: u64,
     identity: String,
     smoo_stats: SmooStatsHandle,
     mut sessions: SessionStore,
     session_id: String,
-) -> Result<()> {
+) -> anyhow::Result<()> {
+    let host_bridge = attach_gibblox_worker_blockreader_client(
+        gibblox_worker
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing gibblox worker lease"))?,
+    )
+    .await
+    .context("attach gibblox bridge for smoo host worker")?;
+    if host_bridge.size_bytes != size_bytes {
+        warn!(
+            expected = size_bytes,
+            actual = host_bridge.size_bytes,
+            "gibblox host bridge size differs from boot-time size"
+        );
+    }
+    if host_bridge.identity != identity {
+        warn!(
+            expected = %identity,
+            actual = %host_bridge.identity,
+            "gibblox host bridge identity differs from boot-time identity"
+        );
+    }
+
+    let host = HostWorker::spawn(
+        host_bridge.reader,
+        HostWorkerConfig {
+            status_retry_attempts: STATUS_RETRY_ATTEMPTS,
+            heartbeat_interval_ms: HEARTBEAT_INTERVAL.as_millis() as u32,
+            size_bytes,
+            identity,
+            ..HostWorkerConfig::default()
+        },
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("spawn host worker failed: {err}"))?;
+    let mut events = host
+        .take_event_receiver()
+        .ok_or_else(|| anyhow::anyhow!("host worker events receiver unavailable"))?;
+
     update_session_active_host_state(&mut sessions, &session_id, Some(true), Some(false));
     loop {
-        let transport = match open_webusb_transport(&initial_device).await {
-            Ok(pair) => pair,
-            Err(err) => {
-                warn!(%err, "waiting for smoo webusb gadget");
+        if host.state() == HostWorkerState::Idle {
+            if let Err(err) = host.start(initial_device.clone()).await {
+                warn!(%err, "starting host worker session failed");
                 sleep(STATUS_RETRY_INTERVAL).await;
                 continue;
             }
+        }
+
+        let Some(event) = events.next().await else {
+            return Err(anyhow::anyhow!("host worker event stream closed"));
         };
-        update_session_active_host_state(&mut sessions, &session_id, Some(true), Some(true));
 
-        match run_web_session(
-            transport,
-            reader.clone(),
-            size_bytes,
-            identity.clone(),
-            smoo_stats.clone(),
-        )
-        .await
-        {
-            Ok(SessionEnd::TransportLost) => {
-                warn!("smoo web transport lost; waiting to reconnect");
+        match event {
+            HostWorkerEvent::Starting => {
+                update_session_active_host_state(
+                    &mut sessions,
+                    &session_id,
+                    Some(true),
+                    Some(false),
+                );
             }
-            Err(err) => {
-                warn!(%err, "smoo web session ended");
+            HostWorkerEvent::TransportConnected | HostWorkerEvent::Configured => {
+                update_session_active_host_state(
+                    &mut sessions,
+                    &session_id,
+                    Some(true),
+                    Some(true),
+                );
+                smoo_stats.set_connected(true);
             }
-        }
-        update_session_active_host_state(&mut sessions, &session_id, Some(true), Some(false));
-        sleep(STATUS_RETRY_INTERVAL).await;
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-enum SessionEnd {
-    TransportLost,
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn run_web_session(
-    transport: WebUsbTransport,
-    reader: std::sync::Arc<dyn gibblox_core::BlockReader>,
-    size_bytes: u64,
-    identity: String,
-    smoo_stats: SmooStatsHandle,
-) -> Result<SessionEnd> {
-    let transport = CountingTransport::new(transport);
-    let counters = transport.counters();
-    let mut control = transport.clone();
-    let source = GibbloxBlockSource::new(reader, identity.clone());
-    let block_size = source.block_size();
-    ensure!(block_size > 0, "block size must be non-zero");
-    ensure!(
-        size_bytes.is_multiple_of(block_size as u64),
-        "image size must align to export block size"
-    );
-
-    let source_handle = BlockSourceHandle::new(source, identity.clone());
-    let mut sources = BTreeMap::new();
-    let mut entries = Vec::new();
-    register_export(
-        &mut sources,
-        &mut entries,
-        source_handle,
-        identity,
-        block_size,
-        size_bytes,
-    )
-    .map_err(|err| anyhow!(err.to_string()))?;
-    let session = HostSession::new(
-        sources,
-        HostSessionConfig {
-            status_retry_attempts: STATUS_RETRY_ATTEMPTS,
-        },
-    )
-    .map_err(|err| anyhow!(err.to_string()))?;
-    let mut task = session
-        .start(transport, &mut control)
-        .await
-        .map_err(|err| anyhow!(err.to_string()))?;
-    smoo_stats.set_connected(true);
-    let mut counter_snapshot = counters.snapshot();
-
-    loop {
-        if let Some(finish) = (&mut task).now_or_never() {
-            update_smoo_stats_from_transport(
-                &smoo_stats,
-                &mut counter_snapshot,
-                counters.snapshot(),
-            );
-            smoo_stats.set_connected(false);
-            return match finish.outcome {
-                Ok(HostSessionOutcome::Stopped) => Ok(SessionEnd::TransportLost),
-                Ok(HostSessionOutcome::TransportLost) => Ok(SessionEnd::TransportLost),
-                Ok(HostSessionOutcome::SessionChanged { previous, current }) => {
-                    warn!(
-                        previous = format!("0x{previous:016x}"),
-                        current = format!("0x{current:016x}"),
-                        "web smoo session changed; reconnecting"
-                    );
-                    Ok(SessionEnd::TransportLost)
-                }
-                Err(err) => Err(anyhow!(err.to_string())),
-            };
-        }
-
-        sleep(HEARTBEAT_INTERVAL).await;
-        if let Err(err) = task.heartbeat(&mut control).await {
-            warn!(%err, "web smoo heartbeat transfer failed");
-            update_smoo_stats_from_transport(
-                &smoo_stats,
-                &mut counter_snapshot,
-                counters.snapshot(),
-            );
-            smoo_stats.set_connected(false);
-            return Ok(SessionEnd::TransportLost);
-        }
-
-        update_smoo_stats_from_transport(&smoo_stats, &mut counter_snapshot, counters.snapshot());
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn open_webusb_transport(initial_device: &web_sys::UsbDevice) -> Result<WebUsbTransport> {
-    if let Ok(pair) = try_open_transport_for_device(initial_device).await {
-        return Ok(pair);
-    }
-
-    let devices = authorized_usb_devices().await?;
-    let mut errors = Vec::new();
-    for device in devices {
-        match try_open_transport_for_device(&device).await {
-            Ok(pair) => return Ok(pair),
-            Err(err) => {
-                let serial = Reflect::get(device.as_ref(), &JsValue::from_str("serialNumber"))
-                    .ok()
-                    .and_then(|v| v.as_string())
-                    .unwrap_or_else(|| "<none>".to_string());
-                errors.push(format!(
-                    "{:04x}:{:04x} serial={serial}: {err}",
-                    device.vendor_id(),
-                    device.product_id()
-                ));
+            HostWorkerEvent::SessionChanged { previous, current } => {
+                warn!(
+                    previous = format!("0x{previous:016x}"),
+                    current = format!("0x{current:016x}"),
+                    "web smoo session changed; waiting to restart"
+                );
+                update_session_active_host_state(
+                    &mut sessions,
+                    &session_id,
+                    Some(true),
+                    Some(false),
+                );
+                smoo_stats.set_connected(false);
+            }
+            HostWorkerEvent::TransportLost => {
+                warn!("smoo web transport lost; waiting to restart");
+                update_session_active_host_state(
+                    &mut sessions,
+                    &session_id,
+                    Some(true),
+                    Some(false),
+                );
+                smoo_stats.set_connected(false);
+            }
+            HostWorkerEvent::Error { message } => {
+                warn!(error = %message, "host worker event");
+            }
+            HostWorkerEvent::Stopped => {
+                update_session_active_host_state(
+                    &mut sessions,
+                    &session_id,
+                    Some(true),
+                    Some(false),
+                );
+                smoo_stats.set_connected(false);
+                sleep(STATUS_RETRY_INTERVAL).await;
             }
         }
     }
-    if errors.is_empty() {
-        Err(anyhow!("no authorized smoo webusb gadget found"))
-    } else {
-        Err(anyhow!(
-            "no authorized smoo webusb gadget found; candidates: {}",
-            errors.join(" | ")
-        ))
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn try_open_transport_for_device(device: &web_sys::UsbDevice) -> Result<WebUsbTransport> {
-    let mut last_err = None;
-    for interface in 0..=7u8 {
-        let config = WebUsbTransportConfig {
-            interface,
-            interrupt_in: None,
-            interrupt_out: None,
-            bulk_in: None,
-            bulk_out: None,
-        };
-        match WebUsbTransport::new(device.clone(), config).await {
-            Ok(transport) => {
-                debug!(interface, "connected to smoo webusb transport");
-                return Ok(transport);
-            }
-            Err(err) => {
-                last_err = Some(format!("iface {interface}: {err}"));
-                continue;
-            }
-        }
-    }
-    let detail = last_err.unwrap_or_else(|| "no interface probe attempts".to_string());
-    Err(anyhow!("device is not a compatible smoo gadget ({detail})"))
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn authorized_usb_devices() -> Result<Vec<web_sys::UsbDevice>> {
-    let window = web_sys::window().ok_or_else(|| anyhow!("window unavailable"))?;
-    let navigator = window.navigator();
-    let usb_value = Reflect::get(navigator.as_ref(), &JsValue::from_str("usb"))
-        .map_err(|err| anyhow!("navigator.usb unavailable: {err:?}"))?;
-    let usb: web_sys::Usb = usb_value
-        .dyn_into()
-        .map_err(|_| anyhow!("navigator.usb has unexpected type"))?;
-    let values = JsFuture::from(usb.get_devices())
-        .await
-        .map_err(|err| anyhow!("navigator.usb.getDevices failed: {err:?}"))?;
-    let array = Array::from(&values);
-    let mut out = Vec::new();
-    for value in array.iter() {
-        if let Ok(device) = value.dyn_into::<web_sys::UsbDevice>() {
-            out.push(device);
-        }
-    }
-    debug!(count = out.len(), "authorized webusb devices enumerated");
-    Ok(out)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn update_smoo_stats_from_transport(
-    smoo_stats: &SmooStatsHandle,
-    previous: &mut TransportCounterSnapshot,
-    current: TransportCounterSnapshot,
-) {
-    let bytes_up_delta = current.bytes_up.saturating_sub(previous.bytes_up);
-    let bytes_down_delta = current.bytes_down.saturating_sub(previous.bytes_down);
-    let ios_up_delta = current.ios_up.saturating_sub(previous.ios_up);
-    let ios_down_delta = current.ios_down.saturating_sub(previous.ios_down);
-    smoo_stats.add_deltas(
-        ios_up_delta.saturating_add(ios_down_delta),
-        bytes_up_delta,
-        bytes_down_delta,
-    );
-    *previous = current;
 }
 
 fn join_cmdline(left: Option<&str>, right: Option<&str>) -> String {

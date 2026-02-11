@@ -1,5 +1,4 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 #[cfg(target_arch = "wasm32")]
 use crate::gibblox_worker::GibbloxWorkerLease;
@@ -7,7 +6,6 @@ use dioxus::prelude::{Signal, WritableExt};
 use fastboop_core::DeviceProfile;
 use fastboop_erofs_rootfs::CacheStatsHandle;
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
-use gibblox_core::BlockReader;
 use ui::{CacheStatsViewModel, SmooStatsHandle};
 
 #[derive(Clone)]
@@ -22,7 +20,6 @@ pub struct ProbedDevice {
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct BootRuntime {
-    pub reader: Arc<dyn BlockReader>,
     pub size_bytes: u64,
     pub identity: String,
     #[cfg(target_arch = "wasm32")]

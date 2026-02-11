@@ -2912,6 +2912,7 @@ dependencies = [
  "smoo-host-blocksource-gibblox",
  "smoo-host-core",
  "smoo-host-session",
+ "smoo-host-web-worker",
  "smoo-host-webusb",
  "tracing",
  "tracing-subscriber",
@@ -7674,6 +7675,26 @@ dependencies = [
  "smoo-host-core",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "smoo-host-web-worker"
+version = "0.0.1"
+dependencies = [
+ "futures-channel",
+ "futures-util",
+ "gibblox-blockreader-messageport",
+ "gibblox-core",
+ "gloo-timers",
+ "js-sys",
+ "smoo-host-blocksource-gibblox",
+ "smoo-host-core",
+ "smoo-host-session",
+ "smoo-host-webusb",
+ "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

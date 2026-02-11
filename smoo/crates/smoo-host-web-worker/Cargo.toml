@@ -1,0 +1,41 @@
+[package]
+name = "smoo-host-web-worker"
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+license = "GPL-3.0-only"
+
+[dependencies]
+futures-channel = "0.3.31"
+futures-util = { version = "0.3.31", default-features = false, features = ["alloc", "async-await", "async-await-macro"] }
+gloo-timers = { version = "0.3.0", features = ["futures"] }
+gibblox-blockreader-messageport = { path = "../../../gibblox/crates/gibblox-blockreader-messageport" }
+gibblox-core = { path = "../../../gibblox/crates/gibblox-core" }
+smoo-host-blocksource-gibblox = { path = "../../../crates/smoo-host-blocksource-gibblox" }
+smoo-host-core = { path = "../smoo-host-core" }
+smoo-host-session = { path = "../smoo-host-session" }
+smoo-host-webusb = { path = "../smoo-host-webusb" }
+tracing = "0.1.41"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.82"
+wasm-bindgen = "0.2.95"
+wasm-bindgen-futures = "0.4.45"
+web-sys = { version = "0.3.82", features = [
+    "DedicatedWorkerGlobalScope",
+    "Document",
+    "Event",
+    "HtmlCollection",
+    "HtmlScriptElement",
+    "MessageChannel",
+    "MessageEvent",
+    "MessagePort",
+    "Navigator",
+    "Usb",
+    "UsbDevice",
+    "Window",
+    "Worker",
+    "WorkerNavigator",
+    "WorkerOptions",
+    "WorkerType",
+] }

@@ -210,6 +210,23 @@ impl FastbootWebUsb {
         );
         Ok(Response { status, payload })
     }
+
+    pub async fn shutdown(&mut self) -> Result<(), FastbootWebUsbError> {
+        if self.claimed.get() {
+            if let Err(err) = JsFuture::from(self.device.release_interface(self.interface)).await {
+                debug!(?err, "fastboot release_interface failed during shutdown");
+            }
+            self.claimed.set(false);
+        }
+
+        if self.device.opened() {
+            if let Err(err) = JsFuture::from(self.device.close()).await {
+                debug!(?err, "fastboot close failed during shutdown");
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl WebUsbDeviceHandle {
@@ -294,11 +311,7 @@ impl FastbootWire for FastbootWebUsb {
 
 impl Drop for FastbootWebUsb {
     fn drop(&mut self) {
-        if self.claimed.get() {
-            let _ = self.device.release_interface(self.interface);
-            self.claimed.set(false);
-        }
-        let _ = self.device.close();
+        self.claimed.set(false);
     }
 }
 

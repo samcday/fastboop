@@ -24,6 +24,11 @@ fn main() {
     init_tracing();
 
     #[cfg(target_arch = "wasm32")]
+    if smoo_host_web_worker::run_if_worker() {
+        return;
+    }
+
+    #[cfg(target_arch = "wasm32")]
     if gibblox_worker::run_if_worker() {
         return;
     }
