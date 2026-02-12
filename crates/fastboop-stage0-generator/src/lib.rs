@@ -25,6 +25,42 @@ const BASE_REQUIRED_MODULES: &[&str] = &[
 ];
 const MODULE_INDEX_FILES: &[&str] = &["modules.dep", "modules.builtin", "modules.order"];
 
+/// Try to read a file from any of the provided rootfs providers (first match wins).
+async fn read_from_any<P: RootfsProvider>(
+    providers: &[&P],
+    path: &str,
+) -> Result<Vec<u8>, Stage0Error> {
+    for provider in providers {
+        if let Ok(data) = (*provider).read_all(path).await {
+            return Ok(data);
+        }
+    }
+    Err(Stage0Error::MissingFile(path.to_string()))
+}
+
+/// Check if a file exists in any provider.
+async fn exists_in_any<P: RootfsProvider>(providers: &[&P], path: &str) -> bool {
+    for provider in providers {
+        if (*provider).exists(path).await.unwrap_or(false) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Try to read a directory from any provider.
+async fn read_dir_from_any<P: RootfsProvider>(
+    providers: &[&P],
+    path: &str,
+) -> Result<Vec<String>, Stage0Error> {
+    for provider in providers {
+        if let Ok(entries) = (*provider).read_dir(path).await {
+            return Ok(entries);
+        }
+    }
+    Err(Stage0Error::MissingFile(path.to_string()))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage0Error {
     MissingFile(String),
@@ -72,20 +108,20 @@ struct ModulesDir {
 }
 
 /// Build a minimal stage0 initrd containing fastboop stage0 as PID1 plus modules.
+/// 
+/// Accepts multiple RootfsProviders - will try each in order (first-match wins) when
+/// searching for kernel, DTB, modules, etc.
 pub async fn build_stage0<P: RootfsProvider>(
     profile: &DeviceProfile,
-    rootfs: &P,
+    rootfs_providers: &[&P],
     opts: &Stage0Options,
     extra_cmdline: Option<&str>,
     existing_cpio: Option<&[u8]>,
 ) -> Result<Stage0Build, Stage0Error> {
-    tracing::debug!("build_stage0: detecting kernel");
-    let kernel_path = detect_kernel(rootfs).await?;
+    tracing::debug!("build_stage0: detecting kernel from {} provider(s)", rootfs_providers.len());
+    let kernel_path = detect_kernel_from_any(rootfs_providers).await?;
     tracing::debug!(kernel_path = %kernel_path, "build_stage0: kernel detected");
-    let kernel_image = rootfs
-        .read_all(&kernel_path)
-        .await
-        .map_err(|_| Stage0Error::MissingFile(kernel_path.clone()))?;
+    let kernel_image = read_from_any(rootfs_providers, &kernel_path).await?;
 
     let init_path = INIT_BIN_PATH.to_string();
 
@@ -95,8 +131,8 @@ pub async fn build_stage0<P: RootfsProvider>(
     let mut modules_builtin = BTreeSet::new();
     let needs_modules = !opts.extra_modules.is_empty() || !profile.stage0.kernel_modules.is_empty();
     if needs_modules {
-        let dir = detect_modules_dir(rootfs).await?;
-        let (dep, paths, builtin) = load_modules_metadata(rootfs, &dir).await?;
+        let dir = detect_modules_dir_from_any(rootfs_providers).await?;
+        let (dep, paths, builtin) = load_modules_metadata_from_any(rootfs_providers, &dir).await?;
         modules_dir = Some(dir);
         modules_dep = dep;
         module_paths = paths;
@@ -106,11 +142,8 @@ pub async fn build_stage0<P: RootfsProvider>(
     let dtb_bytes = if let Some(override_bytes) = &opts.dtb_override {
         override_bytes.clone()
     } else {
-        let dtb_path = select_dtb(profile, rootfs).await?;
-        rootfs
-            .read_all(&dtb_path)
-            .await
-            .map_err(|_| Stage0Error::MissingFile(dtb_path.clone()))?
+        let dtb_path = select_dtb_from_any(profile, rootfs_providers).await?;
+        read_from_any(rootfs_providers, &dtb_path).await?
     };
 
     let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
@@ -140,17 +173,14 @@ pub async fn build_stage0<P: RootfsProvider>(
     if !required_modules.is_empty() {
         let modules_dir = modules_dir
             .ok_or_else(|| Stage0Error::MissingFile("/lib/modules (modules directory)".into()))?;
-        copy_module_indexes(rootfs, &modules_dir, &mut image).await?;
+        copy_module_indexes_from_any(rootfs_providers, &modules_dir, &mut image).await?;
 
         for module in &required_modules {
             if modules_builtin.contains(module) {
                 continue;
             }
             let (rel, path) = module_path_for(module, &module_paths, &modules_dir)?;
-            let data = rootfs
-                .read_all(&path)
-                .await
-                .map_err(|_| Stage0Error::MissingFile(path.clone()))?;
+            let data = read_from_any(rootfs_providers, &path).await?;
             let cpio_path = format!("{MODULES_ROOT}/{rel}");
             image.ensure_file(cpio_path.as_str(), 0o100644, &data)?;
         }
@@ -216,6 +246,17 @@ fn embedded_stage0_binary() -> &'static [u8] {
     include_bytes!(env!("FASTBOOP_STAGE0_EMBED_PATH"))
 }
 
+async fn detect_kernel_from_any<P: RootfsProvider>(
+    providers: &[&P],
+) -> Result<String, Stage0Error> {
+    for provider in providers {
+        if let Ok(kernel) = detect_kernel(*provider).await {
+            return Ok(kernel);
+        }
+    }
+    Err(Stage0Error::MissingFile("kernel image".into()))
+}
+
 async fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Error> {
     if let Some(found) = find_kernel_in_modules(rootfs, "/lib/modules").await? {
         return Ok(found);
@@ -255,6 +296,19 @@ async fn find_kernel_in_modules<P: RootfsProvider>(
         }
     }
     Ok(None)
+}
+
+async fn detect_modules_dir_from_any<P: RootfsProvider>(
+    providers: &[&P],
+) -> Result<ModulesDir, Stage0Error> {
+    for provider in providers {
+        if let Ok(dir) = detect_modules_dir(*provider).await {
+            return Ok(dir);
+        }
+    }
+    Err(Stage0Error::MissingFile(
+        "/lib/modules or /usr/lib/modules".into(),
+    ))
 }
 
 async fn detect_modules_dir<P: RootfsProvider>(rootfs: &P) -> Result<ModulesDir, Stage0Error> {
@@ -306,6 +360,19 @@ fn is_kernel_name(name: &str) -> bool {
     name.starts_with("vmlinuz") || name.starts_with("Image") || name == "linux"
 }
 
+async fn load_modules_metadata_from_any<P: RootfsProvider>(
+    providers: &[&P],
+    modules_dir: &ModulesDir,
+) -> Result<(ModulesDep, ModulePaths, BTreeSet<String>), Stage0Error> {
+    for provider in providers {
+        if let Ok(result) = load_modules_metadata(*provider, modules_dir).await {
+            return Ok(result);
+        }
+    }
+    let dep_path = format!("{}/modules.dep", modules_dir.source_root);
+    Err(Stage0Error::MissingFile(dep_path))
+}
+
 async fn load_modules_metadata<P: RootfsProvider>(
     rootfs: &P,
     modules_dir: &ModulesDir,
@@ -322,6 +389,21 @@ async fn load_modules_metadata<P: RootfsProvider>(
     let modules_builtin = parse_modules_builtin(&builtin_data);
 
     Ok((modules_dep, module_paths, modules_builtin))
+}
+
+async fn copy_module_indexes_from_any<P: RootfsProvider>(
+    providers: &[&P],
+    modules_dir: &ModulesDir,
+    image: &mut CpioImage,
+) -> Result<(), Stage0Error> {
+    for provider in providers {
+        if copy_module_indexes(*provider, modules_dir, image).await.is_ok() {
+            return Ok(());
+        }
+    }
+    Err(Stage0Error::MissingFile(
+        format!("{}/modules.dep", modules_dir.source_root),
+    ))
 }
 
 async fn copy_module_indexes<P: RootfsProvider>(
@@ -343,6 +425,21 @@ async fn copy_module_indexes<P: RootfsProvider>(
         image.ensure_file(cpio_path.as_str(), 0o100644, &data)?;
     }
     Ok(())
+}
+
+async fn select_dtb_from_any<P: RootfsProvider>(
+    profile: &DeviceProfile,
+    providers: &[&P],
+) -> Result<String, Stage0Error> {
+    for provider in providers {
+        if let Ok(dtb_path) = select_dtb(profile, *provider).await {
+            return Ok(dtb_path);
+        }
+    }
+    Err(Stage0Error::MissingFile(format!(
+        "dtb for {}",
+        profile.devicetree_name
+    )))
 }
 
 async fn select_dtb<P: RootfsProvider>(

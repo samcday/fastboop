@@ -88,7 +88,7 @@ pub fn run_stage0(args: Stage0Args) -> Result<()> {
             let opened = open_erofs_rootfs(&args.rootfs.to_string_lossy()).await?;
             let build = build_stage0(
                 profile,
-                &opened.provider,
+                &[&opened.provider],  // ← Wrap in slice for multi-provider support
                 &opts,
                 args.cmdline_append.as_deref(),
                 existing.as_deref(),

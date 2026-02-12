@@ -1,0 +1,15 @@
+[package]
+name = "fastboop-ext4-rootfs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+ext4-view = "0.9.3"
+fastboop-core = { path = "../fastboop-core" }
+gibblox-core = { path = "../../gibblox/crates/gibblox-core" }
+gibblox-ext4 = { path = "../../gibblox/crates/gibblox-ext4" }
+gibblox-file = { path = "../../gibblox/crates/gibblox-file" }
+gibblox-paged-lru = { path = "../../gibblox/crates/gibblox-paged-lru" }
+pollster = "0.3"

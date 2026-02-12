@@ -127,7 +127,7 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
             let image_identity = opened.identity();
             let build = build_stage0(
                 profile,
-                &opened.provider,
+                &[&opened.provider],  // ← Wrap in slice for multi-provider support
                 &opts,
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
