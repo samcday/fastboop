@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use dioxus::prelude::{Signal, WritableExt};
 use fastboop_core::DeviceProfile;
-use fastboop_erofs_rootfs::CacheStatsHandle;
 use fastboop_fastboot_rusb::RusbDeviceHandle;
+use fastboop_rootfs_erofs::CacheStatsHandle;
 use gibblox_core::BlockReader;
 use ui::{CacheStatsViewModel, SmooStatsHandle};
 

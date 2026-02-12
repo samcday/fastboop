@@ -1,478 +1,70 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    use anyhow::{anyhow, bail, Result};
-    use futures_channel::oneshot;
-    use futures_util::{future::select, FutureExt};
-    use gibblox_blockreader_messageport::{
-        MessagePortBlockReaderClient, MessagePortBlockReaderServer,
-    };
-    use gibblox_core::BlockReader;
-    use gloo_timers::future::sleep;
-    use js_sys::{Array, Object, Reflect};
-    use std::time::Duration;
-    use std::{
-        cell::RefCell,
-        sync::{Arc, Mutex},
-    };
-    use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+    use anyhow::{anyhow, Result};
+    use gibblox_web_worker::GibbloxWebWorker;
+    use js_sys::{Object, Reflect};
+    use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::spawn_local;
     use web_sys::{
-        DedicatedWorkerGlobalScope, HtmlScriptElement, MessageChannel, MessageEvent, MessagePort,
-        Worker, WorkerOptions, WorkerType,
+        DedicatedWorkerGlobalScope, HtmlScriptElement, Worker, WorkerOptions, WorkerType,
     };
 
-    use fastboop_erofs_rootfs::open_erofs_rootfs;
-
-    #[derive(Clone)]
-    pub struct GibbloxWorkerLease {
-        _inner: Arc<WorkerLeaseInner>,
-    }
-
-    struct WorkerLeaseInner {
-        worker: Worker,
-    }
-
-    impl Drop for WorkerLeaseInner {
-        fn drop(&mut self) {
-            self.worker.terminate();
-        }
-    }
-
-    pub struct WorkerRootfs {
-        pub reader: Arc<dyn BlockReader>,
-        pub size_bytes: u64,
-        pub identity: String,
-        pub lease: GibbloxWorkerLease,
-    }
-
-    pub struct WorkerBlockReaderClient {
-        pub reader: MessagePortBlockReaderClient,
-        pub size_bytes: u64,
-        pub identity: String,
-    }
+    const WORKER_NAME: &str = "fastboop-gibblox-worker";
 
     pub fn run_if_worker() -> bool {
         let Ok(scope) = js_sys::global().dyn_into::<DedicatedWorkerGlobalScope>() else {
             return false;
         };
-        if scope.name() != "fastboop-gibblox-worker" {
+        if scope.name() != WORKER_NAME {
             return false;
         }
-        tracing::info!("gibblox worker mode: installing RPC handler");
-        install_worker_rpc(scope);
+
+        spawn_local(async move {
+            match crate::rootfs_source::build_rootfs_reader_pipeline().await {
+                Ok(reader) => GibbloxWebWorker::start_worker(scope, reader),
+                Err(err) => {
+                    tracing::error!(error = %err, "failed to initialize gibblox worker rootfs pipeline");
+                    let _ = post_worker_error(&scope, &format!("{err:#}"));
+                }
+            }
+        });
+
         true
     }
 
-    pub async fn start_gibblox_worker_rootfs(rootfs_url: &str) -> Result<WorkerRootfs> {
-        let (worker, channel, ack) = start_gibblox_worker_channel(rootfs_url).await?;
-        let reader_client = MessagePortBlockReaderClient::connect(channel.port1())
-            .await
-            .map_err(|err| anyhow!("connect MessagePort block reader client: {err}"))?;
-        let reader: Arc<dyn BlockReader> = Arc::new(reader_client);
-
-        Ok(WorkerRootfs {
-            reader,
-            size_bytes: ack.size_bytes,
-            identity: ack.identity,
-            lease: GibbloxWorkerLease {
-                _inner: Arc::new(WorkerLeaseInner { worker }),
-            },
-        })
-    }
-
-    pub async fn attach_gibblox_worker_blockreader_client(
-        lease: &GibbloxWorkerLease,
-    ) -> Result<WorkerBlockReaderClient> {
-        let channel = MessageChannel::new().map_err(|err| {
-            anyhow!(
-                "create message channel for gibblox worker attach: {}",
-                js_value_to_string(err)
-            )
-        })?;
-        let request = Object::new();
-        set_prop(
-            &request,
-            "cmd",
-            JsValue::from_str("attach"),
-            "build gibblox attach command",
-        )?;
-        set_prop(
-            &request,
-            "port",
-            channel.port2().clone().into(),
-            "build gibblox attach command",
-        )?;
-        let transfer = Array::new();
-        transfer.push(channel.port2().as_ref());
-        lease
-            ._inner
-            .worker
-            .post_message_with_transfer(&request.into(), transfer.as_ref())
-            .map_err(|err| anyhow!("send gibblox attach command: {}", js_value_to_string(err)))?;
-
-        let ack = wait_for_ack(&lease._inner.worker).await?;
-        let reader = MessagePortBlockReaderClient::connect(channel.port1())
-            .await
-            .map_err(|err| anyhow!("connect MessagePort block reader client: {err}"))?;
-
-        Ok(WorkerBlockReaderClient {
-            reader,
-            size_bytes: ack.size_bytes,
-            identity: ack.identity,
-        })
-    }
-
-    async fn start_gibblox_worker_channel(
-        rootfs_url: &str,
-    ) -> Result<(Worker, MessageChannel, StartAck)> {
+    pub async fn spawn_gibblox_worker() -> Result<GibbloxWebWorker> {
         let script_url = append_current_query_to_script_url(current_module_script_url()?);
         tracing::info!(%script_url, "starting gibblox web worker");
 
         let opts = WorkerOptions::new();
         opts.set_type(WorkerType::Module);
-        opts.set_name("fastboop-gibblox-worker");
+        opts.set_name(WORKER_NAME);
 
         let worker = Worker::new_with_options(&script_url, &opts)
             .map_err(|err| anyhow!("start gibblox worker: {}", js_value_to_string(err)))?;
-        let channel = MessageChannel::new().map_err(|err| {
-            anyhow!(
-                "create message channel for gibblox worker: {}",
-                js_value_to_string(err)
-            )
-        })?;
-        let pending_port = Arc::new(Mutex::new(Some(channel.port2())));
-        let rootfs_url = rootfs_url.to_string();
-
-        let (tx, rx) = oneshot::channel::<Result<StartAck>>();
-        let tx = Arc::new(Mutex::new(Some(tx)));
-        let tx_for_message = tx.clone();
-        let pending_port_for_message = pending_port.clone();
-        let worker_for_message = worker.clone();
-        let rootfs_url_for_message = rootfs_url.clone();
-        let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
-            let data = event.data();
-            let cmd = match prop_string(&data, "cmd") {
-                Ok(cmd) => cmd,
-                Err(_) => return,
-            };
-            if cmd == "ready" {
-                tracing::info!("gibblox worker reported ready; sending start command");
-                let port = pending_port_for_message
-                    .lock()
-                    .ok()
-                    .and_then(|mut slot| slot.take());
-                let Some(port) = port else {
-                    return;
-                };
-                if let Err(err) =
-                    send_start_command(&worker_for_message, &rootfs_url_for_message, port)
-                {
-                    if let Some(tx) = tx_for_message.lock().ok().and_then(|mut slot| slot.take()) {
-                        let _ = tx.send(Err(err));
-                    }
-                }
-                return;
-            }
-            if let Some(tx) = tx_for_message.lock().ok().and_then(|mut slot| slot.take()) {
-                let _ = tx.send(parse_start_ack(data));
-            }
-        });
-        worker.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-
-        let tx_for_error = tx.clone();
-        let on_error = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
-            if let Some(tx) = tx_for_error.lock().ok().and_then(|mut slot| slot.take()) {
-                let _ = tx.send(Err(anyhow!(
-                    "gibblox worker startup error: {}",
-                    js_value_to_string(event.into())
-                )));
-            }
-        });
-        worker.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-
-        let ack_future = async {
-            rx.await
-                .map_err(|_| anyhow!("gibblox worker start response channel closed"))?
-        }
-        .fuse();
-        let timeout = sleep(Duration::from_secs(20)).fuse();
-        futures_util::pin_mut!(ack_future, timeout);
-        let ack = match select(ack_future, timeout).await {
-            futures_util::future::Either::Left((result, _)) => result?,
-            futures_util::future::Either::Right((_, _)) => {
-                worker.terminate();
-                bail!("timed out waiting for gibblox worker start response")
-            }
-        };
-        worker.set_onmessage(None);
-        worker.set_onerror(None);
-        tracing::info!(size_bytes = ack.size_bytes, identity = %ack.identity, "gibblox worker started");
-
-        Ok((worker, channel, ack))
+        Ok(GibbloxWebWorker::new(worker))
     }
 
-    async fn wait_for_ack(worker: &Worker) -> Result<StartAck> {
-        let (tx, rx) = oneshot::channel::<Result<StartAck>>();
-        let tx = Arc::new(Mutex::new(Some(tx)));
-        let tx_for_message = tx.clone();
-        let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
-            let data = event.data();
-            let cmd = match prop_string(&data, "cmd") {
-                Ok(cmd) => cmd,
-                Err(_) => return,
-            };
-            if cmd != "attached" && cmd != "started" && cmd != "error" {
-                return;
-            }
-            if let Some(tx) = tx_for_message.lock().ok().and_then(|mut slot| slot.take()) {
-                let _ = tx.send(parse_start_ack(data));
-            }
-        });
-        worker.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-
-        let tx_for_error = tx.clone();
-        let on_error = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
-            if let Some(tx) = tx_for_error.lock().ok().and_then(|mut slot| slot.take()) {
-                let _ = tx.send(Err(anyhow!(
-                    "gibblox worker attach error: {}",
-                    js_value_to_string(event.into())
-                )));
-            }
-        });
-        worker.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-
-        let ack_future = async {
-            rx.await
-                .map_err(|_| anyhow!("gibblox worker attach response channel closed"))?
-        }
-        .fuse();
-        let timeout = sleep(Duration::from_secs(20)).fuse();
-        futures_util::pin_mut!(ack_future, timeout);
-        let ack = match select(ack_future, timeout).await {
-            futures_util::future::Either::Left((result, _)) => result?,
-            futures_util::future::Either::Right((_, _)) => {
-                bail!("timed out waiting for gibblox worker attach response")
-            }
-        };
-        worker.set_onmessage(None);
-        worker.set_onerror(None);
-        Ok(ack)
-    }
-
-    struct StartAck {
-        size_bytes: u64,
-        identity: String,
-    }
-
-    struct WorkerState {
-        reader: Arc<dyn BlockReader>,
-        size_bytes: u64,
-        identity: String,
-        servers: Vec<MessagePortBlockReaderServer>,
-    }
-
-    thread_local! {
-        static WORKER_STATE: RefCell<Option<WorkerState>> = const { RefCell::new(None) };
-    }
-
-    fn install_worker_rpc(scope: DedicatedWorkerGlobalScope) {
-        let scope_for_handler = scope.clone();
-        let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
-            let scope = scope_for_handler.clone();
-            spawn_local(async move {
-                if let Err(err) = handle_worker_message(&scope, event).await {
-                    tracing::error!(error = %err, "gibblox worker request failed");
-                    let _ = post_error_response(&scope, &format!("{err:#}"));
-                }
-            });
-        });
-        scope.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-        on_message.forget();
-        if let Err(err) = post_ready_response(&scope) {
-            tracing::error!(error = %err, "failed to post gibblox worker ready event");
-        }
-    }
-
-    fn send_start_command(worker: &Worker, rootfs_url: &str, port: MessagePort) -> Result<()> {
-        let request = Object::new();
-        set_prop(
-            &request,
-            "cmd",
-            JsValue::from_str("start"),
-            "build gibblox start command",
-        )?;
-        set_prop(
-            &request,
-            "rootfs_url",
-            JsValue::from_str(rootfs_url),
-            "build gibblox start command",
-        )?;
-        set_prop(
-            &request,
-            "port",
-            port.clone().into(),
-            "build gibblox start command",
-        )?;
-
-        let transfer = Array::new();
-        transfer.push(port.as_ref());
-        worker
-            .post_message_with_transfer(&request.into(), transfer.as_ref())
-            .map_err(|err| anyhow!("send gibblox start command: {}", js_value_to_string(err)))
-    }
-
-    fn post_ready_response(scope: &DedicatedWorkerGlobalScope) -> Result<()> {
-        let response = Object::new();
-        set_prop(
-            &response,
-            "cmd",
-            JsValue::from_str("ready"),
-            "build gibblox ready response",
-        )?;
-        scope
-            .post_message(&response.into())
-            .map_err(|err| anyhow!("send gibblox ready response: {}", js_value_to_string(err)))
-    }
-
-    async fn handle_worker_message(
-        scope: &DedicatedWorkerGlobalScope,
-        event: MessageEvent,
-    ) -> Result<()> {
-        let data = event.data();
-        let cmd = prop_string(&data, "cmd")?;
-        tracing::info!(%cmd, "gibblox worker received command");
-        match cmd.as_str() {
-            "start" => {
-                if WORKER_STATE.with(|state| state.borrow().is_some()) {
-                    bail!("gibblox worker is already started");
-                }
-                let rootfs_url = prop_string(&data, "rootfs_url")?;
-                let port = extract_port(&event, &data, "start")?;
-
-                tracing::info!(%rootfs_url, "gibblox worker opening rootfs");
-                let opened = open_erofs_rootfs(&rootfs_url).await?;
-                let size_bytes = opened.size_bytes;
-                let identity = opened.identity();
-                let reader = opened.reader.clone();
-                let server = MessagePortBlockReaderServer::serve(port, reader.clone())
-                    .map_err(|err| anyhow!("start MessagePort block reader server: {err}"))?;
-                tracing::info!(size_bytes, identity = %identity, "gibblox worker MessagePort server ready");
-
-                WORKER_STATE.with(|state| {
-                    *state.borrow_mut() = Some(WorkerState {
-                        reader,
-                        size_bytes,
-                        identity: identity.clone(),
-                        servers: vec![server],
-                    });
-                });
-
-                post_state_response(scope, "started", size_bytes, &identity)
-            }
-            "attach" => {
-                let port = extract_port(&event, &data, "attach")?;
-                WORKER_STATE.with(|cell| {
-                    let mut state = cell.borrow_mut();
-                    let state = state
-                        .as_mut()
-                        .ok_or_else(|| anyhow!("gibblox worker is not started"))?;
-                    let server = MessagePortBlockReaderServer::serve(port, state.reader.clone())
-                        .map_err(|err| anyhow!("attach MessagePort block reader server: {err}"))?;
-                    state.servers.push(server);
-                    tracing::info!(
-                        size_bytes = state.size_bytes,
-                        identity = %state.identity,
-                        servers = state.servers.len(),
-                        "gibblox worker attached MessagePort block reader server"
-                    );
-                    post_state_response(scope, "attached", state.size_bytes, &state.identity)
-                })
-            }
-            _ => bail!("unsupported gibblox worker command: {cmd}"),
-        }
-    }
-
-    fn parse_start_ack(data: JsValue) -> Result<StartAck> {
-        let cmd = prop_string(&data, "cmd")?;
-        match cmd.as_str() {
-            "started" | "attached" => {
-                let size_bytes = prop_u64_string(&data, "size_bytes")?;
-                let identity = prop_string(&data, "identity")?;
-                Ok(StartAck {
-                    size_bytes,
-                    identity,
-                })
-            }
-            "error" => {
-                let message = prop_string(&data, "error")
-                    .unwrap_or_else(|_| "unknown gibblox worker error".to_string());
-                Err(anyhow!("gibblox worker start failed: {message}"))
-            }
-            _ => Err(anyhow!("unexpected gibblox worker response command: {cmd}")),
-        }
-    }
-
-    fn post_state_response(
-        scope: &DedicatedWorkerGlobalScope,
-        cmd: &str,
-        size_bytes: u64,
-        identity: &str,
-    ) -> Result<()> {
-        let response = Object::new();
-        set_prop(
-            &response,
-            "cmd",
-            JsValue::from_str(cmd),
-            "build gibblox state response",
-        )?;
-        set_prop(
-            &response,
-            "size_bytes",
-            JsValue::from_str(&size_bytes.to_string()),
-            "build gibblox state response",
-        )?;
-        set_prop(
-            &response,
-            "identity",
-            JsValue::from_str(identity),
-            "build gibblox state response",
-        )?;
-        scope
-            .post_message(&response.into())
-            .map_err(|err| anyhow!("send gibblox state response: {}", js_value_to_string(err)))
-    }
-
-    fn extract_port(event: &MessageEvent, data: &JsValue, cmd: &str) -> Result<MessagePort> {
-        let ports = event.ports();
-        if ports.length() != 0 {
-            return ports
-                .get(0)
-                .dyn_into::<MessagePort>()
-                .map_err(|_| anyhow!("{cmd} command transfer[0] is not a MessagePort"));
-        }
-        Reflect::get(data, &JsValue::from_str("port"))
-            .map_err(|err| anyhow!("read {cmd}.port: {}", js_value_to_string(err)))?
-            .dyn_into::<MessagePort>()
-            .map_err(|_| anyhow!("{cmd} command missing MessagePort transfer"))
-    }
-
-    fn post_error_response(scope: &DedicatedWorkerGlobalScope, message: &str) -> Result<()> {
+    fn post_worker_error(scope: &DedicatedWorkerGlobalScope, message: &str) -> Result<()> {
         let response = Object::new();
         set_prop(
             &response,
             "cmd",
             JsValue::from_str("error"),
-            "build gibblox error response",
+            "build gibblox worker error response",
         )?;
         set_prop(
             &response,
             "error",
             JsValue::from_str(message),
-            "build gibblox error response",
+            "build gibblox worker error response",
         )?;
-        scope
-            .post_message(&response.into())
-            .map_err(|err| anyhow!("send gibblox error response: {}", js_value_to_string(err)))
+        scope.post_message(&response.into()).map_err(|err| {
+            anyhow!(
+                "send gibblox worker startup error response: {}",
+                js_value_to_string(err)
+            )
+        })
     }
 
     fn current_module_script_url() -> Result<String> {
@@ -533,20 +125,6 @@ mod wasm {
             .map_err(|err| anyhow!("{context}: {}", js_value_to_string(err)))
     }
 
-    fn prop_string(target: &JsValue, key: &str) -> Result<String> {
-        Reflect::get(target, &JsValue::from_str(key))
-            .map_err(|err| anyhow!("read response field {key}: {}", js_value_to_string(err)))?
-            .as_string()
-            .ok_or_else(|| anyhow!("field {key} is missing or not a string"))
-    }
-
-    fn prop_u64_string(target: &JsValue, key: &str) -> Result<u64> {
-        let value = prop_string(target, key)?;
-        value
-            .parse::<u64>()
-            .map_err(|_| anyhow!("field {key} has invalid u64 value"))
-    }
-
     fn js_value_to_string(value: JsValue) -> String {
         js_sys::JSON::stringify(&value)
             .ok()
@@ -562,25 +140,13 @@ pub use wasm::*;
 #[allow(dead_code)]
 mod non_wasm {
     use anyhow::{bail, Result};
-    use gibblox_core::BlockReader;
-    use std::sync::Arc;
-
-    #[derive(Clone)]
-    pub struct GibbloxWorkerLease;
-
-    pub struct WorkerRootfs {
-        pub reader: Arc<dyn BlockReader>,
-        pub size_bytes: u64,
-        pub identity: String,
-        pub lease: GibbloxWorkerLease,
-    }
 
     pub fn run_if_worker() -> bool {
         false
     }
 
-    pub async fn start_gibblox_worker_rootfs(_rootfs_url: &str) -> Result<WorkerRootfs> {
-        bail!("gibblox worker rootfs is only available on wasm32 targets")
+    pub async fn spawn_gibblox_worker() -> Result<()> {
+        bail!("gibblox web worker is only available on wasm32 targets")
     }
 }
 

@@ -61,7 +61,7 @@ pub(crate) fn setup_tui_tracing(tx: Sender<BootEvent>) {
     let layer = tracing_subscriber::fmt::layer()
         .with_writer(writer)
         .with_ansi(false);
-    
+
     let _ = tracing_subscriber::registry()
         .with(filter)
         .with(layer)

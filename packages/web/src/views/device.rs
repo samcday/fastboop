@@ -5,13 +5,16 @@ use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
-#[cfg(not(target_arch = "wasm32"))]
-use fastboop_erofs_rootfs::open_erofs_rootfs;
-#[cfg(target_arch = "wasm32")]
-use fastboop_erofs_rootfs::open_erofs_rootfs_from_reader;
+use fastboop_rootfs_erofs::ErofsRootfs;
 use fastboop_stage0_generator::{build_stage0, Stage0Options};
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
+#[cfg(target_arch = "wasm32")]
+use gibblox_core::block_identity_string;
+#[cfg(not(target_arch = "wasm32"))]
+use gibblox_core::{block_identity_string, BlockReader};
+#[cfg(not(target_arch = "wasm32"))]
+use gibblox_http::HttpBlockReader;
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::sleep;
 #[cfg(target_arch = "wasm32")]
@@ -19,16 +22,20 @@ use js_sys::{Array, Date, Reflect};
 #[cfg(target_arch = "wasm32")]
 use smoo_host_web_worker::{HostWorker, HostWorkerConfig, HostWorkerEvent, HostWorkerState};
 #[cfg(target_arch = "wasm32")]
+use std::cell::Cell;
+#[cfg(target_arch = "wasm32")]
 use std::collections::VecDeque;
 use std::future::Future;
+use std::rc::Rc;
+use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
-#[cfg(target_arch = "wasm32")]
-use std::{cell::Cell, rc::Rc};
 use ui::{
     oneplus_fajita_dtbo_overlays, CacheStatsPanel, CacheStatsViewModel, SmooStatsHandle,
     SmooStatsPanel, SmooStatsViewModel,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use url::Url;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::closure::Closure;
 #[cfg(target_arch = "wasm32")]
@@ -45,13 +52,10 @@ use web_sys::{
 use super::session::update_session_active_host_state;
 use super::session::{update_session_phase, BootRuntime, SessionPhase, SessionStore};
 #[cfg(target_arch = "wasm32")]
-use crate::gibblox_worker::{
-    attach_gibblox_worker_blockreader_client, start_gibblox_worker_rootfs,
-};
-
-const ROOTFS_URL: &str = "https://bleeding.fastboop.win/sdm845-live-fedora/20260208.ero";
+use crate::gibblox_worker::spawn_gibblox_worker;
+use crate::rootfs_source::ROOTFS_URL;
 const EXTRA_CMDLINE: &str =
-    "selinux=0 sysrq_always_enabled=1 panic=5 smoo.max_io_bytes=1048576 init_on_alloc=0 rhgb drm.panic_screen=kmsg smoo.queue_count=1 smoo.queue_depth=1 regulator_ignore_unused smoo.log=trace";
+    "selinux=0 sysrq_always_enabled=1 panic=5 smoo.max_io_bytes=1048576 init_on_alloc=0 rhgb drm.panic_screen=kmsg smoo.queue_count=1 smoo.queue_depth=1 regulator_ignore_unused";
 #[cfg(target_arch = "wasm32")]
 const STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 #[cfg(target_arch = "wasm32")]
@@ -176,7 +180,7 @@ fn BootedDevice(session_id: String) -> Element {
     let cache_stats_stop = use_signal(|| Option::<Rc<Cell<bool>>>::None);
     #[cfg(target_arch = "wasm32")]
     let smoo_stats_stop = use_signal(|| Option::<Rc<Cell<bool>>>::None);
-    let runtime_for_kickoff = runtime.clone();
+    let runtime_for_kickoff = Rc::clone(&runtime);
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -215,7 +219,7 @@ fn BootedDevice(session_id: String) -> Element {
                 &mut sessions,
                 &session_id,
                 SessionPhase::Active {
-                    runtime: runtime_for_kickoff.clone(),
+                    runtime: Rc::clone(&runtime_for_kickoff),
                     host_started: true,
                     host_connected: false,
                 },
@@ -225,19 +229,12 @@ fn BootedDevice(session_id: String) -> Element {
             {
                 let mut sessions = sessions;
                 let session_id = session_id.clone();
-                let runtime_for_host = runtime_for_kickoff.clone();
+                let runtime_for_host = Rc::clone(&runtime_for_kickoff);
                 spawn_detached(async move {
                     let device = _session.device.handle.device();
-                    if let Err(err) = run_web_host_daemon(
-                        device,
-                        runtime_for_host.gibblox_worker,
-                        runtime_for_host.size_bytes,
-                        runtime_for_host.identity,
-                        runtime_for_host.smoo_stats,
-                        sessions,
-                        session_id.clone(),
-                    )
-                    .await
+                    if let Err(err) =
+                        run_web_host_daemon(device, runtime_for_host, sessions, session_id.clone())
+                            .await
                     {
                         tracing::error!("web host daemon failed for {session_id}: {err:#}");
                         update_session_phase(
@@ -1008,7 +1005,7 @@ fn spawn_detached(fut: impl Future<Output = ()> + 'static) {
 async fn boot_selected_device(
     sessions: &mut SessionStore,
     session_id: &str,
-) -> anyhow::Result<BootRuntime> {
+) -> anyhow::Result<Rc<BootRuntime>> {
     let session = sessions
         .read()
         .iter()
@@ -1147,29 +1144,26 @@ async fn boot_selected_device(
         .map_err(|err| anyhow::anyhow!("fastboot boot failed: {err}"))?;
     let _ = fastboot.shutdown().await;
 
-    Ok(BootRuntime {
+    Ok(Rc::new(BootRuntime {
         size_bytes: runtime.size_bytes,
         identity: runtime.identity,
         #[cfg(target_arch = "wasm32")]
         gibblox_worker: runtime.gibblox_worker,
         cache_stats: runtime.cache_stats,
         smoo_stats: runtime.smoo_stats,
-    })
+    }))
 }
 
 async fn build_stage0_artifacts(
     profile: fastboop_core::DeviceProfile,
     stage0_opts: Stage0Options,
-    sessions: SessionStore,
-    session_id: String,
+    _sessions: SessionStore,
+    _session_id: String,
 ) -> anyhow::Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
     use futures_channel::oneshot;
 
     tracing::info!("build_stage0_artifacts: creating channel");
     let (tx, rx) = oneshot::channel();
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = (&sessions, &session_id);
-
     // Spawn the stage0 build outside the Dioxus context using raw spawn_local
     tracing::info!("build_stage0_artifacts: spawning task");
     wasm_bindgen_futures::spawn_local(async move {
@@ -1177,91 +1171,49 @@ async fn build_stage0_artifacts(
         let result: anyhow::Result<_> = async {
             tracing::info!(profile = %profile.id, "opening rootfs for web boot");
             #[cfg(target_arch = "wasm32")]
-            let (opened, gibblox_worker, rootfs_identity) = {
-                let worker_rootfs = start_gibblox_worker_rootfs(ROOTFS_URL).await?;
-                let opened = open_erofs_rootfs_from_reader(
-                    worker_rootfs.reader.clone(),
-                    worker_rootfs.size_bytes,
-                    None,
-                )
-                .await?;
-                (opened, Some(worker_rootfs.lease), worker_rootfs.identity)
+            let (provider, size_bytes, gibblox_worker, rootfs_identity) = {
+                let gibblox_worker = spawn_gibblox_worker().await?;
+                let reader_for_erofs = gibblox_worker.create_reader().await.map_err(|err| {
+                    anyhow::anyhow!("attach gibblox block reader for stage0: {err}")
+                })?;
+                let size_bytes = reader_size_bytes(&reader_for_erofs).await?;
+                let rootfs_identity = block_identity_string(&reader_for_erofs);
+                let provider = ErofsRootfs::wrap(Arc::new(reader_for_erofs), size_bytes).await?;
+                (provider, size_bytes, Some(gibblox_worker), rootfs_identity)
             };
             #[cfg(not(target_arch = "wasm32"))]
-            let (opened, gibblox_worker, rootfs_identity) = {
-                let opened = open_erofs_rootfs(ROOTFS_URL).await?;
-                let identity = opened.identity();
-                (
-                    opened,
-                    None::<crate::gibblox_worker::GibbloxWorkerLease>,
-                    identity,
+            let (provider, size_bytes, rootfs_identity) = {
+                let url = Url::parse(ROOTFS_URL)
+                    .map_err(|err| anyhow::anyhow!("parse rootfs URL {ROOTFS_URL}: {err}"))?;
+                let http_reader = HttpBlockReader::new(
+                    url.clone(),
+                    fastboop_rootfs_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
                 )
+                .await
+                .map_err(|err| anyhow::anyhow!("open HTTP reader {url}: {err}"))?;
+                let size_bytes = http_reader.size_bytes();
+                let reader: Arc<dyn BlockReader> = Arc::new(http_reader);
+                let provider = ErofsRootfs::wrap(reader.clone(), size_bytes).await?;
+                let identity = block_identity_string(reader.as_ref());
+                (provider, size_bytes, identity)
             };
-            #[cfg(target_arch = "wasm32")]
-            let cache_stats_stop = Rc::new(Cell::new(false));
-            #[cfg(not(target_arch = "wasm32"))]
-            let cache_stats_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            #[cfg(target_arch = "wasm32")]
-            if let Some(cache_stats) = opened.cache_stats.clone() {
-                let cache_stats_stop = cache_stats_stop.clone();
-                let mut sessions = sessions;
-                let session_id = session_id.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    loop {
-                        if cache_stats_stop.get() {
-                            break;
-                        }
-                        match cache_stats.snapshot().await {
-                            Ok(snapshot) => {
-                                update_session_phase(
-                                    &mut sessions,
-                                    &session_id,
-                                    SessionPhase::Booting {
-                                        step: "Building stage0".to_string(),
-                                        cache_stats: Some(CacheStatsViewModel {
-                                            total_blocks: snapshot.total_blocks,
-                                            cached_blocks: snapshot.cached_blocks,
-                                            total_hits: snapshot.total_hits,
-                                            total_misses: snapshot.total_misses,
-                                        }),
-                                    },
-                                );
-                            }
-                            Err(err) => {
-                                tracing::debug!("boot-stage cache stats poll failed: {err}");
-                            }
-                        }
-                        gloo_timers::future::sleep(CACHE_STATS_POLL_INTERVAL).await;
-                    }
-                });
-            }
+            // TODO: Cache stats removed for now, will be re-added later
             tracing::info!(profile = %profile.id, "building stage0 payload");
             // Yield to allow cache workers to make progress
-            gloo_timers::future::sleep(std::time::Duration::from_millis(100)).await;
-            let build = build_stage0(
-                &profile,
-                &opened.provider,
-                &stage0_opts,
-                Some(EXTRA_CMDLINE),
-                None,
-            )
-            .await
-            .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?;
             #[cfg(target_arch = "wasm32")]
-            cache_stats_stop.set(true);
-            #[cfg(not(target_arch = "wasm32"))]
-            cache_stats_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            #[cfg(not(target_arch = "wasm32"))]
-            let _ = gibblox_worker;
+            gloo_timers::future::sleep(std::time::Duration::from_millis(100)).await;
+            let build = build_stage0(&profile, &provider, &stage0_opts, Some(EXTRA_CMDLINE), None)
+                .await
+                .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?;
             tracing::info!("build_stage0_artifacts: stage0 build completed");
             Ok((
                 build,
                 BootRuntime {
-                    size_bytes: opened.size_bytes,
+                    size_bytes,
                     identity: rootfs_identity,
                     #[cfg(target_arch = "wasm32")]
                     gibblox_worker,
-                    cache_stats: opened.cache_stats,
+                    cache_stats: None, // TODO: Re-add cache stats support
                     smoo_stats: SmooStatsHandle::new(),
                 },
             ))
@@ -1280,44 +1232,39 @@ async fn build_stage0_artifacts(
 }
 
 #[cfg(target_arch = "wasm32")]
+async fn reader_size_bytes(reader: &dyn gibblox_core::BlockReader) -> anyhow::Result<u64> {
+    let total_blocks = reader
+        .total_blocks()
+        .await
+        .map_err(|err| anyhow::anyhow!("read rootfs total blocks: {err}"))?;
+    total_blocks
+        .checked_mul(reader.block_size() as u64)
+        .ok_or_else(|| anyhow::anyhow!("rootfs size overflow"))
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn run_web_host_daemon(
     initial_device: web_sys::UsbDevice,
-    gibblox_worker: Option<crate::gibblox_worker::GibbloxWorkerLease>,
-    size_bytes: u64,
-    identity: String,
-    smoo_stats: SmooStatsHandle,
+    runtime: Rc<BootRuntime>,
     mut sessions: SessionStore,
     session_id: String,
 ) -> anyhow::Result<()> {
-    let host_bridge = attach_gibblox_worker_blockreader_client(
-        gibblox_worker
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("missing gibblox worker lease"))?,
-    )
-    .await
-    .context("attach gibblox bridge for smoo host worker")?;
-    if host_bridge.size_bytes != size_bytes {
-        warn!(
-            expected = size_bytes,
-            actual = host_bridge.size_bytes,
-            "gibblox host bridge size differs from boot-time size"
-        );
-    }
-    if host_bridge.identity != identity {
-        warn!(
-            expected = %identity,
-            actual = %host_bridge.identity,
-            "gibblox host bridge identity differs from boot-time identity"
-        );
-    }
+    let gibblox_worker = runtime
+        .gibblox_worker
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("gibblox worker unavailable for host startup"))?;
+    let reader_client = gibblox_worker.create_reader().await.map_err(|err| {
+        anyhow::anyhow!("attach gibblox block reader for smoo host worker: {err}")
+    })?;
+    let smoo_stats = runtime.smoo_stats.clone();
 
     let host = HostWorker::spawn(
-        host_bridge.reader,
+        reader_client,
         HostWorkerConfig {
             status_retry_attempts: STATUS_RETRY_ATTEMPTS,
             heartbeat_interval_ms: HEARTBEAT_INTERVAL.as_millis() as u32,
-            size_bytes,
-            identity,
+            size_bytes: runtime.size_bytes,
+            identity: runtime.identity.clone(),
             ..HostWorkerConfig::default()
         },
     )

@@ -12,8 +12,12 @@ use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
-use fastboop_erofs_rootfs::open_erofs_rootfs;
+use fastboop_rootfs_erofs::{CacheStatsHandle, CacheStatsSource, ErofsRootfs, RootfsCacheStats};
 use fastboop_stage0_generator::{build_stage0, Stage0Options};
+use gibblox_cache::CachedBlockReader;
+use gibblox_cache_store_std::StdCacheOps;
+use gibblox_core::{block_identity_string, BlockReader};
+use gibblox_http::HttpBlockReader;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{
     register_export, BlockSource, BlockSourceHandle, CountingTransport, TransportCounterSnapshot,
@@ -26,6 +30,7 @@ use ui::{
     oneplus_fajita_dtbo_overlays, CacheStatsPanel, CacheStatsViewModel, SmooStatsHandle,
     SmooStatsPanel, SmooStatsViewModel,
 };
+use url::Url;
 
 use super::session::{update_session_phase, BootRuntime, SessionPhase, SessionStore};
 
@@ -43,6 +48,23 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const HEARTBEAT_MISS_BUDGET: u32 = 5;
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 const CACHE_STATS_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+struct DesktopCacheStatsSource {
+    reader: Arc<CachedBlockReader<HttpBlockReader, StdCacheOps>>,
+}
+
+#[async_trait::async_trait]
+impl CacheStatsSource for DesktopCacheStatsSource {
+    async fn snapshot(&self) -> Result<RootfsCacheStats> {
+        let stats = self.reader.get_stats().await;
+        Ok(RootfsCacheStats {
+            total_hits: stats.total_hits,
+            total_misses: stats.total_misses,
+            cached_blocks: stats.cached_blocks,
+            total_blocks: stats.total_blocks,
+        })
+    }
+}
 
 #[component]
 pub fn DevicePage(session_id: String) -> Element {
@@ -491,9 +513,29 @@ async fn build_stage0_artifacts(
                     .context("create tokio runtime for stage0 build")?;
                 runtime.block_on(async move {
                     info!(profile = %profile.id, "opening rootfs for desktop boot");
-                    let opened = open_erofs_rootfs(ROOTFS_URL).await?;
+                    let url = Url::parse(ROOTFS_URL)
+                        .map_err(|err| anyhow!("parse rootfs URL {ROOTFS_URL}: {err}"))?;
+                    let http_reader = HttpBlockReader::new(
+                        url.clone(),
+                        fastboop_rootfs_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
+                    )
+                    .await
+                    .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
+                    let size_bytes = http_reader.size_bytes();
+                    let cache = StdCacheOps::open_default_for_reader(&http_reader)
+                        .await
+                        .map_err(|err| anyhow!("open std cache for HTTP rootfs: {err}"))?;
+                    let cached =
+                        Arc::new(CachedBlockReader::new(http_reader, cache).await.map_err(
+                            |err| anyhow!("initialize std cache for HTTP rootfs: {err}"),
+                        )?);
+                    let reader: Arc<dyn BlockReader> = cached.clone();
+                    let provider = ErofsRootfs::wrap(reader.clone(), size_bytes).await?;
+                    let cache_stats: Option<CacheStatsHandle> =
+                        Some(Arc::new(DesktopCacheStatsSource { reader: cached })
+                            as CacheStatsHandle);
                     let cache_stats_stop = Arc::new(AtomicBool::new(false));
-                    if let Some(cache_stats) = opened.cache_stats.clone() {
+                    if let Some(cache_stats) = cache_stats.clone() {
                         let cache_stats_stop = cache_stats_stop.clone();
                         let progress_tx = progress_tx.clone();
                         tokio::spawn(async move {
@@ -521,24 +563,19 @@ async fn build_stage0_artifacts(
                         });
                     }
                     info!(profile = %profile.id, "building stage0 payload");
-                    let build = build_stage0(
-                        &profile,
-                        &opened.provider,
-                        &stage0_opts,
-                        Some(EXTRA_CMDLINE),
-                        None,
-                    )
-                    .await
-                    .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
-                    let rootfs_identity = opened.identity();
+                    let build =
+                        build_stage0(&profile, &provider, &stage0_opts, Some(EXTRA_CMDLINE), None)
+                            .await
+                            .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
+                    let rootfs_identity = block_identity_string(reader.as_ref());
                     cache_stats_stop.store(true, Ordering::Relaxed);
                     Ok((
                         build,
                         BootRuntime {
-                            reader: opened.reader,
-                            size_bytes: opened.size_bytes,
+                            reader,
+                            size_bytes,
                             identity: rootfs_identity,
-                            cache_stats: opened.cache_stats,
+                            cache_stats,
                             smoo_stats: SmooStatsHandle::new(),
                         },
                     ))

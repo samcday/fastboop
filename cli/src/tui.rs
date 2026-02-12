@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -16,7 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Sparkline};
 use ratatui::{Frame, Terminal};
 
-use crate::boot_ui::{timestamp_hms, BootEvent, BootPhase};
+use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
 
 const TICK: Duration = Duration::from_millis(100);
 const HISTORY: usize = 120;

@@ -1,21 +1,28 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{io::IsTerminal, thread};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use fastboop_core::DeviceProfile;
 use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, profile_filters};
 use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
-use fastboop_erofs_rootfs::open_erofs_rootfs;
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
+use fastboop_rootfs_erofs::ErofsRootfs;
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
+use gibblox_cache::CachedBlockReader;
+use gibblox_cache_store_std::StdCacheOps;
+use gibblox_core::{BlockReader, block_identity_string};
+use gibblox_file::StdFileBlockReader;
+use gibblox_http::HttpBlockReader;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
+use url::Url;
 
 use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
@@ -86,7 +93,11 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("boot worker thread panicked"))?
 }
 
-fn run_boot_worker(args: BootArgs, events: Sender<BootEvent>, shutdown: CancellationToken) -> Result<()> {
+fn run_boot_worker(
+    args: BootArgs,
+    events: Sender<BootEvent>,
+    shutdown: CancellationToken,
+) -> Result<()> {
     emit(
         &events,
         BootEvent::Phase {
@@ -111,7 +122,11 @@ fn run_boot_worker(args: BootArgs, events: Sender<BootEvent>, shutdown: Cancella
     result
 }
 
-fn run_boot_inner(args: BootArgs, events: Sender<BootEvent>, shutdown: CancellationToken) -> Result<()> {
+fn run_boot_inner(
+    args: BootArgs,
+    events: Sender<BootEvent>,
+    shutdown: CancellationToken,
+) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
     let profiles = load_device_profiles(&devpro_dirs)?;
     let profile = profiles
@@ -215,31 +230,59 @@ fn run_boot_inner(args: BootArgs, events: Sender<BootEvent>, shutdown: Cancellat
         },
     );
 
+    const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
+
     let rootfs_rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("create tokio runtime for rootfs reads")?;
-    let (_provider, block_reader, image_size_bytes, image_identity, cache_stats, build) = rootfs_rt
-        .block_on(async {
-            let opened = open_erofs_rootfs(&args.stage0.rootfs.to_string_lossy()).await?;
-            let image_identity = opened.identity();
-            let cache_stats = opened.cache_stats;
+    let (_provider, block_reader, image_size_bytes, image_identity, build) =
+        rootfs_rt.block_on(async {
+            let rootfs_str = args.stage0.rootfs.to_string_lossy();
+
+            // Build gibblox pipeline explicitly
+            let reader: Arc<dyn BlockReader> = if rootfs_str.starts_with("http://")
+                || rootfs_str.starts_with("https://")
+            {
+                // HTTP pipeline: HTTP → Cache
+                let url = Url::parse(&rootfs_str)
+                    .with_context(|| format!("parse rootfs URL {rootfs_str}"))?;
+                let http_reader = HttpBlockReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
+                    .await
+                    .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
+
+                let cache = StdCacheOps::open_default_for_reader(&http_reader)
+                    .await
+                    .map_err(|err| anyhow!("open std cache: {err}"))?;
+                let cached = CachedBlockReader::new(http_reader, cache)
+                    .await
+                    .map_err(|err| anyhow!("initialize std cache: {err}"))?;
+                Arc::new(cached)
+            } else {
+                // File pipeline: File only
+                let canonical = std::fs::canonicalize(&args.stage0.rootfs)
+                    .with_context(|| format!("canonicalize {}", args.stage0.rootfs.display()))?;
+                let file_reader = StdFileBlockReader::open(&canonical, DEFAULT_IMAGE_BLOCK_SIZE)
+                    .map_err(|err| anyhow!("open file {}: {err}", canonical.display()))?;
+                Arc::new(file_reader)
+            };
+
+            let total_blocks = reader.total_blocks().await?;
+            let image_size_bytes = total_blocks * reader.block_size() as u64;
+            let image_identity = block_identity_string(reader.as_ref());
+
+            // Wrap in EROFS
+            let provider = ErofsRootfs::wrap(reader.clone(), image_size_bytes).await?;
+
             let build = build_stage0(
                 profile,
-                &opened.provider,
+                &provider,
                 &opts,
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )
             .await;
-            anyhow::Ok((
-                opened.provider,
-                opened.reader,
-                opened.size_bytes,
-                image_identity,
-                cache_stats,
-                build,
-            ))
+            anyhow::Ok((provider, reader, image_size_bytes, image_identity, build))
         })?;
 
     let build = build.map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
@@ -333,7 +376,7 @@ fn run_boot_inner(args: BootArgs, events: Sender<BootEvent>, shutdown: Cancellat
         block_reader,
         image_size_bytes,
         image_identity,
-        cache_stats,
+        None, // TODO: Re-add cache stats support
         events,
         shutdown,
     )

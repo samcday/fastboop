@@ -4,7 +4,7 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, ensure};
-use fastboop_erofs_rootfs::CacheStatsHandle;
+use fastboop_rootfs_erofs::CacheStatsHandle;
 use gibblox_core::BlockReader;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{BlockSource, BlockSourceHandle, register_export};

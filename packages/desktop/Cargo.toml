@@ -6,13 +6,17 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.91"
+async-trait = "0.1.89"
 dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
-fastboop-erofs-rootfs = { path = "../../crates/fastboop-erofs-rootfs" }
+fastboop-rootfs-erofs = { path = "../../crates/fastboop-rootfs-erofs" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-rusb = { path = "../../crates/fastboop-fastboot-rusb" }
 gibblox-core = { path = "../../gibblox/crates/gibblox-core", features = ["std"] }
+gibblox-cache = { path = "../../gibblox/crates/gibblox-cache", features = ["std"] }
+gibblox-cache-store-std = { path = "../../gibblox/crates/gibblox-cache-store-std" }
+gibblox-http = { path = "../../gibblox/crates/gibblox-http", default-features = false, features = ["native-client"] }
 smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }
 smoo-host-session = { path = "../../smoo/crates/smoo-host-session" }
 smoo-host-transport-rusb = { path = "../../smoo/crates/smoo-host-transport-rusb" }
@@ -21,6 +25,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-util = "0.7.17"
+url = "2.5.4"
 
 [features]
 default = ["desktop"]
