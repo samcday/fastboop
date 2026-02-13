@@ -76,10 +76,7 @@ pub fn DevicePage(session_id: String) -> Element {
 }
 
 #[component]
-fn BootingDevice(
-    session_id: String,
-    step: String,
-) -> Element {
+fn BootingDevice(session_id: String, step: String) -> Element {
     let sessions = use_context::<SessionStore>();
     let mut started = use_signal(|| false);
 
@@ -449,7 +446,7 @@ async fn build_stage0_artifacts(
                             |err| anyhow!("initialize std cache for HTTP rootfs: {err}"),
                         )?);
                     let reader: Arc<dyn BlockReader> = cached.clone();
-                    let provider = ErofsRootfs::wrap(reader.clone(), size_bytes).await?;
+                    let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
                     info!(profile = %profile.id, "building stage0 payload");
                     let build =
                         build_stage0(&profile, &provider, &stage0_opts, Some(EXTRA_CMDLINE), None)

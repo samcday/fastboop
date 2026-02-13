@@ -4,7 +4,6 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, ensure};
-use fastboop_rootfs_erofs::CacheStatsHandle;
 use gibblox_core::BlockReader;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{BlockSource, BlockSourceHandle, register_export};
@@ -34,11 +33,7 @@ pub(crate) fn run_host_daemon(
         .build()
         .context("create tokio runtime for smoo host")?;
     runtime.block_on(run_host_daemon_async(
-        reader,
-        size_bytes,
-        identity,
-        events,
-        shutdown,
+        reader, size_bytes, identity, events, shutdown,
     ))
 }
 

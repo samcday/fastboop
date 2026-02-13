@@ -30,10 +30,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
-use ui::{
-    oneplus_fajita_dtbo_overlays, SmooStatsHandle,
-    SmooStatsPanel, SmooStatsViewModel,
-};
+use ui::{oneplus_fajita_dtbo_overlays, SmooStatsHandle, SmooStatsPanel, SmooStatsViewModel};
 #[cfg(not(target_arch = "wasm32"))]
 use url::Url;
 #[cfg(target_arch = "wasm32")]
@@ -100,10 +97,7 @@ pub fn DevicePage(session_id: String) -> Element {
 }
 
 #[component]
-fn BootingDevice(
-    session_id: String,
-    step: String,
-) -> Element {
+fn BootingDevice(session_id: String, step: String) -> Element {
     let sessions = use_context::<SessionStore>();
     let mut started = use_signal(|| false);
 
@@ -1109,7 +1103,7 @@ async fn build_stage0_artifacts(
                 })?;
                 let size_bytes = reader_size_bytes(&reader_for_erofs).await?;
                 let rootfs_identity = block_identity_string(&reader_for_erofs);
-                let provider = ErofsRootfs::wrap(Arc::new(reader_for_erofs), size_bytes).await?;
+                let provider = ErofsRootfs::new(Arc::new(reader_for_erofs), size_bytes).await?;
                 (provider, size_bytes, Some(gibblox_worker), rootfs_identity)
             };
             #[cfg(not(target_arch = "wasm32"))]
@@ -1124,7 +1118,7 @@ async fn build_stage0_artifacts(
                 .map_err(|err| anyhow::anyhow!("open HTTP reader {url}: {err}"))?;
                 let size_bytes = http_reader.size_bytes();
                 let reader: Arc<dyn BlockReader> = Arc::new(http_reader);
-                let provider = ErofsRootfs::wrap(reader.clone(), size_bytes).await?;
+                let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
                 let identity = block_identity_string(reader.as_ref());
                 (provider, size_bytes, identity)
             };

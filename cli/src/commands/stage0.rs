@@ -127,7 +127,7 @@ pub fn run_stage0(args: Stage0Args) -> Result<()> {
             let image_size_bytes = total_blocks * reader.block_size() as u64;
 
             // Wrap in EROFS
-            let provider = ErofsRootfs::wrap(reader, image_size_bytes).await?;
+            let provider = ErofsRootfs::new(reader, image_size_bytes).await?;
 
             let build = build_stage0(
                 profile,

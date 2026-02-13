@@ -272,7 +272,7 @@ fn run_boot_inner(
             let image_identity = block_identity_string(reader.as_ref());
 
             // Wrap in EROFS
-            let provider = ErofsRootfs::wrap(reader.clone(), image_size_bytes).await?;
+            let provider = ErofsRootfs::new(reader.clone(), image_size_bytes).await?;
 
             let build = build_stage0(
                 profile,

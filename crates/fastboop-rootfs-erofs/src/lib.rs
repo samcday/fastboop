@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use fastboop_core::RootfsProvider;
 use gibblox_core::{BlockReader, GibbloxErrorKind, ReadContext};
@@ -14,69 +14,24 @@ pub struct ErofsRootfs {
     fs: gibblox_core::erofs_rs::EroFS<GibbloxReadAtAdapter>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RootfsCacheStats {
-    pub total_hits: u64,
-    pub total_misses: u64,
-    pub cached_blocks: u64,
-    pub total_blocks: u64,
-}
-
-impl RootfsCacheStats {
-    pub fn hit_rate(&self) -> f64 {
-        let total = self.total_hits + self.total_misses;
-        if total == 0 {
-            return 0.0;
-        }
-        (self.total_hits as f64 / total as f64) * 100.0
-    }
-
-    pub fn fill_rate(&self) -> f64 {
-        if self.total_blocks == 0 {
-            return 0.0;
-        }
-        (self.cached_blocks as f64 / self.total_blocks as f64) * 100.0
-    }
-}
-
-#[async_trait]
-pub trait CacheStatsSource: Send + Sync {
-    async fn snapshot(&self) -> Result<RootfsCacheStats>;
-}
-
-pub type CacheStatsHandle = Arc<dyn CacheStatsSource>;
-
 impl ErofsRootfs {
-    async fn new(reader: Arc<dyn BlockReader>, image_size_bytes: u64) -> Result<Self> {
-        let source_block_size = reader.block_size();
+    pub async fn new(reader: Arc<dyn BlockReader>, image_size_bytes: u64) -> Result<Self> {
+        let paged_lru = PagedLruBlockReader::new(reader, Default::default())
+            .await
+            .map_err(|err| anyhow!("initialize paged LRU for rootfs reader: {err}"))?;
+
+        let source_block_size = paged_lru.block_size();
         if source_block_size == 0 || !source_block_size.is_power_of_two() {
             bail!("source block size must be non-zero power of two");
         }
         let adapter = GibbloxReadAtAdapter {
-            inner: reader,
+            inner: Arc::new(paged_lru),
             block_size: source_block_size as usize,
         };
         let fs = gibblox_core::erofs_rs::EroFS::from_image(adapter, image_size_bytes)
             .await
             .map_err(|err| anyhow!("open erofs image: {err}"))?;
         Ok(Self { fs })
-    }
-
-    /// Wrap an existing BlockReader with EROFS filesystem support.
-    ///
-    /// This is the primary API for constructing an EROFS provider. Callers should
-    /// construct their own gibblox pipeline (HTTP→Cache, File, etc.) and pass it here.
-    ///
-    /// Architecture: GibbloxReadAt(PagedLRU(ExistingChain))
-    /// - PagedLRU is inserted as the first layer that erofs-rs calls into
-    /// - Provides in-memory caching for filesystem metadata and frequently accessed blocks
-    pub async fn wrap(reader: Arc<dyn BlockReader>, image_size_bytes: u64) -> Result<Self> {
-        let paged_lru = Arc::new(
-            PagedLruBlockReader::new(reader, Default::default())
-                .await
-                .map_err(|err| anyhow!("initialize paged LRU for rootfs reader: {err}"))?,
-        );
-        Self::new(paged_lru, image_size_bytes).await
     }
 
     fn normalize(path: &str) -> String {
