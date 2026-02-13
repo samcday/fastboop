@@ -11,16 +11,15 @@ mod wasm {
     use gloo_timers::future::sleep;
     use js_sys::{Array, Object, Reflect};
     use std::cell::RefCell;
-    use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::rc::Rc;
+    use std::sync::Arc;
     use std::time::Duration;
     use tracing::{error, info};
     use wasm_bindgen::{JsCast, JsValue, closure::Closure};
     use wasm_bindgen_futures::spawn_local;
     use web_sys::{DedicatedWorkerGlobalScope, MessageChannel, MessageEvent, MessagePort, Worker};
 
-    const ATTACH_TIMEOUT: Duration = Duration::from_secs(20);
+    const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
     #[derive(Clone, Debug)]
     pub struct WorkerMetadata {
@@ -30,41 +29,16 @@ mod wasm {
 
     #[derive(Clone)]
     pub struct GibbloxWebWorker {
-        inner: Arc<WorkerInner>,
-    }
-
-    struct WorkerInner {
         worker: Worker,
-        next_id: AtomicU32,
-        pending: Arc<Mutex<BTreeMap<u32, oneshot::Sender<GibbloxResult<WorkerMetadata>>>>>,
-        metadata: Arc<Mutex<Option<WorkerMetadata>>>,
-        _on_message: Closure<dyn FnMut(MessageEvent)>,
-        _on_error: Closure<dyn FnMut(web_sys::Event)>,
-    }
-
-    impl Drop for WorkerInner {
-        fn drop(&mut self) {
-            self.worker.set_onmessage(None);
-            self.worker.set_onerror(None);
-            self.worker.terminate();
-            reject_all_pending(
-                &self.pending,
-                GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "gibblox web worker dropped before attach completed",
-                ),
-            );
-        }
+        metadata: WorkerMetadata,
     }
 
     impl GibbloxWebWorker {
-        pub fn new(worker: Worker) -> Self {
-            let pending: Arc<Mutex<BTreeMap<u32, oneshot::Sender<GibbloxResult<WorkerMetadata>>>>> =
-                Arc::new(Mutex::new(BTreeMap::new()));
-            let metadata = Arc::new(Mutex::new(None::<WorkerMetadata>));
+        pub async fn new(worker: Worker) -> GibbloxResult<Self> {
+            let (ready_tx, ready_rx) = oneshot::channel::<GibbloxResult<WorkerMetadata>>();
+            let ready_tx = Rc::new(RefCell::new(Some(ready_tx)));
 
-            let pending_for_message = pending.clone();
-            let metadata_for_message = metadata.clone();
+            let ready_tx_for_message = ready_tx.clone();
             let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
                 let data = event.data();
                 let Ok(cmd) = prop_string(&data, "cmd") else {
@@ -72,100 +46,87 @@ mod wasm {
                 };
                 match cmd.as_str() {
                     "ready" => {
-                        if let Ok(meta) = parse_worker_metadata(&data) {
-                            if let Ok(mut slot) = metadata_for_message.lock() {
-                                *slot = Some(meta);
-                            }
-                        }
-                    }
-                    "attached" => {
-                        let Some(id) = prop_u32(&data, "id") else {
-                            return;
-                        };
-                        let tx = pending_for_message
-                            .lock()
-                            .ok()
-                            .and_then(|mut map| map.remove(&id));
-                        let Some(tx) = tx else {
-                            return;
-                        };
-                        let result = parse_worker_metadata(&data);
-                        if let Ok(meta) = &result {
-                            if let Ok(mut slot) = metadata_for_message.lock() {
-                                *slot = Some(meta.clone());
-                            }
-                        }
-                        let _ = tx.send(result);
+                        let _ = try_send_ready_once(
+                            &ready_tx_for_message,
+                            parse_worker_metadata(&data).map_err(|err| {
+                                GibbloxError::with_message(
+                                    GibbloxErrorKind::Io,
+                                    format!("gibblox worker ready payload invalid: {err}"),
+                                )
+                            }),
+                        );
                     }
                     "error" => {
-                        let Some(id) = prop_u32(&data, "id") else {
-                            return;
-                        };
-                        let tx = pending_for_message
-                            .lock()
-                            .ok()
-                            .and_then(|mut map| map.remove(&id));
-                        let Some(tx) = tx else {
-                            return;
-                        };
                         let message = prop_string(&data, "error")
-                            .unwrap_or_else(|_| "unknown worker error".to_string());
-                        let _ = tx.send(Err(GibbloxError::with_message(
-                            GibbloxErrorKind::Io,
-                            format!("gibblox worker attach failed: {message}"),
-                        )));
+                            .unwrap_or_else(|_| "unknown worker startup error".to_string());
+                        let _ = try_send_ready_once(
+                            &ready_tx_for_message,
+                            Err(GibbloxError::with_message(
+                                GibbloxErrorKind::Io,
+                                format!("gibblox worker startup failed: {message}"),
+                            )),
+                        );
                     }
                     _ => {}
                 }
             });
             worker.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
 
-            let pending_for_error = pending.clone();
+            let ready_tx_for_error = ready_tx.clone();
             let on_error =
                 Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
-                    reject_all_pending(
-                        &pending_for_error,
-                        GibbloxError::with_message(
+                    let _ = try_send_ready_once(
+                        &ready_tx_for_error,
+                        Err(GibbloxError::with_message(
                             GibbloxErrorKind::Io,
                             format!(
                                 "gibblox worker transport error: {}",
                                 js_value_to_string(event.into())
                             ),
-                        ),
+                        )),
                     );
                 });
             worker.set_onerror(Some(on_error.as_ref().unchecked_ref()));
 
-            Self {
-                inner: Arc::new(WorkerInner {
-                    worker,
-                    next_id: AtomicU32::new(1),
-                    pending,
-                    metadata,
-                    _on_message: on_message,
-                    _on_error: on_error,
-                }),
+            let ready_future = async {
+                ready_rx.await.map_err(|_| {
+                    GibbloxError::with_message(
+                        GibbloxErrorKind::Io,
+                        "gibblox worker readiness channel closed",
+                    )
+                })?
             }
+            .fuse();
+            let timeout = sleep(READY_TIMEOUT).fuse();
+            futures_util::pin_mut!(ready_future, timeout);
+            let metadata = match select(ready_future, timeout).await {
+                futures_util::future::Either::Left((result, _)) => result?,
+                futures_util::future::Either::Right((_, _)) => {
+                    worker.set_onmessage(None);
+                    worker.set_onerror(None);
+                    worker.terminate();
+                    return Err(GibbloxError::with_message(
+                        GibbloxErrorKind::Io,
+                        "timed out waiting for gibblox worker ready state",
+                    ));
+                }
+            };
+
+            worker.set_onmessage(None);
+            worker.set_onerror(None);
+            drop(on_message);
+            drop(on_error);
+
+            Ok(Self { worker, metadata })
         }
 
-        pub fn metadata(&self) -> Option<WorkerMetadata> {
-            self.inner
-                .metadata
-                .lock()
-                .ok()
-                .and_then(|slot| slot.clone())
+        pub fn metadata(&self) -> &WorkerMetadata {
+            &self.metadata
         }
 
         pub async fn create_reader(&self) -> GibbloxResult<MessagePortBlockReaderClient> {
             let channel = MessageChannel::new().map_err(js_io)?;
-            let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
             let request = Object::new();
-            set_prop(
-                &request,
-                "id",
-                JsValue::from_f64(id as f64),
-                "build attach request",
-            )?;
             set_prop(
                 &request,
                 "cmd",
@@ -179,57 +140,11 @@ mod wasm {
                 "build attach request",
             )?;
 
-            let (tx, rx) = oneshot::channel::<GibbloxResult<WorkerMetadata>>();
-            {
-                let mut pending = self.inner.pending.lock().map_err(|_| {
-                    GibbloxError::with_message(
-                        GibbloxErrorKind::Io,
-                        "gibblox worker pending map lock poisoned",
-                    )
-                })?;
-                pending.insert(id, tx);
-            }
-
             let transfer = Array::new();
             transfer.push(channel.port2().as_ref());
-            if let Err(err) = self
-                .inner
-                .worker
+            self.worker
                 .post_message_with_transfer(&request.into(), transfer.as_ref())
-            {
-                if let Ok(mut pending) = self.inner.pending.lock() {
-                    let _ = pending.remove(&id);
-                }
-                return Err(js_io(err));
-            }
-
-            let ack_future = async {
-                rx.await.map_err(|_| {
-                    GibbloxError::with_message(
-                        GibbloxErrorKind::Io,
-                        "gibblox worker attach response channel closed",
-                    )
-                })?
-            }
-            .fuse();
-            let timeout = sleep(ATTACH_TIMEOUT).fuse();
-            futures_util::pin_mut!(ack_future, timeout);
-            let metadata = match select(ack_future, timeout).await {
-                futures_util::future::Either::Left((result, _)) => result?,
-                futures_util::future::Either::Right((_, _)) => {
-                    if let Ok(mut pending) = self.inner.pending.lock() {
-                        let _ = pending.remove(&id);
-                    }
-                    return Err(GibbloxError::with_message(
-                        GibbloxErrorKind::Io,
-                        "timed out waiting for gibblox worker attach response",
-                    ));
-                }
-            };
-
-            if let Ok(mut slot) = self.inner.metadata.lock() {
-                *slot = Some(metadata);
-            }
+                .map_err(js_io)?;
 
             MessagePortBlockReaderClient::connect(channel.port1()).await
         }
@@ -241,7 +156,6 @@ mod wasm {
             WORKER_STATE.with(|state| {
                 *state.borrow_mut() = Some(WorkerState {
                     reader: reader.clone(),
-                    identity: identity.clone(),
                     servers: Vec::new(),
                 });
             });
@@ -252,7 +166,7 @@ mod wasm {
                 spawn_local(async move {
                     if let Err(err) = handle_worker_message(&scope, event).await {
                         error!(error = %err, "gibblox worker request failed");
-                        let _ = post_error_response(&scope, None, &err.to_string());
+                        let _ = post_error_response(&scope, &err.to_string());
                     }
                 });
             });
@@ -262,11 +176,11 @@ mod wasm {
             spawn_local(async move {
                 match size_bytes_for_reader(reader).await {
                     Ok(size_bytes) => {
-                        let _ = post_state_response(&scope, "ready", None, size_bytes, &identity);
+                        let _ = post_ready_response(&scope, size_bytes, &identity);
                     }
                     Err(err) => {
                         error!(error = %err, "gibblox worker failed to compute reader metadata");
-                        let _ = post_error_response(&scope, None, &err.to_string());
+                        let _ = post_error_response(&scope, &err.to_string());
                     }
                 }
             });
@@ -275,7 +189,6 @@ mod wasm {
 
     struct WorkerState {
         reader: Arc<dyn BlockReader>,
-        identity: String,
         servers: Vec<MessagePortBlockReaderServer>,
     }
 
@@ -289,12 +202,6 @@ mod wasm {
     ) -> GibbloxResult<()> {
         let data = event.data();
         let cmd = prop_string(&data, "cmd")?;
-        let Some(id) = prop_u32(&data, "id") else {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "gibblox worker command missing id",
-            ));
-        };
 
         match cmd.as_str() {
             "attach" => {
@@ -311,34 +218,17 @@ mod wasm {
                             )
                         })
                 })?;
-                let identity = WORKER_STATE.with(|state| {
-                    state
-                        .borrow()
-                        .as_ref()
-                        .map(|s| s.identity.clone())
-                        .ok_or_else(|| {
-                            GibbloxError::with_message(
-                                GibbloxErrorKind::Io,
-                                "gibblox worker state not initialized",
-                            )
-                        })
-                })?;
 
-                let server = MessagePortBlockReaderServer::serve(port, reader.clone())?;
+                let server = MessagePortBlockReaderServer::serve(port, reader)?;
                 WORKER_STATE.with(|state| {
                     if let Some(state) = state.borrow_mut().as_mut() {
                         state.servers.push(server);
                     }
                 });
 
-                let size_bytes = size_bytes_for_reader(reader).await?;
-                post_state_response(scope, "attached", Some(id), size_bytes, &identity)
+                Ok(())
             }
-            _ => post_error_response(
-                scope,
-                Some(id),
-                &format!("unsupported gibblox worker command: {cmd}"),
-            ),
+            _ => post_error_response(scope, &format!("unsupported gibblox worker command: {cmd}")),
         }
     }
 
@@ -358,6 +248,17 @@ mod wasm {
             size_bytes,
             identity,
         })
+    }
+
+    fn try_send_ready_once(
+        sender: &Rc<RefCell<Option<oneshot::Sender<GibbloxResult<WorkerMetadata>>>>>,
+        value: GibbloxResult<WorkerMetadata>,
+    ) -> bool {
+        if let Some(sender) = sender.borrow_mut().take() {
+            let _ = sender.send(value);
+            return true;
+        }
+        false
     }
 
     fn extract_port(event: &MessageEvent, data: &JsValue, cmd: &str) -> GibbloxResult<MessagePort> {
@@ -382,10 +283,8 @@ mod wasm {
             })
     }
 
-    fn post_state_response(
+    fn post_ready_response(
         scope: &DedicatedWorkerGlobalScope,
-        cmd: &str,
-        id: Option<u32>,
         size_bytes: u64,
         identity: &str,
     ) -> GibbloxResult<()> {
@@ -393,37 +292,25 @@ mod wasm {
         set_prop(
             &response,
             "cmd",
-            JsValue::from_str(cmd),
-            "build worker state response",
+            JsValue::from_str("ready"),
+            "build worker ready response",
         )?;
-        if let Some(id) = id {
-            set_prop(
-                &response,
-                "id",
-                JsValue::from_f64(id as f64),
-                "build worker state response",
-            )?;
-        }
         set_prop(
             &response,
             "size_bytes",
             JsValue::from_str(&size_bytes.to_string()),
-            "build worker state response",
+            "build worker ready response",
         )?;
         set_prop(
             &response,
             "identity",
             JsValue::from_str(identity),
-            "build worker state response",
+            "build worker ready response",
         )?;
         scope.post_message(&response.into()).map_err(js_io)
     }
 
-    fn post_error_response(
-        scope: &DedicatedWorkerGlobalScope,
-        id: Option<u32>,
-        message: &str,
-    ) -> GibbloxResult<()> {
+    fn post_error_response(scope: &DedicatedWorkerGlobalScope, message: &str) -> GibbloxResult<()> {
         let response = Object::new();
         set_prop(
             &response,
@@ -431,14 +318,6 @@ mod wasm {
             JsValue::from_str("error"),
             "build worker error response",
         )?;
-        if let Some(id) = id {
-            set_prop(
-                &response,
-                "id",
-                JsValue::from_f64(id as f64),
-                "build worker error response",
-            )?;
-        }
         set_prop(
             &response,
             "error",
@@ -479,33 +358,6 @@ mod wasm {
                 format!("field {key} has invalid u64 value"),
             )
         })
-    }
-
-    fn prop_u32(target: &JsValue, key: &str) -> Option<u32> {
-        Reflect::get(target, &JsValue::from_str(key))
-            .ok()
-            .and_then(|value| value.as_f64())
-            .and_then(|value| {
-                if value.is_finite() && value >= 0.0 && value <= u32::MAX as f64 {
-                    Some(value as u32)
-                } else {
-                    None
-                }
-            })
-    }
-
-    fn reject_all_pending(
-        pending: &Arc<Mutex<BTreeMap<u32, oneshot::Sender<GibbloxResult<WorkerMetadata>>>>>,
-        err: GibbloxError,
-    ) {
-        let senders = if let Ok(mut map) = pending.lock() {
-            std::mem::take(&mut *map).into_values().collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        for sender in senders {
-            let _ = sender.send(Err(err.clone()));
-        }
     }
 
     fn js_io(err: JsValue) -> GibbloxError {

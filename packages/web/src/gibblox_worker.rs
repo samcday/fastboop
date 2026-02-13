@@ -42,7 +42,9 @@ mod wasm {
 
         let worker = Worker::new_with_options(&script_url, &opts)
             .map_err(|err| anyhow!("start gibblox worker: {}", js_value_to_string(err)))?;
-        Ok(GibbloxWebWorker::new(worker))
+        GibbloxWebWorker::new(worker)
+            .await
+            .map_err(|err| anyhow!("initialize gibblox worker: {err}"))
     }
 
     fn post_worker_error(scope: &DedicatedWorkerGlobalScope, message: &str) -> Result<()> {
