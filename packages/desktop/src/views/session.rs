@@ -4,9 +4,8 @@ use std::sync::Arc;
 use dioxus::prelude::{Signal, WritableExt};
 use fastboop_core::DeviceProfile;
 use fastboop_fastboot_rusb::RusbDeviceHandle;
-use fastboop_rootfs_erofs::CacheStatsHandle;
 use gibblox_core::BlockReader;
-use ui::{CacheStatsViewModel, SmooStatsHandle};
+use ui::SmooStatsHandle;
 
 #[derive(Clone)]
 pub struct ProbedDevice {
@@ -23,7 +22,6 @@ pub struct BootRuntime {
     pub reader: Arc<dyn BlockReader>,
     pub size_bytes: u64,
     pub identity: String,
-    pub cache_stats: Option<CacheStatsHandle>,
     pub smoo_stats: SmooStatsHandle,
 }
 
@@ -31,7 +29,6 @@ pub struct BootRuntime {
 pub enum SessionPhase {
     Booting {
         step: String,
-        cache_stats: Option<CacheStatsViewModel>,
     },
     Active {
         runtime: BootRuntime,

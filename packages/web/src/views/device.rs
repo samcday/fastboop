@@ -31,7 +31,7 @@ use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 use ui::{
-    oneplus_fajita_dtbo_overlays, CacheStatsPanel, CacheStatsViewModel, SmooStatsHandle,
+    oneplus_fajita_dtbo_overlays, SmooStatsHandle,
     SmooStatsPanel, SmooStatsViewModel,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -91,8 +91,8 @@ pub fn DevicePage(session_id: String) -> Element {
     };
 
     match session.phase {
-        SessionPhase::Booting { step, cache_stats } => {
-            rsx! { BootingDevice { session_id, step, cache_stats } }
+        SessionPhase::Booting { step } => {
+            rsx! { BootingDevice { session_id, step } }
         }
         SessionPhase::Active { .. } => rsx! { BootedDevice { session_id } },
         SessionPhase::Error { summary } => rsx! { BootError { summary } },
@@ -103,7 +103,6 @@ pub fn DevicePage(session_id: String) -> Element {
 fn BootingDevice(
     session_id: String,
     step: String,
-    cache_stats: Option<CacheStatsViewModel>,
 ) -> Element {
     let sessions = use_context::<SessionStore>();
     let mut started = use_signal(|| false);
@@ -146,9 +145,6 @@ fn BootingDevice(
                 p { class: "landing__eyebrow", "Booting" }
                 h1 { "Working on it..." }
                 p { class: "landing__lede", "{step}" }
-                if let Some(cache_stats) = cache_stats {
-                    CacheStatsPanel { stats: cache_stats }
-                }
             }
         }
     }
@@ -174,10 +170,7 @@ fn BootedDevice(session_id: String) -> Element {
         return rsx! {};
     };
     let mut kickoff = use_signal(|| false);
-    let cache_stats = use_signal(|| Option::<CacheStatsViewModel>::None);
     let smoo_stats = use_signal(|| Option::<SmooStatsViewModel>::None);
-    #[cfg(target_arch = "wasm32")]
-    let cache_stats_stop = use_signal(|| Option::<Rc<Cell<bool>>>::None);
     #[cfg(target_arch = "wasm32")]
     let smoo_stats_stop = use_signal(|| Option::<Rc<Cell<bool>>>::None);
     let runtime_for_kickoff = Rc::clone(&runtime);
@@ -252,45 +245,6 @@ fn BootedDevice(session_id: String) -> Element {
 
     #[cfg(target_arch = "wasm32")]
     {
-        let mut cache_stats = cache_stats;
-        let mut cache_stats_stop = cache_stats_stop;
-        let cache_stats_handle = runtime.cache_stats.clone();
-        use_effect(move || {
-            let Some(cache_stats_handle) = cache_stats_handle.clone() else {
-                return;
-            };
-            if cache_stats_stop().is_some() {
-                return;
-            }
-
-            let stop = Rc::new(Cell::new(false));
-            cache_stats_stop.set(Some(stop.clone()));
-            spawn_detached(async move {
-                loop {
-                    if stop.get() {
-                        break;
-                    }
-                    match cache_stats_handle.snapshot().await {
-                        Ok(snapshot) => {
-                            cache_stats.set(Some(CacheStatsViewModel {
-                                total_blocks: snapshot.total_blocks,
-                                cached_blocks: snapshot.cached_blocks,
-                                total_hits: snapshot.total_hits,
-                                total_misses: snapshot.total_misses,
-                            }));
-                        }
-                        Err(err) => {
-                            tracing::debug!("cache stats poll failed: {err}");
-                        }
-                    }
-                    sleep(CACHE_STATS_POLL_INTERVAL).await;
-                }
-            });
-        });
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
         let mut smoo_stats = smoo_stats;
         let mut smoo_stats_stop = smoo_stats_stop;
         let smoo_stats_handle = runtime.smoo_stats.clone();
@@ -355,16 +309,6 @@ fn BootedDevice(session_id: String) -> Element {
 
     #[cfg(target_arch = "wasm32")]
     {
-        let mut cache_stats_stop = cache_stats_stop;
-        use_drop(move || {
-            if let Some(stop) = cache_stats_stop.write().take() {
-                stop.set(true);
-            }
-        });
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
         let mut smoo_stats_stop = smoo_stats_stop;
         use_drop(move || {
             if let Some(stop) = smoo_stats_stop.write().take() {
@@ -373,7 +317,6 @@ fn BootedDevice(session_id: String) -> Element {
         });
     }
 
-    let cache_stats = cache_stats();
     let smoo_stats = smoo_stats();
 
     rsx! {
@@ -385,9 +328,6 @@ fn BootedDevice(session_id: String) -> Element {
                 p { class: "landing__note", "Rootfs: {ROOTFS_URL}" }
                 if let Some(smoo_stats) = smoo_stats {
                     SmooStatsPanel { stats: smoo_stats }
-                }
-                if let Some(cache_stats) = cache_stats {
-                    CacheStatsPanel { stats: cache_stats }
                 }
                 if host_connected {
                     SerialLogPanel { device_vid, device_pid }
@@ -817,9 +757,7 @@ async fn request_serial_port(
         .map_err(|_| anyhow::anyhow!("requestPort did not return SerialPort"))?;
     if !serial_port_matches_device(&port, device_vid, device_pid) {
         return Err(anyhow::anyhow!(
-            "requestPort returned a serial device that did not match {:04x}:{:04x}",
-            device_vid,
-            device_pid
+            "requestPort returned a serial device that did not match {device_vid:04x}:{device_pid:04x}"
         ));
     }
     Ok(port)
@@ -1021,7 +959,6 @@ async fn boot_selected_device(
                 "Opening rootfs {} for {} ({:04x}:{:04x})",
                 ROOTFS_URL, session.device.name, session.device.vid, session.device.pid
             ),
-            cache_stats: None,
         },
     );
     update_session_phase(
@@ -1029,7 +966,6 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Building stage0".to_string(),
-            cache_stats: None,
         },
     );
     let dtbo_overlays = if session.device.profile.id == "oneplus-fajita" {
@@ -1065,7 +1001,6 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Assembling android boot image".to_string(),
-            cache_stats: None,
         },
     );
     let cmdline = join_cmdline(
@@ -1109,7 +1044,6 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Opening fastboot transport".to_string(),
-            cache_stats: None,
         },
     );
     let mut fastboot = session
@@ -1124,7 +1058,6 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Downloading boot image".to_string(),
-            cache_stats: None,
         },
     );
     download(&mut fastboot, &bootimg)
@@ -1136,7 +1069,6 @@ async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: "Issuing fastboot boot".to_string(),
-            cache_stats: None,
         },
     );
     boot(&mut fastboot)
@@ -1149,7 +1081,6 @@ async fn boot_selected_device(
         identity: runtime.identity,
         #[cfg(target_arch = "wasm32")]
         gibblox_worker: runtime.gibblox_worker,
-        cache_stats: runtime.cache_stats,
         smoo_stats: runtime.smoo_stats,
     }))
 }
@@ -1213,7 +1144,6 @@ async fn build_stage0_artifacts(
                     identity: rootfs_identity,
                     #[cfg(target_arch = "wasm32")]
                     gibblox_worker,
-                    cache_stats: None, // TODO: Re-add cache stats support
                     smoo_stats: SmooStatsHandle::new(),
                 },
             ))

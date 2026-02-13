@@ -26,7 +26,6 @@ pub(crate) fn run_host_daemon(
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,
     identity: String,
-    cache_stats: Option<CacheStatsHandle>,
     events: Sender<BootEvent>,
     shutdown: CancellationToken,
 ) -> Result<()> {
@@ -38,7 +37,6 @@ pub(crate) fn run_host_daemon(
         reader,
         size_bytes,
         identity,
-        cache_stats,
         events,
         shutdown,
     ))
@@ -48,7 +46,6 @@ async fn run_host_daemon_async(
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,
     identity: String,
-    cache_stats: Option<CacheStatsHandle>,
     events: Sender<BootEvent>,
     shutdown: CancellationToken,
 ) -> Result<()> {
@@ -113,7 +110,6 @@ async fn run_host_daemon_async(
             identity.clone(),
             SessionRuntime {
                 shutdown: shutdown.clone(),
-                cache_stats: cache_stats.clone(),
                 events: events.clone(),
             },
         )
@@ -153,7 +149,6 @@ enum SessionEnd {
 #[derive(Clone)]
 struct SessionRuntime {
     shutdown: CancellationToken,
-    cache_stats: Option<CacheStatsHandle>,
     events: Sender<BootEvent>,
 }
 
@@ -225,30 +220,6 @@ async fn run_session(
                             BootEvent::Log(format!("smoo heartbeat failed: {err}")),
                         );
                         return Ok(SessionEnd::TransportLost);
-                    }
-                }
-
-                if let Some(cache_stats) = &runtime.cache_stats {
-                    match cache_stats.snapshot().await {
-                        Ok(stats) => {
-                            let hit_rate_pct = stats.hit_rate().round().clamp(0.0, 100.0) as u64;
-                            let fill_rate_pct = stats.fill_rate().round().clamp(0.0, 100.0) as u64;
-                            emit(
-                                &runtime.events,
-                                BootEvent::GibbloxStats {
-                                    hit_rate_pct,
-                                    fill_rate_pct,
-                                    cached_blocks: stats.cached_blocks,
-                                    total_blocks: stats.total_blocks,
-                                },
-                            );
-                        }
-                        Err(err) => {
-                            emit(
-                                &runtime.events,
-                                BootEvent::Log(format!("gibblox cache stats failed: {err}")),
-                            );
-                        }
                     }
                 }
 

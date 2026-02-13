@@ -4,10 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dioxus::prelude::{Signal, WritableExt};
 use fastboop_core::DeviceProfile;
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
-use fastboop_rootfs_erofs::CacheStatsHandle;
 #[cfg(target_arch = "wasm32")]
 use gibblox_web_worker::GibbloxWebWorker;
-use ui::{CacheStatsViewModel, SmooStatsHandle};
+use ui::SmooStatsHandle;
 
 #[derive(Clone)]
 pub struct ProbedDevice {
@@ -24,7 +23,6 @@ pub struct BootRuntime {
     pub identity: String,
     #[cfg(target_arch = "wasm32")]
     pub gibblox_worker: Option<GibbloxWebWorker>,
-    pub cache_stats: Option<CacheStatsHandle>,
     pub smoo_stats: SmooStatsHandle,
 }
 
@@ -32,7 +30,6 @@ pub struct BootRuntime {
 pub enum SessionPhase {
     Booting {
         step: String,
-        cache_stats: Option<CacheStatsViewModel>,
     },
     Active {
         runtime: Rc<BootRuntime>,
