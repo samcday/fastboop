@@ -46,6 +46,7 @@ pub enum BootEvent {
         export_count: u32,
         session_id: u64,
     },
+    #[allow(dead_code)]
     GibbloxStats {
         hit_rate_pct: u64,
         fill_rate_pct: u64,

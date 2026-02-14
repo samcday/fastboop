@@ -24,12 +24,9 @@ use smoo_host_core::{
 };
 use smoo_host_session::{HostSession, HostSessionConfig, HostSessionOutcome};
 use smoo_host_transport_rusb::RusbTransport;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tracing::{error, info};
-use ui::{
-    oneplus_fajita_dtbo_overlays, CacheStatsPanel, CacheStatsViewModel, SmooStatsHandle,
-    SmooStatsPanel, SmooStatsViewModel,
-};
+use ui::{oneplus_fajita_dtbo_overlays, SmooStatsHandle, SmooStatsPanel, SmooStatsViewModel};
 use url::Url;
 
 use super::session::{update_session_phase, BootRuntime, SessionPhase, SessionStore};
@@ -315,14 +312,9 @@ async fn boot_selected_device(
         smoo_serial: session.device.serial.clone(),
         personalization: Some(personalization_from_host()),
     };
-    let (build, runtime) = build_stage0_artifacts(
-        session.device.profile.clone(),
-        stage0_opts,
-        *sessions,
-        session_id.to_string(),
-    )
-    .await
-    .context("open rootfs and build stage0")?;
+    let (build, runtime) = build_stage0_artifacts(session.device.profile.clone(), stage0_opts)
+        .await
+        .context("open rootfs and build stage0")?;
 
     update_session_phase(
         sessions,
@@ -414,11 +406,8 @@ async fn boot_selected_device(
 async fn build_stage0_artifacts(
     profile: fastboop_core::DeviceProfile,
     stage0_opts: Stage0Options,
-    mut sessions: SessionStore,
-    session_id: String,
 ) -> Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
     let (tx, rx) = oneshot::channel();
-    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<CacheStatsViewModel>();
     std::thread::Builder::new()
         .name("fastboop-stage0-build".to_string())
         .spawn(move || {
@@ -468,14 +457,8 @@ async fn build_stage0_artifacts(
         })
         .context("spawn stage0 build worker thread")?;
 
-    let mut rx = rx;
-    loop {
-        tokio::select! {
-            result = &mut rx => {
-                return result.map_err(|_| anyhow!("stage0 build worker thread exited unexpectedly"))?;
-            }
-        }
-    }
+    rx.await
+        .map_err(|_| anyhow!("stage0 build worker thread exited unexpectedly"))?
 }
 
 fn run_rusb_host_daemon(
