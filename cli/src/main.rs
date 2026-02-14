@@ -35,17 +35,18 @@ enum Commands {
     Stage0(Stage0Args),
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Boot(args) => run_boot(args),
+        Commands::Boot(args) => run_boot(args).await,
         Commands::Detect(args) => {
             setup_default_tracing();
-            run_detect(args)
+            run_detect(args).await
         }
         Commands::Stage0(args) => {
             setup_default_tracing();
-            run_stage0(args)
+            run_stage0(args).await
         }
     }
 }

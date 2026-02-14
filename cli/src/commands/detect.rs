@@ -23,7 +23,7 @@ pub struct DetectArgs {
     pub wait: u64,
 }
 
-pub fn run_detect(args: DetectArgs) -> Result<()> {
+pub async fn run_detect(args: DetectArgs) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
     let profiles = load_device_profiles(&devpro_dirs)?;
     let profiles = dedup_profiles(&profiles);
@@ -47,7 +47,7 @@ pub fn run_detect(args: DetectArgs) -> Result<()> {
     loop {
         match watcher.try_next_event() {
             Poll::Ready(Ok(DeviceEvent::Arrived { device })) => {
-                if handle_arrived_device(&profiles, &profiles_by_id, device) {
+                if handle_arrived_device(&profiles, &profiles_by_id, device).await {
                     return Ok(());
                 }
             }
@@ -76,16 +76,16 @@ pub fn run_detect(args: DetectArgs) -> Result<()> {
                         return Ok(());
                     }
                     let remaining = deadline.saturating_duration_since(now);
-                    std::thread::sleep(remaining.min(IDLE_POLL_INTERVAL));
+                    tokio::time::sleep(remaining.min(IDLE_POLL_INTERVAL)).await;
                 } else {
-                    std::thread::sleep(IDLE_POLL_INTERVAL);
+                    tokio::time::sleep(IDLE_POLL_INTERVAL).await;
                 }
             }
         }
     }
 }
 
-fn handle_arrived_device(
+async fn handle_arrived_device(
     profiles: &[DeviceProfile],
     profiles_by_id: &HashMap<String, &DeviceProfile>,
     device: RusbDeviceHandle,
@@ -97,7 +97,7 @@ fn handle_arrived_device(
     );
 
     let candidates = [device];
-    let reports = pollster::block_on(probe_candidates(profiles, &candidates));
+    let reports = probe_candidates(profiles, &candidates).await;
     let mut found = false;
     for report in reports {
         let candidate = &candidates[report.candidate_index];

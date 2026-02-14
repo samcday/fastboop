@@ -2852,7 +2852,6 @@ dependencies = [
  "gibblox-core",
  "gibblox-file",
  "gibblox-http",
- "pollster 0.3.0",
  "ratatui",
  "serde",
  "serde_json",

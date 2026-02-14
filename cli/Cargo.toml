@@ -12,7 +12,6 @@ fastboop-core = { path = "../crates/fastboop-core" }
 fastboop-rootfs-erofs = { path = "../crates/fastboop-rootfs-erofs" }
 fastboop-stage0-generator = { path = "../crates/fastboop-stage0-generator" }
 fastboop-fastboot-rusb = { path = "../crates/fastboop-fastboot-rusb" }
-pollster = "0.3.0"
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.132"
 serde_yaml = "0.9.34"

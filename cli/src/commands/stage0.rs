@@ -45,7 +45,7 @@ pub struct Stage0Args {
     pub serial: bool,
 }
 
-pub fn run_stage0(args: Stage0Args) -> Result<()> {
+pub async fn run_stage0(args: Stage0Args) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
     let profiles = load_device_profiles(&devpro_dirs)?;
     let profile = profiles
@@ -88,18 +88,12 @@ pub fn run_stage0(args: Stage0Args) -> Result<()> {
     const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
 
     let existing = read_existing_initrd(&args.augment)?;
-    let rootfs_rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("create tokio runtime for rootfs reads")?;
-    let build = rootfs_rt
-        .block_on(async {
-            let rootfs_str = args.rootfs.to_string_lossy();
+    let build = {
+        let rootfs_str = args.rootfs.to_string_lossy();
 
-            // Build gibblox pipeline explicitly
-            let reader: Arc<dyn BlockReader> = if rootfs_str.starts_with("http://")
-                || rootfs_str.starts_with("https://")
-            {
+        // Build gibblox pipeline explicitly
+        let reader: Arc<dyn BlockReader> =
+            if rootfs_str.starts_with("http://") || rootfs_str.starts_with("https://") {
                 // HTTP pipeline: HTTP → Cache
                 let url = Url::parse(&rootfs_str)
                     .with_context(|| format!("parse rootfs URL {rootfs_str}"))?;
@@ -123,23 +117,23 @@ pub fn run_stage0(args: Stage0Args) -> Result<()> {
                 Arc::new(file_reader)
             };
 
-            let total_blocks = reader.total_blocks().await?;
-            let image_size_bytes = total_blocks * reader.block_size() as u64;
+        let total_blocks = reader.total_blocks().await?;
+        let image_size_bytes = total_blocks * reader.block_size() as u64;
 
-            // Wrap in EROFS
-            let provider = ErofsRootfs::new(reader, image_size_bytes).await?;
+        // Wrap in EROFS
+        let provider = ErofsRootfs::new(reader, image_size_bytes).await?;
 
-            let build = build_stage0(
-                profile,
-                &provider,
-                &opts,
-                args.cmdline_append.as_deref(),
-                existing.as_deref(),
-            )
-            .await;
-            anyhow::Ok(build)
-        })?
-        .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
+        let build = build_stage0(
+            profile,
+            &provider,
+            &opts,
+            args.cmdline_append.as_deref(),
+            existing.as_deref(),
+        )
+        .await;
+        anyhow::Ok(build)
+    }?
+    .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
 
     let mut stdout = std::io::stdout().lock();
     stdout

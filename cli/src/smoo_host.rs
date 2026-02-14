@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Result, anyhow, ensure};
 use gibblox_core::BlockReader;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{BlockSource, BlockSourceHandle, register_export};
@@ -21,20 +21,14 @@ const DISCOVERY_RETRY: Duration = Duration::from_millis(500);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 
-pub(crate) fn run_host_daemon(
+pub(crate) async fn run_host_daemon(
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,
     identity: String,
     events: Sender<BootEvent>,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("create tokio runtime for smoo host")?;
-    runtime.block_on(run_host_daemon_async(
-        reader, size_bytes, identity, events, shutdown,
-    ))
+    run_host_daemon_async(reader, size_bytes, identity, events, shutdown).await
 }
 
 async fn run_host_daemon_async(

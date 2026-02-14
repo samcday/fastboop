@@ -62,10 +62,11 @@ pub struct BootArgs {
     pub plain: bool,
 }
 
-pub fn run_boot(args: BootArgs) -> Result<()> {
+pub async fn run_boot(args: BootArgs) -> Result<()> {
     let use_tui = !args.plain && std::io::stdout().is_terminal() && std::io::stderr().is_terminal();
     let (tx, rx) = std::sync::mpsc::channel::<BootEvent>();
     let shutdown = CancellationToken::new();
+    let runtime = tokio::runtime::Handle::current();
 
     if use_tui {
         crate::setup_tui_tracing(tx.clone());
@@ -74,7 +75,7 @@ pub fn run_boot(args: BootArgs) -> Result<()> {
     }
 
     let worker_shutdown = shutdown.clone();
-    let worker = thread::spawn(move || run_boot_worker(args, tx, worker_shutdown));
+    let worker = thread::spawn(move || run_boot_worker(args, tx, worker_shutdown, runtime));
 
     if use_tui {
         match run_boot_tui(&rx)? {
@@ -97,6 +98,7 @@ fn run_boot_worker(
     args: BootArgs,
     events: Sender<BootEvent>,
     shutdown: CancellationToken,
+    runtime: tokio::runtime::Handle,
 ) -> Result<()> {
     emit(
         &events,
@@ -105,7 +107,7 @@ fn run_boot_worker(
             detail: "loading profiles".to_string(),
         },
     );
-    let result = run_boot_inner(args, events.clone(), shutdown);
+    let result = runtime.block_on(run_boot_inner(args, events.clone(), shutdown));
     match &result {
         Ok(()) => emit(&events, BootEvent::Finished),
         Err(err) => {
@@ -122,7 +124,7 @@ fn run_boot_worker(
     result
 }
 
-fn run_boot_inner(
+async fn run_boot_inner(
     args: BootArgs,
     events: Sender<BootEvent>,
     shutdown: CancellationToken,
@@ -154,7 +156,7 @@ fn run_boot_inner(
             },
         );
         let wait = Duration::from_secs(args.wait);
-        Some(wait_for_fastboot_device(profile, wait, &events)?)
+        Some(wait_for_fastboot_device(profile, wait, &events).await?)
     } else {
         None
     };
@@ -232,18 +234,12 @@ fn run_boot_inner(
 
     const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
 
-    let rootfs_rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("create tokio runtime for rootfs reads")?;
-    let (_provider, block_reader, image_size_bytes, image_identity, build) =
-        rootfs_rt.block_on(async {
-            let rootfs_str = args.stage0.rootfs.to_string_lossy();
+    let (_provider, block_reader, image_size_bytes, image_identity, build) = {
+        let rootfs_str = args.stage0.rootfs.to_string_lossy();
 
-            // Build gibblox pipeline explicitly
-            let reader: Arc<dyn BlockReader> = if rootfs_str.starts_with("http://")
-                || rootfs_str.starts_with("https://")
-            {
+        // Build gibblox pipeline explicitly
+        let reader: Arc<dyn BlockReader> =
+            if rootfs_str.starts_with("http://") || rootfs_str.starts_with("https://") {
                 // HTTP pipeline: HTTP → Cache
                 let url = Url::parse(&rootfs_str)
                     .with_context(|| format!("parse rootfs URL {rootfs_str}"))?;
@@ -267,23 +263,23 @@ fn run_boot_inner(
                 Arc::new(file_reader)
             };
 
-            let total_blocks = reader.total_blocks().await?;
-            let image_size_bytes = total_blocks * reader.block_size() as u64;
-            let image_identity = block_identity_string(reader.as_ref());
+        let total_blocks = reader.total_blocks().await?;
+        let image_size_bytes = total_blocks * reader.block_size() as u64;
+        let image_identity = block_identity_string(reader.as_ref());
 
-            // Wrap in EROFS
-            let provider = ErofsRootfs::new(reader.clone(), image_size_bytes).await?;
+        // Wrap in EROFS
+        let provider = ErofsRootfs::new(reader.clone(), image_size_bytes).await?;
 
-            let build = build_stage0(
-                profile,
-                &provider,
-                &opts,
-                extra_cmdline.as_deref(),
-                existing.as_deref(),
-            )
-            .await;
-            anyhow::Ok((provider, reader, image_size_bytes, image_identity, build))
-        })?;
+        let build = build_stage0(
+            profile,
+            &provider,
+            &opts,
+            extra_cmdline.as_deref(),
+            existing.as_deref(),
+        )
+        .await;
+        anyhow::Ok((provider, reader, image_size_bytes, image_identity, build))
+    }?;
 
     let build = build.map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
 
@@ -358,7 +354,8 @@ fn run_boot_inner(
         },
     );
 
-    pollster::block_on(download(&mut fastboot.fastboot, &bootimg))
+    download(&mut fastboot.fastboot, &bootimg)
+        .await
         .map_err(|e| anyhow::anyhow!("fastboot download failed: {e}"))?;
 
     emit(
@@ -369,22 +366,23 @@ fn run_boot_inner(
         },
     );
 
-    pollster::block_on(boot(&mut fastboot.fastboot))
+    boot(&mut fastboot.fastboot)
+        .await
         .map_err(|e| anyhow::anyhow!("fastboot boot failed: {e}"))?;
 
     run_host_daemon(
         block_reader,
         image_size_bytes,
         image_identity,
-        None, // TODO: Re-add cache stats support
         events,
         shutdown,
     )
+    .await
     .context("running smoo host daemon after boot")?;
     Ok(())
 }
 
-fn wait_for_fastboot_device(
+async fn wait_for_fastboot_device(
     profile: &DeviceProfile,
     wait: Duration,
     events: &Sender<BootEvent>,
@@ -401,7 +399,7 @@ fn wait_for_fastboot_device(
     loop {
         match watcher.try_next_event() {
             Poll::Ready(Ok(DeviceEvent::Arrived { device })) => {
-                if let Some(fastboot) = probe_arrived_device(profile, device, events)? {
+                if let Some(fastboot) = probe_arrived_device(profile, device, events).await? {
                     return Ok(fastboot);
                 }
             }
@@ -441,16 +439,16 @@ fn wait_for_fastboot_device(
                         );
                     }
                     let remaining = deadline.saturating_duration_since(now);
-                    std::thread::sleep(remaining.min(IDLE_POLL_INTERVAL));
+                    tokio::time::sleep(remaining.min(IDLE_POLL_INTERVAL)).await;
                 } else {
-                    std::thread::sleep(IDLE_POLL_INTERVAL);
+                    tokio::time::sleep(IDLE_POLL_INTERVAL).await;
                 }
             }
         }
     }
 }
 
-fn probe_arrived_device(
+async fn probe_arrived_device(
     profile: &DeviceProfile,
     device: RusbDeviceHandle,
     events: &Sender<BootEvent>,
@@ -462,7 +460,7 @@ fn probe_arrived_device(
     }
     let serial = device.usb_serial_number();
 
-    let mut fastboot = match pollster::block_on(device.open_fastboot()) {
+    let mut fastboot = match device.open_fastboot().await {
         Ok(fastboot) => fastboot,
         Err(err) => {
             emit(
@@ -474,7 +472,7 @@ fn probe_arrived_device(
     };
 
     let mut session = FastbootSession::new(&mut fastboot);
-    match pollster::block_on(session.probe_profile(profile)) {
+    match session.probe_profile(profile).await {
         Ok(()) => {
             return Ok(Some(DetectedFastbootDevice {
                 fastboot,
