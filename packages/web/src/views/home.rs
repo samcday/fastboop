@@ -3,8 +3,12 @@ use std::collections::{HashMap, HashSet};
 
 use dioxus::prelude::*;
 #[cfg(target_arch = "wasm32")]
+use js_sys::Reflect;
+#[cfg(target_arch = "wasm32")]
 use ui::{DetectedDevice, TransportKind};
 use ui::{Hero, ProbeState};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsValue;
 
 use crate::Route;
 
@@ -37,12 +41,18 @@ pub fn Home() -> Element {
     let candidates = use_signal(Vec::<WebUsbDeviceHandle>::new);
 
     #[cfg(target_arch = "wasm32")]
+    let webusb_supported = webusb_supported();
+
+    #[cfg(target_arch = "wasm32")]
     {
         let mut watcher_started = use_signal(|| false);
         let mut refresh = refresh;
         let mut candidates = candidates;
 
         use_effect(move || {
+            if !webusb_supported {
+                return;
+            }
             if watcher_started() {
                 return;
             }
@@ -102,9 +112,16 @@ pub fn Home() -> Element {
         let refresh = refresh();
         #[cfg(target_arch = "wasm32")]
         {
+            let webusb_supported = webusb_supported;
             let candidates = candidates();
             async move {
                 let _ = refresh;
+                if !webusb_supported {
+                    return ProbeSnapshot {
+                        state: ProbeState::Unsupported,
+                        devices: Vec::new(),
+                    };
+                }
                 probe_fastboot_devices(candidates).await
             }
         }
@@ -131,33 +148,38 @@ pub fn Home() -> Element {
 
     #[cfg(target_arch = "wasm32")]
     let on_connect: Option<EventHandler<MouseEvent>> = {
-        let refresh = refresh;
-        let candidates = candidates;
-        Some(EventHandler::new(move |_| {
-            let profiles = load_profiles();
-            let filters = profile_filters(&profiles);
-            let mut refresh = refresh;
-            let mut candidates = candidates;
-            spawn(async move {
-                match request_device(&filters).await {
-                    Ok(device) => {
-                        let exists = {
-                            let current = candidates.read();
-                            current.iter().any(|candidate| {
-                                candidate.vid() == device.vid() && candidate.pid() == device.pid()
-                            })
-                        };
-                        if !exists {
-                            candidates.write().push(device);
-                            refresh.set(refresh().saturating_add(1));
+        if !webusb_supported {
+            None
+        } else {
+            let refresh = refresh;
+            let candidates = candidates;
+            Some(EventHandler::new(move |_| {
+                let profiles = load_profiles();
+                let filters = profile_filters(&profiles);
+                let mut refresh = refresh;
+                let mut candidates = candidates;
+                spawn(async move {
+                    match request_device(&filters).await {
+                        Ok(device) => {
+                            let exists = {
+                                let current = candidates.read();
+                                current.iter().any(|candidate| {
+                                    candidate.vid() == device.vid()
+                                        && candidate.pid() == device.pid()
+                                })
+                            };
+                            if !exists {
+                                candidates.write().push(device);
+                                refresh.set(refresh().saturating_add(1));
+                            }
+                        }
+                        Err(err) => {
+                            debug!(target: "fastboop::web::probe", %err, "webusb request device failed");
                         }
                     }
-                    Err(err) => {
-                        debug!(target: "fastboop::web::probe", %err, "webusb request device failed");
-                    }
-                }
-            });
-        }))
+                });
+            }))
+        }
     };
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -247,4 +269,12 @@ async fn probe_fastboot_devices(candidates: Vec<WebUsbDeviceHandle>) -> ProbeSna
         },
         devices: probed,
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn webusb_supported() -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    Reflect::has(window.navigator().as_ref(), &JsValue::from_str("usb")).unwrap_or(false)
 }
