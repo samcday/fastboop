@@ -8,6 +8,7 @@ members = [
     "crates/gibblox-casync-std",
     "crates/gibblox-casync-web",
     "crates/gibblox-iso9660",
+    "crates/gibblox-ext4",
     "crates/gibblox-file",
     "crates/gibblox-http",
     "crates/gibblox-cache",
