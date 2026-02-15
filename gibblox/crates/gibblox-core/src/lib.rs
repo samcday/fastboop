@@ -11,12 +11,14 @@ use core::{fmt, hash::Hasher};
 
 mod byte_range;
 mod erofs;
+mod gpt;
 mod lru;
 mod paged;
 
 pub use byte_range::ByteRangeReader;
 pub use erofs::EroBlockReader;
 pub use erofs_rs;
+pub use gpt::{GptBlockReader, GptPartitionSelector};
 pub use lru::{LruBlockReader, LruConfig};
 pub use paged::{PagedBlockConfig, PagedBlockReader};
 
