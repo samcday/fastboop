@@ -48,15 +48,9 @@ pub struct Stage0Args {
 pub async fn run_stage0(args: Stage0Args) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
     let profiles = load_device_profiles(&devpro_dirs)?;
-    let profile = profiles
-        .get(&args.device_profile)
-        .or_else(|| profiles.get(&format!("file:{}", args.device_profile)));
+    let profile = profiles.get(&args.device_profile);
     let profile = profile.with_context(|| {
-        let mut ids: Vec<_> = profiles
-            .keys()
-            .filter(|k| !k.starts_with("file:"))
-            .cloned()
-            .collect();
+        let mut ids: Vec<_> = profiles.keys().cloned().collect();
         ids.sort();
         format!(
             "device profile '{}' not found in {:?}; available ids: {:?}",

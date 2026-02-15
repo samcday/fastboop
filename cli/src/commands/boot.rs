@@ -759,22 +759,14 @@ fn resolve_profile_by_id(
     devpro_dirs: &[PathBuf],
     requested: &str,
 ) -> Result<DeviceProfile> {
-    profiles
-        .get(requested)
-        .or_else(|| profiles.get(&format!("file:{requested}")))
-        .cloned()
-        .with_context(|| {
-            let mut ids: Vec<_> = profiles
-                .keys()
-                .filter(|k| !k.starts_with("file:"))
-                .cloned()
-                .collect();
-            ids.sort();
-            format!(
-                "device profile '{}' not found in {:?}; available ids: {:?}",
-                requested, devpro_dirs, ids
-            )
-        })
+    profiles.get(requested).cloned().with_context(|| {
+        let mut ids: Vec<_> = profiles.keys().cloned().collect();
+        ids.sort();
+        format!(
+            "device profile '{}' not found in {:?}; available ids: {:?}",
+            requested, devpro_dirs, ids
+        )
+    })
 }
 
 fn profile_choice_label(profile: &DeviceProfile) -> String {
