@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,6 +14,7 @@ use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
 use fastboop_rootfs_erofs::ErofsRootfs;
+use fastboop_serial::{spawn_native_serial_reader, NativeSerialEvent, NativeSerialSelector};
 use fastboop_stage0_generator::{build_stage0, Stage0Options};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
@@ -25,10 +27,11 @@ use smoo_host_core::{
 use smoo_host_session::{HostSession, HostSessionConfig, HostSessionOutcome};
 use smoo_host_transport_rusb::RusbTransport;
 use tokio::sync::oneshot;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use ui::{
     apply_transport_counters, oneplus_fajita_dtbo_overlays, run_smoo_stats_view_loop,
-    SmooStatsHandle, SmooStatsPanel, SmooStatsViewModel, SmooTransportCounters,
+    SerialLogBuffer, SerialLogOutput, SmooStatsHandle, SmooStatsPanel, SmooStatsViewModel,
+    SmooTransportCounters,
 };
 use url::Url;
 
@@ -48,6 +51,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const HEARTBEAT_MISS_BUDGET: u32 = 5;
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 const CACHE_STATS_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const SERIAL_UI_POLL_INTERVAL: Duration = Duration::from_millis(60);
 
 #[component]
 pub fn DevicePage(session_id: String) -> Element {
@@ -130,10 +134,16 @@ fn BootedDevice(session_id: String) -> Element {
             SessionPhase::Active {
                 runtime,
                 host_started,
-            } => Some((runtime.clone(), *host_started)),
+            } => Some((
+                runtime.clone(),
+                *host_started,
+                s.device.vid,
+                s.device.pid,
+                s.device.serial.clone(),
+            )),
             _ => None,
         });
-    let Some((runtime, host_started)) = state else {
+    let Some((runtime, host_started, device_vid, device_pid, device_serial)) = state else {
         return rsx! {};
     };
     let mut kickoff = use_signal(|| false);
@@ -218,7 +228,205 @@ fn BootedDevice(session_id: String) -> Element {
                 if let Some(smoo_stats) = smoo_stats {
                     SmooStatsPanel { stats: smoo_stats }
                 }
+                SerialLogPanel {
+                    device_vid,
+                    device_pid,
+                    device_serial,
+                }
             }
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+enum NativeSerialState {
+    Connecting,
+    Connected,
+    Disconnected,
+    Error(String),
+}
+
+#[component]
+fn SerialLogPanel(device_vid: u16, device_pid: u16, device_serial: Option<String>) -> Element {
+    let state = use_signal(|| NativeSerialState::Connecting);
+    let logs = use_signal(SerialLogBuffer::new);
+    let stop_flag = use_signal(|| Option::<Arc<AtomicBool>>::None);
+    let mut started = use_signal(|| false);
+
+    {
+        let device_serial = device_serial.clone();
+        use_effect(move || {
+            if started() {
+                return;
+            }
+            started.set(true);
+            start_desktop_serial_stream(
+                device_vid,
+                device_pid,
+                device_serial.clone(),
+                state,
+                logs,
+                stop_flag,
+            );
+        });
+    }
+
+    {
+        let mut stop_flag = stop_flag;
+        use_drop(move || {
+            if let Some(stop) = stop_flag.write().take() {
+                stop.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+
+    let on_connect = {
+        let device_serial = device_serial.clone();
+        move |_| {
+            start_desktop_serial_stream(
+                device_vid,
+                device_pid,
+                device_serial.clone(),
+                state,
+                logs,
+                stop_flag,
+            );
+        }
+    };
+
+    let on_disconnect = {
+        let mut state = state;
+        let mut logs = logs;
+        let mut stop_flag = stop_flag;
+        move |_| {
+            if let Some(stop) = stop_flag.write().take() {
+                stop.store(true, Ordering::Relaxed);
+            }
+            logs.write().push_status("Disconnect requested.");
+            state.set(NativeSerialState::Disconnected);
+        }
+    };
+
+    let on_clear = {
+        let mut logs = logs;
+        move |_| {
+            logs.write().clear();
+        }
+    };
+
+    let status_text = match state() {
+        NativeSerialState::Connecting => "Connecting",
+        NativeSerialState::Connected => "Connected",
+        NativeSerialState::Disconnected => "Disconnected",
+        NativeSerialState::Error(_) => "Error",
+    };
+    let status_class = match state() {
+        NativeSerialState::Connected => "serial-logs__status serial-logs__status--ok",
+        NativeSerialState::Error(_) => "serial-logs__status serial-logs__status--err",
+        NativeSerialState::Connecting => "serial-logs__status serial-logs__status--warn",
+        _ => "serial-logs__status",
+    };
+    let error_message = match state() {
+        NativeSerialState::Error(message) => Some(message),
+        _ => None,
+    };
+    let rendered_rows = logs.read().render_rows();
+
+    rsx! {
+        div { class: "serial-logs",
+            div { class: "serial-logs__header",
+                p { class: "serial-logs__title", "Device serial output" }
+                p { class: status_class, "{status_text}" }
+            }
+            p { class: "serial-logs__hint", "Streaming stage0 kernel and early userspace logs over CDC-ACM." }
+
+            div { class: "serial-logs__actions",
+                if !matches!(state(), NativeSerialState::Connected | NativeSerialState::Connecting) {
+                    button { class: "serial-logs__connect", onclick: on_connect, "Connect" }
+                }
+                if matches!(state(), NativeSerialState::Connected | NativeSerialState::Connecting) {
+                    button { class: "serial-logs__disconnect", onclick: on_disconnect, "Disconnect" }
+                }
+                button { class: "serial-logs__clear", onclick: on_clear, "Clear" }
+            }
+
+            if let Some(error_message) = error_message {
+                p { class: "serial-logs__error", "{error_message}" }
+            }
+
+            SerialLogOutput { rows: rendered_rows }
+        }
+    }
+}
+
+fn start_desktop_serial_stream(
+    device_vid: u16,
+    device_pid: u16,
+    device_serial: Option<String>,
+    mut state: Signal<NativeSerialState>,
+    mut logs: Signal<SerialLogBuffer>,
+    mut stop_flag: Signal<Option<Arc<AtomicBool>>>,
+) {
+    if let Some(stop) = stop_flag.write().take() {
+        stop.store(true, Ordering::Relaxed);
+    }
+
+    let (event_tx, event_rx) = mpsc::channel::<NativeSerialEvent>();
+    let selector = NativeSerialSelector::new(device_vid, device_pid, device_serial);
+    let stop = spawn_native_serial_reader(selector, move |event| {
+        let _ = event_tx.send(event);
+    });
+    stop_flag.set(Some(stop.clone()));
+
+    state.set(NativeSerialState::Connecting);
+    logs.write()
+        .push_status("Waiting for matching CDC-ACM gadget...");
+
+    spawn(async move {
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            loop {
+                match event_rx.try_recv() {
+                    Ok(event) => apply_native_serial_event(event, &mut state, &mut logs),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => return,
+                }
+            }
+
+            tokio::time::sleep(SERIAL_UI_POLL_INTERVAL).await;
+        }
+    });
+}
+
+fn apply_native_serial_event(
+    event: NativeSerialEvent,
+    state: &mut Signal<NativeSerialState>,
+    logs: &mut Signal<SerialLogBuffer>,
+) {
+    match event {
+        NativeSerialEvent::Status(message) => {
+            logs.write().push_status(message);
+            state.set(NativeSerialState::Connecting);
+        }
+        NativeSerialEvent::Connected { port } => {
+            logs.write()
+                .push_status(format!("Connected on {port}. Streaming device logs."));
+            state.set(NativeSerialState::Connected);
+        }
+        NativeSerialEvent::Disconnected { port } => {
+            logs.write()
+                .push_status(format!("Disconnected from {port}."));
+            state.set(NativeSerialState::Disconnected);
+        }
+        NativeSerialEvent::Error(message) => {
+            logs.write().push_status(format!("Serial error: {message}"));
+            state.set(NativeSerialState::Error(message));
+        }
+        NativeSerialEvent::Bytes(bytes) => {
+            logs.write().push_bytes(bytes.as_slice());
         }
     }
 }

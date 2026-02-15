@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, Sender};
 use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,6 +16,7 @@ use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_rootfs_erofs::ErofsRootfs;
+use fastboop_serial::{SerialLineAccumulator, strip_ansi};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
@@ -28,6 +30,7 @@ use url::Url;
 use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
 use crate::devpros::{dedup_profiles, load_device_profiles, resolve_devpro_dirs};
 use crate::personalization::personalization_from_host;
+use crate::serial::start_cdc_acm_monitor;
 use crate::smoo_host::run_host_daemon;
 use crate::tui::{TuiOutcome, run_boot_tui};
 
@@ -94,10 +97,14 @@ pub struct BootArgs {
     /// Use plain line-oriented logs (disable TUI view).
     #[arg(long, default_value_t = false)]
     pub plain: bool,
+    /// Disable ANSI colors in --plain output.
+    #[arg(long, default_value_t = false)]
+    pub no_colors: bool,
 }
 
 pub async fn run_boot(args: BootArgs) -> Result<()> {
     let use_tui = !args.plain && std::io::stdout().is_terminal() && std::io::stderr().is_terminal();
+    let plain_colors = !args.no_colors;
     let (tx, rx) = std::sync::mpsc::channel::<BootEvent>();
     let shutdown = CancellationToken::new();
     let runtime = tokio::runtime::Handle::current();
@@ -105,7 +112,7 @@ pub async fn run_boot(args: BootArgs) -> Result<()> {
     if use_tui {
         crate::setup_tui_tracing(tx.clone());
     } else {
-        crate::setup_default_tracing();
+        crate::setup_default_tracing_with_ansi(plain_colors);
     }
 
     let worker_shutdown = shutdown.clone();
@@ -120,7 +127,7 @@ pub async fn run_boot(args: BootArgs) -> Result<()> {
             }
         }
     } else {
-        run_plain_event_loop(&rx);
+        run_plain_event_loop(&rx, plain_colors);
     }
 
     worker
@@ -418,7 +425,18 @@ async fn run_boot_inner(
         .await
         .map_err(|e| anyhow::anyhow!("fastboot boot failed: {e}"))?;
 
-    run_host_daemon(
+    let serial_stop = if args.stage0.serial {
+        Some(start_cdc_acm_monitor(
+            fastboot.vid,
+            fastboot.pid,
+            fastboot.serial.clone(),
+            events.clone(),
+        ))
+    } else {
+        None
+    };
+
+    let host_result = run_host_daemon(
         block_reader,
         image_size_bytes,
         image_identity,
@@ -426,7 +444,13 @@ async fn run_boot_inner(
         shutdown,
     )
     .await
-    .context("running smoo host daemon after boot")?;
+    .context("running smoo host daemon after boot");
+
+    if let Some(stop) = serial_stop {
+        stop.store(true, Ordering::Relaxed);
+    }
+
+    host_result?;
     Ok(())
 }
 
@@ -681,26 +705,55 @@ async fn probe_arrived_device_auto(
     }
 }
 
-fn run_plain_event_loop(rx: &Receiver<BootEvent>) {
+fn run_plain_event_loop(rx: &Receiver<BootEvent>, colors_enabled: bool) {
+    let mut serial_lines = SerialLineAccumulator::default();
     while let Ok(event) = rx.recv() {
-        print_plain_event(event);
+        print_plain_event(event, colors_enabled, &mut serial_lines);
+    }
+    if let Some(pending) = serial_lines.take_pending()
+        && !pending.is_empty()
+    {
+        print_plain_serial_line(pending, colors_enabled);
     }
 }
 
-fn print_plain_event(event: BootEvent) {
+fn print_plain_event(
+    event: BootEvent,
+    colors_enabled: bool,
+    serial_lines: &mut SerialLineAccumulator,
+) {
     match event {
         BootEvent::Phase { phase, detail } => {
-            eprintln!("[{}] phase={} {}", timestamp_hms(), phase.label(), detail);
+            let phase_label = style_text(colors_enabled, phase.label(), "1;34");
+            eprintln!(
+                "[{}] phase={} {}",
+                timestamp_hms(),
+                phase_label,
+                sanitize_plain_text(detail, colors_enabled)
+            );
         }
         BootEvent::Log(line) => {
-            eprintln!("[{}] {line}", timestamp_hms());
+            eprintln!(
+                "[{}] {}",
+                timestamp_hms(),
+                sanitize_plain_text(line, colors_enabled)
+            );
+        }
+        BootEvent::SerialBytes(bytes) => {
+            for line in serial_lines.push_bytes(bytes.as_slice()) {
+                print_plain_serial_line(line, colors_enabled);
+            }
         }
         BootEvent::SmooStatus {
             active,
             export_count,
             session_id,
         } => {
-            let status = if active { "up" } else { "down" };
+            let status = if active {
+                style_text(colors_enabled, "up", "1;32")
+            } else {
+                style_text(colors_enabled, "down", "1;31")
+            };
             eprintln!(
                 "[{}] smoo status={} exports={} sid={}",
                 timestamp_hms(),
@@ -716,20 +769,51 @@ fn print_plain_event(event: BootEvent) {
             total_blocks,
         } => {
             eprintln!(
-                "[{}] gibblox hit={}%% fill={}%% cache={}/{}",
+                "[{}] gibblox hit={} fill={} cache={}/{}",
                 timestamp_hms(),
-                hit_rate_pct,
-                fill_rate_pct,
+                style_text(colors_enabled, format!("{hit_rate_pct}%").as_str(), "36"),
+                style_text(colors_enabled, format!("{fill_rate_pct}%").as_str(), "36"),
                 cached_blocks,
                 total_blocks
             );
         }
         BootEvent::Finished => {
-            eprintln!("[{}] boot flow finished", timestamp_hms());
+            eprintln!(
+                "[{}] {}",
+                timestamp_hms(),
+                style_text(colors_enabled, "boot flow finished", "1;32")
+            );
         }
         BootEvent::Failed(message) => {
-            eprintln!("[{}] boot flow failed: {message}", timestamp_hms());
+            eprintln!(
+                "[{}] {}: {}",
+                timestamp_hms(),
+                style_text(colors_enabled, "boot flow failed", "1;31"),
+                sanitize_plain_text(message, colors_enabled)
+            );
         }
+    }
+}
+
+fn print_plain_serial_line(line: String, colors_enabled: bool) {
+    let rendered = sanitize_plain_text(line, colors_enabled);
+    let tag = style_text(colors_enabled, "[serial]", "38;5;45");
+    eprintln!("[{}] {} {}", timestamp_hms(), tag, rendered);
+}
+
+fn sanitize_plain_text(text: String, colors_enabled: bool) -> String {
+    if colors_enabled {
+        text
+    } else {
+        strip_ansi(&text)
+    }
+}
+
+fn style_text(colors_enabled: bool, text: &str, code: &str) -> String {
+    if colors_enabled {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
     }
 }
 
@@ -762,10 +846,7 @@ fn resolve_profile_by_id(
     profiles.get(requested).cloned().with_context(|| {
         let mut ids: Vec<_> = profiles.keys().cloned().collect();
         ids.sort();
-        format!(
-            "device profile '{}' not found in {:?}; available ids: {:?}",
-            requested, devpro_dirs, ids
-        )
+        format!("device profile '{requested}' not found in {devpro_dirs:?}; available ids: {ids:?}")
     })
 }
 

@@ -1288,7 +1288,7 @@ checksum = "fe6d2e5af09e8c8ad56c969f2157a3d4238cebc7c55f0a517728c38f7b200f81"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]
@@ -2846,6 +2846,7 @@ dependencies = [
  "fastboop-core",
  "fastboop-fastboot-rusb",
  "fastboop-rootfs-erofs",
+ "fastboop-serial",
  "fastboop-stage0-generator",
  "gibblox-cache",
  "gibblox-cache-store-std",
@@ -2888,6 +2889,7 @@ dependencies = [
  "fastboop-core",
  "fastboop-fastboot-rusb",
  "fastboop-rootfs-erofs",
+ "fastboop-serial",
  "fastboop-stage0-generator",
  "gibblox-cache",
  "gibblox-cache-store-std",
@@ -2960,6 +2962,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastboop-serial"
+version = "0.0.1"
+dependencies = [
+ "libc 0.2.180",
+ "vt100-ctt",
+]
+
+[[package]]
 name = "fastboop-stage0"
 version = "0.0.1"
 dependencies = [
@@ -2994,6 +3004,7 @@ dependencies = [
  "fastboop-core",
  "fastboop-fastboot-webusb",
  "fastboop-rootfs-erofs",
+ "fastboop-serial",
  "fastboop-stage0-generator",
  "futures-channel",
  "futures-util",
@@ -8965,6 +8976,7 @@ version = "0.0.1"
 dependencies = [
  "dioxus",
  "fastboop-core",
+ "fastboop-serial",
 ]
 
 [[package]]
@@ -9272,6 +9284,39 @@ name = "void"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
+
+[[package]]
+name = "vt100-ctt"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e0333bcaa031b50f85eac76cb9d62a400be0915ac2d60c3cce28656c01e7e58"
+dependencies = [
+ "itoa",
+ "log",
+ "unicode-width 0.2.0",
+ "vte",
+]
+
+[[package]]
+name = "vte"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a0b683b20ef64071ff03745b14391751f6beab06a54347885459b77a3f2caa5"
+dependencies = [
+ "arrayvec",
+ "utf8parse",
+ "vte_generate_state_changes",
+]
+
+[[package]]
+name = "vte_generate_state_changes"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e369bee1b05d510a7b4ed645f5faa90619e05437111783ea5848f28d97d3c2e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
 
 [[package]]
 name = "walkdir"

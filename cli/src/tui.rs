@@ -9,6 +9,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use fastboop_serial::{SerialTerminal, TerminalColor, TerminalStyle};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -55,9 +56,13 @@ pub fn run_boot_tui(rx: &Receiver<BootEvent>) -> Result<TuiOutcome> {
         let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
+            .constraints([
+                Constraint::Percentage(20),
+                Constraint::Percentage(40),
+                Constraint::Percentage(40),
+            ])
             .split(area);
-        let visible_logs = rows[1].height.saturating_sub(2) as usize;
+        let visible_logs = rows[2].height.saturating_sub(2) as usize;
         state.page_step = (visible_logs.max(1) / 2).max(1) as u16;
         state.clamp_scroll(visible_logs);
 
@@ -110,7 +115,11 @@ pub fn run_boot_tui(rx: &Receiver<BootEvent>) -> Result<TuiOutcome> {
 fn draw(frame: &mut Frame<'_>, state: &TuiState) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
+        .constraints([
+            Constraint::Percentage(20),
+            Constraint::Percentage(40),
+            Constraint::Percentage(40),
+        ])
         .split(frame.area());
     let top = Layout::default()
         .direction(Direction::Horizontal)
@@ -153,6 +162,8 @@ fn draw(frame: &mut Frame<'_>, state: &TuiState) {
     draw_smoo_panel(frame, top_right[0], state);
     draw_gibblox_panel(frame, top_right[1], state);
 
+    draw_serial_panel(frame, rows[1], state);
+
     let log_title = if state.paused {
         format!("Logs [paused, scroll={}]", state.scroll)
     } else {
@@ -161,7 +172,7 @@ fn draw(frame: &mut Frame<'_>, state: &TuiState) {
     let logs = Paragraph::new(state.logs.join("\n"))
         .block(Block::default().title(log_title).borders(Borders::ALL))
         .scroll((state.scroll, 0));
-    frame.render_widget(logs, rows[1]);
+    frame.render_widget(logs, rows[2]);
 }
 
 fn draw_smoo_panel(frame: &mut Frame<'_>, area: ratatui::layout::Rect, state: &TuiState) {
@@ -239,6 +250,65 @@ fn draw_gibblox_panel(frame: &mut Frame<'_>, area: ratatui::layout::Rect, state:
     frame.render_widget(sparkline, rows[1]);
 }
 
+fn draw_serial_panel(frame: &mut Frame<'_>, area: ratatui::layout::Rect, state: &TuiState) {
+    let inner_rows = area.height.saturating_sub(2) as usize;
+    let terminal_rows = state.serial.styled_rows(inner_rows.max(1));
+    let lines: Vec<Line<'_>> = terminal_rows
+        .into_iter()
+        .map(|row| {
+            let spans = row
+                .spans
+                .into_iter()
+                .map(|span| Span::styled(span.text, style_from_terminal(span.style)))
+                .collect::<Vec<_>>();
+            Line::from(spans)
+        })
+        .collect();
+
+    let panel = Paragraph::new(lines).block(
+        Block::default()
+            .title("Serial Console")
+            .borders(Borders::ALL),
+    );
+    frame.render_widget(panel, area);
+}
+
+fn style_from_terminal(style: TerminalStyle) -> Style {
+    let (fg, bg) = if style.inverse {
+        (style.bg, style.fg)
+    } else {
+        (style.fg, style.bg)
+    };
+
+    let mut out = Style::default();
+    if let Some(color) = ratatui_color(fg) {
+        out = out.fg(color);
+    }
+    if let Some(color) = ratatui_color(bg) {
+        out = out.bg(color);
+    }
+    if style.bold {
+        out = out.add_modifier(Modifier::BOLD);
+    }
+    if style.dim {
+        out = out.add_modifier(Modifier::DIM);
+    }
+    if style.italic {
+        out = out.add_modifier(Modifier::ITALIC);
+    }
+    if style.underline {
+        out = out.add_modifier(Modifier::UNDERLINED);
+    }
+    out
+}
+
+fn ratatui_color(color: TerminalColor) -> Option<Color> {
+    match color {
+        TerminalColor::Default => None,
+        TerminalColor::Rgb(r, g, b) => Some(Color::Rgb(r, g, b)),
+    }
+}
+
 fn trend_symbol(history: &VecDeque<u64>) -> &'static str {
     if history.len() < 2 {
         return "-";
@@ -259,6 +329,7 @@ struct TuiState {
     phase: BootPhase,
     phase_detail: String,
     logs: Vec<String>,
+    serial: SerialTerminal,
     paused: bool,
     scroll: u16,
     page_step: u16,
@@ -287,6 +358,9 @@ impl TuiState {
                 ));
             }
             BootEvent::Log(line) => self.push_log(format!("[{}] {line}", timestamp_hms())),
+            BootEvent::SerialBytes(bytes) => {
+                self.serial.process(bytes.as_slice());
+            }
             BootEvent::SmooStatus {
                 active,
                 export_count,

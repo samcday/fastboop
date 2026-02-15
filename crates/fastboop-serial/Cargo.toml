@@ -1,0 +1,13 @@
+[package]
+name = "fastboop-serial"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vt100 = { package = "vt100-ctt", version = "0.17.1", default-features = false }
+libc = { version = "0.2.171", optional = true }
+
+[features]
+default = []
+native-serial = ["dep:libc"]

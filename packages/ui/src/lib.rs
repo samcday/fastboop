@@ -13,6 +13,10 @@ mod dtbo;
 pub use dtbo::oneplus_fajita_dtbo_overlays;
 mod cache_stats;
 pub use cache_stats::{CacheStatsPanel, CacheStatsViewModel};
+mod serial_console;
+pub use serial_console::{
+    SerialLogBuffer, SerialLogOutput, SERIAL_LOG_COLS, SERIAL_LOG_ROWS, SERIAL_LOG_SCROLLBACK,
+};
 mod smoo_stats;
 pub use smoo_stats::{
     apply_transport_counters, run_smoo_stats_view_loop, SmooStatsAccumulator, SmooStatsHandle,
