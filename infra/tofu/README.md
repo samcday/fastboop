@@ -10,6 +10,9 @@ The worker behavior:
 - `/` and `/latest` 302 redirect to `/commit/<sha>/`.
 - `/commit/<sha>/...` serves static files from R2.
 - Missing paths fall back to `/commit/<sha>/index.html` for SPA routing.
+- Direct artifact paths are served from R2 with CORS + range support:
+  - any `*.ero` object (for EROFS image fetches), and
+  - `/live-pocket-fedora/casync/*` (manifests, indexes, chunks).
 
 ## Prereqs
 
