@@ -12,6 +12,9 @@ use alloc::vec::Vec;
 use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 
+#[cfg(feature = "async")]
+use async_trait::async_trait;
+
 #[cfg(feature = "std")]
 use {
     std::fs::File,
@@ -33,6 +36,47 @@ pub trait Ext4Read {
         start_byte: u64,
         dst: &mut [u8],
     ) -> Result<(), BoxedError>;
+}
+
+/// Async interface used by [`Ext4`] when loading from async-first sources.
+///
+/// [`Ext4`]: crate::Ext4
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+#[async_trait(?Send)]
+pub trait Ext4ReadAsync {
+    /// Read bytes into `dst`, starting at `start_byte`.
+    ///
+    /// Exactly `dst.len()` bytes must be read. Return an error if the
+    /// source cannot provide that data.
+    async fn read(
+        &self,
+        start_byte: u64,
+        dst: &mut [u8],
+    ) -> Result<(), BoxedError>;
+}
+
+#[cfg(feature = "async")]
+pub(crate) struct BlockingAsyncReader {
+    inner: Box<dyn Ext4ReadAsync>,
+}
+
+#[cfg(feature = "async")]
+impl BlockingAsyncReader {
+    pub(crate) fn new(inner: Box<dyn Ext4ReadAsync>) -> Self {
+        Self { inner }
+    }
+}
+
+#[cfg(feature = "async")]
+impl Ext4Read for BlockingAsyncReader {
+    fn read(
+        &mut self,
+        start_byte: u64,
+        dst: &mut [u8],
+    ) -> Result<(), BoxedError> {
+        pollster::block_on(self.inner.read(start_byte, dst))
+    }
 }
 
 #[cfg(feature = "std")]
@@ -87,6 +131,25 @@ impl Ext4Read for Vec<u8> {
     }
 }
 
+#[cfg(feature = "async")]
+#[async_trait(?Send)]
+impl Ext4ReadAsync for Vec<u8> {
+    async fn read(
+        &self,
+        start_byte: u64,
+        dst: &mut [u8],
+    ) -> Result<(), BoxedError> {
+        read_from_bytes(self, start_byte, dst).ok_or_else(|| {
+            Box::new(MemIoError {
+                start: start_byte,
+                read_len: dst.len(),
+                src_len: self.len(),
+            })
+            .into()
+        })
+    }
+}
+
 fn read_from_bytes(src: &[u8], start_byte: u64, dst: &mut [u8]) -> Option<()> {
     let start = usize::try_from(start_byte).ok()?;
     let end = start.checked_add(dst.len())?;
@@ -105,14 +168,33 @@ mod tests {
         let mut src = vec![1, 2, 3];
 
         let mut dst = [0; 3];
-        src.read(0, &mut dst).unwrap();
+        Ext4Read::read(&mut src, 0, &mut dst).unwrap();
         assert_eq!(dst, [1, 2, 3]);
 
         let mut dst = [0; 2];
-        src.read(1, &mut dst).unwrap();
+        Ext4Read::read(&mut src, 1, &mut dst).unwrap();
         assert_eq!(dst, [2, 3]);
 
-        let err = src.read(4, &mut dst).unwrap_err();
+        let err = Ext4Read::read(&mut src, 4, &mut dst).unwrap_err();
+        assert_eq!(
+            format!("{err}"),
+            format!(
+                "failed to read 2 bytes at offset 4 from a slice of length 3"
+            )
+        );
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn test_vec_read_async() {
+        let src = vec![1, 2, 3];
+
+        let mut dst = [0; 2];
+        pollster::block_on(Ext4ReadAsync::read(&src, 1, &mut dst)).unwrap();
+        assert_eq!(dst, [2, 3]);
+
+        let err = pollster::block_on(Ext4ReadAsync::read(&src, 4, &mut dst))
+            .unwrap_err();
         assert_eq!(
             format!("{err}"),
             format!(

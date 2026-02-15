@@ -166,6 +166,8 @@ pub use iters::read_dir::ReadDir;
 pub use label::Label;
 pub use metadata::Metadata;
 pub use path::{Component, Components, Path, PathBuf, PathError};
+#[cfg(feature = "async")]
+pub use reader::Ext4ReadAsync;
 pub use reader::{Ext4Read, MemIoError};
 pub use uuid::Uuid;
 
@@ -232,6 +234,19 @@ impl Ext4 {
         Rc::get_mut(&mut fs.0).unwrap().journal = journal;
 
         Ok(fs)
+    }
+
+    /// Load an `Ext4` instance from an async-first reader.
+    ///
+    /// This is an adapter around [`Ext4::load`]. The filesystem parser
+    /// remains synchronous, but each backing read is bridged through the
+    /// provided async reader.
+    #[cfg(feature = "async")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+    pub async fn load_async(
+        reader: Box<dyn Ext4ReadAsync>,
+    ) -> Result<Self, Ext4Error> {
+        Self::load(Box::new(reader::BlockingAsyncReader::new(reader)))
     }
 
     /// Load an `Ext4` filesystem from the given `path`.
