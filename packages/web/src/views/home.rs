@@ -1,12 +1,10 @@
-use std::collections::HashMap;
-
 use dioxus::prelude::*;
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Reflect;
 use ui::{
     apply_selected_profiles, build_probe_snapshot, selected_profile_option,
-    update_profile_selection, Hero, ProbeSnapshot, ProbeState, TransportKind,
+    update_profile_selection, Hero, ProbeSnapshot, ProbeState, ProfileSelectionMap, TransportKind,
 };
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
@@ -31,7 +29,7 @@ pub fn Home() -> Element {
     let sessions = use_context::<SessionStore>();
     let navigator = use_navigator();
     let refresh = use_signal(|| 0u32);
-    let selected_profiles = use_signal(HashMap::<(u16, u16), usize>::new);
+    let selected_profiles = use_signal(ProfileSelectionMap::new);
 
     #[cfg(target_arch = "wasm32")]
     let candidates = use_signal(Vec::<WebUsbDeviceHandle>::new);

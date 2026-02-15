@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use dioxus::prelude::*;
 use fastboop_core::builtin::builtin_profiles;
 use fastboop_core::device::{profile_filters, DeviceEvent, DeviceHandle as _, DeviceWatcher as _};
@@ -8,7 +6,7 @@ use fastboop_fastboot_rusb::{DeviceWatcher, RusbDeviceHandle};
 use tracing::{debug, info};
 use ui::{
     apply_selected_profiles, build_probe_snapshot, selected_profile_option,
-    update_profile_selection, Hero, ProbeSnapshot, ProbeState, TransportKind,
+    update_profile_selection, Hero, ProbeSnapshot, ProbeState, ProfileSelectionMap, TransportKind,
 };
 
 use crate::Route;
@@ -22,7 +20,7 @@ pub fn Home() -> Element {
 
     let mut watcher_started = use_signal(|| false);
     let candidates = use_signal(Vec::<RusbDeviceHandle>::new);
-    let selected_profiles = use_signal(HashMap::<(u16, u16), usize>::new);
+    let selected_profiles = use_signal(ProfileSelectionMap::new);
 
     use_effect(move || {
         if watcher_started() {

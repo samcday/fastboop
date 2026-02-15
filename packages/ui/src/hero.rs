@@ -5,7 +5,7 @@ use crate::{DetectedDevice, ProbeState, TransportKind};
 const HERO_CSS: Asset = asset!("/assets/styling/hero.css");
 
 fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
-    if std::env::var_os("FLATPAK_ID").is_some() {
+    if cfg!(flatpak_runtime_paths) {
         flatpak_path.to_string()
     } else {
         asset.to_string()

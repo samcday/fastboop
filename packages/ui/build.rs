@@ -3,6 +3,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(flatpak_runtime_paths)");
+    if env::var_os("FLATPAK_ID").is_some() {
+        println!("cargo:rustc-cfg=flatpak_runtime_paths");
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let assets_dir = manifest_dir.join("assets/dtbo");
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));

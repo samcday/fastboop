@@ -1,6 +1,8 @@
 //! This crate contains all shared UI for the workspace.
 
-use std::collections::{HashMap, HashSet};
+extern crate alloc;
+
+use alloc::collections::{BTreeMap, BTreeSet};
 
 use fastboop_core::prober::ProbeCandidateReport;
 use fastboop_core::DeviceProfile;
@@ -69,11 +71,13 @@ pub struct ProbeSnapshot<Handle> {
     pub devices: Vec<ProbedCandidateDevice<Handle>>,
 }
 
+pub type ProfileSelectionMap = BTreeMap<(u16, u16), usize>;
+
 pub fn selected_profile_index(
     vid: u16,
     pid: u16,
     option_count: usize,
-    selections: &HashMap<(u16, u16), usize>,
+    selections: &ProfileSelectionMap,
 ) -> Option<usize> {
     if option_count == 1 {
         return Some(0);
@@ -86,7 +90,7 @@ pub fn selected_profile_index(
 
 pub fn selected_profile_option<'a, Handle>(
     device: &'a ProbedCandidateDevice<Handle>,
-    selections: &HashMap<(u16, u16), usize>,
+    selections: &ProfileSelectionMap,
 ) -> Option<&'a ProbedProfileOption> {
     let index = selected_profile_index(
         device.vid,
@@ -98,7 +102,7 @@ pub fn selected_profile_option<'a, Handle>(
 }
 
 pub fn update_profile_selection<Handle>(
-    selections: &mut HashMap<(u16, u16), usize>,
+    selections: &mut ProfileSelectionMap,
     devices: &[ProbedCandidateDevice<Handle>],
     device_index: usize,
     profile_index: usize,
@@ -112,7 +116,7 @@ pub fn update_profile_selection<Handle>(
     selections.insert((device.vid, device.pid), profile_index);
 }
 
-pub fn apply_selected_profiles(state: &mut ProbeState, selections: &HashMap<(u16, u16), usize>) {
+pub fn apply_selected_profiles(state: &mut ProbeState, selections: &ProfileSelectionMap) {
     if let ProbeState::Ready { devices, .. } = state {
         for device in devices.iter_mut() {
             device.selected_profile = selected_profile_index(
@@ -135,12 +139,12 @@ pub fn build_probe_snapshot<Handle, OErr, WErr>(
 where
     Handle: Clone,
 {
-    let profiles_by_id: HashMap<_, _> = profiles
+    let profiles_by_id: BTreeMap<_, _> = profiles
         .iter()
         .map(|profile| (profile.id.clone(), profile))
         .collect();
 
-    let mut seen = HashSet::new();
+    let mut seen = BTreeSet::new();
     let mut detected = Vec::new();
     let mut probed = Vec::new();
     for report in reports {

@@ -1,7 +1,8 @@
+use core::future::Future;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use dioxus::prelude::*;
-use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+
+use alloc::sync::Arc;
 
 const SMOO_STATS_CSS: Asset = asset!("/assets/styling/smoo_stats.css");
 
@@ -182,7 +183,7 @@ pub async fn run_smoo_stats_view_loop<Sleep, SleepFut, Now, Stop, Emit>(
 }
 
 fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
-    if std::env::var_os("FLATPAK_ID").is_some() {
+    if cfg!(flatpak_runtime_paths) {
         flatpak_path.to_string()
     } else {
         asset.to_string()
