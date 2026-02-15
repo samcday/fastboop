@@ -14,6 +14,9 @@ extract artifacts from it. smoo just wants to serve it as a block device.
 
 ## Read-on-demand index
 - `crates/gibblox-core/*`: core traits/errors and cross-crate invariants.
+- `crates/gibblox-casync/*`: no_std casync index/reconstruction core.
+- `crates/gibblox-casync-std/*`: native casync source/store integration.
+- `crates/gibblox-casync-web/*`: wasm32-only casync source/store integration.
 - `crates/gibblox-http/*`: HTTP range reader behavior (native + wasm).
 - `crates/gibblox-cache/*`: cache file format, cache read/write behavior.
 - `crates/gibblox-cache-store-std/*`: native cache storage backend.

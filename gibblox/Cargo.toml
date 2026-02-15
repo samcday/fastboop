@@ -3,6 +3,9 @@ resolver = "2"
 members = [
     "crates/gibblox-core",
     "crates/gibblox-zip",
+    "crates/gibblox-casync",
+    "crates/gibblox-casync-std",
+    "crates/gibblox-casync-web",
     "crates/gibblox-iso9660",
     "crates/gibblox-file",
     "crates/gibblox-http",

@@ -1,0 +1,19 @@
+[package]
+name = "gibblox-casync"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[features]
+default = []
+std = ["gibblox-core/std"]
+
+[dependencies]
+async-trait = "0.1.89"
+gibblox-core = { path = "../gibblox-core", default-features = false }
+sha2 = { version = "0.10.9", default-features = false }
+tracing = { version = "0.1.41", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync"] }
