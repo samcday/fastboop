@@ -7,9 +7,11 @@ use async_trait::async_trait;
 use core::{fmt, hash::Hasher};
 
 mod erofs;
+mod gpt;
 
 pub use erofs::EroBlockReader;
 pub use erofs_rs;
+pub use gpt::{GptBlockReader, GptPartitionSelector};
 
 pub type GibbloxResult<T> = core::result::Result<T, GibbloxError>;
 
