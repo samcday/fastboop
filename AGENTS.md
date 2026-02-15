@@ -19,6 +19,18 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
 - Keep diffs focused and reviewable.
 - Preserve non-mutating behavior (no flash/erase/format/slot toggles/unlock paths).
 - Keep platform-agnostic logic in core crates and platform bindings in leaf crates.
+- Strict `no_std + alloc` boundary (do not introduce `std` unless user explicitly asks):
+  - `crates/fastboop-core`
+  - `crates/fastboop-schema` (no-std path)
+  - `crates/fastboop-stage0-generator` (no-std path)
+  - `smoo/crates/smoo-proto`
+  - `smoo/crates/smoo-host-core`
+  - `smoo/crates/smoo-host-session`
+  - `gibblox/crates/gibblox-core`
+  - `gibblox/crates/gibblox-cache`
+  - `gibblox/crates/gibblox-iso9660`
+  - `gibblox/crates/gibblox-paged-lru`
+  - and any crate declaring `#![no_std]` or `#![cfg_attr(not(feature = "std"), no_std)]`
 - Prefer async-first code; justify blocking paths.
 - Use `tracing` for new operationally relevant behavior.
 
