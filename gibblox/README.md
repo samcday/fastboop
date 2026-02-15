@@ -20,6 +20,7 @@ To gibblox you will always be just another block.
 ## Crates
 - `gibblox-core`: core traits and error types.
 - `gibblox-iso9660`: ISO9660 file-backed block reader.
+- `gibblox-ext4`: ext4 file-backed block reader and async ext4 adapter.
 - `gibblox-http`: HTTP Range-backed block reader (native + wasm).
 - `gibblox-cache`: cache layer and cache file format logic.
 - `gibblox-paged-lru`: in-memory page cache for coalescing small foreground reads.
