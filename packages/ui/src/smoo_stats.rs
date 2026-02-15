@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -73,6 +74,111 @@ pub struct SmooStatsViewModel {
     pub ewma_iops: f64,
     pub ewma_up_bps: f64,
     pub ewma_down_bps: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SmooStatsAccumulator {
+    previous: SmooStatsSnapshot,
+    ewma_iops: f64,
+    ewma_up_bps: f64,
+    ewma_down_bps: f64,
+}
+
+impl SmooStatsAccumulator {
+    pub fn new(initial: SmooStatsSnapshot) -> Self {
+        Self {
+            previous: initial,
+            ewma_iops: 0.0,
+            ewma_up_bps: 0.0,
+            ewma_down_bps: 0.0,
+        }
+    }
+
+    pub fn update(&mut self, snapshot: SmooStatsSnapshot, dt_seconds: f64) -> SmooStatsViewModel {
+        let dt = dt_seconds.max(0.001);
+        let io_delta = snapshot.total_ios.saturating_sub(self.previous.total_ios) as f64;
+        let up_delta = snapshot
+            .total_bytes_up
+            .saturating_sub(self.previous.total_bytes_up) as f64;
+        let down_delta = snapshot
+            .total_bytes_down
+            .saturating_sub(self.previous.total_bytes_down) as f64;
+
+        let inst_iops = io_delta / dt;
+        let inst_up_bps = up_delta / dt;
+        let inst_down_bps = down_delta / dt;
+        let alpha = 1.0 - (-dt / 5.0).exp();
+
+        self.ewma_iops += alpha * (inst_iops - self.ewma_iops);
+        self.ewma_up_bps += alpha * (inst_up_bps - self.ewma_up_bps);
+        self.ewma_down_bps += alpha * (inst_down_bps - self.ewma_down_bps);
+        self.previous = snapshot;
+
+        SmooStatsViewModel {
+            connected: snapshot.connected,
+            total_ios: snapshot.total_ios,
+            total_bytes_up: snapshot.total_bytes_up,
+            total_bytes_down: snapshot.total_bytes_down,
+            ewma_iops: self.ewma_iops,
+            ewma_up_bps: self.ewma_up_bps,
+            ewma_down_bps: self.ewma_down_bps,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SmooTransportCounters {
+    pub ios_up: u64,
+    pub ios_down: u64,
+    pub bytes_up: u64,
+    pub bytes_down: u64,
+}
+
+pub fn apply_transport_counters(
+    stats: &SmooStatsHandle,
+    previous: &mut SmooTransportCounters,
+    current: SmooTransportCounters,
+) {
+    let ios_delta = current
+        .ios_up
+        .saturating_sub(previous.ios_up)
+        .saturating_add(current.ios_down.saturating_sub(previous.ios_down));
+    let bytes_up_delta = current.bytes_up.saturating_sub(previous.bytes_up);
+    let bytes_down_delta = current.bytes_down.saturating_sub(previous.bytes_down);
+
+    stats.add_deltas(ios_delta, bytes_up_delta, bytes_down_delta);
+    *previous = current;
+}
+
+pub async fn run_smoo_stats_view_loop<Sleep, SleepFut, Now, Stop, Emit>(
+    stats_handle: SmooStatsHandle,
+    mut sleep: Sleep,
+    mut now_seconds: Now,
+    mut should_stop: Stop,
+    mut emit: Emit,
+) where
+    Sleep: FnMut() -> SleepFut,
+    SleepFut: Future<Output = ()>,
+    Now: FnMut() -> f64,
+    Stop: FnMut() -> bool,
+    Emit: FnMut(SmooStatsViewModel),
+{
+    let mut previous_ts = now_seconds();
+    let mut accumulator = SmooStatsAccumulator::new(stats_handle.snapshot());
+
+    loop {
+        if should_stop() {
+            break;
+        }
+
+        sleep().await;
+
+        let now_ts = now_seconds();
+        let dt = (now_ts - previous_ts).max(0.001);
+        let snapshot = stats_handle.snapshot();
+        emit(accumulator.update(snapshot, dt));
+        previous_ts = now_ts;
+    }
 }
 
 fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {

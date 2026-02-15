@@ -26,7 +26,10 @@ use smoo_host_session::{HostSession, HostSessionConfig, HostSessionOutcome};
 use smoo_host_transport_rusb::RusbTransport;
 use tokio::sync::oneshot;
 use tracing::{error, info};
-use ui::{oneplus_fajita_dtbo_overlays, SmooStatsHandle, SmooStatsPanel, SmooStatsViewModel};
+use ui::{
+    apply_transport_counters, oneplus_fajita_dtbo_overlays, run_smoo_stats_view_loop,
+    SmooStatsHandle, SmooStatsPanel, SmooStatsViewModel, SmooTransportCounters,
+};
 use url::Url;
 
 use super::session::{update_session_phase, BootRuntime, SessionPhase, SessionStore};
@@ -179,52 +182,17 @@ fn BootedDevice(session_id: String) -> Element {
             let stop = Arc::new(AtomicBool::new(false));
             smoo_stats_stop.set(Some(stop.clone()));
             spawn(async move {
-                let mut previous = smoo_stats_handle.snapshot();
-                let mut previous_ts = std::time::Instant::now();
-                let mut ewma_iops = 0.0f64;
-                let mut ewma_up_bps = 0.0f64;
-                let mut ewma_down_bps = 0.0f64;
-                loop {
-                    if stop.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    tokio::time::sleep(CACHE_STATS_POLL_INTERVAL).await;
-                    let now_ts = std::time::Instant::now();
-                    let dt = now_ts.duration_since(previous_ts).as_secs_f64().max(0.001);
-                    let snapshot = smoo_stats_handle.snapshot();
-
-                    let io_delta = snapshot.total_ios.saturating_sub(previous.total_ios) as f64;
-                    let up_delta = snapshot
-                        .total_bytes_up
-                        .saturating_sub(previous.total_bytes_up)
-                        as f64;
-                    let down_delta = snapshot
-                        .total_bytes_down
-                        .saturating_sub(previous.total_bytes_down)
-                        as f64;
-
-                    let inst_iops = io_delta / dt;
-                    let inst_up_bps = up_delta / dt;
-                    let inst_down_bps = down_delta / dt;
-                    let alpha = 1.0 - (-dt / 5.0).exp();
-
-                    ewma_iops += alpha * (inst_iops - ewma_iops);
-                    ewma_up_bps += alpha * (inst_up_bps - ewma_up_bps);
-                    ewma_down_bps += alpha * (inst_down_bps - ewma_down_bps);
-
-                    smoo_stats.set(Some(SmooStatsViewModel {
-                        connected: snapshot.connected,
-                        total_ios: snapshot.total_ios,
-                        total_bytes_up: snapshot.total_bytes_up,
-                        total_bytes_down: snapshot.total_bytes_down,
-                        ewma_iops,
-                        ewma_up_bps,
-                        ewma_down_bps,
-                    }));
-
-                    previous = snapshot;
-                    previous_ts = now_ts;
-                }
+                let started = std::time::Instant::now();
+                run_smoo_stats_view_loop(
+                    smoo_stats_handle,
+                    || tokio::time::sleep(CACHE_STATS_POLL_INTERVAL),
+                    move || started.elapsed().as_secs_f64(),
+                    move || stop.load(Ordering::Relaxed),
+                    move |stats_view| {
+                        smoo_stats.set(Some(stats_view));
+                    },
+                )
+                .await;
             });
         });
     }
@@ -579,7 +547,7 @@ async fn run_rusb_session(
         .await
         .map_err(|err| anyhow!(err.to_string()))?;
     smoo_stats.set_connected(true);
-    let mut counter_snapshot = counters.snapshot();
+    let mut counter_snapshot = transport_counters_from_snapshot(counters.snapshot());
     let mut missed_heartbeats: u32 = 0;
 
     loop {
@@ -588,7 +556,7 @@ async fn run_rusb_session(
                 update_smoo_stats_from_transport(
                     &smoo_stats,
                     &mut counter_snapshot,
-                    counters.snapshot(),
+                    transport_counters_from_snapshot(counters.snapshot()),
                 );
                 smoo_stats.set_connected(false);
                 match finish.outcome {
@@ -636,7 +604,7 @@ async fn run_rusb_session(
                     update_smoo_stats_from_transport(
                         &smoo_stats,
                         &mut counter_snapshot,
-                        counters.snapshot(),
+                        transport_counters_from_snapshot(counters.snapshot()),
                     );
                     smoo_stats.set_connected(false);
                     return Ok(SessionEnd::TransportLost);
@@ -644,7 +612,7 @@ async fn run_rusb_session(
                 update_smoo_stats_from_transport(
                     &smoo_stats,
                     &mut counter_snapshot,
-                    counters.snapshot(),
+                    transport_counters_from_snapshot(counters.snapshot()),
                 );
             }
         }
@@ -653,19 +621,19 @@ async fn run_rusb_session(
 
 fn update_smoo_stats_from_transport(
     smoo_stats: &SmooStatsHandle,
-    previous: &mut TransportCounterSnapshot,
-    current: TransportCounterSnapshot,
+    previous: &mut SmooTransportCounters,
+    current: SmooTransportCounters,
 ) {
-    let bytes_up_delta = current.bytes_up.saturating_sub(previous.bytes_up);
-    let bytes_down_delta = current.bytes_down.saturating_sub(previous.bytes_down);
-    let ios_up_delta = current.ios_up.saturating_sub(previous.ios_up);
-    let ios_down_delta = current.ios_down.saturating_sub(previous.ios_down);
-    smoo_stats.add_deltas(
-        ios_up_delta.saturating_add(ios_down_delta),
-        bytes_up_delta,
-        bytes_down_delta,
-    );
-    *previous = current;
+    apply_transport_counters(smoo_stats, previous, current);
+}
+
+fn transport_counters_from_snapshot(snapshot: TransportCounterSnapshot) -> SmooTransportCounters {
+    SmooTransportCounters {
+        ios_up: snapshot.ios_up,
+        ios_down: snapshot.ios_down,
+        bytes_up: snapshot.bytes_up,
+        bytes_down: snapshot.bytes_down,
+    }
 }
 
 fn join_cmdline(left: Option<&str>, right: Option<&str>) -> String {

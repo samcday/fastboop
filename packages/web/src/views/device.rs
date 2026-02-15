@@ -30,7 +30,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
-use ui::{oneplus_fajita_dtbo_overlays, SmooStatsHandle, SmooStatsPanel, SmooStatsViewModel};
+use ui::{
+    apply_transport_counters, oneplus_fajita_dtbo_overlays, run_smoo_stats_view_loop,
+    SmooStatsHandle, SmooStatsPanel, SmooStatsViewModel, SmooTransportCounters,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use url::Url;
 #[cfg(target_arch = "wasm32")]
@@ -251,52 +254,16 @@ fn BootedDevice(session_id: String) -> Element {
             let stop = Rc::new(Cell::new(false));
             smoo_stats_stop.set(Some(stop.clone()));
             spawn_detached(async move {
-                let mut previous = smoo_stats_handle.snapshot();
-                let mut previous_ts = Date::now();
-                let mut ewma_iops = 0.0f64;
-                let mut ewma_up_bps = 0.0f64;
-                let mut ewma_down_bps = 0.0f64;
-                loop {
-                    if stop.get() {
-                        break;
-                    }
-                    sleep(CACHE_STATS_POLL_INTERVAL).await;
-                    let now_ts = Date::now();
-                    let dt = ((now_ts - previous_ts) / 1000.0).max(0.001);
-                    let snapshot = smoo_stats_handle.snapshot();
-
-                    let io_delta = snapshot.total_ios.saturating_sub(previous.total_ios) as f64;
-                    let up_delta = snapshot
-                        .total_bytes_up
-                        .saturating_sub(previous.total_bytes_up)
-                        as f64;
-                    let down_delta = snapshot
-                        .total_bytes_down
-                        .saturating_sub(previous.total_bytes_down)
-                        as f64;
-
-                    let inst_iops = io_delta / dt;
-                    let inst_up_bps = up_delta / dt;
-                    let inst_down_bps = down_delta / dt;
-                    let alpha = 1.0 - (-dt / 5.0).exp();
-
-                    ewma_iops += alpha * (inst_iops - ewma_iops);
-                    ewma_up_bps += alpha * (inst_up_bps - ewma_up_bps);
-                    ewma_down_bps += alpha * (inst_down_bps - ewma_down_bps);
-
-                    smoo_stats.set(Some(SmooStatsViewModel {
-                        connected: snapshot.connected,
-                        total_ios: snapshot.total_ios,
-                        total_bytes_up: snapshot.total_bytes_up,
-                        total_bytes_down: snapshot.total_bytes_down,
-                        ewma_iops,
-                        ewma_up_bps,
-                        ewma_down_bps,
-                    }));
-
-                    previous = snapshot;
-                    previous_ts = now_ts;
-                }
+                run_smoo_stats_view_loop(
+                    smoo_stats_handle,
+                    || sleep(CACHE_STATS_POLL_INTERVAL),
+                    || Date::now() / 1000.0,
+                    move || stop.get(),
+                    move |stats_view| {
+                        smoo_stats.set(Some(stats_view));
+                    },
+                )
+                .await;
             });
         });
     }
@@ -1197,10 +1164,7 @@ async fn run_web_host_daemon(
     let mut events = host
         .take_event_receiver()
         .ok_or_else(|| anyhow::anyhow!("host worker events receiver unavailable"))?;
-    let mut prev_ios_up = 0u64;
-    let mut prev_ios_down = 0u64;
-    let mut prev_bytes_up = 0u64;
-    let mut prev_bytes_down = 0u64;
+    let mut previous_counters = SmooTransportCounters::default();
 
     update_session_active_host_state(&mut sessions, &session_id, Some(true), Some(false));
     loop {
@@ -1240,16 +1204,16 @@ async fn run_web_host_daemon(
                 bytes_up,
                 bytes_down,
             } => {
-                let ios_delta = ios_up
-                    .saturating_sub(prev_ios_up)
-                    .saturating_add(ios_down.saturating_sub(prev_ios_down));
-                let bytes_up_delta = bytes_up.saturating_sub(prev_bytes_up);
-                let bytes_down_delta = bytes_down.saturating_sub(prev_bytes_down);
-                smoo_stats.add_deltas(ios_delta, bytes_up_delta, bytes_down_delta);
-                prev_ios_up = ios_up;
-                prev_ios_down = ios_down;
-                prev_bytes_up = bytes_up;
-                prev_bytes_down = bytes_down;
+                apply_transport_counters(
+                    &smoo_stats,
+                    &mut previous_counters,
+                    SmooTransportCounters {
+                        ios_up,
+                        ios_down,
+                        bytes_up,
+                        bytes_down,
+                    },
+                );
             }
             HostWorkerEvent::SessionChanged { previous, current } => {
                 warn!(
