@@ -163,10 +163,6 @@
   color: var(--color-text-subtle);
 }
 
-.device-profile--ambiguous {
-  color: #f2a95b;
-}
-
 .device-profile-picker {
   display: grid;
   gap: 6px;

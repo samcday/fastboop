@@ -6,4 +6,4 @@ license.workspace = true
 
 [dependencies]
 dioxus = { workspace = true }
-
+fastboop-core = { workspace = true }

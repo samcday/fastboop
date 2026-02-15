@@ -1,11 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use dioxus::prelude::*;
-use fastboop_core::DeviceProfile;
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Reflect;
-use ui::{DetectedDevice, DetectedProfileOption, Hero, ProbeState, TransportKind};
+use ui::{
+    apply_selected_profiles, build_probe_snapshot, selected_profile_option,
+    update_profile_selection, Hero, ProbeSnapshot, ProbeState, TransportKind,
+};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
 
@@ -23,26 +25,6 @@ use fastboop_core::prober::probe_candidates;
 use fastboop_fastboot_webusb::{request_device, DeviceWatcher};
 #[cfg(target_arch = "wasm32")]
 use tracing::{debug, info, warn};
-
-#[derive(Clone)]
-struct ProbedProfileOption {
-    profile: DeviceProfile,
-    name: String,
-}
-
-#[derive(Clone)]
-struct ProbedCandidateDevice {
-    handle: WebUsbDeviceHandle,
-    profile_options: Vec<ProbedProfileOption>,
-    vid: u16,
-    pid: u16,
-}
-
-#[derive(Clone)]
-struct ProbeSnapshot {
-    state: ProbeState,
-    devices: Vec<ProbedCandidateDevice>,
-}
 
 #[component]
 pub fn Home() -> Element {
@@ -162,17 +144,8 @@ pub fn Home() -> Element {
 
     let state = {
         let mut state = snapshot.state.clone();
-        if let ProbeState::Ready { devices, .. } = &mut state {
-            let selections = selected_profiles.read();
-            for device in devices.iter_mut() {
-                device.selected_profile = selected_profile_index(
-                    device.vid,
-                    device.pid,
-                    device.profile_options.len(),
-                    &selections,
-                );
-            }
-        }
+        let selections = selected_profiles.read();
+        apply_selected_profiles(&mut state, &selections);
         state
     };
 
@@ -181,15 +154,8 @@ pub fn Home() -> Element {
         let devices = snapshot.devices.clone();
         Some(EventHandler::new(
             move |(device_index, profile_index): (usize, usize)| {
-                let Some(device) = devices.get(device_index) else {
-                    return;
-                };
-                if profile_index >= device.profile_options.len() {
-                    return;
-                }
-                selected_profiles
-                    .write()
-                    .insert((device.vid, device.pid), profile_index);
+                let mut selections = selected_profiles.write();
+                update_profile_selection(&mut selections, &devices, device_index, profile_index);
             },
         ))
     };
@@ -242,19 +208,11 @@ pub fn Home() -> Element {
                 return;
             };
 
-            let profile_index = {
+            let profile = {
                 let selections = selected_profiles.read();
-                selected_profile_index(
-                    device.vid,
-                    device.pid,
-                    device.profile_options.len(),
-                    &selections,
-                )
+                selected_profile_option(&device, &selections).cloned()
             };
-            let Some(profile_index) = profile_index else {
-                return;
-            };
-            let Some(profile) = device.profile_options.get(profile_index).cloned() else {
+            let Some(profile) = profile else {
                 return;
             };
 
@@ -292,102 +250,19 @@ fn load_profiles() -> Vec<fastboop_core::DeviceProfile> {
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn probe_fastboot_devices(candidates: Vec<WebUsbDeviceHandle>) -> ProbeSnapshot {
+async fn probe_fastboot_devices(
+    candidates: Vec<WebUsbDeviceHandle>,
+) -> ProbeSnapshot<WebUsbDeviceHandle> {
     let profiles = load_profiles();
-    let profiles_by_id: HashMap<_, _> = profiles
-        .iter()
-        .map(|profile| (profile.id.clone(), profile))
-        .collect();
 
     let reports = probe_candidates(&profiles, &candidates).await;
-    let mut seen = HashSet::new();
-    let mut detected = Vec::new();
-    let mut probed = Vec::new();
-    for report in reports {
-        let matched: Vec<_> = report
-            .attempts
-            .iter()
-            .filter(|attempt| attempt.result.is_ok())
-            .filter_map(|attempt| profiles_by_id.get(&attempt.profile_id).copied())
-            .collect();
-        if matched.is_empty() {
-            continue;
-        }
-        let key = (report.vid, report.pid);
-        if !seen.insert(key) {
-            continue;
-        }
-        let Some(handle) = candidates.get(report.candidate_index).cloned() else {
-            continue;
-        };
-
-        let mut profile_options = Vec::new();
-        for profile in matched {
-            let name = profile
-                .display_name
-                .clone()
-                .unwrap_or_else(|| profile.id.clone());
-            profile_options.push(ProbedProfileOption {
-                profile: profile.clone(),
-                name,
-            });
-        }
-        profile_options.sort_by(|left, right| left.profile.id.cmp(&right.profile.id));
-        let selected_profile = (profile_options.len() == 1).then_some(0);
-        let name = if let Some(profile) = profile_options.first() {
-            if profile_options.len() == 1 {
-                profile.name.clone()
-            } else {
-                format!("{} profile matches", profile_options.len())
-            }
-        } else {
-            continue;
-        };
-
-        let ui_profile_options = profile_options
-            .iter()
-            .map(|profile| DetectedProfileOption {
-                profile_id: profile.profile.id.clone(),
-                name: profile.name.clone(),
-            })
-            .collect();
-        detected.push(DetectedDevice {
-            vid: report.vid,
-            pid: report.pid,
-            name: name.clone(),
-            profile_options: ui_profile_options,
-            selected_profile,
-        });
-        probed.push(ProbedCandidateDevice {
-            handle,
-            profile_options,
-            vid: report.vid,
-            pid: report.pid,
-        });
-    }
-
-    ProbeSnapshot {
-        state: ProbeState::Ready {
-            transport: TransportKind::WebUsb,
-            devices: detected,
-        },
-        devices: probed,
-    }
-}
-
-fn selected_profile_index(
-    vid: u16,
-    pid: u16,
-    option_count: usize,
-    selections: &HashMap<(u16, u16), usize>,
-) -> Option<usize> {
-    if option_count == 1 {
-        return Some(0);
-    }
-    selections
-        .get(&(vid, pid))
-        .copied()
-        .filter(|index| *index < option_count)
+    build_probe_snapshot(
+        TransportKind::WebUsb,
+        &profiles,
+        reports,
+        &candidates,
+        |_| None,
+    )
 }
 
 #[cfg(target_arch = "wasm32")]

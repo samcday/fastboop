@@ -24,6 +24,7 @@ license = "GPL-3.0-only"
 [workspace.dependencies]
 dioxus = { version = "0.7.1" }
 ui = { path = "packages/ui" }
+fastboop-core = { path = "crates/fastboop-core" }
 fastboop-schema = { path = "crates/fastboop-schema", default-features = false }
 bitflags = "2"
 memmap2 = { version = "0.9", default-features = false }
