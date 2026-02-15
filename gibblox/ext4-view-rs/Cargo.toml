@@ -1,0 +1,53 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+# https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+# <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+# option. This file may not be copied, modified, or distributed
+# except according to those terms.
+
+[package]
+name = "ext4-view"
+version = "0.9.3"
+edition.workspace = true
+license.workspace = true
+repository = "https://github.com/nicholasbishop/ext4-view-rs"
+categories = ["filesystem", "embedded", "no-std"]
+description = "No-std compatible Rust library for reading ext2/ext3/ext4 filesystems"
+keywords = ["ext4", "ext2", "ext3", "filesystem", "no_std"]
+rust-version = "1.85"
+include = [
+    "src/*.rs",
+    "src/iters",
+    "src/journal",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+]
+
+[workspace]
+members = ["xtask", "xtask/uefibench"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+anyhow = { version = "1.0.0", features = ["backtrace"] }
+
+[features]
+std = []
+
+[dependencies]
+bitflags = "2.0.0"
+crc = "3.0.0"
+
+[dev-dependencies]
+anyhow.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[example]]
+name = "cat"
+required-features = ["std"]
