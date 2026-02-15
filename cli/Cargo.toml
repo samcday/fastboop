@@ -10,6 +10,7 @@ async-trait = { workspace = true }
 clap = { workspace = true }
 fastboop-core = { path = "../crates/fastboop-core" }
 fastboop-rootfs-erofs = { path = "../crates/fastboop-rootfs-erofs" }
+fastboop-rootfs-ext4 = { path = "../crates/fastboop-rootfs-ext4" }
 fastboop-stage0-generator = { path = "../crates/fastboop-stage0-generator" }
 fastboop-fastboot-rusb = { path = "../crates/fastboop-fastboot-rusb" }
 serde = { version = "1.0.217", features = ["derive"] }
