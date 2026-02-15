@@ -15,6 +15,7 @@ use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_rootfs_erofs::ErofsRootfs;
+use fastboop_rootfs_ext4::Ext4Rootfs;
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
@@ -49,7 +50,7 @@ struct ResolvedDetectedFastbootDevice {
 
 #[derive(Args)]
 pub struct BootStage0Args {
-    /// Path or HTTP(S) URL to EROFS image containing kernel/modules.
+    /// Path or HTTP(S) URL to rootfs image containing kernel/modules.
     #[arg(value_name = "ROOTFS")]
     pub rootfs: PathBuf,
     /// Device profile id to use. If omitted, fastboop auto-probes matching profiles.
@@ -282,7 +283,7 @@ async fn run_boot_inner(
 
     const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
 
-    let (_provider, block_reader, image_size_bytes, image_identity, build) = {
+    let (block_reader, image_size_bytes, image_identity, build) = {
         let rootfs_str = args.stage0.rootfs.to_string_lossy();
 
         // Build gibblox pipeline explicitly
@@ -315,18 +316,34 @@ async fn run_boot_inner(
         let image_size_bytes = total_blocks * reader.block_size() as u64;
         let image_identity = block_identity_string(reader.as_ref());
 
-        // Wrap in EROFS
-        let provider = ErofsRootfs::new(reader.clone(), image_size_bytes).await?;
-
-        let build = build_stage0(
-            &profile,
-            &provider,
-            &opts,
-            extra_cmdline.as_deref(),
-            existing.as_deref(),
-        )
-        .await;
-        anyhow::Ok((provider, reader, image_size_bytes, image_identity, build))
+        let build = match ErofsRootfs::new(reader.clone(), image_size_bytes).await {
+            Ok(provider) => {
+                build_stage0(
+                    &profile,
+                    &provider,
+                    &opts,
+                    extra_cmdline.as_deref(),
+                    existing.as_deref(),
+                )
+                .await
+            }
+            Err(erofs_err) => {
+                let provider = Ext4Rootfs::new(reader.clone()).await.map_err(|ext4_err| {
+                    anyhow!(
+                        "rootfs is neither EROFS nor ext4 (erofs: {erofs_err}; ext4: {ext4_err})"
+                    )
+                })?;
+                build_stage0(
+                    &profile,
+                    &provider,
+                    &opts,
+                    extra_cmdline.as_deref(),
+                    existing.as_deref(),
+                )
+                .await
+            }
+        };
+        anyhow::Ok((reader, image_size_bytes, image_identity, build))
     }?;
 
     let build = build.map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
@@ -762,10 +779,7 @@ fn resolve_profile_by_id(
     profiles.get(requested).cloned().with_context(|| {
         let mut ids: Vec<_> = profiles.keys().cloned().collect();
         ids.sort();
-        format!(
-            "device profile '{}' not found in {:?}; available ids: {:?}",
-            requested, devpro_dirs, ids
-        )
+        format!("device profile '{requested}' not found in {devpro_dirs:?}; available ids: {ids:?}")
     })
 }
 

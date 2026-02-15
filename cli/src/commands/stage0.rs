@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use fastboop_rootfs_erofs::ErofsRootfs;
+use fastboop_rootfs_ext4::Ext4Rootfs;
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
@@ -19,7 +20,7 @@ use super::{read_dtbo_overlays, read_existing_initrd};
 
 #[derive(Args)]
 pub struct Stage0Args {
-    /// Path or HTTP(S) URL to EROFS image containing kernel/modules.
+    /// Path or HTTP(S) URL to rootfs image containing kernel/modules.
     #[arg(value_name = "ROOTFS")]
     pub rootfs: PathBuf,
     /// Device profile id to use (must be present in loaded DevPros).
@@ -114,17 +115,33 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         let total_blocks = reader.total_blocks().await?;
         let image_size_bytes = total_blocks * reader.block_size() as u64;
 
-        // Wrap in EROFS
-        let provider = ErofsRootfs::new(reader, image_size_bytes).await?;
-
-        let build = build_stage0(
-            profile,
-            &provider,
-            &opts,
-            args.cmdline_append.as_deref(),
-            existing.as_deref(),
-        )
-        .await;
+        let build = match ErofsRootfs::new(reader.clone(), image_size_bytes).await {
+            Ok(provider) => {
+                build_stage0(
+                    profile,
+                    &provider,
+                    &opts,
+                    args.cmdline_append.as_deref(),
+                    existing.as_deref(),
+                )
+                .await
+            }
+            Err(erofs_err) => {
+                let provider = Ext4Rootfs::new(reader).await.map_err(|ext4_err| {
+                    anyhow!(
+                        "rootfs is neither EROFS nor ext4 (erofs: {erofs_err}; ext4: {ext4_err})"
+                    )
+                })?;
+                build_stage0(
+                    profile,
+                    &provider,
+                    &opts,
+                    args.cmdline_append.as_deref(),
+                    existing.as_deref(),
+                )
+                .await
+            }
+        };
         anyhow::Ok(build)
     }?
     .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
