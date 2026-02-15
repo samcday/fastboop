@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -25,12 +26,12 @@ use tracing::debug;
 use url::Url;
 
 use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
-use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
+use crate::devpros::{dedup_profiles, load_device_profiles, resolve_devpro_dirs};
 use crate::personalization::personalization_from_host;
 use crate::smoo_host::run_host_daemon;
 use crate::tui::{TuiOutcome, run_boot_tui};
 
-use super::{Stage0Args, format_probe_error, read_dtbo_overlays, read_existing_initrd};
+use super::{format_probe_error, read_dtbo_overlays, read_existing_initrd};
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -41,10 +42,43 @@ struct DetectedFastbootDevice {
     serial: Option<String>,
 }
 
+struct ResolvedDetectedFastbootDevice {
+    profile: DeviceProfile,
+    device: DetectedFastbootDevice,
+}
+
+#[derive(Args)]
+pub struct BootStage0Args {
+    /// Path or HTTP(S) URL to EROFS image containing kernel/modules.
+    #[arg(value_name = "ROOTFS")]
+    pub rootfs: PathBuf,
+    /// Device profile id to use. If omitted, fastboop auto-probes matching profiles.
+    #[arg(long)]
+    pub device_profile: Option<String>,
+    /// Override DTB path (host path).
+    #[arg(long)]
+    pub dtb: Option<PathBuf>,
+    /// DTBO overlay to apply (repeatable).
+    #[arg(long)]
+    pub dtbo: Vec<PathBuf>,
+    /// Existing initrd (cpio newc) to augment.
+    #[arg(long)]
+    pub augment: Option<PathBuf>,
+    /// Extra required modules (repeatable).
+    #[arg(long = "require-module")]
+    pub require_modules: Vec<String>,
+    /// Extra kernel cmdline to append after generated stage0 arguments.
+    #[arg(long, alias = "cmdline")]
+    pub cmdline_append: Option<String>,
+    /// Enable CDC-ACM gadget (smoo.acm=1) and include usb_f_acm.
+    #[arg(long)]
+    pub serial: bool,
+}
+
 #[derive(Args)]
 pub struct BootArgs {
     #[command(flatten)]
-    pub stage0: Stage0Args,
+    pub stage0: BootStage0Args,
     /// Write boot image to a file and skip device detection/boot.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
@@ -131,50 +165,64 @@ async fn run_boot_inner(
 ) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
     let profiles = load_device_profiles(&devpro_dirs)?;
-    let profile = profiles
-        .get(&args.stage0.device_profile)
-        .or_else(|| profiles.get(&format!("file:{}", args.stage0.device_profile)));
-    let profile = profile.with_context(|| {
-        let mut ids: Vec<_> = profiles
-            .keys()
-            .filter(|k| !k.starts_with("file:"))
-            .cloned()
-            .collect();
-        ids.sort();
-        format!(
-            "device profile '{}' not found in {:?}; available ids: {:?}",
-            args.stage0.device_profile, devpro_dirs, ids
-        )
-    })?;
+    let mut profile = match args.stage0.device_profile.as_deref() {
+        Some(requested) => Some(resolve_profile_by_id(&profiles, &devpro_dirs, requested)?),
+        None => None,
+    };
+
+    if args.output.is_some() && profile.is_none() {
+        bail!(
+            "--device-profile is required when using --output; profile auto-detection needs a connected device"
+        );
+    }
 
     let mut detected_device = if args.output.is_none() {
-        emit(
-            &events,
-            BootEvent::Phase {
-                phase: BootPhase::WaitingForDevice,
-                detail: format!("profile={}", profile.id),
-            },
-        );
         let wait = Duration::from_secs(args.wait);
-        Some(wait_for_fastboot_device(profile, wait, &events).await?)
+        if let Some(selected_profile) = profile.as_ref() {
+            emit(
+                &events,
+                BootEvent::Phase {
+                    phase: BootPhase::WaitingForDevice,
+                    detail: format!("profile={}", selected_profile.id),
+                },
+            );
+            Some(wait_for_fastboot_device(selected_profile, wait, &events).await?)
+        } else {
+            let unique_profiles: Vec<DeviceProfile> =
+                dedup_profiles(&profiles).into_iter().cloned().collect();
+            emit(
+                &events,
+                BootEvent::Phase {
+                    phase: BootPhase::WaitingForDevice,
+                    detail: "profile=auto".to_string(),
+                },
+            );
+            let resolved = wait_for_fastboot_device_auto(&unique_profiles, wait, &events).await?;
+            profile = Some(resolved.profile);
+            Some(resolved.device)
+        }
     } else {
         None
     };
 
+    let profile = profile.expect("profile resolved before build");
+
     if let Some(device) = &detected_device {
+        let profile_detail = format!("profile={}", profile.id);
         emit(
             &events,
             BootEvent::Phase {
                 phase: BootPhase::DeviceDetected,
                 detail: format!(
-                    "{:04x}:{:04x} {}",
+                    "{:04x}:{:04x} {} {}",
                     device.vid,
                     device.pid,
                     device
                         .serial
                         .as_deref()
                         .map(|s| format!("serial={s}"))
-                        .unwrap_or_else(|| "serial=unknown".to_string())
+                        .unwrap_or_else(|| "serial=unknown".to_string()),
+                    profile_detail,
                 ),
             },
         );
@@ -271,7 +319,7 @@ async fn run_boot_inner(
         let provider = ErofsRootfs::new(reader.clone(), image_size_bytes).await?;
 
         let build = build_stage0(
-            profile,
+            &profile,
             &provider,
             &opts,
             extra_cmdline.as_deref(),
@@ -294,7 +342,7 @@ async fn run_boot_inner(
     );
 
     let mut kernel_image = build.kernel_image;
-    let mut profile = profile.clone();
+    let mut profile = profile;
     if profile
         .boot
         .fastboot_boot
@@ -448,6 +496,71 @@ async fn wait_for_fastboot_device(
     }
 }
 
+async fn wait_for_fastboot_device_auto(
+    profiles: &[DeviceProfile],
+    wait: Duration,
+    events: &Sender<BootEvent>,
+) -> Result<ResolvedDetectedFastbootDevice> {
+    if profiles.is_empty() {
+        bail!("no device profiles available for auto-detection");
+    }
+
+    let filters = profile_filters(profiles);
+    let mut watcher = DeviceWatcher::new(&filters).context("starting USB hotplug watcher")?;
+    let deadline = if wait.is_zero() {
+        None
+    } else {
+        Some(Instant::now() + wait)
+    };
+    let mut waiting = false;
+
+    loop {
+        match watcher.try_next_event() {
+            Poll::Ready(Ok(DeviceEvent::Arrived { device })) => {
+                if let Some(resolved) = probe_arrived_device_auto(profiles, device, events).await? {
+                    return Ok(resolved);
+                }
+            }
+            Poll::Ready(Ok(DeviceEvent::Left { .. })) => {}
+            Poll::Ready(Err(err)) => {
+                bail!("USB watcher disconnected: {err}");
+            }
+            Poll::Pending => {
+                if !waiting {
+                    waiting = true;
+                    if wait.is_zero() {
+                        emit(
+                            events,
+                            BootEvent::Log(
+                                "Waiting for fastboot device matching any profile...".to_string(),
+                            ),
+                        );
+                    } else {
+                        emit(
+                            events,
+                            BootEvent::Log(format!(
+                                "Waiting up to {}s for fastboot device matching any profile...",
+                                wait.as_secs()
+                            )),
+                        );
+                    }
+                }
+
+                if let Some(deadline) = deadline {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        bail!("timed out waiting for fastboot device matching any profile");
+                    }
+                    let remaining = deadline.saturating_duration_since(now);
+                    tokio::time::sleep(remaining.min(IDLE_POLL_INTERVAL)).await;
+                } else {
+                    tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+                }
+            }
+        }
+    }
+}
+
 async fn probe_arrived_device(
     profile: &DeviceProfile,
     device: RusbDeviceHandle,
@@ -493,6 +606,79 @@ async fn probe_arrived_device(
     }
 
     Ok(None)
+}
+
+async fn probe_arrived_device_auto(
+    profiles: &[DeviceProfile],
+    device: RusbDeviceHandle,
+    events: &Sender<BootEvent>,
+) -> Result<Option<ResolvedDetectedFastbootDevice>> {
+    let vid = device.vid();
+    let pid = device.pid();
+    let matching_profiles: Vec<&DeviceProfile> = profiles
+        .iter()
+        .filter(|profile| profile_matches_vid_pid(profile, vid, pid))
+        .collect();
+    if matching_profiles.is_empty() {
+        return Ok(None);
+    }
+
+    let serial = device.usb_serial_number();
+    let mut fastboot = match device.open_fastboot().await {
+        Ok(fastboot) => fastboot,
+        Err(err) => {
+            emit(
+                events,
+                BootEvent::Log(format!("Skipping {vid:04x}:{pid:04x}: open failed: {err}")),
+            );
+            return Ok(None);
+        }
+    };
+
+    let mut session = FastbootSession::new(&mut fastboot);
+    let mut matched_profiles = Vec::new();
+    for profile in matching_profiles {
+        match session.probe_profile(profile).await {
+            Ok(()) => matched_profiles.push(profile),
+            Err(err) => {
+                debug!(
+                    profile_id = %profile.id,
+                    vid = %format!("{:04x}", vid),
+                    pid = %format!("{:04x}", pid),
+                    error = %format_probe_error(err),
+                    "fastboot probe failed"
+                );
+            }
+        }
+    }
+
+    match matched_profiles.as_slice() {
+        [] => Ok(None),
+        [profile] => Ok(Some(ResolvedDetectedFastbootDevice {
+            profile: (*profile).clone(),
+            device: DetectedFastbootDevice {
+                fastboot,
+                vid,
+                pid,
+                serial,
+            },
+        })),
+        _ => {
+            let mut profile_choices: Vec<String> = matched_profiles
+                .iter()
+                .map(|profile| profile_choice_label(profile))
+                .collect();
+            profile_choices.sort();
+            let serial_suffix = serial
+                .as_deref()
+                .map(|serial| format!(" serial={serial}"))
+                .unwrap_or_default();
+            bail!(
+                "multiple device profiles matched {vid:04x}:{pid:04x}{serial_suffix}: {}. --device-profile which-one, guv?",
+                profile_choices.join(", "),
+            );
+        }
+    }
 }
 
 fn run_plain_event_loop(rx: &Receiver<BootEvent>) {
@@ -566,6 +752,36 @@ fn join_cmdline(left: Option<&str>, right: Option<&str>) -> String {
         }
     }
     out
+}
+
+fn resolve_profile_by_id(
+    profiles: &HashMap<String, DeviceProfile>,
+    devpro_dirs: &[PathBuf],
+    requested: &str,
+) -> Result<DeviceProfile> {
+    profiles
+        .get(requested)
+        .or_else(|| profiles.get(&format!("file:{requested}")))
+        .cloned()
+        .with_context(|| {
+            let mut ids: Vec<_> = profiles
+                .keys()
+                .filter(|k| !k.starts_with("file:"))
+                .cloned()
+                .collect();
+            ids.sort();
+            format!(
+                "device profile '{}' not found in {:?}; available ids: {:?}",
+                requested, devpro_dirs, ids
+            )
+        })
+}
+
+fn profile_choice_label(profile: &DeviceProfile) -> String {
+    match profile.display_name.as_deref() {
+        Some(display_name) => format!("{} ({display_name})", profile.id),
+        None => profile.id.clone(),
+    }
 }
 
 fn system_time_cmdline() -> Result<String> {

@@ -1,12 +1,11 @@
-#[cfg(target_arch = "wasm32")]
 use std::collections::{HashMap, HashSet};
 
 use dioxus::prelude::*;
+use fastboop_core::DeviceProfile;
+use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Reflect;
-#[cfg(target_arch = "wasm32")]
-use ui::{DetectedDevice, TransportKind};
-use ui::{Hero, ProbeState};
+use ui::{DetectedDevice, DetectedProfileOption, Hero, ProbeState, TransportKind};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
 
@@ -21,14 +20,28 @@ use fastboop_core::device::{profile_filters, DeviceEvent, DeviceHandle as _, Dev
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::prober::probe_candidates;
 #[cfg(target_arch = "wasm32")]
-use fastboop_fastboot_webusb::{request_device, DeviceWatcher, WebUsbDeviceHandle};
+use fastboop_fastboot_webusb::{request_device, DeviceWatcher};
 #[cfg(target_arch = "wasm32")]
 use tracing::{debug, info, warn};
 
 #[derive(Clone)]
+struct ProbedProfileOption {
+    profile: DeviceProfile,
+    name: String,
+}
+
+#[derive(Clone)]
+struct ProbedCandidateDevice {
+    handle: WebUsbDeviceHandle,
+    profile_options: Vec<ProbedProfileOption>,
+    vid: u16,
+    pid: u16,
+}
+
+#[derive(Clone)]
 struct ProbeSnapshot {
     state: ProbeState,
-    devices: Vec<ProbedDevice>,
+    devices: Vec<ProbedCandidateDevice>,
 }
 
 #[component]
@@ -36,6 +49,7 @@ pub fn Home() -> Element {
     let sessions = use_context::<SessionStore>();
     let navigator = use_navigator();
     let refresh = use_signal(|| 0u32);
+    let selected_profiles = use_signal(HashMap::<(u16, u16), usize>::new);
 
     #[cfg(target_arch = "wasm32")]
     let candidates = use_signal(Vec::<WebUsbDeviceHandle>::new);
@@ -146,6 +160,40 @@ pub fn Home() -> Element {
             devices: Vec::new(),
         });
 
+    let state = {
+        let mut state = snapshot.state.clone();
+        if let ProbeState::Ready { devices, .. } = &mut state {
+            let selections = selected_profiles.read();
+            for device in devices.iter_mut() {
+                device.selected_profile = selected_profile_index(
+                    device.vid,
+                    device.pid,
+                    device.profile_options.len(),
+                    &selections,
+                );
+            }
+        }
+        state
+    };
+
+    let on_select_profile = {
+        let mut selected_profiles = selected_profiles;
+        let devices = snapshot.devices.clone();
+        Some(EventHandler::new(
+            move |(device_index, profile_index): (usize, usize)| {
+                let Some(device) = devices.get(device_index) else {
+                    return;
+                };
+                if profile_index >= device.profile_options.len() {
+                    return;
+                }
+                selected_profiles
+                    .write()
+                    .insert((device.vid, device.pid), profile_index);
+            },
+        ))
+    };
+
     #[cfg(target_arch = "wasm32")]
     let on_connect: Option<EventHandler<MouseEvent>> = {
         if !webusb_supported {
@@ -188,14 +236,38 @@ pub fn Home() -> Element {
     let on_boot = {
         let mut sessions = sessions;
         let devices = snapshot.devices.clone();
+        let selected_profiles = selected_profiles;
         Some(EventHandler::new(move |index: usize| {
             let Some(device) = devices.get(index).cloned() else {
                 return;
             };
+
+            let profile_index = {
+                let selections = selected_profiles.read();
+                selected_profile_index(
+                    device.vid,
+                    device.pid,
+                    device.profile_options.len(),
+                    &selections,
+                )
+            };
+            let Some(profile_index) = profile_index else {
+                return;
+            };
+            let Some(profile) = device.profile_options.get(profile_index).cloned() else {
+                return;
+            };
+
             let session_id = next_session_id();
             sessions.write().push(DeviceSession {
                 id: session_id.clone(),
-                device,
+                device: ProbedDevice {
+                    handle: device.handle,
+                    profile: profile.profile,
+                    name: profile.name,
+                    vid: device.vid,
+                    pid: device.pid,
+                },
                 phase: SessionPhase::Booting {
                     step: "Queued".to_string(),
                 },
@@ -205,7 +277,12 @@ pub fn Home() -> Element {
     };
 
     rsx! {
-        Hero { state: snapshot.state, on_connect, on_boot }
+        Hero {
+            state,
+            on_connect,
+            on_boot,
+            on_select_profile,
+        }
     }
 }
 
@@ -227,36 +304,63 @@ async fn probe_fastboot_devices(candidates: Vec<WebUsbDeviceHandle>) -> ProbeSna
     let mut detected = Vec::new();
     let mut probed = Vec::new();
     for report in reports {
-        let matched = report
+        let matched: Vec<_> = report
             .attempts
             .iter()
-            .find(|attempt| attempt.result.is_ok());
-        let Some(matched) = matched else {
+            .filter(|attempt| attempt.result.is_ok())
+            .filter_map(|attempt| profiles_by_id.get(&attempt.profile_id).copied())
+            .collect();
+        if matched.is_empty() {
             continue;
-        };
+        }
         let key = (report.vid, report.pid);
         if !seen.insert(key) {
             continue;
         }
-        let Some(profile) = profiles_by_id.get(&matched.profile_id) else {
-            continue;
-        };
         let Some(handle) = candidates.get(report.candidate_index).cloned() else {
             continue;
         };
-        let name = profile
-            .display_name
-            .clone()
-            .unwrap_or(matched.profile_id.clone());
+
+        let mut profile_options = Vec::new();
+        for profile in matched {
+            let name = profile
+                .display_name
+                .clone()
+                .unwrap_or_else(|| profile.id.clone());
+            profile_options.push(ProbedProfileOption {
+                profile: profile.clone(),
+                name,
+            });
+        }
+        profile_options.sort_by(|left, right| left.profile.id.cmp(&right.profile.id));
+        let selected_profile = (profile_options.len() == 1).then_some(0);
+        let name = if let Some(profile) = profile_options.first() {
+            if profile_options.len() == 1 {
+                profile.name.clone()
+            } else {
+                format!("{} profile matches", profile_options.len())
+            }
+        } else {
+            continue;
+        };
+
+        let ui_profile_options = profile_options
+            .iter()
+            .map(|profile| DetectedProfileOption {
+                profile_id: profile.profile.id.clone(),
+                name: profile.name.clone(),
+            })
+            .collect();
         detected.push(DetectedDevice {
             vid: report.vid,
             pid: report.pid,
             name: name.clone(),
+            profile_options: ui_profile_options,
+            selected_profile,
         });
-        probed.push(ProbedDevice {
+        probed.push(ProbedCandidateDevice {
             handle,
-            profile: (*profile).clone(),
-            name,
+            profile_options,
             vid: report.vid,
             pid: report.pid,
         });
@@ -269,6 +373,21 @@ async fn probe_fastboot_devices(candidates: Vec<WebUsbDeviceHandle>) -> ProbeSna
         },
         devices: probed,
     }
+}
+
+fn selected_profile_index(
+    vid: u16,
+    pid: u16,
+    option_count: usize,
+    selections: &HashMap<(u16, u16), usize>,
+) -> Option<usize> {
+    if option_count == 1 {
+        return Some(0);
+    }
+    selections
+        .get(&(vid, pid))
+        .copied()
+        .filter(|index| *index < option_count)
 }
 
 #[cfg(target_arch = "wasm32")]

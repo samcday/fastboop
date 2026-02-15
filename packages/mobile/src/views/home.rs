@@ -10,6 +10,8 @@ pub fn Home() -> Element {
                 devices: Vec::new(),
             },
             on_connect: None,
+            on_boot: None,
+            on_select_profile: None,
         }
     }
 }

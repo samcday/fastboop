@@ -16,10 +16,18 @@ pub enum TransportKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DetectedProfileOption {
+    pub profile_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DetectedDevice {
     pub vid: u16,
     pub pid: u16,
     pub name: String,
+    pub profile_options: Vec<DetectedProfileOption>,
+    pub selected_profile: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

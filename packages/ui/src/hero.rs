@@ -17,6 +17,7 @@ pub fn Hero(
     state: ProbeState,
     on_connect: Option<EventHandler<MouseEvent>>,
     on_boot: Option<EventHandler<usize>>,
+    on_select_profile: Option<EventHandler<(usize, usize)>>,
 ) -> Element {
     let hero_css = stylesheet_href(&HERO_CSS, "/assets/styling/hero.css");
 
@@ -77,6 +78,7 @@ pub fn Hero(
                             index,
                             device: device.clone(),
                             on_boot: on_boot,
+                            on_select_profile: on_select_profile,
                         }
                     }
                 }
@@ -124,22 +126,82 @@ fn DeviceRow(
     index: usize,
     device: DetectedDevice,
     on_boot: Option<EventHandler<usize>>,
+    on_select_profile: Option<EventHandler<(usize, usize)>>,
 ) -> Element {
     let id = format!("{:04x}:{:04x}", device.vid, device.pid);
+    let selected_profile = if device.profile_options.len() == 1 {
+        Some(0)
+    } else {
+        device.selected_profile
+    };
+    let boot_enabled = selected_profile.is_some();
     let boot_button = match on_boot {
         Some(handler) => rsx! {
             button {
                 class: "device-boot",
+                disabled: !boot_enabled,
                 onclick: move |_| handler.call(index),
                 "Boot"
             }
         },
         None => rsx! {},
     };
+    let profile_badge = if device.profile_options.len() == 1 {
+        let profile = &device.profile_options[0];
+        rsx! {
+            span { class: "device-profile", "{profile.name} ({profile.profile_id})" }
+        }
+    } else {
+        rsx! {}
+    };
+    let profile_picker = if device.profile_options.len() > 1 {
+        let selected = selected_profile
+            .map(|choice| choice.to_string())
+            .unwrap_or_default();
+        match on_select_profile {
+            Some(handler) => rsx! {
+                label { class: "device-profile-picker",
+                    span { class: "device-profile-picker__label", "Device profile" }
+                    select {
+                        class: "device-profile-picker__select",
+                        value: selected,
+                        onchange: move |evt| {
+                            let value = evt.value();
+                            if let Ok(choice) = value.parse::<usize>() {
+                                handler.call((index, choice));
+                            }
+                        },
+                        option { value: "", disabled: true, "-- choose a profile --" }
+                        for (choice_index, profile) in device.profile_options.iter().enumerate() {
+                            option {
+                                value: "{choice_index}",
+                                "{profile.name} ({profile.profile_id})"
+                            }
+                        }
+                    }
+                }
+            },
+            None => rsx! {},
+        }
+    } else {
+        rsx! {}
+    };
+    let profile_hint = if device.profile_options.len() > 1 && selected_profile.is_none() {
+        rsx! {
+            p { class: "device-hint", "Choose a device profile before booting." }
+        }
+    } else {
+        rsx! {}
+    };
     rsx! {
         li {
             span { class: "device-id", "{id}" }
-            span { class: "device-name", "{device.name}" }
+            div { class: "device-details",
+                span { class: "device-name", "{device.name}" }
+                {profile_badge}
+                {profile_picker}
+                {profile_hint}
+            }
             span { class: "device-mode", "fastboot" }
             {boot_button}
         }
