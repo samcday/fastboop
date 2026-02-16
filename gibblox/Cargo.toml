@@ -4,6 +4,7 @@ members = [
     "crates/gibblox-core",
     "crates/gibblox-iso9660",
     "crates/gibblox-file",
+    "crates/gibblox-web-file",
     "crates/gibblox-http",
     "crates/gibblox-cache",
     "crates/gibblox-paged-lru",

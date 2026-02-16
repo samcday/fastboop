@@ -21,6 +21,7 @@ To gibblox you will always be just another block.
 - `gibblox-core`: core traits and error types.
 - `gibblox-iso9660`: ISO9660 file-backed block reader.
 - `gibblox-http`: HTTP Range-backed block reader (native + wasm).
+- `gibblox-web-file`: browser `File`-backed block reader for wasm targets.
 - `gibblox-cache`: cache layer and cache file format logic.
 - `gibblox-paged-lru`: in-memory page cache for coalescing small foreground reads.
 - `gibblox-cache-store-std`: XDG-friendly filesystem cache backend for native CLI/desktop apps.
