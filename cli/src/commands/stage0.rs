@@ -6,11 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use fastboop_rootfs_erofs::{ErofsRootfs, OstreeRootfs};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
-use gibblox_cache::CachedBlockReader;
-use gibblox_cache_store_std::StdCacheOps;
 use gibblox_core::BlockReader;
-use gibblox_file::StdFileBlockReader;
-use gibblox_http::HttpBlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 use tracing::debug;
 use url::Url;
@@ -19,12 +15,12 @@ use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
 
 use super::{
     OstreeArg, auto_detect_ostree_deployment_path, parse_ostree_arg, read_dtbo_overlays,
-    read_existing_initrd,
+    open_rootfs_block_reader, read_existing_initrd,
 };
 
 #[derive(Args)]
 pub struct Stage0Args {
-    /// Path or HTTP(S) URL to EROFS image containing kernel/modules.
+    /// Path or HTTP(S) URL to an EROFS image, or HTTP(S) casync blob index (.caibx), containing kernel/modules.
     #[arg(value_name = "ROOTFS")]
     pub rootfs: PathBuf,
     /// Resolve kernel/modules inside this OSTree deployment path (`--ostree` auto-detects).
@@ -88,8 +84,6 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         personalization: None,
     };
 
-    const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
-
     let existing = read_existing_initrd(&args.augment)?;
     let cmdline_append = args
         .cmdline_append
@@ -100,32 +94,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
 
     let build = {
         let rootfs_str = args.rootfs.to_string_lossy();
-
-        // Build gibblox pipeline explicitly
-        let reader: Arc<dyn BlockReader> =
-            if rootfs_str.starts_with("http://") || rootfs_str.starts_with("https://") {
-                // HTTP pipeline: HTTP → Cache
-                let url = Url::parse(&rootfs_str)
-                    .with_context(|| format!("parse rootfs URL {rootfs_str}"))?;
-                let http_reader = HttpBlockReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
-                    .await
-                    .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
-
-                let cache = StdCacheOps::open_default_for_reader(&http_reader)
-                    .await
-                    .map_err(|err| anyhow!("open std cache: {err}"))?;
-                let cached = CachedBlockReader::new(http_reader, cache)
-                    .await
-                    .map_err(|err| anyhow!("initialize std cache: {err}"))?;
-                Arc::new(cached)
-            } else {
-                // File pipeline: File only
-                let canonical = std::fs::canonicalize(&args.rootfs)
-                    .with_context(|| format!("canonicalize {}", args.rootfs.display()))?;
-                let file_reader = StdFileBlockReader::open(&canonical, DEFAULT_IMAGE_BLOCK_SIZE)
-                    .map_err(|err| anyhow!("open file {}: {err}", canonical.display()))?;
-                Arc::new(file_reader)
-            };
+        let reader = open_rootfs_block_reader(&args.rootfs).await?;
 
         let reader: Arc<dyn BlockReader> = match zip_entry_name_from_rootfs(&rootfs_str)? {
             Some(entry_name) => {

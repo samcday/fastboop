@@ -18,6 +18,8 @@ serde_yaml = "0.9.34"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 gibblox-core = { path = "../gibblox/crates/gibblox-core", features = ["std"] }
+gibblox-casync = { path = "../gibblox/crates/gibblox-casync", features = ["std"] }
+gibblox-casync-std = { path = "../gibblox/crates/gibblox-casync-std" }
 gibblox-cache = { path = "../gibblox/crates/gibblox-cache", features = ["std"] }
 gibblox-cache-store-std = { path = "../gibblox/crates/gibblox-cache-store-std" }
 gibblox-file = { path = "../gibblox/crates/gibblox-file" }

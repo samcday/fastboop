@@ -1,11 +1,24 @@
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use fastboop_core::fastboot::{FastbootProtocolError, ProbeError};
 use fastboop_core::{RootfsEntryType, RootfsProvider};
-use fastboop_rootfs_erofs::normalize_ostree_deployment_path;
+use fastboop_rootfs_erofs::{DEFAULT_IMAGE_BLOCK_SIZE, normalize_ostree_deployment_path};
+use gibblox_cache::CachedBlockReader;
+use gibblox_cache_store_std::StdCacheOps;
+use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
+use gibblox_casync_std::{
+    StdCasyncChunkStore, StdCasyncChunkStoreConfig, StdCasyncChunkStoreLocator,
+    StdCasyncIndexLocator, StdCasyncIndexSource,
+};
+use gibblox_core::{BlockReader, ReadContext};
+use gibblox_file::StdFileBlockReader;
+use gibblox_http::HttpBlockReader;
+use tracing::info;
+use url::Url;
 
 mod boot;
 mod detect;
@@ -14,6 +27,168 @@ mod stage0;
 pub use boot::{BootArgs, run_boot};
 pub use detect::{DetectArgs, run_detect};
 pub use stage0::{Stage0Args, run_stage0};
+
+pub(crate) async fn open_rootfs_block_reader(rootfs: &Path) -> Result<Arc<dyn BlockReader>> {
+    let rootfs_str = rootfs.to_string_lossy();
+    if rootfs_str.ends_with(".caidx") {
+        bail!(
+            "casync archive indexes (.caidx) are not supported for rootfs block reads; provide a casync blob index (.caibx)"
+        );
+    }
+
+    if rootfs_str.starts_with("http://") || rootfs_str.starts_with("https://") {
+        let url =
+            Url::parse(&rootfs_str).with_context(|| format!("parse rootfs URL {rootfs_str}"))?;
+
+        if url.path().ends_with(".caibx") {
+            info!(index_url = %url, "using casync blob-index rootfs reader pipeline");
+            return open_casync_reader(url).await;
+        }
+
+        let http_reader = HttpBlockReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
+            .await
+            .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
+        let cache = StdCacheOps::open_default_for_reader(&http_reader)
+            .await
+            .map_err(|err| anyhow!("open std cache: {err}"))?;
+        let cached = CachedBlockReader::new(http_reader, cache)
+            .await
+            .map_err(|err| anyhow!("initialize std cache: {err}"))?;
+        return Ok(Arc::new(cached));
+    }
+
+    let canonical =
+        fs::canonicalize(rootfs).with_context(|| format!("canonicalize {}", rootfs.display()))?;
+    let file_reader = StdFileBlockReader::open(&canonical, DEFAULT_IMAGE_BLOCK_SIZE)
+        .map_err(|err| anyhow!("open file {}: {err}", canonical.display()))?;
+    Ok(Arc::new(file_reader))
+}
+
+async fn open_casync_reader(index_url: Url) -> Result<Arc<dyn BlockReader>> {
+    let index_source = StdCasyncIndexSource::new(StdCasyncIndexLocator::url(index_url.clone()))
+        .map_err(|err| anyhow!("open casync index source {index_url}: {err}"))?;
+
+    let chunk_store_url = derive_casync_chunk_store_url(&index_url)?;
+    info!(
+        index_url = %index_url,
+        chunk_store_url = %chunk_store_url,
+        "resolved casync chunk store URL"
+    );
+
+    let chunk_locator =
+        StdCasyncChunkStoreLocator::url_prefix(chunk_store_url.clone()).map_err(|err| {
+            anyhow!("configure casync chunk store URL {chunk_store_url}: {err}")
+        })?;
+    let mut chunk_store_config = StdCasyncChunkStoreConfig::new(chunk_locator);
+    chunk_store_config.cache_dir = Some(default_casync_cache_dir());
+    let chunk_store = StdCasyncChunkStore::new(chunk_store_config)
+        .map_err(|err| anyhow!("build casync chunk store: {err}"))?;
+
+    let reader = CasyncBlockReader::open(
+        index_source,
+        chunk_store,
+        CasyncReaderConfig {
+            block_size: DEFAULT_IMAGE_BLOCK_SIZE,
+            strict_verify: false,
+        },
+    )
+    .await
+    .map_err(|err| anyhow!("open casync reader {index_url}: {err}"))?;
+
+    if !casync_blob_looks_like_erofs(&reader).await? {
+        bail!(
+            "casync blob index does not reference a raw EROFS image: {index_url}; expected EROFS superblock magic"
+        );
+    }
+    Ok(Arc::new(reader))
+}
+
+async fn casync_blob_looks_like_erofs<R: BlockReader + ?Sized>(reader: &R) -> Result<bool> {
+    const EROFS_SUPER_OFFSET: u64 = 1024;
+    const EROFS_SUPER_MAGIC: u32 = 0xe0f5_e1e2;
+
+    let block_size = reader.block_size() as u64;
+    let total_blocks = reader.total_blocks().await?;
+    let total_bytes = total_blocks
+        .checked_mul(block_size)
+        .ok_or_else(|| anyhow!("casync blob size overflow"))?;
+    if total_bytes < EROFS_SUPER_OFFSET + 4 {
+        return Ok(false);
+    }
+
+    let super_lba = EROFS_SUPER_OFFSET / block_size;
+    let within_block = (EROFS_SUPER_OFFSET % block_size) as usize;
+    let block_size_usize = block_size as usize;
+    let required = within_block + 4;
+    let blocks_to_read = required.div_ceil(block_size_usize);
+    let mut scratch = vec![0u8; blocks_to_read * block_size_usize];
+    let read = reader
+        .read_blocks(super_lba, &mut scratch, ReadContext::FOREGROUND)
+        .await?;
+    if read < required {
+        return Ok(false);
+    }
+
+    let magic = u32::from_le_bytes([
+        scratch[within_block],
+        scratch[within_block + 1],
+        scratch[within_block + 2],
+        scratch[within_block + 3],
+    ]);
+    Ok(magic == EROFS_SUPER_MAGIC)
+}
+
+fn derive_casync_chunk_store_url(index_url: &Url) -> Result<Url> {
+    if let Some(segments) = index_url.path_segments() {
+        let segments: Vec<&str> = segments.collect();
+        if let Some(index_pos) = segments.iter().rposition(|segment| *segment == "indexes") {
+            let mut base_segments = segments[..=index_pos].to_vec();
+            base_segments[index_pos] = "chunks";
+            let mut url = index_url.clone();
+            let mut path = String::from("/");
+            path.push_str(&base_segments.join("/"));
+            if !path.ends_with('/') {
+                path.push('/');
+            }
+            url.set_path(&path);
+            url.set_query(None);
+            url.set_fragment(None);
+            return Ok(url);
+        }
+    }
+
+    index_url
+        .join("./")
+        .with_context(|| format!("derive casync chunk store URL from {index_url}"))
+}
+
+fn default_casync_cache_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
+        if !path.is_empty() {
+            return PathBuf::from(path).join("gibblox").join("casync");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(path) = std::env::var_os("LOCALAPPDATA") {
+            if !path.is_empty() {
+                return PathBuf::from(path).join("gibblox").join("casync");
+            }
+        }
+    }
+
+    if let Some(path) = std::env::var_os("HOME") {
+        if !path.is_empty() {
+            return PathBuf::from(path)
+                .join(".cache")
+                .join("gibblox")
+                .join("casync");
+        }
+    }
+
+    std::env::temp_dir().join("gibblox").join("casync")
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum OstreeArg {
