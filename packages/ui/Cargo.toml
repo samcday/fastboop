@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 dioxus = { workspace = true }
 fastboop-core = { workspace = true }
+fastboop-serial = { path = "../../crates/fastboop-serial" }

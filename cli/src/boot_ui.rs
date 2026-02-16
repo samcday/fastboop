@@ -41,6 +41,7 @@ pub enum BootEvent {
         detail: String,
     },
     Log(String),
+    SerialBytes(Vec<u8>),
     SmooStatus {
         active: bool,
         export_count: u32,

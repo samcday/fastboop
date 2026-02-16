@@ -113,8 +113,7 @@ a {
     min-height: 14rem;
     max-height: 22rem;
     overflow: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
+    white-space: pre;
     padding: 0.75rem;
     border-radius: 0.5rem;
     background: rgba(0, 0, 0, 0.45);
@@ -122,4 +121,9 @@ a {
     font-family: var(--font-mono);
     font-size: 0.82rem;
     line-height: 1.45;
+    font-variant-ligatures: none;
+}
+
+.serial-logs__row {
+    min-height: 1.2em;
 }

@@ -12,6 +12,7 @@ mod boot_ui;
 mod commands;
 mod devpros;
 mod personalization;
+mod serial;
 mod smoo_host;
 mod tui;
 
@@ -52,8 +53,15 @@ async fn main() -> Result<()> {
 }
 
 pub(crate) fn setup_default_tracing() {
+    setup_default_tracing_with_ansi(true);
+}
+
+pub(crate) fn setup_default_tracing_with_ansi(ansi: bool) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(ansi)
+        .try_init();
 }
 
 pub(crate) fn setup_tui_tracing(tx: Sender<BootEvent>) {

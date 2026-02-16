@@ -13,6 +13,7 @@ fastboop-core = { path = "../../crates/fastboop-core" }
 fastboop-rootfs-erofs = { path = "../../crates/fastboop-rootfs-erofs" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-rusb = { path = "../../crates/fastboop-fastboot-rusb" }
+fastboop-serial = { path = "../../crates/fastboop-serial", features = ["native-serial"] }
 gibblox-core = { path = "../../gibblox/crates/gibblox-core", features = ["std"] }
 gibblox-cache = { path = "../../gibblox/crates/gibblox-cache", features = ["std"] }
 gibblox-cache-store-std = { path = "../../gibblox/crates/gibblox-cache-store-std" }

@@ -23,17 +23,16 @@ use js_sys::{Array, Date, Reflect};
 use smoo_host_web_worker::{HostWorker, HostWorkerConfig, HostWorkerEvent, HostWorkerState};
 #[cfg(target_arch = "wasm32")]
 use std::cell::Cell;
-#[cfg(target_arch = "wasm32")]
-use std::collections::VecDeque;
 use std::future::Future;
 use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
-use ui::{
-    apply_transport_counters, oneplus_fajita_dtbo_overlays, run_smoo_stats_view_loop,
-    SmooStatsHandle, SmooStatsPanel, SmooStatsViewModel, SmooTransportCounters,
-};
+#[cfg(target_arch = "wasm32")]
+use ui::{apply_transport_counters, run_smoo_stats_view_loop, SmooTransportCounters};
+use ui::{oneplus_fajita_dtbo_overlays, SmooStatsHandle, SmooStatsPanel, SmooStatsViewModel};
+#[cfg(target_arch = "wasm32")]
+use ui::{SerialLogBuffer, SerialLogOutput};
 #[cfg(not(target_arch = "wasm32"))]
 use url::Url;
 #[cfg(target_arch = "wasm32")]
@@ -64,10 +63,6 @@ const STATUS_RETRY_ATTEMPTS: usize = 5;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(target_arch = "wasm32")]
 const CACHE_STATS_POLL_INTERVAL: Duration = Duration::from_millis(500);
-#[cfg(target_arch = "wasm32")]
-const SERIAL_LOG_MAX_LINES: usize = 2000;
-#[cfg(target_arch = "wasm32")]
-const SERIAL_LOG_MAX_BYTES: usize = 512 * 1024;
 #[cfg(target_arch = "wasm32")]
 const SERIAL_ACCESS_DENIED_TOKEN: &str = "Failed to open serial port.";
 #[cfg(target_arch = "wasm32")]
@@ -312,86 +307,6 @@ fn BootError(summary: String) -> Element {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[derive(Clone)]
-struct SerialLogBuffer {
-    lines: VecDeque<String>,
-    pending: String,
-    bytes: usize,
-    max_lines: usize,
-    max_bytes: usize,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl SerialLogBuffer {
-    fn new(max_lines: usize, max_bytes: usize) -> Self {
-        Self {
-            lines: VecDeque::new(),
-            pending: String::new(),
-            bytes: 0,
-            max_lines,
-            max_bytes,
-        }
-    }
-
-    fn clear(&mut self) {
-        self.lines.clear();
-        self.pending.clear();
-        self.bytes = 0;
-    }
-
-    fn push_status(&mut self, message: impl Into<String>) {
-        self.push_line(format!("[host] {}", message.into()));
-    }
-
-    fn push_bytes(&mut self, bytes: &[u8]) {
-        let text = String::from_utf8_lossy(bytes);
-        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        self.pending.push_str(&normalized);
-
-        while let Some(newline) = self.pending.find('\n') {
-            let mut line = self.pending.drain(..=newline).collect::<String>();
-            if line.ends_with('\n') {
-                line.pop();
-            }
-            self.push_line(line);
-        }
-
-        if self.pending.len() > 4096 {
-            let line = std::mem::take(&mut self.pending);
-            self.push_line(line);
-        }
-    }
-
-    fn push_line(&mut self, line: impl Into<String>) {
-        let line = line.into();
-        self.bytes = self.bytes.saturating_add(line.len() + 1);
-        self.lines.push_back(line);
-
-        while self.lines.len() > self.max_lines || self.bytes > self.max_bytes {
-            let Some(front) = self.lines.pop_front() else {
-                break;
-            };
-            self.bytes = self.bytes.saturating_sub(front.len() + 1);
-        }
-    }
-
-    fn render_text(&self) -> String {
-        if self.lines.is_empty() && self.pending.is_empty() {
-            return String::new();
-        }
-        let mut rendered = String::with_capacity(self.bytes + self.pending.len());
-        for line in &self.lines {
-            rendered.push_str(line);
-            rendered.push('\n');
-        }
-        if !self.pending.is_empty() {
-            rendered.push_str(self.pending.as_str());
-        }
-        rendered
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
 #[derive(Clone, PartialEq)]
 enum WebSerialState {
     Idle,
@@ -405,7 +320,7 @@ enum WebSerialState {
 #[component]
 fn SerialLogPanel(device_vid: u16, device_pid: u16) -> Element {
     let state = use_signal(|| WebSerialState::Idle);
-    let logs = use_signal(|| SerialLogBuffer::new(SERIAL_LOG_MAX_LINES, SERIAL_LOG_MAX_BYTES));
+    let logs = use_signal(SerialLogBuffer::new);
 
     let stop_flag = use_signal(|| Option::<Rc<Cell<bool>>>::None);
     let active_port = use_signal(|| Option::<SerialPort>::None);
@@ -626,7 +541,7 @@ fn SerialLogPanel(device_vid: u16, device_pid: u16) -> Element {
         _ => None,
     };
     let show_access_denied_hint = access_denied_hint();
-    let rendered_logs = logs.read().render_text();
+    let rendered_rows = logs.read().render_rows();
 
     rsx! {
         div { class: "serial-logs",
@@ -676,7 +591,7 @@ fn SerialLogPanel(device_vid: u16, device_pid: u16) -> Element {
                 button { class: "serial-logs__clear", onclick: on_clear, "Clear" }
             }
 
-            pre { class: "serial-logs__output", "{rendered_logs}" }
+            SerialLogOutput { rows: rendered_rows }
         }
     }
 }
