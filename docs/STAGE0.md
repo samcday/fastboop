@@ -147,10 +147,10 @@ If the gadget child exits unexpectedly before handoff, stage0 has failed.
 
 ## OSTree deployment handoff (v0)
 
-If kernel cmdline contains `ostree=`, stage0 performs an OSTree-compatible
+If `/etc/stage0/ostree` is present, stage0 performs an OSTree-compatible
 handoff before execing distro init:
 
-- resolve `ostree=` in the mounted root and require it to point at a deployment
+- resolve the `ostree` path in the mounted root and require it to point at a deployment
   symlink target
 - switch root into the resolved deployment path
 - bind-mount physical root onto the deployment's `/sysroot`
@@ -158,9 +158,30 @@ handoff before execing distro init:
 - bind-mount `/boot` into deployment `/boot` when the shared-boot layout is
   detected (`/boot/loader` symlink)
 
-This compatibility mode is intentionally limited to `ostree=` path resolution
+This compatibility mode is intentionally limited to `ostree` path resolution
 and mount layout. It does not parse `prepare-root.conf` and does not implement
 composefs policy.
+
+---
+
+## Stage0 settings and firstboot credentials
+
+Stage0 runtime settings are sourced from file entries under `/etc/stage0/` in
+the generated initramfs, not from kernel cmdline.
+
+Examples:
+
+- `/etc/stage0/ostree`
+- `/etc/stage0/smoo.acm`
+- `/etc/stage0/smoo.queue_count`
+- `/etc/stage0/smoo.queue_depth`
+- `/etc/stage0/smoo.max_io_bytes`
+- `/etc/stage0/smoo.log`
+
+First-boot locale/keymap/timezone values are also written into `/etc/stage0`
+by the generator. Right before handing off to distro init, stage0 publishes
+them into `/run/credstore/firstboot.*` so systemd units using
+`ImportCredential=firstboot.*` can consume them.
 
 ---
 

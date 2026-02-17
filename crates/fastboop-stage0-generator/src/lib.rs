@@ -16,6 +16,7 @@ use fastboop_core::{DeviceProfile, InjectMac, Personalization, RootfsProvider};
 const MODULES_LOAD_PATH: &str = "etc/modules-load.d/fastboop-stage0.conf";
 const MODULES_ROOT: &str = "lib/modules";
 const INIT_BIN_PATH: &str = "init";
+const STAGE0_CONFIG_DIR: &str = "etc/stage0";
 const BASE_REQUIRED_MODULES: &[&str] = &[
     "configfs",
     "libcomposite",
@@ -165,37 +166,42 @@ pub async fn build_stage0<P: RootfsProvider>(
     image.ensure_file(MODULES_LOAD_PATH, 0o100644, &module_load_bytes)?;
 
     let mut cmdline_parts: Vec<String> = Vec::new();
+    let mut stage0_settings = BTreeMap::new();
     if opts.enable_serial {
-        cmdline_parts.push("smoo.acm=1".to_string());
+        stage0_settings.insert("smoo.acm".to_string(), "1".to_string());
         cmdline_parts.push("plymouth.ignore-serial-consoles".to_string());
     }
     if opts.mimic_fastboot {
-        cmdline_parts.push("smoo.mimic_fastboot=1".to_string());
+        stage0_settings.insert("smoo.mimic_fastboot".to_string(), "1".to_string());
     }
     if let Some(vendor) = opts.smoo_vendor {
-        cmdline_parts.push(format!("smoo.vendor=0x{vendor:04x}"));
+        stage0_settings.insert("smoo.vendor".to_string(), format!("0x{vendor:04x}"));
     }
     if let Some(product) = opts.smoo_product {
-        cmdline_parts.push(format!("smoo.product=0x{product:04x}"));
+        stage0_settings.insert("smoo.product".to_string(), format!("0x{product:04x}"));
     }
     if let Some(serial) = opts.smoo_serial.as_ref() {
         let serial = serial.trim();
         if !serial.is_empty() {
-            cmdline_parts.push(format!("smoo.serial={serial}"));
+            stage0_settings.insert("smoo.serial".to_string(), serial.to_string());
         }
     }
     if let Some(personalization) = &opts.personalization {
-        let personalization = personalization.cmdline_append();
-        if !personalization.is_empty() {
-            cmdline_parts.push(personalization);
+        for (key, value) in personalization.stage0_entries() {
+            stage0_settings.insert(key, value);
         }
     }
     if let Some(extra) = extra_cmdline {
         let extra = extra.trim();
         if !extra.is_empty() {
-            cmdline_parts.push(extra.to_string());
+            let (from_extra, passthrough) = split_extra_cmdline(extra);
+            for (key, value) in from_extra {
+                stage0_settings.insert(key, value);
+            }
+            cmdline_parts.extend(passthrough);
         }
     }
+    write_stage0_settings(&mut image, &stage0_settings)?;
     let cmdline = if cmdline_parts.is_empty() {
         String::new()
     } else {
@@ -214,6 +220,105 @@ pub async fn build_stage0<P: RootfsProvider>(
 
 fn embedded_stage0_binary() -> &'static [u8] {
     include_bytes!(env!("FASTBOOP_STAGE0_EMBED_PATH"))
+}
+
+fn split_extra_cmdline(extra: &str) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut stage0_settings = BTreeMap::new();
+    let mut passthrough = Vec::new();
+    for token in extra.split_whitespace() {
+        if token.is_empty() {
+            continue;
+        }
+
+        if let Some((key, value)) = token.split_once('=') {
+            if is_stage0_config_key(key) {
+                let value = value.trim();
+                if !value.is_empty() {
+                    stage0_settings.insert(key.to_string(), value.to_string());
+                }
+                continue;
+            }
+            if key == "systemd.set_credential"
+                && let Some((name, cred_value)) = value.split_once(':')
+                && is_firstboot_credential_key(name)
+            {
+                let cred_value = cred_value.trim();
+                if !cred_value.is_empty() {
+                    stage0_settings.insert(name.to_string(), cred_value.to_string());
+                }
+                continue;
+            }
+            passthrough.push(token.to_string());
+            continue;
+        }
+
+        if is_stage0_flag_key(token) {
+            stage0_settings.insert(token.to_string(), "1".to_string());
+            continue;
+        }
+
+        passthrough.push(token.to_string());
+    }
+
+    (stage0_settings, passthrough)
+}
+
+fn write_stage0_settings(
+    image: &mut CpioImage,
+    stage0_settings: &BTreeMap<String, String>,
+) -> Result<(), Stage0Error> {
+    if stage0_settings.is_empty() {
+        return Ok(());
+    }
+
+    image.ensure_dir(STAGE0_CONFIG_DIR)?;
+    for (key, value) in stage0_settings {
+        let path = format!("{STAGE0_CONFIG_DIR}/{key}");
+        let mut data = value.as_bytes().to_vec();
+        data.push(b'\n');
+        image.ensure_file(path.as_str(), 0o100644, &data)?;
+    }
+    Ok(())
+}
+
+fn is_stage0_config_key(key: &str) -> bool {
+    matches!(
+        key,
+        "ostree"
+            | "stage0.fb"
+            | "smoo.acm"
+            | "smoo.break"
+            | "smoo.queue_count"
+            | "smoo.queue_depth"
+            | "smoo.queue_size"
+            | "smoo.max_io_bytes"
+            | "smoo.max_io"
+            | "smoo.vendor"
+            | "smoo.vendor_id"
+            | "smoo.product"
+            | "smoo.product_id"
+            | "smoo.serial"
+            | "smoo.mimic_fastboot"
+            | "smoo.log"
+            | "firstboot.locale"
+            | "firstboot.locale-messages"
+            | "firstboot.keymap"
+            | "firstboot.timezone"
+    )
+}
+
+fn is_stage0_flag_key(key: &str) -> bool {
+    matches!(key, "stage0.fb" | "smoo.acm" | "smoo.mimic_fastboot")
+}
+
+fn is_firstboot_credential_key(key: &str) -> bool {
+    matches!(
+        key,
+        "firstboot.locale"
+            | "firstboot.locale-messages"
+            | "firstboot.keymap"
+            | "firstboot.timezone"
+    )
 }
 
 async fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Error> {
@@ -753,6 +858,7 @@ fn find_node<'a>(root: &'a DeviceTreeNode, path: &str) -> Option<&'a DeviceTreeN
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use dtoolkit::fdt::Fdt;
     use dtoolkit::model::{DeviceTree, DeviceTreeNode};
     use dtoolkit::{Node, Property};
@@ -792,6 +898,37 @@ mod tests {
         let mut expected_bt = mac_from_seed(0, "bluetooth", "qcom,wcn3990-bt");
         expected_bt.reverse();
         assert_eq!(bt_prop.value(), expected_bt);
+    }
+
+    #[test]
+    fn split_extra_cmdline_extracts_stage0_tokens() {
+        let (stage0_settings, passthrough) = split_extra_cmdline(
+            "quiet smoo.log=trace smoo.acm ostree=/ostree/boot.1/fedora/deadbeef/0",
+        );
+
+        assert_eq!(stage0_settings.get("smoo.log"), Some(&"trace".to_string()));
+        assert_eq!(stage0_settings.get("smoo.acm"), Some(&"1".to_string()));
+        assert_eq!(
+            stage0_settings.get("ostree"),
+            Some(&"/ostree/boot.1/fedora/deadbeef/0".to_string())
+        );
+        assert_eq!(passthrough, vec!["quiet".to_string()]);
+    }
+
+    #[test]
+    fn split_extra_cmdline_converts_firstboot_set_credential_tokens() {
+        let (stage0_settings, passthrough) = split_extra_cmdline(
+            "systemd.set_credential=firstboot.locale:en_US.UTF-8 systemd.set_credential=foo:bar",
+        );
+
+        assert_eq!(
+            stage0_settings.get("firstboot.locale"),
+            Some(&"en_US.UTF-8".to_string())
+        );
+        assert_eq!(
+            passthrough,
+            vec!["systemd.set_credential=foo:bar".to_string()]
+        );
     }
 
     fn add_compatible(tree: &mut DeviceTree, path: &str, compat: &str) {

@@ -17,7 +17,7 @@ pub(super) fn detect_ostree_layout(newroot: &Path) -> Result<Option<OstreeLayout
         return Ok(None);
     };
 
-    let target_rel = normalize_cmdline_path(&ostree_target)?;
+    let target_rel = normalize_stage0_path(&ostree_target)?;
     let target_path = newroot.join(&target_rel);
     let target_meta = std::fs::symlink_metadata(&target_path)
         .with_context(|| format!("lstat {}", target_path.display()))?;
@@ -71,9 +71,9 @@ pub(super) fn detect_ostree_layout(newroot: &Path) -> Result<Option<OstreeLayout
     }))
 }
 
-fn normalize_cmdline_path(raw: &str) -> Result<PathBuf> {
+fn normalize_stage0_path(raw: &str) -> Result<PathBuf> {
     let trimmed = raw.trim();
-    ensure!(!trimmed.is_empty(), "ostree= kernel argument is empty");
+    ensure!(!trimmed.is_empty(), "stage0 ostree setting is empty");
 
     let mut normalized = PathBuf::new();
     for component in Path::new(trimmed).components() {
@@ -82,12 +82,12 @@ fn normalize_cmdline_path(raw: &str) -> Result<PathBuf> {
             Component::Normal(part) => normalized.push(part),
             Component::ParentDir => {
                 return Err(anyhow!(
-                    "ostree= kernel argument must not contain '..': {trimmed}"
+                    "stage0 ostree setting must not contain '..': {trimmed}"
                 ));
             }
             Component::Prefix(_) => {
                 return Err(anyhow!(
-                    "ostree= kernel argument has unsupported path prefix: {trimmed}"
+                    "stage0 ostree setting has unsupported path prefix: {trimmed}"
                 ));
             }
         }
@@ -95,7 +95,7 @@ fn normalize_cmdline_path(raw: &str) -> Result<PathBuf> {
 
     ensure!(
         !normalized.as_os_str().is_empty(),
-        "ostree= kernel argument resolved to an empty path"
+        "stage0 ostree setting resolved to an empty path"
     );
     Ok(normalized)
 }
@@ -255,14 +255,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_cmdline_path_strips_root_prefix() {
-        let path = normalize_cmdline_path(" /ostree/boot.1/example ").unwrap();
+    fn normalize_stage0_path_strips_root_prefix() {
+        let path = normalize_stage0_path(" /ostree/boot.1/example ").unwrap();
         assert_eq!(path, PathBuf::from("ostree/boot.1/example"));
     }
 
     #[test]
-    fn normalize_cmdline_path_rejects_parent_components() {
-        let err = normalize_cmdline_path("/ostree/../etc").unwrap_err();
+    fn normalize_stage0_path_rejects_parent_components() {
+        let err = normalize_stage0_path("/ostree/../etc").unwrap_err();
         assert!(
             err.to_string().contains("must not contain '..'"),
             "unexpected error: {err:#}"

@@ -13,6 +13,7 @@ use std::{
     os::unix::fs::{FileTypeExt, symlink},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 use tracing::{debug, error, info, warn};
@@ -61,6 +62,10 @@ const STAGE0_ROLE_ENV: &str = "FASTBOOP_STAGE0_ROLE";
 const STAGE0_ROLE_GADGET_CHILD: &str = "gadget-child";
 const STAGE0_ROLE_KMSG_CHILD: &str = "kmsg-child";
 const STAGE0_ROLE_FRAMEBUFFER_CHILD: &str = "framebuffer-child";
+const STAGE0_CONFIG_DIR: &str = "/etc/stage0";
+const STAGE0_CREDSTORE_DIR: &str = "/run/credstore";
+
+static STAGE0_CONFIG: OnceLock<HashMap<String, String>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Stage0Role {
@@ -379,7 +384,7 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
     }
 
     let ostree_layout = detect_ostree_layout(Path::new("/newroot"))
-        .context("resolve ostree deployment from kernel cmdline")?;
+        .context("resolve ostree deployment from stage0 config")?;
     if let Some(layout) = &ostree_layout {
         info!(
             deployment = %layout.deployment_rel.display(),
@@ -465,6 +470,7 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
         warn!("pid1: /run/systemd/system missing before exec");
     }
     ensure_serial_getty().ok();
+    stage_firstboot_credentials().context("stage firstboot credentials")?;
 
     let systemd_path = if Path::new("/lib/systemd/systemd").exists() {
         "/lib/systemd/systemd"
@@ -477,13 +483,7 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
 }
 
 fn cmdline_value(key: &str) -> Option<String> {
-    let data = std::fs::read_to_string("/proc/cmdline").ok()?;
-    for token in data.split_whitespace() {
-        if let Some(value) = token.strip_prefix(&format!("{key}=")) {
-            return Some(value.to_string());
-        }
-    }
-    None
+    stage0_config().get(key).cloned()
 }
 
 fn ensure_serial_getty() -> Result<()> {
@@ -514,10 +514,7 @@ fn ensure_serial_getty() -> Result<()> {
 }
 
 fn cmdline_flag(key: &str) -> bool {
-    let Ok(data) = std::fs::read_to_string("/proc/cmdline") else {
-        return false;
-    };
-    data.split_whitespace().any(|token| token == key)
+    stage0_config().contains_key(key)
 }
 
 fn cmdline_bool(key: &str) -> bool {
@@ -532,6 +529,88 @@ fn cmdline_bool(key: &str) -> bool {
         };
     }
     cmdline_flag(key)
+}
+
+fn stage0_config() -> &'static HashMap<String, String> {
+    STAGE0_CONFIG.get_or_init(load_stage0_config)
+}
+
+fn load_stage0_config() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let entries = match std::fs::read_dir(STAGE0_CONFIG_DIR) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return map,
+        Err(err) => {
+            warn!(error = ?err, "pid1: failed reading {}", STAGE0_CONFIG_DIR);
+            return map;
+        }
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let key = entry.file_name().to_string_lossy().to_string();
+        if key.trim().is_empty() {
+            continue;
+        }
+
+        match std::fs::read_to_string(entry.path()) {
+            Ok(raw) => {
+                let value = raw.trim();
+                if value.is_empty() {
+                    map.insert(key, "1".to_string());
+                } else {
+                    map.insert(key, value.to_string());
+                }
+            }
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    path = %entry.path().display(),
+                    "pid1: failed reading stage0 setting"
+                );
+            }
+        }
+    }
+
+    map
+}
+
+fn stage_firstboot_credentials() -> Result<()> {
+    let firstboot_keys = [
+        "firstboot.locale",
+        "firstboot.locale-messages",
+        "firstboot.keymap",
+        "firstboot.timezone",
+    ];
+
+    let mut wrote_any = false;
+    for key in &firstboot_keys {
+        let Some(value) = cmdline_value(key) else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        std::fs::create_dir_all(STAGE0_CREDSTORE_DIR)
+            .with_context(|| format!("create {}", STAGE0_CREDSTORE_DIR))?;
+        let path = Path::new(STAGE0_CREDSTORE_DIR).join(key);
+        std::fs::write(&path, value.as_bytes())
+            .with_context(|| format!("write {}", path.display()))?;
+        wrote_any = true;
+    }
+
+    if wrote_any {
+        info!("pid1: staged firstboot credentials in /run/credstore");
+    }
+
+    Ok(())
 }
 
 fn path_to_string(path: &Path) -> Result<String> {
@@ -1040,40 +1119,40 @@ fn spawn_gadget_child(
     {
         child_args.push(OsStr::new("--queue-depth").to_os_string());
         child_args.push(OsStr::new(&queue_depth.to_string()).to_os_string());
-        info!("pid1: using queue depth {queue_depth} from cmdline");
+        info!("pid1: using queue depth {queue_depth} from stage0 config");
     }
     if let Some(queue_count) = cmdline_u16("smoo.queue_count") {
         child_args.push(OsStr::new("--queue-count").to_os_string());
         child_args.push(OsStr::new(&queue_count.to_string()).to_os_string());
-        info!("pid1: using queue count {queue_count} from cmdline");
+        info!("pid1: using queue count {queue_count} from stage0 config");
     }
     if let Some(max_io_bytes) =
         cmdline_usize("smoo.max_io_bytes").or_else(|| cmdline_usize("smoo.max_io"))
     {
         child_args.push(OsStr::new("--max-io").to_os_string());
         child_args.push(OsStr::new(&max_io_bytes.to_string()).to_os_string());
-        info!("pid1: using max io bytes {max_io_bytes} from cmdline");
+        info!("pid1: using max io bytes {max_io_bytes} from stage0 config");
     }
     if let Some(vendor_id) =
         cmdline_u16_flexible("smoo.vendor").or_else(|| cmdline_u16_flexible("smoo.vendor_id"))
     {
         child_args.push(OsStr::new("--vendor-id").to_os_string());
         child_args.push(OsStr::new(&format!("0x{vendor_id:04x}")).to_os_string());
-        info!("pid1: using vendor id 0x{vendor_id:04x} from cmdline");
+        info!("pid1: using vendor id 0x{vendor_id:04x} from stage0 config");
     }
     if let Some(product_id) =
         cmdline_u16_flexible("smoo.product").or_else(|| cmdline_u16_flexible("smoo.product_id"))
     {
         child_args.push(OsStr::new("--product-id").to_os_string());
         child_args.push(OsStr::new(&format!("0x{product_id:04x}")).to_os_string());
-        info!("pid1: using product id 0x{product_id:04x} from cmdline");
+        info!("pid1: using product id 0x{product_id:04x} from stage0 config");
     }
     if let Some(serial) = cmdline_value("smoo.serial") {
         let serial = serial.trim();
         if !serial.is_empty() {
             child_args.push(OsStr::new("--serial").to_os_string());
             child_args.push(OsStr::new(serial).to_os_string());
-            info!("pid1: using USB serial from cmdline");
+            info!("pid1: using USB serial from stage0 config");
         }
     }
     if cmdline_bool("smoo.mimic_fastboot") {
