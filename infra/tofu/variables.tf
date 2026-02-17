@@ -40,6 +40,13 @@ variable "github_repo" {
   default     = "fastboop"
 }
 
+variable "pocketblue_github_token" {
+  type        = string
+  description = "Optional GitHub token for /pocketblue/gha/* worker proxy (needs Actions:read on pocketblue/pocketblue)."
+  default     = ""
+  sensitive   = true
+}
+
 variable "state_passphrase" {
   type        = string
   description = "Passphrase for OpenTofu state encryption (min 16 chars)."

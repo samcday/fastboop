@@ -36,6 +36,14 @@ resource "cloudflare_workers_script" "bleeding" {
     name        = "R2_BUCKET"
     bucket_name = cloudflare_r2_bucket.bleeding.name
   }
+
+  dynamic "secret_text_binding" {
+    for_each = var.pocketblue_github_token == "" ? [] : [var.pocketblue_github_token]
+    content {
+      name = "GITHUB_TOKEN"
+      text = secret_text_binding.value
+    }
+  }
 }
 
 resource "cloudflare_workers_route" "bleeding" {
