@@ -30,8 +30,8 @@ modules:
       env:
         RUSTFLAGS: -L/app/lib
     build-commands:
-      - cargo build --release -p desktop --locked
-      - install -Dm755 target/release/desktop /app/bin/fastboop
+      - cargo build --release -p fastboop-desktop --locked
+      - install -Dm755 target/release/fastboop-desktop /app/bin/fastboop
       - install -Dm644 packages/desktop/assets/main.css /app/bin/assets/main.css
       - install -Dm644 packages/ui/assets/styling/hero.css /app/bin/assets/styling/hero.css
       - install -Dm644 flatpak/com.samcday.fastboop.desktop /app/share/applications/com.samcday.fastboop.desktop
