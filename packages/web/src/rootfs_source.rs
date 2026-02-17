@@ -6,14 +6,22 @@ mod wasm {
     use gibblox_core::BlockReader;
     use gibblox_http::HttpBlockReader;
     use std::sync::Arc;
+    use ui::DEFAULT_ROOTFS_ARTIFACT;
     use url::Url;
 
     const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
-    pub const ROOTFS_URL: &str = "https://bleeding.fastboop.win/sdm845-live-fedora/20260208.ero";
 
-    pub async fn build_rootfs_reader_pipeline() -> Result<Arc<dyn BlockReader>> {
-        let url = Url::parse(ROOTFS_URL)
-            .map_err(|err| anyhow!("parse rootfs URL {ROOTFS_URL}: {err}"))?;
+    pub async fn build_rootfs_reader_pipeline(
+        rootfs_artifact: &str,
+    ) -> Result<Arc<dyn BlockReader>> {
+        let rootfs_artifact = rootfs_artifact.trim();
+        let rootfs_artifact = if rootfs_artifact.is_empty() {
+            DEFAULT_ROOTFS_ARTIFACT
+        } else {
+            rootfs_artifact
+        };
+        let url = Url::parse(rootfs_artifact)
+            .map_err(|err| anyhow!("parse rootfs URL {rootfs_artifact}: {err}"))?;
         let http_reader = HttpBlockReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
             .await
             .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
@@ -31,4 +39,9 @@ mod wasm {
 pub use wasm::*;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub const ROOTFS_URL: &str = "https://bleeding.fastboop.win/sdm845-live-fedora/20260208.ero";
+#[allow(dead_code)]
+pub fn build_rootfs_reader_pipeline(
+    _rootfs_artifact: &str,
+) -> anyhow::Result<std::sync::Arc<dyn gibblox_core::BlockReader>> {
+    anyhow::bail!("rootfs reader pipeline is only available on wasm32 targets")
+}

@@ -3,6 +3,7 @@ mod wasm {
     use anyhow::{anyhow, Result};
     use gibblox_web_worker::GibbloxWebWorker;
     use js_sys::{Object, Reflect};
+    use ui::DEFAULT_ROOTFS_ARTIFACT;
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::spawn_local;
     use web_sys::{
@@ -18,9 +19,10 @@ mod wasm {
         if scope.name() != WORKER_NAME {
             return false;
         }
+        let rootfs_artifact = worker_rootfs_artifact(&scope);
 
         spawn_local(async move {
-            match crate::rootfs_source::build_rootfs_reader_pipeline().await {
+            match crate::rootfs_source::build_rootfs_reader_pipeline(&rootfs_artifact).await {
                 Ok(reader) => GibbloxWebWorker::start_worker(scope, reader),
                 Err(err) => {
                     tracing::error!(error = %err, "failed to initialize gibblox worker rootfs pipeline");
@@ -32,8 +34,12 @@ mod wasm {
         true
     }
 
-    pub async fn spawn_gibblox_worker() -> Result<GibbloxWebWorker> {
-        let script_url = append_current_query_to_script_url(current_module_script_url()?);
+    pub async fn spawn_gibblox_worker(rootfs_artifact: String) -> Result<GibbloxWebWorker> {
+        let script_url = append_query_to_script_url(
+            append_current_query_to_script_url(current_module_script_url()?),
+            "rootfs",
+            rootfs_artifact.trim(),
+        );
         tracing::info!(%script_url, "starting gibblox web worker");
 
         let opts = WorkerOptions::new();
@@ -45,6 +51,15 @@ mod wasm {
         GibbloxWebWorker::new(worker)
             .await
             .map_err(|err| anyhow!("initialize gibblox worker: {err}"))
+    }
+
+    fn worker_rootfs_artifact(scope: &DedicatedWorkerGlobalScope) -> String {
+        let search = Reflect::get(scope.as_ref(), &JsValue::from_str("location"))
+            .ok()
+            .and_then(|location| Reflect::get(&location, &JsValue::from_str("search")).ok())
+            .and_then(|search| search.as_string())
+            .unwrap_or_default();
+        parse_query_param(&search, "rootfs").unwrap_or_else(|| DEFAULT_ROOTFS_ARTIFACT.to_string())
     }
 
     fn post_worker_error(scope: &DedicatedWorkerGlobalScope, message: &str) -> Result<()> {
@@ -121,6 +136,41 @@ mod wasm {
         script_url
     }
 
+    fn append_query_to_script_url(mut script_url: String, key: &str, value: &str) -> String {
+        if value.is_empty() {
+            return script_url;
+        }
+        let encoded = js_sys::encode_uri_component(value)
+            .as_string()
+            .unwrap_or_else(|| value.to_string());
+        if script_url.contains('?') {
+            script_url.push('&');
+        } else {
+            script_url.push('?');
+        }
+        script_url.push_str(key);
+        script_url.push('=');
+        script_url.push_str(&encoded);
+        script_url
+    }
+
+    fn parse_query_param(search: &str, key: &str) -> Option<String> {
+        let query = search.strip_prefix('?').unwrap_or(search);
+        for pair in query.split('&') {
+            let Some((k, value)) = pair.split_once('=') else {
+                continue;
+            };
+            if k != key {
+                continue;
+            }
+            return js_sys::decode_uri_component(value)
+                .ok()
+                .and_then(|decoded| decoded.as_string())
+                .or_else(|| Some(value.to_string()));
+        }
+        None
+    }
+
     fn set_prop(target: &Object, key: &str, value: JsValue, context: &str) -> Result<()> {
         Reflect::set(target.as_ref(), &JsValue::from_str(key), &value)
             .map(|_| ())
@@ -147,7 +197,7 @@ mod non_wasm {
         false
     }
 
-    pub async fn spawn_gibblox_worker() -> Result<()> {
+    pub async fn spawn_gibblox_worker(_rootfs_artifact: String) -> Result<()> {
         bail!("gibblox web worker is only available on wasm32 targets")
     }
 }

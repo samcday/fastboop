@@ -28,3 +28,44 @@ body {
 a {
     color: inherit;
 }
+
+.boot-config {
+    margin-top: 1.25rem;
+    display: grid;
+    gap: 0.9rem;
+}
+
+.boot-config__field {
+    display: grid;
+    gap: 0.45rem;
+}
+
+.boot-config__label {
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-text-subtle);
+}
+
+.boot-config__input {
+    width: 100%;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 0.75rem;
+    background: rgba(8, 13, 16, 0.72);
+    color: var(--color-text);
+    font: inherit;
+    padding: 0.7rem 0.8rem;
+}
+
+.boot-config__toggle {
+    margin-top: 0.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--color-text-muted);
+}
+
+.boot-config__submit {
+    margin-top: 0.35rem;
+    justify-self: start;
+}

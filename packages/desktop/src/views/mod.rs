@@ -1,4 +1,5 @@
 mod device;
+mod device_boot;
 mod home;
 mod session;
 

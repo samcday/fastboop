@@ -17,6 +17,27 @@ pub struct ProbedDevice {
     pub pid: u16,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BootConfig {
+    pub rootfs_artifact: String,
+    pub extra_kargs: String,
+    pub enable_serial: bool,
+}
+
+impl BootConfig {
+    pub fn new(
+        rootfs_artifact: impl Into<String>,
+        extra_kargs: impl Into<String>,
+        enable_serial: bool,
+    ) -> Self {
+        Self {
+            rootfs_artifact: rootfs_artifact.into(),
+            extra_kargs: extra_kargs.into(),
+            enable_serial,
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub struct BootRuntime {
     pub size_bytes: u64,
@@ -28,6 +49,7 @@ pub struct BootRuntime {
 
 #[derive(Clone)]
 pub enum SessionPhase {
+    Configuring,
     Booting {
         step: String,
     },
@@ -45,6 +67,7 @@ pub enum SessionPhase {
 pub struct DeviceSession {
     pub id: String,
     pub device: ProbedDevice,
+    pub boot_config: BootConfig,
     pub phase: SessionPhase,
 }
 
@@ -60,6 +83,16 @@ pub fn next_session_id() -> String {
 pub fn update_session_phase(store: &mut SessionStore, session_id: &str, phase: SessionPhase) {
     if let Some(session) = store.write().iter_mut().find(|s| s.id == session_id) {
         session.phase = phase;
+    }
+}
+
+pub fn update_session_boot_config(
+    store: &mut SessionStore,
+    session_id: &str,
+    update: impl FnOnce(&mut BootConfig),
+) {
+    if let Some(session) = store.write().iter_mut().find(|s| s.id == session_id) {
+        update(&mut session.boot_config);
     }
 }
 

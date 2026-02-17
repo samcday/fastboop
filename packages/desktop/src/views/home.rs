@@ -7,11 +7,14 @@ use tracing::{debug, info};
 use ui::{
     apply_selected_profiles, build_probe_snapshot, selected_profile_option,
     update_profile_selection, Hero, ProbeSnapshot, ProbeState, ProfileSelectionMap, TransportKind,
+    DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS, DEFAULT_ROOTFS_ARTIFACT,
 };
 
 use crate::Route;
 
-use super::session::{next_session_id, DeviceSession, ProbedDevice, SessionPhase, SessionStore};
+use super::session::{
+    next_session_id, BootConfig, DeviceSession, ProbedDevice, SessionPhase, SessionStore,
+};
 
 #[component]
 pub fn Home() -> Element {
@@ -104,7 +107,6 @@ pub fn Home() -> Element {
     let on_boot = {
         let mut sessions = sessions;
         let devices = snapshot.devices.clone();
-        let selected_profiles = selected_profiles;
         Some(EventHandler::new(move |index: usize| {
             let Some(device) = devices.get(index).cloned() else {
                 return;
@@ -129,9 +131,12 @@ pub fn Home() -> Element {
                     pid: device.pid,
                     serial: device.serial,
                 },
-                phase: SessionPhase::Booting {
-                    step: "Queued".to_string(),
-                },
+                boot_config: BootConfig::new(
+                    DEFAULT_ROOTFS_ARTIFACT,
+                    DEFAULT_EXTRA_KARGS,
+                    DEFAULT_ENABLE_SERIAL,
+                ),
+                phase: SessionPhase::Configuring,
             });
             navigator.push(Route::DevicePage { session_id });
         }))
