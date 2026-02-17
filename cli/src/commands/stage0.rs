@@ -4,13 +4,14 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
-use fastboop_rootfs_erofs::ErofsRootfs;
+use fastboop_rootfs_erofs::{ErofsRootfs, OstreeRootfs, normalize_ostree_deployment_path};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
 use gibblox_core::BlockReader;
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
+use tracing::debug;
 use url::Url;
 
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
@@ -22,6 +23,9 @@ pub struct Stage0Args {
     /// Path or HTTP(S) URL to EROFS image containing kernel/modules.
     #[arg(value_name = "ROOTFS")]
     pub rootfs: PathBuf,
+    /// Resolve kernel/modules inside this OSTree deployment path.
+    #[arg(long, value_name = "PATH")]
+    pub ostree: Option<String>,
     /// Device profile id to use (must be present in loaded DevPros).
     #[arg(long, required = true)]
     pub device_profile: String,
@@ -66,6 +70,11 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
     };
 
     let dtbo_overlays = read_dtbo_overlays(&args.dtbo)?;
+    let normalized_ostree = args
+        .ostree
+        .as_deref()
+        .map(normalize_ostree_deployment_path)
+        .transpose()?;
     let opts = Stage0Options {
         extra_modules: args.require_modules,
         dtb_override,
@@ -82,6 +91,24 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
     const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
 
     let existing = read_existing_initrd(&args.augment)?;
+    let mut extra_parts = Vec::new();
+    if let Some(ostree) = normalized_ostree.as_deref() {
+        extra_parts.push(format!("ostree=/{ostree}"));
+    }
+    if let Some(cmdline) = args
+        .cmdline_append
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        extra_parts.push(cmdline.to_string());
+    }
+    let extra_cmdline = if extra_parts.is_empty() {
+        None
+    } else {
+        Some(extra_parts.join(" "))
+    };
+
     let build = {
         let rootfs_str = args.rootfs.to_string_lossy();
 
@@ -117,14 +144,28 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         // Wrap in EROFS
         let provider = ErofsRootfs::new(reader, image_size_bytes).await?;
 
-        let build = build_stage0(
-            profile,
-            &provider,
-            &opts,
-            args.cmdline_append.as_deref(),
-            existing.as_deref(),
-        )
-        .await;
+        let build = if let Some(ostree) = normalized_ostree.as_deref() {
+            let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree).await?;
+            debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
+            let provider = OstreeRootfs::new(provider, &resolved_ostree)?;
+            build_stage0(
+                profile,
+                &provider,
+                &opts,
+                extra_cmdline.as_deref(),
+                existing.as_deref(),
+            )
+            .await
+        } else {
+            build_stage0(
+                profile,
+                &provider,
+                &opts,
+                extra_cmdline.as_deref(),
+                existing.as_deref(),
+            )
+            .await
+        };
         anyhow::Ok(build)
     }?
     .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;

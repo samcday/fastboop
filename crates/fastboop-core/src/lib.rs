@@ -21,6 +21,14 @@ pub use prober::*;
 /// Newline-separated list of modules to load, in deterministic order.
 pub type ModuleLoadList = Vec<String>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootfsEntryType {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
 /// Minimal VFS-like access to a rootfs.
 pub trait RootfsProvider {
     type Error;
@@ -38,6 +46,16 @@ pub trait RootfsProvider {
 
     /// List entries (file/dir names) in a directory at `path`.
     async fn read_dir(&self, path: &str) -> Result<alloc::vec::Vec<String>, Self::Error>;
+
+    /// Return entry type for a path without following symlinks.
+    ///
+    /// Returns `Ok(None)` when the path does not exist.
+    async fn entry_type(&self, path: &str) -> Result<Option<RootfsEntryType>, Self::Error>;
+
+    /// Read symlink target bytes as UTF-8 text.
+    ///
+    /// Implementations should return an error when `path` is not a symlink.
+    async fn read_link(&self, path: &str) -> Result<String, Self::Error>;
 
     /// Check if a path exists.
     async fn exists(&self, path: &str) -> Result<bool, Self::Error>;

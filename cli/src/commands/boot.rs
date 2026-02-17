@@ -14,7 +14,7 @@ use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, 
 use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
-use fastboop_rootfs_erofs::ErofsRootfs;
+use fastboop_rootfs_erofs::{ErofsRootfs, OstreeRootfs, normalize_ostree_deployment_path};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
@@ -52,6 +52,9 @@ pub struct BootStage0Args {
     /// Path or HTTP(S) URL to EROFS image containing kernel/modules.
     #[arg(value_name = "ROOTFS")]
     pub rootfs: PathBuf,
+    /// Resolve kernel/modules inside this OSTree deployment path.
+    #[arg(long, value_name = "PATH")]
+    pub ostree: Option<String>,
     /// Device profile id to use. If omitted, fastboop auto-probes matching profiles.
     #[arg(long)]
     pub device_profile: Option<String>,
@@ -236,6 +239,12 @@ async fn run_boot_inner(
     };
 
     let dtbo_overlays = read_dtbo_overlays(&args.stage0.dtbo)?;
+    let normalized_ostree = args
+        .stage0
+        .ostree
+        .as_deref()
+        .map(normalize_ostree_deployment_path)
+        .transpose()?;
     let opts = Stage0Options {
         extra_modules: args.stage0.require_modules,
         dtb_override,
@@ -254,6 +263,9 @@ async fn run_boot_inner(
     let existing = read_existing_initrd(&args.stage0.augment)?;
 
     let mut extra_parts = Vec::new();
+    if let Some(ostree) = normalized_ostree.as_deref() {
+        extra_parts.push(format!("ostree=/{ostree}"));
+    }
     if let Some(cmdline) = args
         .stage0
         .cmdline_append
@@ -282,7 +294,7 @@ async fn run_boot_inner(
 
     const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
 
-    let (_provider, block_reader, image_size_bytes, image_identity, build) = {
+    let (block_reader, image_size_bytes, image_identity, build) = {
         let rootfs_str = args.stage0.rootfs.to_string_lossy();
 
         // Build gibblox pipeline explicitly
@@ -318,15 +330,29 @@ async fn run_boot_inner(
         // Wrap in EROFS
         let provider = ErofsRootfs::new(reader.clone(), image_size_bytes).await?;
 
-        let build = build_stage0(
-            &profile,
-            &provider,
-            &opts,
-            extra_cmdline.as_deref(),
-            existing.as_deref(),
-        )
-        .await;
-        anyhow::Ok((provider, reader, image_size_bytes, image_identity, build))
+        let build = if let Some(ostree) = normalized_ostree.as_deref() {
+            let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree).await?;
+            debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
+            let provider = OstreeRootfs::new(provider, &resolved_ostree)?;
+            build_stage0(
+                &profile,
+                &provider,
+                &opts,
+                extra_cmdline.as_deref(),
+                existing.as_deref(),
+            )
+            .await
+        } else {
+            build_stage0(
+                &profile,
+                &provider,
+                &opts,
+                extra_cmdline.as_deref(),
+                existing.as_deref(),
+            )
+            .await
+        };
+        anyhow::Ok((reader, image_size_bytes, image_identity, build))
     }?;
 
     let build = build.map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;

@@ -3,8 +3,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use fastboop_core::RootfsProvider;
 use fastboop_core::fastboot::{FastbootProtocolError, ProbeError};
+use fastboop_core::{RootfsEntryType, RootfsProvider};
 
 mod boot;
 mod detect;
@@ -69,6 +69,36 @@ impl RootfsProvider for DirectoryRootfs {
             }
         }
         Ok(names)
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<RootfsEntryType>> {
+        let path = resolve_rooted(&self.root, path)?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("reading metadata for {}", path.display()));
+            }
+        };
+        let ty = metadata.file_type();
+        let entry_type = if ty.is_file() {
+            RootfsEntryType::File
+        } else if ty.is_dir() {
+            RootfsEntryType::Directory
+        } else if ty.is_symlink() {
+            RootfsEntryType::Symlink
+        } else {
+            RootfsEntryType::Other
+        };
+        Ok(Some(entry_type))
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String> {
+        let path = resolve_rooted(&self.root, path)?;
+        let target = fs::read_link(&path)
+            .with_context(|| format!("reading symlink target {}", path.display()))?;
+        Ok(target.to_string_lossy().into_owned())
     }
 
     async fn exists(&self, path: &str) -> Result<bool> {
