@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, anyhow, ensure};
 use clap::{Parser, ValueEnum};
 use drm::{ClientCapability, Device as _, buffer::Buffer as _, control::Device as _};
+mod ostree;
+use ostree::{detect_ostree_layout, setup_ostree_runtime_mounts};
 use std::io::{Read, Write};
 use std::{
     collections::{HashMap, HashSet},
@@ -376,17 +378,43 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
         debug_shell("smoo.break requested")?;
     }
 
-    std::fs::create_dir_all("/newroot/proc").ok();
-    std::fs::create_dir_all("/newroot/sys").ok();
-    std::fs::create_dir_all("/newroot/dev").ok();
-    std::fs::create_dir_all("/newroot/run").ok();
+    let ostree_layout = detect_ostree_layout(Path::new("/newroot"))
+        .context("resolve ostree deployment from kernel cmdline")?;
+    if let Some(layout) = &ostree_layout {
+        info!(
+            deployment = %layout.deployment_rel.display(),
+            stateroot_var = %layout.stateroot_var_rel.display(),
+            "pid1: ostree deployment mode enabled"
+        );
+    }
 
-    debug!("pid1: bind-mounting proc/sys/dev/run into newroot");
-    bind_mount_if_needed("/proc", "/newroot/proc", true)?;
-    bind_mount_if_needed("/sys", "/newroot/sys", true)?;
-    bind_mount_if_needed("/dev", "/newroot/dev", true)?;
-    bind_mount_if_needed("/run", "/newroot/run", false)?;
-    debug!("pid1: bind mounts into newroot complete");
+    let final_root = ostree_layout
+        .as_ref()
+        .map(|layout| Path::new("/newroot").join(&layout.deployment_rel))
+        .unwrap_or_else(|| PathBuf::from("/newroot"));
+    ensure!(
+        final_root.is_dir(),
+        "final root path is missing or not a directory: {}",
+        final_root.display()
+    );
+    let final_root_str = path_to_string(&final_root)?;
+
+    std::fs::create_dir_all(final_root.join("proc")).ok();
+    std::fs::create_dir_all(final_root.join("sys")).ok();
+    std::fs::create_dir_all(final_root.join("dev")).ok();
+    std::fs::create_dir_all(final_root.join("run")).ok();
+
+    let final_proc = path_to_string(&final_root.join("proc"))?;
+    let final_sys = path_to_string(&final_root.join("sys"))?;
+    let final_dev = path_to_string(&final_root.join("dev"))?;
+    let final_run = path_to_string(&final_root.join("run"))?;
+
+    debug!("pid1: bind-mounting proc/sys/dev/run into {final_root_str}");
+    bind_mount_if_needed("/proc", &final_proc, true)?;
+    bind_mount_if_needed("/sys", &final_sys, true)?;
+    bind_mount_if_needed("/dev", &final_dev, true)?;
+    bind_mount_if_needed("/run", &final_run, false)?;
+    debug!("pid1: bind mounts into final root complete");
 
     std::env::set_current_dir("/newroot").ok();
     debug!("pid1: moving newroot to /");
@@ -398,8 +426,19 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
         None,
     )
     .context("move newroot to /")?;
-    debug!("pid1: chrooting to new root");
-    chroot_to(".").context("chroot to new root")?;
+
+    std::env::set_current_dir("/").ok();
+    if let Some(layout) = &ostree_layout {
+        setup_ostree_runtime_mounts(layout).context("setup ostree runtime mounts")?;
+    }
+
+    let chroot_target = if let Some(layout) = &ostree_layout {
+        path_to_string(&Path::new("/").join(&layout.deployment_rel))?
+    } else {
+        ".".to_string()
+    };
+    debug!("pid1: chrooting to {}", chroot_target);
+    chroot_to(&chroot_target).context("chroot to selected root")?;
     std::env::set_current_dir("/").ok();
     info!("pid1: switched root");
 
@@ -493,6 +532,12 @@ fn cmdline_bool(key: &str) -> bool {
         };
     }
     cmdline_flag(key)
+}
+
+fn path_to_string(path: &Path) -> Result<String> {
+    path.to_str()
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow!("path is not valid UTF-8: {}", path.display()))
 }
 
 fn log_mountinfo(context: &str) {

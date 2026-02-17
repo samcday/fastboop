@@ -145,6 +145,25 @@ If the gadget child exits unexpectedly before handoff, stage0 has failed.
 
 ---
 
+## OSTree deployment handoff (v0)
+
+If kernel cmdline contains `ostree=`, stage0 performs an OSTree-compatible
+handoff before execing distro init:
+
+- resolve `ostree=` in the mounted root and require it to point at a deployment
+  symlink target
+- switch root into the resolved deployment path
+- bind-mount physical root onto the deployment's `/sysroot`
+- bind-mount stateroot `/var` onto the deployment's `/var`
+- bind-mount `/boot` into deployment `/boot` when the shared-boot layout is
+  detected (`/boot/loader` symlink)
+
+This compatibility mode is intentionally limited to `ostree=` path resolution
+and mount layout. It does not parse `prepare-root.conf` and does not implement
+composefs policy.
+
+---
+
 ## Error philosophy
 
 Stage0 failures must be:
