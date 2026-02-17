@@ -92,19 +92,7 @@ impl BlockReader for HttpBlockReader {
     }
 
     async fn total_blocks(&self) -> GibbloxResult<u64> {
-        if self.block_size == 0 || !self.block_size.is_power_of_two() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "block size must be non-zero power of two",
-            ));
-        }
-        if !self.size_bytes.is_multiple_of(self.block_size as u64) {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "size must align to block size",
-            ));
-        }
-        Ok(self.size_bytes / self.block_size as u64)
+        Ok(self.size_bytes.div_ceil(self.block_size as u64))
     }
 
     fn write_identity(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
@@ -120,32 +108,56 @@ impl BlockReader for HttpBlockReader {
         if buf.is_empty() {
             return Ok(0);
         }
+        if !buf.len().is_multiple_of(self.block_size as usize) {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "buffer length must align to block size",
+            ));
+        }
+
+        let total_blocks = self.total_blocks().await?;
+        if lba >= total_blocks {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::OutOfRange,
+                "requested block out of range",
+            ));
+        }
+
         let offset = lba.checked_mul(self.block_size as u64).ok_or_else(|| {
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "lba overflow")
         })?;
-        let range = self.offset_range(offset, buf.len())?;
+        let available = (self.size_bytes - offset) as usize;
+        let read_len = available.min(buf.len());
+        let range = self.offset_range(offset, read_len)?;
         tracing::trace!(
             url = %self.url,
             start = *range.start(),
             end = *range.end(),
-            len = buf.len(),
+            len = read_len,
             "http read range"
         );
         let read = self
             .inner
-            .read_range(&self.url, range.clone(), buf, ctx)
+            .read_range(&self.url, range.clone(), &mut buf[..read_len], ctx)
             .await
             .map_err(map_http_err("read range"))?;
-        if read != buf.len() {
+        if read != read_len {
             debug!(
-                expected = buf.len(),
+                expected = read_len,
                 read,
                 start = *range.start(),
                 end = *range.end(),
                 "partial HTTP read"
             );
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::Io,
+                "short HTTP read",
+            ));
         }
-        Ok(read)
+        if read_len < buf.len() {
+            buf[read_len..].fill(0);
+        }
+        Ok(buf.len())
     }
 }
 

@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use url::Url;
 
-use gibblox_core::{BlockReader, ReadContext};
+use gibblox_core::{BlockReader, GibbloxErrorKind, ReadContext};
 use gibblox_http::HttpBlockReader;
 
 async fn start_server(data: Vec<u8>) -> (Url, oneshot::Sender<()>) {
@@ -130,5 +130,42 @@ async fn http_probe_size_uses_range() {
     let (url, shutdown) = start_server(data.clone()).await;
     let source = HttpBlockReader::new(url, 512).await.expect("http source");
     assert_eq!(source.size_bytes(), 4096);
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn http_reader_zero_pads_tail_block_for_unaligned_size() {
+    let data = data_blob(4097);
+    let (url, shutdown) = start_server(data.clone()).await;
+    let source = HttpBlockReader::new(url, 512).await.expect("http source");
+
+    assert_eq!(source.size_bytes(), 4097);
+    assert_eq!(source.total_blocks().await.expect("total blocks"), 9);
+
+    let mut tail = vec![0u8; 512];
+    let read = source
+        .read_blocks(8, &mut tail, ReadContext::FOREGROUND)
+        .await
+        .expect("read tail");
+    assert_eq!(read, 512);
+    assert_eq!(tail[0], data[4096]);
+    assert!(tail[1..].iter().all(|b| *b == 0));
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn http_reader_reports_out_of_range_after_last_block() {
+    let data = data_blob(4097);
+    let (url, shutdown) = start_server(data).await;
+    let source = HttpBlockReader::new(url, 512).await.expect("http source");
+
+    let mut buf = vec![0u8; 512];
+    let err = source
+        .read_blocks(9, &mut buf, ReadContext::FOREGROUND)
+        .await
+        .expect_err("read past end should fail");
+    assert_eq!(err.kind(), GibbloxErrorKind::OutOfRange);
+
     let _ = shutdown.send(());
 }
