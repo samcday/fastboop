@@ -428,6 +428,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-zip"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "tracing",
+]
+
+[[package]]
 name = "gloo-timers"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

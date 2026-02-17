@@ -19,6 +19,7 @@ To gibblox you will always be just another block.
 
 ## Crates
 - `gibblox-core`: core traits and error types.
+- `gibblox-zip`: ZIP file entry-backed block reader (stored entries).
 - `gibblox-iso9660`: ISO9660 file-backed block reader.
 - `gibblox-http`: HTTP Range-backed block reader (native + wasm).
 - `gibblox-cache`: cache layer and cache file format logic.
