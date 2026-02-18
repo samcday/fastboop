@@ -432,19 +432,43 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
     )
     .context("move newroot to /")?;
 
+    info!("pid1: chrooting to moved root");
+    chroot_to(".").context("chroot to moved root")?;
     std::env::set_current_dir("/").ok();
+
     if let Some(layout) = &ostree_layout {
         setup_ostree_runtime_mounts(layout).context("setup ostree runtime mounts")?;
+
+        let deployment_root = Path::new("/").join(&layout.deployment_rel);
+        let deployment_root_str = path_to_string(&deployment_root)?;
+        let deployment_bind_root = Path::new("/run/fastboop-stage0-root");
+        std::fs::create_dir_all(deployment_bind_root).ok();
+        let deployment_bind_root_str = path_to_string(deployment_bind_root)?;
+        info!(
+            deployment = %deployment_root.display(),
+            target = %deployment_bind_root.display(),
+            "pid1: bind-mounting deployment root"
+        );
+        mount_fs(
+            Some(&deployment_root_str),
+            &deployment_bind_root_str,
+            None,
+            (libc::MS_BIND | libc::MS_REC) as libc::c_ulong,
+            None,
+        )
+        .context("bind mount deployment root")?;
+
+        info!("pid1: chrooting to bound deployment root");
+        chroot_to(&deployment_bind_root_str).context("chroot to selected root")?;
+        std::env::set_current_dir("/").ok();
     }
 
-    let chroot_target = if let Some(layout) = &ostree_layout {
-        path_to_string(&Path::new("/").join(&layout.deployment_rel))?
-    } else {
-        ".".to_string()
-    };
-    debug!("pid1: chrooting to {}", chroot_target);
-    chroot_to(&chroot_target).context("chroot to selected root")?;
-    std::env::set_current_dir("/").ok();
+    ensure_proc_mountinfo_ready().context("ensure /proc mountinfo is available")?;
+    match is_mount_point("/") {
+        Ok(true) => info!("pid1: / is a mount point"),
+        Ok(false) => warn!("pid1: / is not a mount point"),
+        Err(err) => warn!(error = ?err, "pid1: failed to determine whether / is a mount point"),
+    }
     info!("pid1: switched root");
 
     ensure_kernel_mounts()?;
@@ -472,11 +496,18 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
     ensure_serial_getty().ok();
     stage_firstboot_credentials().context("stage firstboot credentials")?;
 
-    let systemd_path = if Path::new("/lib/systemd/systemd").exists() {
-        "/lib/systemd/systemd"
-    } else {
-        "/sbin/init"
-    };
+    let systemd_path = [
+        "/lib/systemd/systemd",
+        "/usr/lib/systemd/systemd",
+        "/sbin/init",
+    ]
+    .into_iter()
+    .find(|path| Path::new(path).exists())
+    .ok_or_else(|| {
+        anyhow!(
+            "no init binary found in /lib/systemd/systemd, /usr/lib/systemd/systemd, or /sbin/init"
+        )
+    })?;
     info!("pid1: exec {}", systemd_path);
     let err = std::process::Command::new(systemd_path).exec();
     Err(anyhow!("exec {systemd_path} failed: {err}"))
@@ -620,7 +651,7 @@ fn path_to_string(path: &Path) -> Result<String> {
 }
 
 fn log_mountinfo(context: &str) {
-    match std::fs::read_to_string("/proc/self/mountinfo") {
+    match read_mountinfo_contents() {
         Ok(data) => {
             info!("pid1: mountinfo ({context})\n{data}");
         }
@@ -1531,8 +1562,7 @@ fn bind_mount_if_needed(src: &str, dst: &str, recursive: bool) -> Result<()> {
 }
 
 fn is_mount_point(path: &str) -> Result<bool> {
-    let data =
-        std::fs::read_to_string("/proc/self/mountinfo").context("read /proc/self/mountinfo")?;
+    let data = read_mountinfo_contents()?;
     for line in data.lines() {
         let mut parts = line.split_whitespace();
         let _ = parts.next();
@@ -1546,6 +1576,22 @@ fn is_mount_point(path: &str) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+fn ensure_proc_mountinfo_ready() -> Result<()> {
+    read_mountinfo_contents().map(|_| ())
+}
+
+fn read_mountinfo_contents() -> Result<String> {
+    match std::fs::read_to_string("/proc/self/mountinfo") {
+        Ok(data) => Ok(data),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir_all("/proc").ok();
+            let _ = mount_fs(Some("proc"), "/proc", Some("proc"), 0, None);
+            std::fs::read_to_string("/proc/self/mountinfo").context("read /proc/self/mountinfo")
+        }
+        Err(err) => Err(err).context("read /proc/self/mountinfo"),
+    }
 }
 
 fn mount_fs(

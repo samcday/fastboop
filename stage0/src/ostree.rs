@@ -2,6 +2,7 @@ use super::{cmdline_value, mount_fs, path_to_string};
 use anyhow::{Context, Result, anyhow, ensure};
 use std::{
     ffi::OsStr,
+    io,
     path::{Component, Path, PathBuf},
 };
 
@@ -183,20 +184,45 @@ pub(super) fn setup_ostree_runtime_mounts(layout: &OstreeLayout) -> Result<()> {
     let deployment_var = deployment_root.join("var");
     let stateroot_var = Path::new("/").join(&layout.stateroot_var_rel);
 
+    let deployment_root_meta = std::fs::metadata(&deployment_root)
+        .with_context(|| format!("stat {}", deployment_root.display()))?;
     ensure!(
-        deployment_root.is_dir(),
-        "ostree deployment root not found: {}",
+        deployment_root_meta.is_dir(),
+        "ostree deployment root is not a directory: {}",
         deployment_root.display()
     );
+
+    match std::fs::metadata(&deployment_sysroot) {
+        Ok(meta) => {
+            ensure!(
+                meta.is_dir(),
+                "ostree deployment /sysroot is not a directory: {}",
+                deployment_sysroot.display()
+            );
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&deployment_sysroot)
+                .with_context(|| format!("create {}", deployment_sysroot.display()))?;
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("stat {}", deployment_sysroot.display()));
+        }
+    }
+
+    let stateroot_var_meta = std::fs::metadata(&stateroot_var)
+        .with_context(|| format!("stat {}", stateroot_var.display()))?;
     ensure!(
-        deployment_sysroot.exists(),
-        "ostree deployment missing /sysroot: {}",
-        deployment_sysroot.display()
-    );
-    ensure!(
-        stateroot_var.is_dir(),
+        stateroot_var_meta.is_dir(),
         "ostree stateroot /var not found: {}",
         stateroot_var.display()
+    );
+
+    let deployment_var_meta = std::fs::metadata(&deployment_var)
+        .with_context(|| format!("stat {}", deployment_var.display()))?;
+    ensure!(
+        deployment_var_meta.is_dir(),
+        "ostree deployment /var is not a directory: {}",
+        deployment_var.display()
     );
 
     let deployment_sysroot_str = path_to_string(&deployment_sysroot)?;
@@ -222,9 +248,11 @@ pub(super) fn setup_ostree_runtime_mounts(layout: &OstreeLayout) -> Result<()> {
 
     if layout.bind_boot {
         let deployment_boot = deployment_root.join("boot");
+        let deployment_boot_meta = std::fs::metadata(&deployment_boot)
+            .with_context(|| format!("stat {}", deployment_boot.display()))?;
         ensure!(
-            deployment_boot.exists(),
-            "ostree deployment missing /boot: {}",
+            deployment_boot_meta.is_dir(),
+            "ostree deployment /boot is not a directory: {}",
             deployment_boot.display()
         );
         let deployment_boot_str = path_to_string(&deployment_boot)?;
