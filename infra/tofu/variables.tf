@@ -40,9 +40,9 @@ variable "github_repo" {
   default     = "fastboop"
 }
 
-variable "pocketblue_github_token" {
+variable "artifact_proxy_github_token" {
   type        = string
-  description = "Optional GitHub token for /pocketblue/gha/* worker proxy (needs Actions:read on pocketblue/pocketblue)."
+  description = "Optional GitHub token for /<project>/gha/* worker proxies (needs Actions:read on the source repositories)."
   default     = ""
   sensitive   = true
 }

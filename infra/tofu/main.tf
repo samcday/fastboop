@@ -38,7 +38,7 @@ resource "cloudflare_workers_script" "bleeding" {
   }
 
   dynamic "secret_text_binding" {
-    for_each = var.pocketblue_github_token == "" ? [] : [var.pocketblue_github_token]
+    for_each = var.artifact_proxy_github_token == "" ? [] : [var.artifact_proxy_github_token]
     content {
       name = "GITHUB_TOKEN"
       text = secret_text_binding.value

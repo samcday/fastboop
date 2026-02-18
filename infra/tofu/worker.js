@@ -1,9 +1,18 @@
 const LATEST_KEY = "latest.txt";
 const REDIRECT_STATUS = 302;
 const GITHUB_API_BASE = "https://api.github.com";
-const GITHUB_OWNER = "pocketblue";
-const GITHUB_REPO = "pocketblue";
-const POCKETBLUE_GHA_PREFIX = "/pocketblue/gha/";
+const GHA_ARTIFACT_ROUTES = [
+  {
+    prefix: "/pocketblue/gha/",
+    owner: "pocketblue",
+    repo: "pocketblue",
+  },
+  {
+    prefix: "/live-pocket-fedora/gha/",
+    owner: "samcday",
+    repo: "live-pocket-fedora",
+  },
+];
 const ARTIFACT_METADATA_TTL_MS = 5 * 60 * 1000;
 const SIGNED_URL_REFRESH_LEEWAY_MS = 30 * 1000;
 const FALLBACK_SIGNED_URL_TTL_MS = 5 * 60 * 1000;
@@ -18,12 +27,12 @@ addEventListener("fetch", (event) => {
 async function handleRequest(request) {
   const url = new URL(request.url);
   const path = url.pathname;
-  const pocketblueArtifact = parsePocketblueArtifactPath(path);
+  const githubArtifact = parseGithubArtifactPath(path);
 
   // Handle CORS preflight requests for direct artifacts.
   if (
     request.method === "OPTIONS" &&
-    (isR2DirectArtifactPath(path) || pocketblueArtifact)
+    (isR2DirectArtifactPath(path) || githubArtifact)
   ) {
     return handleCorsPreflightArtifact();
   }
@@ -32,8 +41,8 @@ async function handleRequest(request) {
     return redirectToLatest();
   }
 
-  if (pocketblueArtifact) {
-    return handlePocketblueArtifact(request, pocketblueArtifact);
+  if (githubArtifact) {
+    return handleGithubArtifact(request, githubArtifact);
   }
 
   // Handle direct R2 artifact paths with range request support.
@@ -134,7 +143,7 @@ async function handleDirectArtifact(request, path) {
   }
 }
 
-async function handlePocketblueArtifact(request, artifactRef) {
+async function handleGithubArtifact(request, artifactRef) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     const headers = artifactCorsHeaders();
     headers.set("allow", "GET, HEAD, OPTIONS");
@@ -151,12 +160,12 @@ async function handlePocketblueArtifact(request, artifactRef) {
       upstream = await fetchSignedArtifact(request, signedUrl);
     }
 
-    return buildPocketblueProxyResponse(upstream);
+    return buildGithubArtifactProxyResponse(upstream);
   } catch (error) {
     const status = Number.isInteger(error?.status) ? error.status : 502;
     const headers = artifactCorsHeaders();
     headers.set("cache-control", "no-store");
-    console.error("Error proxying pocketblue artifact:", error);
+    console.error("Error proxying GitHub artifact:", error);
     return new Response(error?.message || "Failed to fetch artifact", {
       status,
       headers,
@@ -206,7 +215,7 @@ async function resolveArtifactMetadata(artifactRef, forceRefresh = false) {
 
   while (true) {
     const listUrl =
-      `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${GITHUB_REPO}` +
+      `${GITHUB_API_BASE}/repos/${artifactRef.owner}/${artifactRef.repo}` +
       `/actions/runs/${artifactRef.runId}/artifacts?per_page=${perPage}&page=${page}`;
     const payload = await fetchGithubJson(listUrl);
     const artifacts = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
@@ -218,13 +227,13 @@ async function resolveArtifactMetadata(artifactRef, forceRefresh = false) {
       if (artifact?.expired) {
         throw httpError(
           404,
-          `Artifact '${artifactRef.artifactName}' from run ${artifactRef.runId} has expired`
+          `Artifact '${artifactRef.artifactName}' from ${artifactRef.owner}/${artifactRef.repo} run ${artifactRef.runId} has expired`
         );
       }
       if (!artifact?.archive_download_url) {
         throw httpError(
           502,
-          `Artifact '${artifactRef.artifactName}' is missing archive download URL`
+          `Artifact '${artifactRef.artifactName}' from ${artifactRef.owner}/${artifactRef.repo} is missing archive download URL`
         );
       }
 
@@ -250,7 +259,7 @@ async function resolveArtifactMetadata(artifactRef, forceRefresh = false) {
 
   throw httpError(
     404,
-    `Artifact '${artifactRef.artifactName}' not found in run ${artifactRef.runId}`
+    `Artifact '${artifactRef.artifactName}' not found in ${artifactRef.owner}/${artifactRef.repo} run ${artifactRef.runId}`
   );
 }
 
@@ -293,7 +302,7 @@ async function fetchSignedArtifact(request, signedUrl) {
   });
 }
 
-function buildPocketblueProxyResponse(upstream) {
+function buildGithubArtifactProxyResponse(upstream) {
   const headers = artifactCorsHeaders();
   copyHeaderIfPresent(upstream.headers, headers, "accept-ranges");
   copyHeaderIfPresent(upstream.headers, headers, "content-disposition");
@@ -311,7 +320,7 @@ function buildPocketblueProxyResponse(upstream) {
 }
 
 function artifactCacheKey(artifactRef) {
-  return `${artifactRef.runId}:${artifactRef.artifactName}`;
+  return `${artifactRef.owner}/${artifactRef.repo}:${artifactRef.runId}:${artifactRef.artifactName}`;
 }
 
 function parseSignedUrlExpiryMs(url) {
@@ -328,47 +337,52 @@ function parseSignedUrlExpiryMs(url) {
   }
 }
 
-function parsePocketblueArtifactPath(path) {
-  if (!path.startsWith(POCKETBLUE_GHA_PREFIX)) {
-    return null;
+function parseGithubArtifactPath(path) {
+  for (const route of GHA_ARTIFACT_ROUTES) {
+    if (!path.startsWith(route.prefix)) {
+      continue;
+    }
+
+    const remainder = path.slice(route.prefix.length);
+    const sep = remainder.indexOf("/");
+    if (sep <= 0) {
+      return null;
+    }
+
+    const runId = remainder.slice(0, sep);
+    if (!/^\d+$/.test(runId)) {
+      return null;
+    }
+
+    const rawArtifactFile = remainder.slice(sep + 1);
+    if (!rawArtifactFile || rawArtifactFile.includes("/")) {
+      return null;
+    }
+
+    let artifactName;
+    try {
+      artifactName = decodeURIComponent(rawArtifactFile);
+    } catch {
+      return null;
+    }
+
+    if (artifactName.toLowerCase().endsWith(".zip")) {
+      artifactName = artifactName.slice(0, -4);
+    }
+
+    if (!artifactName || artifactName.includes("/")) {
+      return null;
+    }
+
+    return {
+      runId,
+      artifactName,
+      owner: route.owner,
+      repo: route.repo,
+    };
   }
 
-  const remainder = path.slice(POCKETBLUE_GHA_PREFIX.length);
-  const sep = remainder.indexOf("/");
-  if (sep <= 0) {
-    return null;
-  }
-
-  const runId = remainder.slice(0, sep);
-  if (!/^\d+$/.test(runId)) {
-    return null;
-  }
-
-  const rawArtifactFile = remainder.slice(sep + 1);
-  if (!rawArtifactFile || rawArtifactFile.includes("/")) {
-    return null;
-  }
-
-  let decodedFile;
-  try {
-    decodedFile = decodeURIComponent(rawArtifactFile);
-  } catch {
-    return null;
-  }
-
-  if (!decodedFile.toLowerCase().endsWith(".zip")) {
-    return null;
-  }
-
-  const artifactName = decodedFile.slice(0, -4);
-  if (!artifactName) {
-    return null;
-  }
-
-  return {
-    runId,
-    artifactName,
-  };
+  return null;
 }
 
 function githubApiHeaders() {
@@ -376,7 +390,7 @@ function githubApiHeaders() {
   if (!token) {
     throw httpError(
       500,
-      "GITHUB_TOKEN worker binding is required for /pocketblue/gha/* artifact proxy"
+      "GITHUB_TOKEN worker binding is required for /pocketblue/gha/* and /live-pocket-fedora/gha/* artifact proxies"
     );
   }
 
