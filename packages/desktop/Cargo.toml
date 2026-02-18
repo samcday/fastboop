@@ -17,6 +17,7 @@ gibblox-core = { path = "../../gibblox/crates/gibblox-core", features = ["std"] 
 gibblox-cache = { path = "../../gibblox/crates/gibblox-cache", features = ["std"] }
 gibblox-cache-store-std = { path = "../../gibblox/crates/gibblox-cache-store-std" }
 gibblox-http = { path = "../../gibblox/crates/gibblox-http", default-features = false, features = ["native-client"] }
+gibblox-zip = { path = "../../gibblox/crates/gibblox-zip", features = ["std"] }
 smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }
 smoo-host-session = { path = "../../smoo/crates/smoo-host-session" }
 smoo-host-transport-rusb = { path = "../../smoo/crates/smoo-host-transport-rusb" }

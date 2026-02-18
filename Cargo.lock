@@ -2852,6 +2852,7 @@ dependencies = [
  "gibblox-core",
  "gibblox-file",
  "gibblox-http",
+ "gibblox-zip",
  "ratatui",
  "serde",
  "serde_json",
@@ -2893,6 +2894,7 @@ dependencies = [
  "gibblox-cache-store-std",
  "gibblox-core",
  "gibblox-http",
+ "gibblox-zip",
  "smoo-host-blocksource-gibblox",
  "smoo-host-core",
  "smoo-host-session",
@@ -3002,6 +3004,7 @@ dependencies = [
  "gibblox-core",
  "gibblox-http",
  "gibblox-web-worker",
+ "gibblox-zip",
  "gloo-timers",
  "js-sys",
  "smoo-host-blocksource-gibblox",
@@ -3607,6 +3610,16 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "gibblox-zip"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "tracing",
 ]
 
 [[package]]

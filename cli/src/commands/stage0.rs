@@ -11,6 +11,7 @@ use gibblox_cache_store_std::StdCacheOps;
 use gibblox_core::BlockReader;
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
+use gibblox_zip::ZipEntryBlockReader;
 use tracing::debug;
 use url::Url;
 
@@ -138,6 +139,16 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                 Arc::new(file_reader)
             };
 
+        let reader: Arc<dyn BlockReader> = match zip_entry_name_from_rootfs(&rootfs_str)? {
+            Some(entry_name) => {
+                let zip_reader = ZipEntryBlockReader::new(&entry_name, reader)
+                    .await
+                    .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
+                Arc::new(zip_reader)
+            }
+            None => reader,
+        };
+
         let total_blocks = reader.total_blocks().await?;
         let image_size_bytes = total_blocks * reader.block_size() as u64;
 
@@ -182,4 +193,35 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         build.init_path
     );
     Ok(())
+}
+
+fn zip_entry_name_from_rootfs(rootfs: &str) -> Result<Option<String>> {
+    let trimmed = rootfs.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        let url = Url::parse(trimmed).with_context(|| format!("parse rootfs URL {trimmed}"))?;
+        let file_name = url
+            .path_segments()
+            .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back());
+        return zip_entry_name_from_file_name(file_name);
+    }
+
+    let file_name = std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str());
+    zip_entry_name_from_file_name(file_name)
+}
+
+fn zip_entry_name_from_file_name(file_name: Option<&str>) -> Result<Option<String>> {
+    let Some(file_name) = file_name else {
+        return Ok(None);
+    };
+    if !file_name.to_ascii_lowercase().ends_with(".zip") {
+        return Ok(None);
+    }
+
+    let stem = &file_name[..file_name.len() - 4];
+    if stem.is_empty() {
+        return Err(anyhow!("zip artifact name must include a filename stem"));
+    }
+    Ok(Some(format!("{stem}.ero")))
 }

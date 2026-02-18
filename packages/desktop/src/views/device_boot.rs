@@ -17,6 +17,7 @@ use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
 use gibblox_core::{block_identity_string, BlockReader};
 use gibblox_http::HttpBlockReader;
+use gibblox_zip::ZipEntryBlockReader;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{
     register_export, BlockSource, BlockSourceHandle, CountingTransport, TransportCounterSnapshot,
@@ -215,7 +216,6 @@ async fn build_stage0_artifacts(
                     )
                     .await
                     .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
-                    let size_bytes = http_reader.size_bytes();
                     let cache = StdCacheOps::open_default_for_reader(&http_reader)
                         .await
                         .map_err(|err| anyhow!("open std cache for HTTP rootfs: {err}"))?;
@@ -224,7 +224,15 @@ async fn build_stage0_artifacts(
                             .await
                             .map_err(|err| anyhow!("initialize std cache for HTTP rootfs: {err}"))?,
                     );
-                    let reader: Arc<dyn BlockReader> = cached.clone();
+                    let reader: Arc<dyn BlockReader> = if let Some(entry_name) = zip_entry_name_from_url(&url)? {
+                        let zip_reader = ZipEntryBlockReader::new(&entry_name, cached)
+                            .await
+                            .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
+                        Arc::new(zip_reader)
+                    } else {
+                        cached
+                    };
+                    let size_bytes = reader_size_bytes(reader.as_ref()).await?;
                     let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
                     info!(profile = %profile.id, "building stage0 payload");
                     let build =
@@ -249,6 +257,38 @@ async fn build_stage0_artifacts(
 
     rx.await
         .map_err(|_| anyhow!("stage0 build worker thread exited unexpectedly"))?
+}
+
+fn zip_entry_name_from_url(url: &Url) -> Result<Option<String>> {
+    let file_name = url
+        .path_segments()
+        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back());
+    zip_entry_name_from_file_name(file_name)
+}
+
+fn zip_entry_name_from_file_name(file_name: Option<&str>) -> Result<Option<String>> {
+    let Some(file_name) = file_name else {
+        return Ok(None);
+    };
+    if !file_name.to_ascii_lowercase().ends_with(".zip") {
+        return Ok(None);
+    }
+
+    let stem = &file_name[..file_name.len() - 4];
+    if stem.is_empty() {
+        return Err(anyhow!("zip artifact name must include a filename stem"));
+    }
+    Ok(Some(format!("{stem}.ero")))
+}
+
+async fn reader_size_bytes(reader: &dyn BlockReader) -> Result<u64> {
+    let total_blocks = reader
+        .total_blocks()
+        .await
+        .map_err(|err| anyhow!("read total blocks for rootfs: {err}"))?;
+    total_blocks
+        .checked_mul(reader.block_size() as u64)
+        .ok_or_else(|| anyhow!("rootfs size overflow"))
 }
 
 pub fn run_rusb_host_daemon(

@@ -15,6 +15,8 @@ use gibblox_core::block_identity_string;
 use gibblox_core::{block_identity_string, BlockReader};
 #[cfg(not(target_arch = "wasm32"))]
 use gibblox_http::HttpBlockReader;
+#[cfg(not(target_arch = "wasm32"))]
+use gibblox_zip::ZipEntryBlockReader;
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::sleep;
 #[cfg(target_arch = "wasm32")]
@@ -235,8 +237,17 @@ async fn build_stage0_artifacts(
                 )
                 .await
                 .map_err(|err| anyhow::anyhow!("open HTTP reader {url}: {err}"))?;
-                let size_bytes = http_reader.size_bytes();
                 let reader: Arc<dyn BlockReader> = Arc::new(http_reader);
+                let reader: Arc<dyn BlockReader> = match zip_entry_name_from_url(&url)? {
+                    Some(entry_name) => {
+                        let zip_reader = ZipEntryBlockReader::new(&entry_name, reader)
+                            .await
+                            .map_err(|err| anyhow::anyhow!("open ZIP entry {entry_name}: {err}"))?;
+                        Arc::new(zip_reader)
+                    }
+                    None => reader,
+                };
+                let size_bytes = reader_size_bytes(reader.as_ref()).await?;
                 let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
                 let identity = block_identity_string(reader.as_ref());
                 (provider, size_bytes, identity)
@@ -284,6 +295,43 @@ async fn reader_size_bytes(reader: &dyn gibblox_core::BlockReader) -> anyhow::Re
     total_blocks
         .checked_mul(reader.block_size() as u64)
         .ok_or_else(|| anyhow::anyhow!("rootfs size overflow"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn reader_size_bytes(reader: &dyn gibblox_core::BlockReader) -> anyhow::Result<u64> {
+    let total_blocks = reader
+        .total_blocks()
+        .await
+        .map_err(|err| anyhow::anyhow!("read rootfs total blocks: {err}"))?;
+    total_blocks
+        .checked_mul(reader.block_size() as u64)
+        .ok_or_else(|| anyhow::anyhow!("rootfs size overflow"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn zip_entry_name_from_url(url: &Url) -> anyhow::Result<Option<String>> {
+    let file_name = url
+        .path_segments()
+        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back());
+    zip_entry_name_from_file_name(file_name)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn zip_entry_name_from_file_name(file_name: Option<&str>) -> anyhow::Result<Option<String>> {
+    let Some(file_name) = file_name else {
+        return Ok(None);
+    };
+    if !file_name.to_ascii_lowercase().ends_with(".zip") {
+        return Ok(None);
+    }
+
+    let stem = &file_name[..file_name.len() - 4];
+    if stem.is_empty() {
+        return Err(anyhow::anyhow!(
+            "zip artifact name must include a filename stem"
+        ));
+    }
+    Ok(Some(format!("{stem}.ero")))
 }
 
 #[cfg(target_arch = "wasm32")]
