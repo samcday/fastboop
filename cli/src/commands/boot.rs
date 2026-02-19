@@ -14,7 +14,7 @@ use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, 
 use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
-use fastboop_rootfs_erofs::{ErofsRootfs, OstreeRootfs, normalize_ostree_deployment_path};
+use fastboop_rootfs_erofs::{ErofsRootfs, OstreeRootfs};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
@@ -32,7 +32,10 @@ use crate::personalization::personalization_from_host;
 use crate::smoo_host::run_host_daemon;
 use crate::tui::{TuiOutcome, run_boot_tui};
 
-use super::{format_probe_error, read_dtbo_overlays, read_existing_initrd};
+use super::{
+    OstreeArg, auto_detect_ostree_deployment_path, format_probe_error, parse_ostree_arg,
+    read_dtbo_overlays, read_existing_initrd,
+};
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -53,9 +56,9 @@ pub struct BootStage0Args {
     /// Path or HTTP(S) URL to EROFS image containing kernel/modules.
     #[arg(value_name = "ROOTFS")]
     pub rootfs: PathBuf,
-    /// Resolve kernel/modules inside this OSTree deployment path.
-    #[arg(long, value_name = "PATH")]
-    pub ostree: Option<String>,
+    /// Resolve kernel/modules inside this OSTree deployment path (`--ostree` auto-detects).
+    #[arg(long, value_name = "PATH", num_args = 0..=1)]
+    pub ostree: Option<Option<String>>,
     /// Device profile id to use. If omitted, fastboop auto-probes matching profiles.
     #[arg(long)]
     pub device_profile: Option<String>,
@@ -240,12 +243,7 @@ async fn run_boot_inner(
     };
 
     let dtbo_overlays = read_dtbo_overlays(&args.stage0.dtbo)?;
-    let normalized_ostree = args
-        .stage0
-        .ostree
-        .as_deref()
-        .map(normalize_ostree_deployment_path)
-        .transpose()?;
+    let ostree_arg = parse_ostree_arg(args.stage0.ostree.as_ref())?;
     let opts = Stage0Options {
         extra_modules: args.stage0.require_modules,
         dtb_override,
@@ -262,27 +260,17 @@ async fn run_boot_inner(
     };
 
     let existing = read_existing_initrd(&args.stage0.augment)?;
-
-    let mut extra_parts = Vec::new();
-    if let Some(ostree) = normalized_ostree.as_deref() {
-        extra_parts.push(format!("ostree=/{ostree}"));
-    }
-    if let Some(cmdline) = args
+    let cmdline_append = args
         .stage0
         .cmdline_append
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-    {
-        extra_parts.push(cmdline.to_string());
-    }
-    if args.system_time {
-        extra_parts.push(system_time_cmdline()?);
-    }
-    let extra_cmdline = if extra_parts.is_empty() {
-        None
+        .map(str::to_string);
+    let system_time_part = if args.system_time {
+        Some(system_time_cmdline()?)
     } else {
-        Some(extra_parts.join(" "))
+        None
     };
 
     emit(
@@ -341,7 +329,33 @@ async fn run_boot_inner(
         // Wrap in EROFS
         let provider = ErofsRootfs::new(reader.clone(), image_size_bytes).await?;
 
-        let build = if let Some(ostree) = normalized_ostree.as_deref() {
+        let selected_ostree = match &ostree_arg {
+            OstreeArg::Disabled => None,
+            OstreeArg::AutoDetect => {
+                let detected = auto_detect_ostree_deployment_path(&provider).await?;
+                debug!(ostree = %detected, "auto-detected ostree deployment path");
+                Some(detected)
+            }
+            OstreeArg::Explicit(path) => Some(path.clone()),
+        };
+
+        let mut extra_parts = Vec::new();
+        if let Some(ostree) = selected_ostree.as_deref() {
+            extra_parts.push(format!("ostree=/{ostree}"));
+        }
+        if let Some(cmdline) = cmdline_append.as_deref() {
+            extra_parts.push(cmdline.to_string());
+        }
+        if let Some(system_time) = system_time_part.as_deref() {
+            extra_parts.push(system_time.to_string());
+        }
+        let extra_cmdline = if extra_parts.is_empty() {
+            None
+        } else {
+            Some(extra_parts.join(" "))
+        };
+
+        let build = if let Some(ostree) = selected_ostree.as_deref() {
             let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree).await?;
             debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
             let provider = OstreeRootfs::new(provider, &resolved_ostree)?;
