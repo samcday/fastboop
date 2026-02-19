@@ -264,11 +264,11 @@ impl StdCasyncChunkStore {
 
         let fetch_start = Instant::now();
 
-        let (encoded, source_kind) =
+        let (encoded, source_kind, encoding) =
             if let Some(bytes) = self.load_from_source_locator(&compressed_relative).await? {
-                (bytes, compressed_relative)
+                (bytes, compressed_relative, ChunkEncoding::Compressed)
             } else if let Some(bytes) = self.load_from_source_locator(&raw_relative).await? {
-                (bytes, raw_relative)
+                (bytes, raw_relative, ChunkEncoding::Raw)
             } else {
                 return Err(GibbloxError::with_message(
                     GibbloxErrorKind::Io,
@@ -285,7 +285,7 @@ impl StdCasyncChunkStore {
             "fetched chunk payload"
         );
 
-        let decoded = decode_chunk_payload(&encoded)?;
+        let decoded = decode_chunk_payload(&encoded, encoding)?;
         validate_chunk_bounds(decoded.len())?;
         self.write_to_cache(id, &decoded).await;
         Ok(decoded)
@@ -392,9 +392,16 @@ fn detect_compression(payload: &[u8]) -> CompressionKind {
     CompressionKind::Raw
 }
 
-fn decode_chunk_payload(encoded: &[u8]) -> GibbloxResult<Vec<u8>> {
+fn decode_chunk_payload(encoded: &[u8], encoding: ChunkEncoding) -> GibbloxResult<Vec<u8>> {
     validate_chunk_bounds(encoded.len())?;
 
+    match encoding {
+        ChunkEncoding::Raw => Ok(encoded.to_vec()),
+        ChunkEncoding::Compressed => decode_compressed_chunk_payload(encoded),
+    }
+}
+
+fn decode_compressed_chunk_payload(encoded: &[u8]) -> GibbloxResult<Vec<u8>> {
     match detect_compression(encoded) {
         CompressionKind::Raw => Ok(encoded.to_vec()),
         CompressionKind::Gzip => decode_gzip(encoded),
@@ -452,6 +459,12 @@ fn http_err(op: &str, err: reqwest::Error) -> GibbloxError {
 }
 
 #[derive(Clone, Copy)]
+enum ChunkEncoding {
+    Raw,
+    Compressed,
+}
+
+#[derive(Clone, Copy)]
 enum CompressionKind {
     Raw,
     Gzip,
@@ -462,7 +475,7 @@ enum CompressionKind {
 #[cfg(test)]
 mod tests {
     use super::{
-        StdCasyncChunkStore, StdCasyncChunkStoreConfig, StdCasyncChunkStoreLocator,
+        ChunkEncoding, StdCasyncChunkStore, StdCasyncChunkStoreConfig, StdCasyncChunkStoreLocator,
         decode_chunk_payload,
     };
     use flate2::{Compression, write::GzEncoder};
@@ -540,7 +553,35 @@ mod tests {
             .expect("load compressed chunk");
         assert_eq!(loaded, payload);
 
-        let decoded = decode_chunk_payload(&read_gzip_chunk(src.path(), &id));
+        let decoded =
+            decode_chunk_payload(&read_gzip_chunk(src.path(), &id), ChunkEncoding::Compressed);
+        assert_eq!(decoded.expect("decode helper"), payload);
+    }
+
+    #[tokio::test]
+    async fn raw_chunk_with_gzip_magic_is_not_decoded_as_compressed() {
+        let src = tempfile::tempdir().expect("src tempdir");
+        let cache = tempfile::tempdir().expect("cache tempdir");
+
+        let mut payload = b"pretend raw chunk".to_vec();
+        payload[0] = 0x1f;
+        payload[1] = 0x8b;
+        let id = chunk_id_for(&payload);
+        write_raw_chunk(src.path(), &id, &payload);
+
+        let mut config = StdCasyncChunkStoreConfig::new(StdCasyncChunkStoreLocator::path_prefix(
+            src.path().to_path_buf(),
+        ));
+        config.cache_dir = Some(cache.path().to_path_buf());
+        let store = StdCasyncChunkStore::new(config).expect("build chunk store");
+
+        let loaded = store
+            .load_chunk(&id, ReadContext::FOREGROUND)
+            .await
+            .expect("load raw chunk with gzip magic");
+        assert_eq!(loaded, payload);
+
+        let decoded = decode_chunk_payload(&payload, ChunkEncoding::Raw);
         assert_eq!(decoded.expect("decode helper"), payload);
     }
 

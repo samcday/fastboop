@@ -29,8 +29,8 @@ use crate::smoo_host::run_host_daemon;
 use crate::tui::{TuiOutcome, run_boot_tui};
 
 use super::{
-    OstreeArg, auto_detect_ostree_deployment_path, format_probe_error, parse_ostree_arg,
-    open_rootfs_block_reader, read_dtbo_overlays, read_existing_initrd,
+    OstreeArg, auto_detect_ostree_deployment_path, format_probe_error, open_rootfs_block_reader,
+    parse_ostree_arg, read_dtbo_overlays, read_existing_initrd,
 };
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);

@@ -183,12 +183,15 @@ mod wasm {
             let compressed_url = chunk_url(&self.chunk_store_url, &compressed)?;
             let raw_url = chunk_url(&self.chunk_store_url, &raw)?;
 
-            if let Some(hit) = self.cache_match_bytes(&compressed_url).await? {
+            if let Some(hit) = self
+                .cache_match_bytes(&compressed_url, ChunkEncoding::Compressed)
+                .await?
+            {
                 trace!(chunk = %id, cache = %self.cache_name, source = %compressed_url, bytes = hit.len(), "chunk cache hit");
                 return Ok(Some(hit));
             }
 
-            if let Some(hit) = self.cache_match_bytes(&raw_url).await? {
+            if let Some(hit) = self.cache_match_bytes(&raw_url, ChunkEncoding::Raw).await? {
                 trace!(chunk = %id, cache = %self.cache_name, source = %raw_url, bytes = hit.len(), "chunk cache hit");
                 return Ok(Some(hit));
             }
@@ -196,7 +199,11 @@ mod wasm {
             Ok(None)
         }
 
-        async fn cache_match_bytes(&self, url: &Url) -> GibbloxResult<Option<Vec<u8>>> {
+        async fn cache_match_bytes(
+            &self,
+            url: &Url,
+            encoding: ChunkEncoding,
+        ) -> GibbloxResult<Option<Vec<u8>>> {
             let promise = {
                 let request = build_request(url, ReadContext::FOREGROUND)?;
                 self.cache.0.match_with_request(&request)
@@ -216,7 +223,7 @@ mod wasm {
                 Err(err) => return Err(js_io_with("cache.match cast Response")(err)),
             };
             let decoded = response_to_bytes(response).await?;
-            let payload = decode_chunk_payload(&decoded)?;
+            let payload = decode_chunk_payload(&decoded, encoding)?;
             validate_chunk_bounds(payload.len())?;
             Ok(Some(payload))
         }
@@ -261,10 +268,10 @@ mod wasm {
 
             let fetch_start = js_sys::Date::now();
 
-            let (response, url) = match fetch_optional_url(&compressed_url, ctx).await? {
-                Some(response) => (response, compressed_url),
+            let (response, url, encoding) = match fetch_optional_url(&compressed_url, ctx).await? {
+                Some(response) => (response, compressed_url, ChunkEncoding::Compressed),
                 None => match fetch_optional_url(&raw_url, ctx).await? {
-                    Some(response) => (response, raw_url),
+                    Some(response) => (response, raw_url, ChunkEncoding::Raw),
                     None => {
                         return Err(GibbloxError::with_message(
                             GibbloxErrorKind::Io,
@@ -285,7 +292,7 @@ mod wasm {
 
             self.cache_put_response(&url, response.clone()).await;
             let encoded = response_to_bytes(response).await?;
-            let decoded = decode_chunk_payload(&encoded)?;
+            let decoded = decode_chunk_payload(&encoded, encoding)?;
             validate_chunk_bounds(decoded.len())?;
             Ok(decoded)
         }
@@ -445,9 +452,16 @@ mod wasm {
         CompressionKind::Raw
     }
 
-    fn decode_chunk_payload(encoded: &[u8]) -> GibbloxResult<Vec<u8>> {
+    fn decode_chunk_payload(encoded: &[u8], encoding: ChunkEncoding) -> GibbloxResult<Vec<u8>> {
         validate_chunk_bounds(encoded.len())?;
 
+        match encoding {
+            ChunkEncoding::Raw => Ok(encoded.to_vec()),
+            ChunkEncoding::Compressed => decode_compressed_chunk_payload(encoded),
+        }
+    }
+
+    fn decode_compressed_chunk_payload(encoded: &[u8]) -> GibbloxResult<Vec<u8>> {
         match detect_compression(encoded) {
             CompressionKind::Raw => Ok(encoded.to_vec()),
             CompressionKind::Gzip => decode_gzip(encoded),
@@ -523,6 +537,12 @@ mod wasm {
     fn js_value_into_response(value: JsValue, op: &'static str) -> GibbloxResult<SendResponse> {
         let response: Response = value.dyn_into().map_err(js_io_with(op))?;
         Ok(SendResponse(response))
+    }
+
+    #[derive(Clone, Copy)]
+    enum ChunkEncoding {
+        Raw,
+        Compressed,
     }
 
     #[derive(Clone, Copy)]

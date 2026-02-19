@@ -14,8 +14,8 @@ use url::Url;
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
 
 use super::{
-    OstreeArg, auto_detect_ostree_deployment_path, parse_ostree_arg, read_dtbo_overlays,
-    open_rootfs_block_reader, read_existing_initrd,
+    OstreeArg, auto_detect_ostree_deployment_path, open_rootfs_block_reader, parse_ostree_arg,
+    read_dtbo_overlays, read_existing_initrd,
 };
 
 #[derive(Args)]

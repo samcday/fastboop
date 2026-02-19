@@ -22,7 +22,10 @@ use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{
     register_export, BlockSource, BlockSourceHandle, CountingTransport, TransportCounterSnapshot,
 };
-use smoo_host_session::{HostSession, HostSessionConfig, HostSessionOutcome};
+use smoo_host_session::{
+    drive_host_session, HostSession, HostSessionConfig, HostSessionDriveConfig,
+    HostSessionDriveEvent, HostSessionDriveOutcome,
+};
 use smoo_host_transport_rusb::RusbTransport;
 use tokio::sync::oneshot;
 use tracing::{error, info, warn};
@@ -41,7 +44,6 @@ const FASTBOOT_INTERFACE_PROTOCOL: u8 = 0x03;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(1);
 const DISCOVERY_RETRY: Duration = Duration::from_millis(500);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
-const HEARTBEAT_MISS_BUDGET: u32 = 5;
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 
 pub async fn boot_selected_device(
@@ -404,80 +406,76 @@ async fn run_rusb_session(
         },
     )
     .map_err(|err| anyhow!(err.to_string()))?;
-    let mut task = session
+    let task = session
         .start(transport, &mut control)
         .await
         .map_err(|err| anyhow!(err.to_string()))?;
     smoo_stats.set_connected(true);
     let mut counter_snapshot = transport_counters_from_snapshot(counters.snapshot());
-    let mut missed_heartbeats: u32 = 0;
 
-    loop {
-        tokio::select! {
-            finish = &mut task => {
-                update_smoo_stats_from_transport(
-                    &smoo_stats,
-                    &mut counter_snapshot,
-                    transport_counters_from_snapshot(counters.snapshot()),
-                );
-                smoo_stats.set_connected(false);
-                match finish.outcome {
-                    Ok(HostSessionOutcome::Stopped) => return Ok(SessionEnd::TransportLost),
-                    Ok(HostSessionOutcome::TransportLost) => return Ok(SessionEnd::TransportLost),
-                    Ok(HostSessionOutcome::SessionChanged { previous, current }) => {
-                        info!(
-                            previous = format_args!("0x{previous:016x}"),
-                            current = format_args!("0x{current:016x}"),
-                            "desktop smoo session changed; reconnecting"
-                        );
-                        return Ok(SessionEnd::TransportLost);
-                    }
-                    Err(err) => return Err(anyhow!(err.to_string())),
+    let outcome = drive_host_session(
+        task,
+        control,
+        std::future::pending::<()>(),
+        || tokio::time::sleep(HEARTBEAT_INTERVAL),
+        HostSessionDriveConfig::default(),
+        |event| {
+            update_smoo_stats_from_transport(
+                &smoo_stats,
+                &mut counter_snapshot,
+                transport_counters_from_snapshot(counters.snapshot()),
+            );
+            match event {
+                HostSessionDriveEvent::HeartbeatStatus { .. } => {}
+                HostSessionDriveEvent::HeartbeatRecovered { missed_heartbeats } => {
+                    info!(missed_heartbeats, "desktop smoo heartbeat recovered");
                 }
-            }
-            _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
-                match tokio::time::timeout(HEARTBEAT_INTERVAL, task.heartbeat(&mut control)).await {
-                    Ok(Ok(_status)) => {
-                        if missed_heartbeats > 0 {
-                            info!(missed_heartbeats, "desktop smoo heartbeat recovered");
-                        }
-                        missed_heartbeats = 0;
-                    }
-                    Ok(Err(err)) => {
-                        missed_heartbeats = missed_heartbeats.saturating_add(1);
-                        warn!(
-                            %err,
-                            missed_heartbeats,
-                            budget = HEARTBEAT_MISS_BUDGET,
-                            "desktop smoo heartbeat failed"
-                        );
-                    }
-                    Err(_) => {
-                        missed_heartbeats = missed_heartbeats.saturating_add(1);
-                        warn!(
-                            missed_heartbeats,
-                            budget = HEARTBEAT_MISS_BUDGET,
-                            "desktop smoo heartbeat timed out"
-                        );
-                    }
-                }
-                if missed_heartbeats >= HEARTBEAT_MISS_BUDGET {
-                    error!("desktop smoo heartbeat budget exhausted");
-                    update_smoo_stats_from_transport(
-                        &smoo_stats,
-                        &mut counter_snapshot,
-                        transport_counters_from_snapshot(counters.snapshot()),
+                HostSessionDriveEvent::HeartbeatMiss {
+                    error,
+                    missed_heartbeats,
+                    budget,
+                } => {
+                    warn!(
+                        %error,
+                        missed_heartbeats,
+                        budget,
+                        "desktop smoo heartbeat failed"
                     );
-                    smoo_stats.set_connected(false);
-                    return Ok(SessionEnd::TransportLost);
                 }
-                update_smoo_stats_from_transport(
-                    &smoo_stats,
-                    &mut counter_snapshot,
-                    transport_counters_from_snapshot(counters.snapshot()),
-                );
+                HostSessionDriveEvent::HeartbeatMissBudgetExhausted {
+                    missed_heartbeats,
+                    budget,
+                } => {
+                    error!(
+                        missed_heartbeats,
+                        budget, "desktop smoo heartbeat budget exhausted"
+                    );
+                }
             }
+        },
+    )
+    .await;
+
+    update_smoo_stats_from_transport(
+        &smoo_stats,
+        &mut counter_snapshot,
+        transport_counters_from_snapshot(counters.snapshot()),
+    );
+    smoo_stats.set_connected(false);
+
+    match outcome {
+        HostSessionDriveOutcome::Shutdown | HostSessionDriveOutcome::TransportLost => {
+            Ok(SessionEnd::TransportLost)
         }
+        HostSessionDriveOutcome::SessionChanged { previous, current } => {
+            info!(
+                previous = format_args!("0x{previous:016x}"),
+                current = format_args!("0x{current:016x}"),
+                "desktop smoo session changed; reconnecting"
+            );
+            Ok(SessionEnd::TransportLost)
+        }
+        HostSessionDriveOutcome::Failed(err) => Err(anyhow!(err.to_string())),
     }
 }
 

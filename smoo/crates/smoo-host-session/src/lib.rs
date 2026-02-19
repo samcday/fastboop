@@ -13,6 +13,7 @@ use core::marker::PhantomData;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll};
+use futures_util::FutureExt;
 use smoo_host_core::control::{ConfigExportsV0, read_status};
 use smoo_host_core::{
     BlockSource, BlockSourceHandle, ControlTransport, HostErrorKind, SmooHost, Transport,
@@ -20,6 +21,8 @@ use smoo_host_core::{
 use smoo_proto::{ConfigExport, SmooStatusV0};
 
 pub use smoo_host_core::ExportIdentity;
+
+pub const DEFAULT_HEARTBEAT_MISS_BUDGET: u32 = 5;
 
 #[derive(Clone, Debug)]
 pub struct HostSessionConfig {
@@ -96,6 +99,8 @@ where
     _transport: PhantomData<T>,
 }
 
+impl<T> Unpin for HostSessionTask<T> where T: Transport + Clone + Send + Sync + 'static {}
+
 impl<T> HostSessionTask<T>
 where
     T: Transport + Clone + Send + Sync + 'static,
@@ -117,6 +122,113 @@ where
             self.state.session_changed.store(true, Ordering::Relaxed);
         }
         Ok(status)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostSessionDriveConfig {
+    pub heartbeat_miss_budget: u32,
+}
+
+impl Default for HostSessionDriveConfig {
+    fn default() -> Self {
+        Self {
+            heartbeat_miss_budget: DEFAULT_HEARTBEAT_MISS_BUDGET,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostSessionDriveEvent {
+    HeartbeatStatus {
+        status: SmooStatusV0,
+    },
+    HeartbeatRecovered {
+        missed_heartbeats: u32,
+    },
+    HeartbeatMiss {
+        error: HostSessionError,
+        missed_heartbeats: u32,
+        budget: u32,
+    },
+    HeartbeatMissBudgetExhausted {
+        missed_heartbeats: u32,
+        budget: u32,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostSessionDriveOutcome {
+    Shutdown,
+    TransportLost,
+    SessionChanged { previous: u64, current: u64 },
+    Failed(HostSessionError),
+}
+
+pub async fn drive_host_session<T, C, Shutdown, Tick, TickFuture, OnEvent>(
+    mut task: HostSessionTask<T>,
+    mut control: C,
+    shutdown: Shutdown,
+    mut heartbeat_tick: Tick,
+    config: HostSessionDriveConfig,
+    mut on_event: OnEvent,
+) -> HostSessionDriveOutcome
+where
+    T: Transport + Clone + Send + Sync + 'static,
+    C: ControlTransport + Sync,
+    Shutdown: Future<Output = ()>,
+    Tick: FnMut() -> TickFuture,
+    TickFuture: Future<Output = ()>,
+    OnEvent: FnMut(HostSessionDriveEvent),
+{
+    let mut heartbeat_budget = match HeartbeatBudget::new(config.heartbeat_miss_budget) {
+        Ok(budget) => budget,
+        Err(err) => return HostSessionDriveOutcome::Failed(err),
+    };
+
+    let shutdown = shutdown.fuse();
+    futures_util::pin_mut!(shutdown);
+
+    loop {
+        let heartbeat_tick = heartbeat_tick().fuse();
+        futures_util::pin_mut!(heartbeat_tick);
+
+        futures_util::select_biased! {
+            _ = shutdown => {
+                task.stop();
+                return HostSessionDriveOutcome::Shutdown;
+            }
+            finish = (&mut task).fuse() => {
+                return map_drive_finish(finish.outcome);
+            }
+            _ = heartbeat_tick => {
+                match task.heartbeat(&mut control).await {
+                    Ok(status) => {
+                        if let Some(missed_heartbeats) = heartbeat_budget.record_success() {
+                            on_event(HostSessionDriveEvent::HeartbeatRecovered {
+                                missed_heartbeats,
+                            });
+                        }
+                        on_event(HostSessionDriveEvent::HeartbeatStatus { status });
+                    }
+                    Err(error) => {
+                        let update = heartbeat_budget.record_miss();
+                        on_event(HostSessionDriveEvent::HeartbeatMiss {
+                            error,
+                            missed_heartbeats: update.missed_heartbeats,
+                            budget: update.budget,
+                        });
+                        if update.exhausted {
+                            on_event(HostSessionDriveEvent::HeartbeatMissBudgetExhausted {
+                                missed_heartbeats: update.missed_heartbeats,
+                                budget: update.budget,
+                            });
+                            return HostSessionDriveOutcome::TransportLost;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -157,10 +269,56 @@ pub enum HostSessionErrorKind {
     Internal,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostSessionError {
     kind: HostSessionErrorKind,
     message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HeartbeatBudget {
+    miss_budget: u32,
+    missed_heartbeats: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HeartbeatBudgetUpdate {
+    missed_heartbeats: u32,
+    budget: u32,
+    exhausted: bool,
+}
+
+impl HeartbeatBudget {
+    fn new(miss_budget: u32) -> Result<Self, HostSessionError> {
+        if miss_budget == 0 {
+            return Err(HostSessionError::with_message(
+                HostSessionErrorKind::InvalidConfiguration,
+                "heartbeat_miss_budget must be greater than zero",
+            ));
+        }
+        Ok(Self {
+            miss_budget,
+            missed_heartbeats: 0,
+        })
+    }
+
+    fn record_success(&mut self) -> Option<u32> {
+        if self.missed_heartbeats == 0 {
+            return None;
+        }
+        let recovered = self.missed_heartbeats;
+        self.missed_heartbeats = 0;
+        Some(recovered)
+    }
+
+    fn record_miss(&mut self) -> HeartbeatBudgetUpdate {
+        self.missed_heartbeats = self.missed_heartbeats.saturating_add(1);
+        HeartbeatBudgetUpdate {
+            missed_heartbeats: self.missed_heartbeats,
+            budget: self.miss_budget,
+            exhausted: self.missed_heartbeats >= self.miss_budget,
+        }
+    }
 }
 
 impl HostSessionError {
@@ -326,6 +484,19 @@ where
     }
 }
 
+fn map_drive_finish(
+    outcome: Result<HostSessionOutcome, HostSessionError>,
+) -> HostSessionDriveOutcome {
+    match outcome {
+        Ok(HostSessionOutcome::Stopped) => HostSessionDriveOutcome::Shutdown,
+        Ok(HostSessionOutcome::TransportLost) => HostSessionDriveOutcome::TransportLost,
+        Ok(HostSessionOutcome::SessionChanged { previous, current }) => {
+            HostSessionDriveOutcome::SessionChanged { previous, current }
+        }
+        Err(err) => HostSessionDriveOutcome::Failed(err),
+    }
+}
+
 fn map_transport_error(err: smoo_host_core::TransportError) -> HostSessionError {
     HostSessionError::with_message(HostSessionErrorKind::Transport, err.to_string())
 }
@@ -343,4 +514,60 @@ fn map_host_error(err: smoo_host_core::HostError) -> HostSessionError {
         HostErrorKind::NotReady => HostSessionErrorKind::NotReady,
     };
     HostSessionError::with_message(kind, err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heartbeat_budget_rejects_zero_budget() {
+        let err = HeartbeatBudget::new(0).expect_err("zero budget must fail");
+        assert_eq!(err.kind(), HostSessionErrorKind::InvalidConfiguration);
+    }
+
+    #[test]
+    fn heartbeat_budget_counts_and_resets() {
+        let mut budget = HeartbeatBudget::new(3).expect("budget");
+
+        let miss1 = budget.record_miss();
+        assert_eq!(
+            miss1,
+            HeartbeatBudgetUpdate {
+                missed_heartbeats: 1,
+                budget: 3,
+                exhausted: false,
+            }
+        );
+
+        let miss2 = budget.record_miss();
+        assert_eq!(
+            miss2,
+            HeartbeatBudgetUpdate {
+                missed_heartbeats: 2,
+                budget: 3,
+                exhausted: false,
+            }
+        );
+
+        assert_eq!(budget.record_success(), Some(2));
+        assert_eq!(budget.record_success(), None);
+
+        let miss3 = budget.record_miss();
+        assert_eq!(
+            miss3,
+            HeartbeatBudgetUpdate {
+                missed_heartbeats: 1,
+                budget: 3,
+                exhausted: false,
+            }
+        );
+    }
+
+    #[test]
+    fn heartbeat_budget_detects_exhaustion() {
+        let mut budget = HeartbeatBudget::new(2).expect("budget");
+        assert!(!budget.record_miss().exhausted);
+        assert!(budget.record_miss().exhausted);
+    }
 }

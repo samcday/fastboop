@@ -10,7 +10,10 @@ use smoo_host_blocksources::random::RandomBlockSource;
 use smoo_host_core::{
     register_export, BlockSource, BlockSourceHandle, BlockSourceResult, ExportIdentity,
 };
-use smoo_host_session::{HostSession, HostSessionConfig, HostSessionOutcome};
+use smoo_host_session::{
+    HostSession, HostSessionConfig, HostSessionDriveConfig, HostSessionDriveEvent,
+    HostSessionDriveOutcome, drive_host_session,
+};
 use smoo_host_transport_rusb::RusbTransport;
 use std::{
     collections::BTreeMap, convert::Infallible, fs, net::SocketAddr, path::PathBuf, time::Duration,
@@ -27,7 +30,6 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 1;
 const DISCOVERY_DELAY_INITIAL: Duration = Duration::from_millis(500);
 const DISCOVERY_DELAY_MAX: Duration = Duration::from_secs(5);
 const STATUS_RETRY_ATTEMPTS: usize = 5;
-const HEARTBEAT_MISS_BUDGET: u32 = 5;
 const RECONNECT_PAUSE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Parser)]
@@ -227,7 +229,7 @@ async fn run_session(
         },
     )
     .map_err(|err| anyhow!(err.to_string()))?;
-    let mut task = match session.start(transport, &mut control).await {
+    let task = match session.start(transport, &mut control).await {
         Ok(task) => task,
         Err(err) => {
             warn!(error = %err, "host session setup failed");
@@ -236,67 +238,58 @@ async fn run_session(
     };
 
     let heartbeat_interval = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
-    let mut missed_heartbeats: u32 = 0;
     info!("connected to smoo gadget");
 
-    let outcome = loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => {
-                info!("shutdown requested");
-                task.stop();
-                let _ = (&mut task).await;
-                break SessionEnd::Shutdown;
+    let outcome = drive_host_session(
+        task,
+        control,
+        shutdown.cancelled(),
+        || time::sleep(heartbeat_interval),
+        HostSessionDriveConfig::default(),
+        |event| match event {
+            HostSessionDriveEvent::HeartbeatStatus { .. } => {}
+            HostSessionDriveEvent::HeartbeatRecovered { missed_heartbeats } => {
+                info!(missed_heartbeats, "heartbeat recovered");
             }
-            finish = &mut task => {
-                match finish.outcome {
-                    Ok(HostSessionOutcome::Stopped) => break SessionEnd::Shutdown,
-                    Ok(HostSessionOutcome::TransportLost) => break SessionEnd::TransportLost,
-                    Ok(HostSessionOutcome::SessionChanged { previous, current }) => {
-                        info!(
-                            previous = format_args!("0x{previous:016x}"),
-                            current = format_args!("0x{current:016x}"),
-                            "gadget session changed; restarting"
-                        );
-                        break SessionEnd::SessionRestart;
-                    }
-                    Err(err) => return Err(anyhow!(err.to_string())),
-                }
+            HostSessionDriveEvent::HeartbeatMiss {
+                error,
+                missed_heartbeats,
+                budget,
+            } => {
+                warn!(
+                    error = %error,
+                    missed_heartbeats,
+                    budget,
+                    "heartbeat transfer failed"
+                );
             }
-            _ = time::sleep(heartbeat_interval), if !shutdown.is_cancelled() => {
-                match time::timeout(heartbeat_interval, task.heartbeat(&mut control)).await {
-                    Ok(Ok(_status)) => {
-                        if missed_heartbeats > 0 {
-                            info!(missed_heartbeats, "heartbeat recovered");
-                        }
-                        missed_heartbeats = 0;
-                    }
-                    Ok(Err(err)) => {
-                        missed_heartbeats = missed_heartbeats.saturating_add(1);
-                        warn!(
-                            error = %err,
-                            missed_heartbeats,
-                            budget = HEARTBEAT_MISS_BUDGET,
-                            "heartbeat transfer failed"
-                        );
-                    }
-                    Err(_) => {
-                        missed_heartbeats = missed_heartbeats.saturating_add(1);
-                        warn!(
-                            missed_heartbeats,
-                            budget = HEARTBEAT_MISS_BUDGET,
-                            "heartbeat transfer timed out"
-                        );
-                    }
-                }
-                if missed_heartbeats >= HEARTBEAT_MISS_BUDGET {
-                    warn!("heartbeat miss budget exhausted; treating transport as lost");
-                    break SessionEnd::TransportLost;
-                }
+            HostSessionDriveEvent::HeartbeatMissBudgetExhausted {
+                missed_heartbeats,
+                budget,
+            } => {
+                warn!(
+                    missed_heartbeats,
+                    budget,
+                    "heartbeat miss budget exhausted; treating transport as lost"
+                );
             }
-        }
-    };
+        },
+    )
+    .await;
 
-    Ok(outcome)
+    match outcome {
+        HostSessionDriveOutcome::Shutdown => Ok(SessionEnd::Shutdown),
+        HostSessionDriveOutcome::TransportLost => Ok(SessionEnd::TransportLost),
+        HostSessionDriveOutcome::SessionChanged { previous, current } => {
+            info!(
+                previous = format_args!("0x{previous:016x}"),
+                current = format_args!("0x{current:016x}"),
+                "gadget session changed; restarting"
+            );
+            Ok(SessionEnd::SessionRestart)
+        }
+        HostSessionDriveOutcome::Failed(err) => Err(anyhow!(err.to_string())),
+    }
 }
 
 async fn open_sources(args: &Args) -> Result<BTreeMap<u32, BlockSourceHandle>> {

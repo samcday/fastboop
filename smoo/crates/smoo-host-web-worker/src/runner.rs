@@ -1,12 +1,15 @@
 use crate::api::{HostWorkerConfig, HostWorkerEvent};
 use futures_channel::oneshot;
-use futures_util::{FutureExt, select_biased};
+use futures_util::FutureExt;
 use gibblox_blockreader_messageport::MessagePortBlockReaderClient;
 use gibblox_core::BlockReader;
 use gloo_timers::future::sleep;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{BlockSource, BlockSourceHandle, CountingTransport, register_export};
-use smoo_host_session::{HostSession, HostSessionConfig, HostSessionOutcome};
+use smoo_host_session::{
+    HostSession, HostSessionConfig, HostSessionDriveConfig, HostSessionDriveEvent,
+    HostSessionDriveOutcome, drive_host_session,
+};
 use smoo_host_webusb::WebUsbTransport;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -43,8 +46,6 @@ pub(crate) struct RuntimeConfig {
     pub(crate) reader: Arc<dyn BlockReader>,
     pub(crate) host_cfg: HostWorkerConfig,
 }
-
-const HEARTBEAT_MISS_BUDGET: u32 = 5;
 
 pub(crate) async fn init_runtime(
     runtime: &mut WorkerRuntime,
@@ -141,7 +142,7 @@ pub(crate) async fn start_session(
         runtime.busy = false;
         err.to_string()
     })?;
-    let mut task = session.start(counting, &mut control).await.map_err(|err| {
+    let task = session.start(counting, &mut control).await.map_err(|err| {
         runtime.busy = false;
         err.to_string()
     })?;
@@ -155,59 +156,49 @@ pub(crate) async fn start_session(
 
     let emit_for_task = emit.clone();
     spawn_local(async move {
-        let mut stop_rx = stop_rx.fuse();
         let interval = Duration::from_millis(cfg.host_cfg.heartbeat_interval_ms as u64);
-        let mut counters_tick = sleep(interval).fuse();
-        let mut missed_heartbeats: u32 = 0;
-
-        loop {
-            select_biased! {
-                _ = stop_rx => {
-                    task.stop();
-                    let finish = task.await;
-                    emit_finish(&emit_for_task, finish.outcome);
-                    emit_for_task(HostWorkerEvent::Stopped);
-                    on_exit();
-                    break;
-                }
-                finish = (&mut task).fuse() => {
-                    emit_finish(&emit_for_task, finish.outcome);
-                    emit_for_task(HostWorkerEvent::Stopped);
-                    on_exit();
-                    break;
-                }
-                _ = counters_tick => {
-                    emit_counters(&emit_for_task, counters.snapshot());
-                    match task.heartbeat(&mut control).await {
-                        Ok(_status) => {
-                            if missed_heartbeats > 0 {
-                                info!(missed_heartbeats, "host worker heartbeat recovered");
-                            }
-                            missed_heartbeats = 0;
-                        }
-                        Err(err) => {
-                            missed_heartbeats = missed_heartbeats.saturating_add(1);
-                            warn!(
-                                error = %err,
-                                missed_heartbeats,
-                                budget = HEARTBEAT_MISS_BUDGET,
-                                "host worker heartbeat failed"
-                            );
-                            if missed_heartbeats >= HEARTBEAT_MISS_BUDGET {
-                                warn!("host worker heartbeat miss budget exhausted");
-                                task.stop();
-                                let finish = task.await;
-                                emit_finish(&emit_for_task, finish.outcome);
-                                emit_for_task(HostWorkerEvent::Stopped);
-                                on_exit();
-                                break;
-                            }
-                        }
+        let outcome = drive_host_session(
+            task,
+            control,
+            stop_rx.map(|_| ()),
+            || sleep(interval),
+            HostSessionDriveConfig::default(),
+            |event| {
+                emit_counters(&emit_for_task, counters.snapshot());
+                match event {
+                    HostSessionDriveEvent::HeartbeatStatus { .. } => {}
+                    HostSessionDriveEvent::HeartbeatRecovered { missed_heartbeats } => {
+                        info!(missed_heartbeats, "host worker heartbeat recovered");
                     }
-                    counters_tick = sleep(interval).fuse();
+                    HostSessionDriveEvent::HeartbeatMiss {
+                        error,
+                        missed_heartbeats,
+                        budget,
+                    } => {
+                        warn!(
+                            error = %error,
+                            missed_heartbeats,
+                            budget,
+                            "host worker heartbeat failed"
+                        );
+                    }
+                    HostSessionDriveEvent::HeartbeatMissBudgetExhausted {
+                        missed_heartbeats,
+                        budget,
+                    } => {
+                        warn!(
+                            missed_heartbeats,
+                            budget, "host worker heartbeat miss budget exhausted"
+                        );
+                    }
                 }
-            }
-        }
+            },
+        )
+        .await;
+
+        emit_finish(&emit_for_task, outcome);
+        emit_for_task(HostWorkerEvent::Stopped);
+        on_exit();
     });
 
     Ok(())
@@ -228,23 +219,20 @@ pub(crate) fn mark_session_stopped(runtime: &mut WorkerRuntime) {
     runtime.stop_tx = None;
 }
 
-fn emit_finish(
-    emit: &impl Fn(HostWorkerEvent),
-    outcome: Result<HostSessionOutcome, smoo_host_session::HostSessionError>,
-) {
+fn emit_finish(emit: &impl Fn(HostWorkerEvent), outcome: HostSessionDriveOutcome) {
     match outcome {
-        Ok(HostSessionOutcome::Stopped) => {
+        HostSessionDriveOutcome::Shutdown => {
             debug!("host worker session stopped");
         }
-        Ok(HostSessionOutcome::TransportLost) => {
+        HostSessionDriveOutcome::TransportLost => {
             warn!("host worker session transport lost");
             emit(HostWorkerEvent::TransportLost)
         }
-        Ok(HostSessionOutcome::SessionChanged { previous, current }) => {
+        HostSessionDriveOutcome::SessionChanged { previous, current } => {
             warn!(previous, current, "host worker session changed");
             emit(HostWorkerEvent::SessionChanged { previous, current });
         }
-        Err(err) => {
+        HostSessionDriveOutcome::Failed(err) => {
             warn!(error = %err, "host worker session failed");
             emit(HostWorkerEvent::Error {
                 message: err.to_string(),

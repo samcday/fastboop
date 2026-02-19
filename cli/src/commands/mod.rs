@@ -75,10 +75,8 @@ async fn open_casync_reader(index_url: Url) -> Result<Arc<dyn BlockReader>> {
         "resolved casync chunk store URL"
     );
 
-    let chunk_locator =
-        StdCasyncChunkStoreLocator::url_prefix(chunk_store_url.clone()).map_err(|err| {
-            anyhow!("configure casync chunk store URL {chunk_store_url}: {err}")
-        })?;
+    let chunk_locator = StdCasyncChunkStoreLocator::url_prefix(chunk_store_url.clone())
+        .map_err(|err| anyhow!("configure casync chunk store URL {chunk_store_url}: {err}"))?;
     let mut chunk_store_config = StdCasyncChunkStoreConfig::new(chunk_locator);
     chunk_store_config.cache_dir = Some(default_casync_cache_dir());
     let chunk_store = StdCasyncChunkStore::new(chunk_store_config)
