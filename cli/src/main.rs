@@ -16,7 +16,10 @@ mod smoo_host;
 mod tui;
 
 use boot_ui::BootEvent;
-use commands::{BootArgs, DetectArgs, Stage0Args, run_boot, run_detect, run_stage0};
+use commands::{
+    BootArgs, BootProfileArgs, DetectArgs, Stage0Args, run_boot, run_bootprofile, run_detect,
+    run_stage0,
+};
 
 #[derive(Parser)]
 #[command(author, version, about = "fastboop CLI utilities")]
@@ -29,6 +32,8 @@ struct Cli {
 enum Commands {
     /// Boot a device by synthesizing stage0 and issuing fastboot download+boot.
     Boot(BootArgs),
+    /// Compile or inspect boot profile binaries.
+    Bootprofile(BootProfileArgs),
     /// Detect connected fastboot devices that match a DevPro.
     Detect(DetectArgs),
     /// Synthesize a stage0 initrd from a rootfs and device profile; writes cpio to stdout.
@@ -40,6 +45,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Boot(args) => run_boot(args).await,
+        Commands::Bootprofile(args) => run_bootprofile(args),
         Commands::Detect(args) => {
             setup_default_tracing();
             run_detect(args).await

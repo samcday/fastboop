@@ -8,10 +8,12 @@ use fastboop_core::{RootfsEntryType, RootfsProvider};
 use fastboop_rootfs_erofs::normalize_ostree_deployment_path;
 
 mod boot;
+mod bootprofile;
 mod detect;
 mod stage0;
 
 pub use boot::{BootArgs, run_boot};
+pub use bootprofile::{BootProfileArgs, run_bootprofile};
 pub use detect::{DetectArgs, run_detect};
 pub use stage0::{Stage0Args, run_stage0};
 

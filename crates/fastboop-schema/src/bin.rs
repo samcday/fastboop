@@ -1,12 +1,63 @@
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Boot, DeviceProfile, ExistsFlag, FastbootGetvarEq, FastbootGetvarExists, FastbootGetvarNotEq,
-    FastbootGetvarNotExists, InjectMac, MatchRule, NotExistsFlag, ProbeStep, Stage0,
+    Boot, BootProfile, BootProfileDevice, BootProfileDeviceStage0, BootProfileRootfs,
+    BootProfileRootfsCasync, BootProfileRootfsCasyncSource, BootProfileRootfsHttpSource,
+    BootProfileStage0, DeviceProfile, ExistsFlag, FastbootGetvarEq, FastbootGetvarExists,
+    FastbootGetvarNotEq, FastbootGetvarNotExists, InjectMac, MatchRule, NotExistsFlag, ProbeStep,
+    Stage0,
 };
+
+pub const BOOT_PROFILE_BIN_FORMAT_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BootProfileEnvelopeBin {
+    pub format_version: u16,
+    pub profile: BootProfileBin,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BootProfileBin {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub rootfs: BootProfileRootfsBin,
+    pub dt_overlays: Vec<Vec<u8>>,
+    pub extra_cmdline: Option<String>,
+    pub stage0: BootProfileStage0Bin,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum BootProfileRootfsBin {
+    Casync {
+        index: String,
+        chunk_store: Option<String>,
+    },
+    Http {
+        url: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BootProfileStage0Bin {
+    pub extra_modules: Vec<String>,
+    pub devices: BTreeMap<String, BootProfileDeviceBin>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BootProfileDeviceBin {
+    pub dt_overlays: Vec<Vec<u8>>,
+    pub extra_cmdline: Option<String>,
+    pub stage0: BootProfileDeviceStage0Bin,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BootProfileDeviceStage0Bin {
+    pub extra_modules: Vec<String>,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DeviceProfileBin {
@@ -143,6 +194,122 @@ impl From<InjectMacBin> for InjectMac {
         Self {
             wifi: mac.wifi,
             bluetooth: mac.bluetooth,
+        }
+    }
+}
+
+impl From<BootProfile> for BootProfileBin {
+    fn from(profile: BootProfile) -> Self {
+        Self {
+            id: profile.id,
+            display_name: profile.display_name,
+            rootfs: BootProfileRootfsBin::from(profile.rootfs),
+            dt_overlays: profile.dt_overlays,
+            extra_cmdline: profile.extra_cmdline,
+            stage0: BootProfileStage0Bin::from(profile.stage0),
+        }
+    }
+}
+
+impl From<BootProfileBin> for BootProfile {
+    fn from(profile: BootProfileBin) -> Self {
+        Self {
+            id: profile.id,
+            display_name: profile.display_name,
+            rootfs: BootProfileRootfs::from(profile.rootfs),
+            dt_overlays: profile.dt_overlays,
+            extra_cmdline: profile.extra_cmdline,
+            stage0: BootProfileStage0::from(profile.stage0),
+        }
+    }
+}
+
+impl From<BootProfileRootfs> for BootProfileRootfsBin {
+    fn from(rootfs: BootProfileRootfs) -> Self {
+        match rootfs {
+            BootProfileRootfs::Casync(BootProfileRootfsCasyncSource {
+                casync: BootProfileRootfsCasync { index, chunk_store },
+            }) => Self::Casync { index, chunk_store },
+            BootProfileRootfs::Http(BootProfileRootfsHttpSource { http }) => {
+                Self::Http { url: http }
+            }
+        }
+    }
+}
+
+impl From<BootProfileRootfsBin> for BootProfileRootfs {
+    fn from(rootfs: BootProfileRootfsBin) -> Self {
+        match rootfs {
+            BootProfileRootfsBin::Casync { index, chunk_store } => {
+                Self::Casync(BootProfileRootfsCasyncSource {
+                    casync: BootProfileRootfsCasync { index, chunk_store },
+                })
+            }
+            BootProfileRootfsBin::Http { url } => {
+                Self::Http(BootProfileRootfsHttpSource { http: url })
+            }
+        }
+    }
+}
+
+impl From<BootProfileStage0> for BootProfileStage0Bin {
+    fn from(stage0: BootProfileStage0) -> Self {
+        Self {
+            extra_modules: stage0.extra_modules,
+            devices: stage0
+                .devices
+                .into_iter()
+                .map(|(device_id, device)| (device_id, BootProfileDeviceBin::from(device)))
+                .collect(),
+        }
+    }
+}
+
+impl From<BootProfileStage0Bin> for BootProfileStage0 {
+    fn from(stage0: BootProfileStage0Bin) -> Self {
+        Self {
+            extra_modules: stage0.extra_modules,
+            devices: stage0
+                .devices
+                .into_iter()
+                .map(|(device_id, device)| (device_id, BootProfileDevice::from(device)))
+                .collect(),
+        }
+    }
+}
+
+impl From<BootProfileDevice> for BootProfileDeviceBin {
+    fn from(device: BootProfileDevice) -> Self {
+        Self {
+            dt_overlays: device.dt_overlays,
+            extra_cmdline: device.extra_cmdline,
+            stage0: BootProfileDeviceStage0Bin::from(device.stage0),
+        }
+    }
+}
+
+impl From<BootProfileDeviceBin> for BootProfileDevice {
+    fn from(device: BootProfileDeviceBin) -> Self {
+        Self {
+            dt_overlays: device.dt_overlays,
+            extra_cmdline: device.extra_cmdline,
+            stage0: BootProfileDeviceStage0::from(device.stage0),
+        }
+    }
+}
+
+impl From<BootProfileDeviceStage0> for BootProfileDeviceStage0Bin {
+    fn from(stage0: BootProfileDeviceStage0) -> Self {
+        Self {
+            extra_modules: stage0.extra_modules,
+        }
+    }
+}
+
+impl From<BootProfileDeviceStage0Bin> for BootProfileDeviceStage0 {
+    fn from(stage0: BootProfileDeviceStage0Bin) -> Self {
+        Self {
+            extra_modules: stage0.extra_modules,
         }
     }
 }
