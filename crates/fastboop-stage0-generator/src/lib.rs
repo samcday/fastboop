@@ -12,6 +12,7 @@ use dtoolkit::fdt::Fdt;
 use dtoolkit::model::{DeviceTree, DeviceTreeNode, DeviceTreeProperty};
 use dtoolkit::{Node, Property};
 use fastboop_core::{DeviceProfile, InjectMac, Personalization, RootfsProvider};
+use futures_util::future::{join, join_all};
 
 const MODULES_LOAD_PATH: &str = "etc/modules-load.d/fastboop-stage0.conf";
 const MODULES_ROOT: &str = "lib/modules";
@@ -25,6 +26,7 @@ const BASE_REQUIRED_MODULES: &[&str] = &[
     "overlay",
 ];
 const MODULE_INDEX_FILES: &[&str] = &["modules.dep", "modules.builtin", "modules.order"];
+const MODULE_READ_FANOUT: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage0Error {
@@ -80,33 +82,39 @@ pub async fn build_stage0<P: RootfsProvider>(
     extra_cmdline: Option<&str>,
     existing_cpio: Option<&[u8]>,
 ) -> Result<Stage0Build, Stage0Error> {
-    tracing::debug!("build_stage0: detecting kernel");
-    let kernel_path = detect_kernel(rootfs).await?;
-    tracing::debug!(kernel_path = %kernel_path, "build_stage0: kernel detected");
-    let kernel_image = rootfs
-        .read_all(&kernel_path)
-        .await
-        .map_err(|_| Stage0Error::MissingFile(kernel_path.clone()))?;
-    tracing::debug!(
-        kernel_path = %kernel_path,
-        kernel_bytes = kernel_image.len(),
-        "build_stage0: kernel image loaded"
-    );
-
     let init_path = INIT_BIN_PATH.to_string();
-
-    let mut modules_dir = None;
-    let mut modules_dep = ModulesDep::new();
-    let mut module_paths = ModulePaths::new();
-    let mut modules_builtin = BTreeSet::new();
     let needs_modules = !opts.extra_modules.is_empty() || !profile.stage0.kernel_modules.is_empty();
     tracing::debug!(
         needs_modules,
         profile_module_count = profile.stage0.kernel_modules.len(),
         extra_module_count = opts.extra_modules.len(),
-        "build_stage0: evaluating module requirements"
+        dtb_override = opts.dtb_override.is_some(),
+        "build_stage0: collecting rootfs artifacts"
     );
-    if needs_modules {
+
+    let kernel_future = async {
+        tracing::debug!("build_stage0: detecting kernel");
+        let kernel_path = detect_kernel(rootfs).await?;
+        tracing::debug!(kernel_path = %kernel_path, "build_stage0: kernel detected");
+        let kernel_image = rootfs
+            .read_all(&kernel_path)
+            .await
+            .map_err(|_| Stage0Error::MissingFile(kernel_path.clone()))?;
+        tracing::debug!(
+            kernel_path = %kernel_path,
+            kernel_bytes = kernel_image.len(),
+            "build_stage0: kernel image loaded"
+        );
+        Ok::<(String, Vec<u8>), Stage0Error>((kernel_path, kernel_image))
+    };
+
+    let modules_future = async {
+        if !needs_modules {
+            return Ok::<
+                Option<(ModulesDir, ModulesDep, ModulePaths, BTreeSet<String>)>,
+                Stage0Error,
+            >(None);
+        }
         tracing::debug!("build_stage0: detecting module metadata");
         let dir = detect_modules_dir(rootfs).await?;
         let (dep, paths, builtin) = load_modules_metadata(rootfs, &dir).await?;
@@ -118,35 +126,44 @@ pub async fn build_stage0<P: RootfsProvider>(
             builtin_module_entries = builtin.len(),
             "build_stage0: module metadata loaded"
         );
-        modules_dir = Some(dir);
-        modules_dep = dep;
-        module_paths = paths;
-        modules_builtin = builtin;
-    }
+        Ok(Some((dir, dep, paths, builtin)))
+    };
 
-    let dtb_bytes = if let Some(override_bytes) = &opts.dtb_override {
-        tracing::debug!(
-            dtb_override_bytes = override_bytes.len(),
-            "build_stage0: using dtb override"
-        );
-        override_bytes.clone()
-    } else {
+    let dtb_future = async {
+        if let Some(override_bytes) = &opts.dtb_override {
+            tracing::debug!(
+                dtb_override_bytes = override_bytes.len(),
+                "build_stage0: using dtb override"
+            );
+            return Ok::<Vec<u8>, Stage0Error>(override_bytes.clone());
+        }
         tracing::debug!(
             devicetree = %profile.devicetree_name,
             "build_stage0: selecting dtb"
         );
         let dtb_path = select_dtb(profile, rootfs).await?;
         tracing::debug!(dtb_path = %dtb_path, "build_stage0: dtb selected");
-        rootfs
+        let dtb_bytes = rootfs
             .read_all(&dtb_path)
             .await
-            .map_err(|_| Stage0Error::MissingFile(dtb_path.clone()))?
+            .map_err(|_| Stage0Error::MissingFile(dtb_path.clone()))?;
+        tracing::debug!(
+            dtb_bytes = dtb_bytes.len(),
+            dtbo_overlay_count = opts.dtbo_overlays.len(),
+            "build_stage0: dtb bytes loaded"
+        );
+        Ok(dtb_bytes)
     };
-    tracing::debug!(
-        dtb_bytes = dtb_bytes.len(),
-        dtbo_overlay_count = opts.dtbo_overlays.len(),
-        "build_stage0: dtb bytes loaded"
-    );
+
+    let ((kernel_result, modules_result), dtb_result) =
+        join(join(kernel_future, modules_future), dtb_future).await;
+
+    let (kernel_path, kernel_image) = kernel_result?;
+    let (modules_dir, modules_dep, module_paths, modules_builtin) = match modules_result? {
+        Some((dir, dep, paths, builtin)) => (Some(dir), dep, paths, builtin),
+        None => (None, ModulesDep::new(), ModulePaths::new(), BTreeSet::new()),
+    };
+    let dtb_bytes = dtb_result?;
 
     let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
     let dtb_bytes = apply_dtbo_overlays(&dtb_bytes, &opts.dtbo_overlays)?;
@@ -186,24 +203,20 @@ pub async fn build_stage0<P: RootfsProvider>(
             .ok_or_else(|| Stage0Error::MissingFile("/lib/modules (modules directory)".into()))?;
         copy_module_indexes(rootfs, &modules_dir, &mut image).await?;
 
-        for module in &required_modules {
-            if modules_builtin.contains(module) {
-                tracing::trace!(module = %module, "build_stage0: skipping built-in module");
-                continue;
-            }
-            let (rel, path) = module_path_for(module, &module_paths, &modules_dir)?;
+        let module_plans = collect_module_read_plans(
+            &required_modules,
+            &modules_builtin,
+            &module_paths,
+            &modules_dir,
+        )?;
+        tracing::debug!(
+            modules = module_plans.len(),
+            fanout = MODULE_READ_FANOUT,
+            "build_stage0: reading module payloads"
+        );
+        let module_files = read_modules_in_parallel(rootfs, &module_plans).await?;
+        for (cpio_path, data) in module_files {
             tracing::trace!(
-                module = %module,
-                source_path = %path,
-                "build_stage0: reading module payload"
-            );
-            let data = rootfs
-                .read_all(&path)
-                .await
-                .map_err(|_| Stage0Error::MissingFile(path.clone()))?;
-            let cpio_path = format!("{MODULES_ROOT}/{rel}");
-            tracing::trace!(
-                module = %module,
                 destination_path = %cpio_path,
                 module_bytes = data.len(),
                 "build_stage0: writing module to initrd"
@@ -404,13 +417,18 @@ fn is_firstboot_credential_key(key: &str) -> bool {
 }
 
 async fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Error> {
-    tracing::debug!("detect_kernel: searching /lib/modules");
-    if let Some(found) = find_kernel_in_modules(rootfs, "/lib/modules").await? {
+    tracing::debug!("detect_kernel: searching /lib/modules and /usr/lib/modules");
+    let (lib_modules, usr_modules) = join(
+        find_kernel_in_modules(rootfs, "/lib/modules"),
+        find_kernel_in_modules(rootfs, "/usr/lib/modules"),
+    )
+    .await;
+
+    if let Some(found) = lib_modules? {
         tracing::debug!(kernel_path = %found, "detect_kernel: found kernel via /lib/modules");
         return Ok(found);
     }
-    tracing::debug!("detect_kernel: searching /usr/lib/modules");
-    if let Some(found) = find_kernel_in_modules(rootfs, "/usr/lib/modules").await? {
+    if let Some(found) = usr_modules? {
         tracing::debug!(
             kernel_path = %found,
             "detect_kernel: found kernel via /usr/lib/modules"
@@ -420,9 +438,13 @@ async fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Er
 
     const CANDIDATES: &[&str] = &["/boot/vmlinuz", "/boot/Image", "/boot/Image.gz"];
     tracing::debug!("detect_kernel: checking common /boot paths");
-    for cand in CANDIDATES {
-        tracing::trace!(candidate = %cand, "detect_kernel: probing candidate");
-        let exists = rootfs.exists(cand).await.unwrap_or(false);
+    let candidate_exists = join_all(
+        CANDIDATES
+            .iter()
+            .map(|cand| async move { rootfs.exists(cand).await.unwrap_or(false) }),
+    )
+    .await;
+    for (cand, exists) in CANDIDATES.iter().zip(candidate_exists.into_iter()) {
         tracing::trace!(candidate = %cand, exists, "detect_kernel: candidate probe finished");
         if exists {
             let kernel_path = cand.trim_start_matches('/').to_string();
@@ -623,10 +645,17 @@ async fn load_modules_metadata<P: RootfsProvider>(
         "load_modules_metadata: reading modules.dep"
     );
     let dep_path = format!("{}/modules.dep", modules_dir.source_root);
-    let dep_data = rootfs
-        .read_all(&dep_path)
-        .await
-        .map_err(|_| Stage0Error::MissingFile(dep_path.clone()))?;
+    let builtin_path = format!("{}/modules.builtin", modules_dir.source_root);
+
+    let dep_future = async {
+        rootfs
+            .read_all(&dep_path)
+            .await
+            .map_err(|_| Stage0Error::MissingFile(dep_path.clone()))
+    };
+    let builtin_future = rootfs.read_all(&builtin_path);
+    let (dep_data, builtin_data) = join(dep_future, builtin_future).await;
+    let dep_data = dep_data?;
     let (modules_dep, module_paths) = parse_modules_dep(&dep_data);
     tracing::trace!(
         source_root = %modules_dir.source_root,
@@ -635,13 +664,12 @@ async fn load_modules_metadata<P: RootfsProvider>(
         "load_modules_metadata: parsed modules.dep"
     );
 
-    let builtin_path = format!("{}/modules.builtin", modules_dir.source_root);
     tracing::trace!(
         source_root = %modules_dir.source_root,
         builtin_path = %builtin_path,
         "load_modules_metadata: reading modules.builtin"
     );
-    let builtin_data = rootfs.read_all(&builtin_path).await.unwrap_or_default();
+    let builtin_data = builtin_data.unwrap_or_default();
     let modules_builtin = parse_modules_builtin(&builtin_data);
     tracing::trace!(
         source_root = %modules_dir.source_root,
@@ -661,19 +689,29 @@ async fn copy_module_indexes<P: RootfsProvider>(
         source_root = %modules_dir.source_root,
         "copy_module_indexes: scanning module index files"
     );
-    let mut copied = 0usize;
-    for name in MODULE_INDEX_FILES {
+    let index_reads = MODULE_INDEX_FILES.iter().map(|name| {
         let source = format!("{}/{}", modules_dir.source_root, name);
-        tracing::trace!(source = %source, "copy_module_indexes: probing index file");
-        let exists = rootfs.exists(&source).await.unwrap_or(false);
-        if !exists {
-            tracing::trace!(source = %source, "copy_module_indexes: index file missing");
-            continue;
+        async move {
+            tracing::trace!(source = %source, "copy_module_indexes: probing index file");
+            if !rootfs.exists(&source).await.unwrap_or(false) {
+                tracing::trace!(source = %source, "copy_module_indexes: index file missing");
+                return Ok::<Option<Vec<u8>>, Stage0Error>(None);
+            }
+            let data = rootfs
+                .read_all(&source)
+                .await
+                .map_err(|_| Stage0Error::MissingFile(source.clone()))?;
+            Ok(Some(data))
         }
-        let data = rootfs
-            .read_all(&source)
-            .await
-            .map_err(|_| Stage0Error::MissingFile(source.clone()))?;
+    });
+
+    let mut copied = 0usize;
+    let index_results = join_all(index_reads).await;
+    for (name, result) in MODULE_INDEX_FILES.iter().zip(index_results.into_iter()) {
+        let source = format!("{}/{}", modules_dir.source_root, name);
+        let Some(data) = result? else {
+            continue;
+        };
         let rel = format!("{}/{}", modules_dir.kver, name);
         let cpio_path = format!("{MODULES_ROOT}/{rel}");
         tracing::trace!(
@@ -743,9 +781,13 @@ async fn select_dtb<P: RootfsProvider>(
         candidate_count = candidates.len(),
         "select_dtb: probing dtb candidates"
     );
-    for cand in candidates {
-        tracing::trace!(candidate = %cand, "select_dtb: probing candidate path");
-        let exists = rootfs.exists(&cand).await.unwrap_or(false);
+    let candidate_exists = join_all(
+        candidates
+            .iter()
+            .map(|cand| async move { rootfs.exists(cand).await.unwrap_or(false) }),
+    )
+    .await;
+    for (cand, exists) in candidates.iter().zip(candidate_exists.into_iter()) {
         tracing::trace!(candidate = %cand, exists, "select_dtb: candidate probe finished");
         if exists {
             let selected = cand.trim_start_matches('/').to_string();
@@ -1355,6 +1397,61 @@ fn module_path_for(
     let rel = format!("{}/{}.ko", modules_dir.kver, module);
     let source = format!("{}/{}.ko", modules_dir.source_root, module);
     Ok((rel, source))
+}
+
+#[derive(Clone, Debug)]
+struct ModuleReadPlan {
+    cpio_path: String,
+    source_path: String,
+}
+
+fn collect_module_read_plans(
+    required_modules: &[String],
+    modules_builtin: &BTreeSet<String>,
+    module_paths: &ModulePaths,
+    modules_dir: &ModulesDir,
+) -> Result<Vec<ModuleReadPlan>, Stage0Error> {
+    let mut plans = Vec::new();
+    for module in required_modules {
+        if modules_builtin.contains(module) {
+            continue;
+        }
+        let (rel, source_path) = module_path_for(module, module_paths, modules_dir)?;
+        plans.push(ModuleReadPlan {
+            cpio_path: format!("{MODULES_ROOT}/{rel}"),
+            source_path,
+        });
+    }
+    Ok(plans)
+}
+
+async fn read_modules_in_parallel<P: RootfsProvider>(
+    rootfs: &P,
+    plans: &[ModuleReadPlan],
+) -> Result<Vec<(String, Vec<u8>)>, Stage0Error> {
+    let mut out = Vec::with_capacity(plans.len());
+    let mut offset = 0usize;
+    while offset < plans.len() {
+        let end = core::cmp::min(offset + MODULE_READ_FANOUT, plans.len());
+        let mut reads = Vec::with_capacity(end - offset);
+        for plan in &plans[offset..end] {
+            let source_path = plan.source_path.clone();
+            reads.push(async move {
+                rootfs
+                    .read_all(&source_path)
+                    .await
+                    .map_err(|_| Stage0Error::MissingFile(source_path))
+            });
+        }
+
+        let results = join_all(reads).await;
+        for (plan, result) in plans[offset..end].iter().zip(results.into_iter()) {
+            let data = result?;
+            out.push((plan.cpio_path.clone(), data));
+        }
+        offset = end;
+    }
+    Ok(out)
 }
 
 fn trim_leading_slash(path: &str) -> Result<&str, Stage0Error> {

@@ -3003,6 +3003,7 @@ version = "0.0.1"
 dependencies = [
  "dtoolkit",
  "fastboop-core",
+ "futures-util",
  "miniz_oxide 0.8.9",
  "ruzstd 0.7.3",
  "tracing",
