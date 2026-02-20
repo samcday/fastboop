@@ -10,7 +10,6 @@ members = [
     "crates/gibblox-file",
     "crates/gibblox-http",
     "crates/gibblox-cache",
-    "crates/gibblox-paged-lru",
     "crates/gibblox-cache-store-std",
     "crates/gibblox-cache-store-opfs",
     "crates/gibblox-blockreader-messageport",

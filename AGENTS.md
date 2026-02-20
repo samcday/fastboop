@@ -29,7 +29,6 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
   - `gibblox/crates/gibblox-core`
   - `gibblox/crates/gibblox-cache`
   - `gibblox/crates/gibblox-iso9660`
-  - `gibblox/crates/gibblox-paged-lru`
   - and any crate declaring `#![no_std]` or `#![cfg_attr(not(feature = "std"), no_std)]`
 - Prefer async-first code; justify blocking paths.
 - Use `tracing` for new operationally relevant behavior.

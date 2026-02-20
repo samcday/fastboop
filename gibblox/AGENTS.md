@@ -21,7 +21,6 @@ extract artifacts from it. smoo just wants to serve it as a block device.
 - `crates/gibblox-cache/*`: cache file format, cache read/write behavior.
 - `crates/gibblox-cache-store-std/*`: native cache storage backend.
 - `crates/gibblox-cache-store-opfs/*`: wasm OPFS cache storage backend.
-- `crates/gibblox-paged-lru/*`: in-memory page cache semantics.
 - `crates/gibblox-blockreader-messageport/*`: worker/main-thread bridging for wasm.
 
 ## Working rules

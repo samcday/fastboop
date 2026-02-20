@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+pub mod block_reader;
 pub mod bootimg;
 pub mod builtin;
 pub mod device;
@@ -13,6 +14,7 @@ pub mod prober;
 
 use alloc::{string::String, vec::Vec};
 
+pub use block_reader::*;
 pub use device::*;
 pub use devpro::*;
 pub use personalization::*;

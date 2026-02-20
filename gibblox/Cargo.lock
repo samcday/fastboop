@@ -552,17 +552,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gibblox-paged-lru"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "futures-channel",
- "gibblox-core",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "gibblox-web-worker"
 version = "0.0.1"
 dependencies = [
@@ -582,6 +571,7 @@ dependencies = [
 name = "gibblox-zip"
 version = "0.0.1"
 dependencies = [
+ "async-lock",
  "async-trait",
  "futures",
  "gibblox-core",

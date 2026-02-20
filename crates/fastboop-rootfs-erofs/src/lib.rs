@@ -4,9 +4,8 @@ use std::{path::Component, path::Path};
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use fastboop_core::{RootfsEntryType, RootfsProvider};
+use fastboop_core::{LruBlockReader, PagedBlockReader, RootfsEntryType, RootfsProvider};
 use gibblox_core::{BlockReader, GibbloxErrorKind, ReadContext};
-use gibblox_paged_lru::PagedLruBlockReader;
 
 const DIRENT_SIZE: usize = 12;
 pub const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
@@ -57,16 +56,19 @@ pub fn normalize_ostree_deployment_path(path: &str) -> Result<String> {
 
 impl ErofsRootfs {
     pub async fn new(reader: Arc<dyn BlockReader>, image_size_bytes: u64) -> Result<Self> {
-        let paged_lru = PagedLruBlockReader::new(reader, Default::default())
+        let lru = LruBlockReader::new(reader, Default::default())
             .await
-            .map_err(|err| anyhow!("initialize paged LRU for rootfs reader: {err}"))?;
+            .map_err(|err| anyhow!("initialize LRU for rootfs reader: {err}"))?;
+        let paged = PagedBlockReader::new(lru, Default::default())
+            .await
+            .map_err(|err| anyhow!("initialize paged reader for rootfs reader: {err}"))?;
 
-        let source_block_size = paged_lru.block_size();
+        let source_block_size = paged.block_size();
         if source_block_size == 0 || !source_block_size.is_power_of_two() {
             bail!("source block size must be non-zero power of two");
         }
         let adapter = GibbloxReadAtAdapter {
-            inner: Arc::new(paged_lru),
+            inner: Arc::new(paged),
             block_size: source_block_size as usize,
         };
         let fs = gibblox_core::erofs_rs::EroFS::from_image(adapter, image_size_bytes)
