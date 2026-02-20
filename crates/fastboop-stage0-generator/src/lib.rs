@@ -87,6 +87,11 @@ pub async fn build_stage0<P: RootfsProvider>(
         .read_all(&kernel_path)
         .await
         .map_err(|_| Stage0Error::MissingFile(kernel_path.clone()))?;
+    tracing::debug!(
+        kernel_path = %kernel_path,
+        kernel_bytes = kernel_image.len(),
+        "build_stage0: kernel image loaded"
+    );
 
     let init_path = INIT_BIN_PATH.to_string();
 
@@ -95,9 +100,24 @@ pub async fn build_stage0<P: RootfsProvider>(
     let mut module_paths = ModulePaths::new();
     let mut modules_builtin = BTreeSet::new();
     let needs_modules = !opts.extra_modules.is_empty() || !profile.stage0.kernel_modules.is_empty();
+    tracing::debug!(
+        needs_modules,
+        profile_module_count = profile.stage0.kernel_modules.len(),
+        extra_module_count = opts.extra_modules.len(),
+        "build_stage0: evaluating module requirements"
+    );
     if needs_modules {
+        tracing::debug!("build_stage0: detecting module metadata");
         let dir = detect_modules_dir(rootfs).await?;
         let (dep, paths, builtin) = load_modules_metadata(rootfs, &dir).await?;
+        tracing::debug!(
+            kernel_release = %dir.kver,
+            source_root = %dir.source_root,
+            modules_dep_entries = dep.len(),
+            module_path_entries = paths.len(),
+            builtin_module_entries = builtin.len(),
+            "build_stage0: module metadata loaded"
+        );
         modules_dir = Some(dir);
         modules_dep = dep;
         module_paths = paths;
@@ -105,14 +125,28 @@ pub async fn build_stage0<P: RootfsProvider>(
     }
 
     let dtb_bytes = if let Some(override_bytes) = &opts.dtb_override {
+        tracing::debug!(
+            dtb_override_bytes = override_bytes.len(),
+            "build_stage0: using dtb override"
+        );
         override_bytes.clone()
     } else {
+        tracing::debug!(
+            devicetree = %profile.devicetree_name,
+            "build_stage0: selecting dtb"
+        );
         let dtb_path = select_dtb(profile, rootfs).await?;
+        tracing::debug!(dtb_path = %dtb_path, "build_stage0: dtb selected");
         rootfs
             .read_all(&dtb_path)
             .await
             .map_err(|_| Stage0Error::MissingFile(dtb_path.clone()))?
     };
+    tracing::debug!(
+        dtb_bytes = dtb_bytes.len(),
+        dtbo_overlay_count = opts.dtbo_overlays.len(),
+        "build_stage0: dtb bytes loaded"
+    );
 
     let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
     let dtb_bytes = apply_dtbo_overlays(&dtb_bytes, &opts.dtbo_overlays)?;
@@ -120,6 +154,15 @@ pub async fn build_stage0<P: RootfsProvider>(
     let _dtb = Fdt::new(&dtb_bytes).map_err(|_| Stage0Error::ParseError("dtb"))?;
 
     let required_modules = collect_required_modules(profile, opts, &modules_dep);
+    tracing::debug!(
+        required_module_count = required_modules.len(),
+        builtin_module_count = modules_builtin.len(),
+        "build_stage0: resolved required modules"
+    );
+    tracing::trace!(
+        required_modules = ?required_modules,
+        "build_stage0: required module order"
+    );
 
     let mut image = if let Some(data) = existing_cpio {
         CpioImage::from_bytes(data)?
@@ -145,14 +188,26 @@ pub async fn build_stage0<P: RootfsProvider>(
 
         for module in &required_modules {
             if modules_builtin.contains(module) {
+                tracing::trace!(module = %module, "build_stage0: skipping built-in module");
                 continue;
             }
             let (rel, path) = module_path_for(module, &module_paths, &modules_dir)?;
+            tracing::trace!(
+                module = %module,
+                source_path = %path,
+                "build_stage0: reading module payload"
+            );
             let data = rootfs
                 .read_all(&path)
                 .await
                 .map_err(|_| Stage0Error::MissingFile(path.clone()))?;
             let cpio_path = format!("{MODULES_ROOT}/{rel}");
+            tracing::trace!(
+                module = %module,
+                destination_path = %cpio_path,
+                module_bytes = data.len(),
+                "build_stage0: writing module to initrd"
+            );
             image.ensure_file(cpio_path.as_str(), 0o100644, &data)?;
         }
     }
@@ -162,6 +217,14 @@ pub async fn build_stage0<P: RootfsProvider>(
         .filter(|m| !modules_builtin.contains(*m))
         .cloned()
         .collect();
+    tracing::debug!(
+        module_load_count = module_load_list.len(),
+        "build_stage0: writing module load list"
+    );
+    tracing::trace!(
+        module_load_list = ?module_load_list,
+        "build_stage0: module load entries"
+    );
     let module_load_bytes = serialize_module_load(&module_load_list);
     image.ensure_file(MODULES_LOAD_PATH, 0o100644, &module_load_bytes)?;
 
@@ -201,18 +264,37 @@ pub async fn build_stage0<P: RootfsProvider>(
             cmdline_parts.extend(passthrough);
         }
     }
+    tracing::debug!(
+        stage0_setting_count = stage0_settings.len(),
+        cmdline_passthrough_count = cmdline_parts.len(),
+        "build_stage0: writing stage0 settings"
+    );
+    tracing::trace!(
+        stage0_settings = ?stage0_settings,
+        "build_stage0: stage0 settings entries"
+    );
     write_stage0_settings(&mut image, &stage0_settings)?;
     let cmdline = if cmdline_parts.is_empty() {
         String::new()
     } else {
         cmdline_parts.join(" ")
     };
+    let initrd = image.finish()?;
+    tracing::debug!(
+        initrd_bytes = initrd.len(),
+        cmdline_append_bytes = cmdline.len(),
+        "build_stage0: build complete"
+    );
+    tracing::trace!(
+        kernel_cmdline_append = %cmdline,
+        "build_stage0: kernel cmdline append"
+    );
 
     Ok(Stage0Build {
         kernel_image,
         kernel_path,
         init_path,
-        initrd: image.finish()?,
+        initrd,
         dtb: dtb_bytes,
         kernel_cmdline_append: cmdline,
     })
@@ -322,22 +404,46 @@ fn is_firstboot_credential_key(key: &str) -> bool {
 }
 
 async fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Error> {
+    tracing::debug!("detect_kernel: searching /lib/modules");
     if let Some(found) = find_kernel_in_modules(rootfs, "/lib/modules").await? {
+        tracing::debug!(kernel_path = %found, "detect_kernel: found kernel via /lib/modules");
         return Ok(found);
     }
+    tracing::debug!("detect_kernel: searching /usr/lib/modules");
     if let Some(found) = find_kernel_in_modules(rootfs, "/usr/lib/modules").await? {
+        tracing::debug!(
+            kernel_path = %found,
+            "detect_kernel: found kernel via /usr/lib/modules"
+        );
         return Ok(found);
     }
 
     const CANDIDATES: &[&str] = &["/boot/vmlinuz", "/boot/Image", "/boot/Image.gz"];
+    tracing::debug!("detect_kernel: checking common /boot paths");
     for cand in CANDIDATES {
-        if rootfs.exists(cand).await.unwrap_or(false) {
-            return Ok(cand.trim_start_matches('/').to_string());
+        tracing::trace!(candidate = %cand, "detect_kernel: probing candidate");
+        let exists = rootfs.exists(cand).await.unwrap_or(false);
+        tracing::trace!(candidate = %cand, exists, "detect_kernel: candidate probe finished");
+        if exists {
+            let kernel_path = cand.trim_start_matches('/').to_string();
+            tracing::debug!(kernel_path = %kernel_path, "detect_kernel: found explicit /boot path");
+            return Ok(kernel_path);
         }
     }
+
+    tracing::debug!(
+        start = "/boot",
+        max_depth = 3usize,
+        "detect_kernel: recursive /boot scan"
+    );
     if let Some(found) = find_kernel_recursive(rootfs, "/boot", 3).await? {
+        tracing::debug!(
+            kernel_path = %found,
+            "detect_kernel: found kernel via recursive /boot scan"
+        );
         return Ok(found);
     }
+    tracing::debug!("detect_kernel: failed to locate kernel image");
     Err(Stage0Error::MissingFile("kernel image".into()))
 }
 
@@ -345,36 +451,92 @@ async fn find_kernel_in_modules<P: RootfsProvider>(
     rootfs: &P,
     base: &str,
 ) -> Result<Option<String>, Stage0Error> {
+    tracing::trace!(base = %base, "detect_kernel: reading module directory");
     let mut entries = match rootfs.read_dir(base).await {
         Ok(entries) => entries,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            tracing::trace!(base = %base, "detect_kernel: module directory unavailable");
+            return Ok(None);
+        }
     };
     entries.sort();
+    tracing::trace!(
+        base = %base,
+        module_release_count = entries.len(),
+        "detect_kernel: scanning module releases for vmlinuz"
+    );
     for entry in entries {
         if entry.contains("rescue") {
+            tracing::trace!(
+                base = %base,
+                module_release = %entry,
+                "detect_kernel: skipping rescue module release"
+            );
             continue;
         }
         let candidate = format!("{base}/{entry}/vmlinuz");
-        if rootfs.exists(&candidate).await.unwrap_or(false) {
-            return Ok(Some(candidate.trim_start_matches('/').to_string()));
+        tracing::trace!(
+            base = %base,
+            module_release = %entry,
+            candidate = %candidate,
+            "detect_kernel: probing modules vmlinuz candidate"
+        );
+        let exists = rootfs.exists(&candidate).await.unwrap_or(false);
+        tracing::trace!(
+            base = %base,
+            module_release = %entry,
+            candidate = %candidate,
+            exists,
+            "detect_kernel: modules vmlinuz probe finished"
+        );
+        if exists {
+            let kernel_path = candidate.trim_start_matches('/').to_string();
+            tracing::debug!(
+                base = %base,
+                module_release = %entry,
+                kernel_path = %kernel_path,
+                "detect_kernel: found modules kernel"
+            );
+            return Ok(Some(kernel_path));
         }
     }
+    tracing::trace!(base = %base, "detect_kernel: no modules kernel found");
     Ok(None)
 }
 
 async fn detect_modules_dir<P: RootfsProvider>(rootfs: &P) -> Result<ModulesDir, Stage0Error> {
     let bases = ["/lib/modules", "/usr/lib/modules"];
+    tracing::debug!("detect_modules_dir: locating module metadata root");
     for base in &bases {
-        if let Ok(mut entries) = rootfs.read_dir(base).await {
-            entries.sort();
-            if let Some(first) = entries.first() {
-                return Ok(ModulesDir {
-                    kver: first.clone(),
-                    source_root: format!("{base}/{first}"),
-                });
+        tracing::trace!(base = %base, "detect_modules_dir: reading module root");
+        let mut entries = match rootfs.read_dir(base).await {
+            Ok(entries) => entries,
+            Err(_) => {
+                tracing::trace!(base = %base, "detect_modules_dir: module root unavailable");
+                continue;
             }
+        };
+        entries.sort();
+        tracing::trace!(
+            base = %base,
+            module_release_count = entries.len(),
+            "detect_modules_dir: module releases discovered"
+        );
+        if let Some(first) = entries.first() {
+            let source_root = format!("{base}/{first}");
+            tracing::debug!(
+                base = %base,
+                kernel_release = %first,
+                source_root = %source_root,
+                "detect_modules_dir: selected module metadata root"
+            );
+            return Ok(ModulesDir {
+                kver: first.clone(),
+                source_root,
+            });
         }
     }
+    tracing::debug!("detect_modules_dir: failed to locate module metadata root");
     Err(Stage0Error::MissingFile(
         "/lib/modules or /usr/lib/modules".into(),
     ))
@@ -385,25 +547,66 @@ async fn find_kernel_recursive<P: RootfsProvider>(
     start: &str,
     max_depth: usize,
 ) -> Result<Option<String>, Stage0Error> {
+    tracing::trace!(
+        start = %start,
+        max_depth,
+        "detect_kernel: starting recursive kernel scan"
+    );
     let mut stack = Vec::new();
     stack.push((start.trim_end_matches('/').to_string(), 0usize));
     while let Some((dir, depth)) = stack.pop() {
+        tracing::trace!(
+            directory = %dir,
+            depth,
+            pending_directories = stack.len(),
+            "detect_kernel: reading directory during recursive scan"
+        );
         let entries = match rootfs.read_dir(&dir).await {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(_) => {
+                tracing::trace!(
+                    directory = %dir,
+                    depth,
+                    "detect_kernel: directory unreadable during recursive scan"
+                );
+                continue;
+            }
         };
+        tracing::trace!(
+            directory = %dir,
+            depth,
+            entry_count = entries.len(),
+            "detect_kernel: directory entries loaded"
+        );
         for name in entries {
             let mut path = dir.clone();
             path.push('/');
             path.push_str(&name);
+            tracing::trace!(
+                path = %path,
+                depth,
+                "detect_kernel: probing recursive scan path"
+            );
             let is_dir = rootfs.read_dir(&path).await.is_ok();
             if is_dir && depth < max_depth {
+                tracing::trace!(
+                    directory = %path,
+                    next_depth = depth + 1,
+                    "detect_kernel: queueing subdirectory for scan"
+                );
                 stack.push((path, depth + 1));
             } else if is_kernel_name(&name) {
-                return Ok(Some(path.trim_start_matches('/').to_string()));
+                let kernel_path = path.trim_start_matches('/').to_string();
+                tracing::debug!(
+                    kernel_path = %kernel_path,
+                    depth,
+                    "detect_kernel: found kernel-like filename"
+                );
+                return Ok(Some(kernel_path));
             }
         }
     }
+    tracing::trace!("detect_kernel: recursive scan exhausted without kernel");
     Ok(None)
 }
 
@@ -415,16 +618,36 @@ async fn load_modules_metadata<P: RootfsProvider>(
     rootfs: &P,
     modules_dir: &ModulesDir,
 ) -> Result<(ModulesDep, ModulePaths, BTreeSet<String>), Stage0Error> {
+    tracing::trace!(
+        source_root = %modules_dir.source_root,
+        "load_modules_metadata: reading modules.dep"
+    );
     let dep_path = format!("{}/modules.dep", modules_dir.source_root);
     let dep_data = rootfs
         .read_all(&dep_path)
         .await
         .map_err(|_| Stage0Error::MissingFile(dep_path.clone()))?;
     let (modules_dep, module_paths) = parse_modules_dep(&dep_data);
+    tracing::trace!(
+        source_root = %modules_dir.source_root,
+        modules_dep_entries = modules_dep.len(),
+        module_path_entries = module_paths.len(),
+        "load_modules_metadata: parsed modules.dep"
+    );
 
     let builtin_path = format!("{}/modules.builtin", modules_dir.source_root);
+    tracing::trace!(
+        source_root = %modules_dir.source_root,
+        builtin_path = %builtin_path,
+        "load_modules_metadata: reading modules.builtin"
+    );
     let builtin_data = rootfs.read_all(&builtin_path).await.unwrap_or_default();
     let modules_builtin = parse_modules_builtin(&builtin_data);
+    tracing::trace!(
+        source_root = %modules_dir.source_root,
+        builtin_module_entries = modules_builtin.len(),
+        "load_modules_metadata: parsed modules.builtin"
+    );
 
     Ok((modules_dep, module_paths, modules_builtin))
 }
@@ -434,9 +657,17 @@ async fn copy_module_indexes<P: RootfsProvider>(
     modules_dir: &ModulesDir,
     image: &mut CpioImage,
 ) -> Result<(), Stage0Error> {
+    tracing::trace!(
+        source_root = %modules_dir.source_root,
+        "copy_module_indexes: scanning module index files"
+    );
+    let mut copied = 0usize;
     for name in MODULE_INDEX_FILES {
         let source = format!("{}/{}", modules_dir.source_root, name);
-        if !rootfs.exists(&source).await.unwrap_or(false) {
+        tracing::trace!(source = %source, "copy_module_indexes: probing index file");
+        let exists = rootfs.exists(&source).await.unwrap_or(false);
+        if !exists {
+            tracing::trace!(source = %source, "copy_module_indexes: index file missing");
             continue;
         }
         let data = rootfs
@@ -445,8 +676,20 @@ async fn copy_module_indexes<P: RootfsProvider>(
             .map_err(|_| Stage0Error::MissingFile(source.clone()))?;
         let rel = format!("{}/{}", modules_dir.kver, name);
         let cpio_path = format!("{MODULES_ROOT}/{rel}");
+        tracing::trace!(
+            source = %source,
+            destination = %cpio_path,
+            bytes = data.len(),
+            "copy_module_indexes: writing index file"
+        );
         image.ensure_file(cpio_path.as_str(), 0o100644, &data)?;
+        copied += 1;
     }
+    tracing::debug!(
+        source_root = %modules_dir.source_root,
+        copied_index_count = copied,
+        "copy_module_indexes: completed"
+    );
     Ok(())
 }
 
@@ -454,6 +697,10 @@ async fn select_dtb<P: RootfsProvider>(
     profile: &DeviceProfile,
     rootfs: &P,
 ) -> Result<String, Stage0Error> {
+    tracing::debug!(
+        devicetree = %profile.devicetree_name,
+        "select_dtb: resolving dtb candidate path"
+    );
     let name = profile.devicetree_name.trim_start_matches('/');
     let mut candidates = Vec::new();
     candidates.extend_from_slice(&[
@@ -462,25 +709,54 @@ async fn select_dtb<P: RootfsProvider>(
         format!("/lib/firmware/{name}.dtb"),
         format!("/usr/lib/firmware/{name}.dtb"),
     ]);
+    tracing::trace!("select_dtb: checking /usr/lib/modules for dtb directories");
     if let Ok(mods) = rootfs.read_dir("/usr/lib/modules").await {
+        tracing::trace!(
+            module_release_count = mods.len(),
+            "select_dtb: module releases enumerated"
+        );
         for m in mods {
             let base = format!("/usr/lib/modules/{m}/dtb");
+            tracing::trace!(dtb_base = %base, "select_dtb: adding module dtb candidates");
             candidates.push(format!("{base}/{name}.dtb"));
             candidates.push(format!("{base}/{name}"));
             if let Ok(entries) = rootfs.read_dir(&base).await {
+                tracing::trace!(
+                    dtb_base = %base,
+                    entry_count = entries.len(),
+                    "select_dtb: scanning module dtb directory"
+                );
                 for e in entries {
                     if e.ends_with(".dtb") && e.contains(name) {
+                        tracing::trace!(
+                            dtb_base = %base,
+                            entry = %e,
+                            "select_dtb: adding fuzzy dtb candidate"
+                        );
                         candidates.push(format!("{base}/{e}"));
                     }
                 }
             }
         }
     }
+    tracing::trace!(
+        candidate_count = candidates.len(),
+        "select_dtb: probing dtb candidates"
+    );
     for cand in candidates {
-        if rootfs.exists(&cand).await.unwrap_or(false) {
-            return Ok(cand.trim_start_matches('/').to_string());
+        tracing::trace!(candidate = %cand, "select_dtb: probing candidate path");
+        let exists = rootfs.exists(&cand).await.unwrap_or(false);
+        tracing::trace!(candidate = %cand, exists, "select_dtb: candidate probe finished");
+        if exists {
+            let selected = cand.trim_start_matches('/').to_string();
+            tracing::debug!(selected_dtb = %selected, "select_dtb: selected dtb candidate");
+            return Ok(selected);
         }
     }
+    tracing::debug!(
+        devicetree = %profile.devicetree_name,
+        "select_dtb: failed to find matching dtb"
+    );
     Err(Stage0Error::MissingFile(format!(
         "dtb for {}",
         profile.devicetree_name

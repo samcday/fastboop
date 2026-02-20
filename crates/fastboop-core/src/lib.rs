@@ -3,6 +3,9 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate std;
+
 pub mod block_reader;
 pub mod bootimg;
 pub mod builtin;
