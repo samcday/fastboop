@@ -50,35 +50,27 @@ impl ByteReader {
         }
 
         let bs = self.block_size as u64;
-        let mut abs = offset;
-        let mut out_offset = 0usize;
-        let mut scratch: Option<Vec<u8>> = None;
-
-        let head_skip = (abs % bs) as usize;
-        if head_skip != 0 {
-            let take = (self.block_size - head_skip).min(out.len());
-            let tmp = scratch.get_or_insert_with(|| vec![0u8; self.block_size]);
-            self.read_full_blocks(abs / bs, tmp, ctx).await?;
-            out[..take].copy_from_slice(&tmp[head_skip..head_skip + take]);
-            abs += take as u64;
-            out_offset += take;
+        if (offset % bs) == 0 && out.len().is_multiple_of(self.block_size) {
+            self.read_full_blocks(offset / bs, out, ctx).await?;
+            return Ok(());
         }
 
-        let remaining = out.len() - out_offset;
-        let middle_len = remaining - (remaining % self.block_size);
-        if middle_len > 0 {
-            self.read_full_blocks(abs / bs, &mut out[out_offset..out_offset + middle_len], ctx)
-                .await?;
-            abs += middle_len as u64;
-            out_offset += middle_len;
-        }
+        let start_lba = offset / bs;
+        let start_skip = (offset % bs) as usize;
+        let aligned_end = end.div_ceil(bs);
+        let aligned_blocks = aligned_end.saturating_sub(start_lba);
+        let aligned_blocks_usize = usize::try_from(aligned_blocks)
+            .map_err(|_| ZipError::out_of_range("zip aligned read too large"))?;
+        let aligned_len = aligned_blocks_usize
+            .checked_mul(self.block_size)
+            .ok_or_else(|| ZipError::out_of_range("zip aligned read size overflow"))?;
 
-        if out_offset < out.len() {
-            let tail_len = out.len() - out_offset;
-            let tmp = scratch.get_or_insert_with(|| vec![0u8; self.block_size]);
-            self.read_full_blocks(abs / bs, tmp, ctx).await?;
-            out[out_offset..].copy_from_slice(&tmp[..tail_len]);
-        }
+        let mut scratch = vec![0u8; aligned_len];
+        self.read_full_blocks(start_lba, &mut scratch, ctx).await?;
+        let end_skip = start_skip
+            .checked_add(out.len())
+            .ok_or_else(|| ZipError::out_of_range("zip aligned slice overflow"))?;
+        out.copy_from_slice(&scratch[start_skip..end_skip]);
 
         Ok(())
     }

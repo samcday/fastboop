@@ -25,10 +25,11 @@ const GP_FLAG_ENCRYPTED: u16 = 1 << 0;
 const STORED_COMPRESSION_METHOD: u16 = 0;
 
 #[derive(Clone, Debug)]
-pub(crate) struct ZipStoredEntryMeta {
+pub(crate) struct ZipEntryMeta {
     pub(crate) name: String,
     pub(crate) data_offset: u64,
     pub(crate) size_bytes: u64,
+    pub(crate) compression_method: u16,
 }
 
 #[derive(Clone, Copy)]
@@ -47,21 +48,22 @@ struct SelectedCentralEntry {
     local_file_header_offset: u32,
 }
 
-pub(crate) async fn locate_stored_entry(
+pub(crate) async fn locate_entry(
     reader: &ByteReader,
     archive_size: u64,
     entry_name: &str,
-) -> ZipResult<ZipStoredEntryMeta> {
+) -> ZipResult<ZipEntryMeta> {
     let located = find_end_of_central_directory(reader, archive_size).await?;
     let selected =
         find_central_directory_entry(reader, archive_size, entry_name, &located.record).await?;
     validate_selected_entry(&selected)?;
     let data_offset = resolve_local_data_offset(reader, archive_size, &selected).await?;
 
-    Ok(ZipStoredEntryMeta {
+    Ok(ZipEntryMeta {
         name: selected.name,
         data_offset,
         size_bytes: selected.uncompressed_size as u64,
+        compression_method: selected.compression_method,
     })
 }
 
@@ -193,8 +195,7 @@ async fn find_central_directory_entry(
             .ok_or_else(|| ZipError::out_of_range("central directory entry overflow"))?;
         if fixed_end > cd_end {
             return Err(ZipError::invalid_input(format!(
-                "central directory entry {} exceeds declared directory size",
-                index
+                "central directory entry {index} exceeds declared directory size"
             )));
         }
 
@@ -204,8 +205,7 @@ async fn find_central_directory_entry(
             .await?;
         let header = CentralDirectoryFileHeader::parse(&fixed, 0).ok_or_else(|| {
             ZipError::invalid_input(format!(
-                "central directory entry {} has invalid signature (expected {:08x})",
-                index, CENTRAL_DIRECTORY_FILE_HEADER_SIGNATURE
+                "central directory entry {index} has invalid signature (expected {CENTRAL_DIRECTORY_FILE_HEADER_SIGNATURE:08x})"
             ))
         })?;
 
@@ -220,8 +220,7 @@ async fn find_central_directory_entry(
             .ok_or_else(|| ZipError::out_of_range("central directory cursor overflow"))?;
         if next_cursor > cd_end {
             return Err(ZipError::invalid_input(format!(
-                "central directory entry {} overruns the declared central directory span",
-                index
+                "central directory entry {index} overruns the declared central directory span"
             )));
         }
 
@@ -281,11 +280,13 @@ fn validate_selected_entry(entry: &SelectedCentralEntry) -> ZipResult<()> {
     }
     if entry.compression_method != STORED_COMPRESSION_METHOD {
         return Err(ZipError::unsupported(format!(
-            "ZIP entry '{}' compression method {} is unsupported (expected method 0/store)",
+            "ZIP entry '{}' compression method {} is unsupported (required method: 0/store)",
             entry.name, entry.compression_method
         )));
     }
-    if entry.compressed_size != entry.uncompressed_size {
+    if entry.compression_method == STORED_COMPRESSION_METHOD
+        && entry.compressed_size != entry.uncompressed_size
+    {
         return Err(ZipError::unsupported(format!(
             "ZIP entry '{}' uses unsupported stored-size mismatch",
             entry.name

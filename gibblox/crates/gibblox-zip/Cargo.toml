@@ -10,7 +10,6 @@ default = []
 std = []
 
 [dependencies]
-async-lock = { version = "3.4", default-features = false }
 async-trait = "0.1.89"
 gibblox-core = { path = "../gibblox-core" }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }

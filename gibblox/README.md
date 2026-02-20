@@ -19,7 +19,7 @@ To gibblox you will always be just another block.
 
 ## Crates
 - `gibblox-core`: core traits and error types.
-- `gibblox-zip`: ZIP file entry-backed block reader (stored and deflate entries).
+- `gibblox-zip`: ZIP file entry-backed block reader (stored entries only).
 - `gibblox-casync`: no_std casync index + reconstruction core.
 - `gibblox-casync-std`: native index/chunk source + integrated chunk cache/store.
 - `gibblox-casync-web`: wasm-only index/chunk source + CacheStorage-backed chunk store.

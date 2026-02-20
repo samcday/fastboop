@@ -571,7 +571,6 @@ dependencies = [
 name = "gibblox-zip"
 version = "0.0.1"
 dependencies = [
- "async-lock",
  "async-trait",
  "futures",
  "gibblox-core",
