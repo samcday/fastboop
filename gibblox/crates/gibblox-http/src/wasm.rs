@@ -14,6 +14,9 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Headers, Request, RequestInit, RequestMode, Response, WorkerGlobalScope};
 
+const READ_RANGE_MAX_ATTEMPTS: usize = 3;
+const PARTIAL_CONTENT_STATUS: u16 = 206;
+
 /// Wrapper to mark `JsFuture` as `Send` on wasm targets.
 struct SendJsFuture(JsFuture);
 
@@ -107,32 +110,154 @@ impl Client {
         buf: &mut [u8],
         ctx: ReadContext,
     ) -> Result<usize, HttpError> {
+        let start = *range.start();
+        let end = *range.end();
+        let expected_len = range_len(start, end)?;
         let header = format!("bytes={}-{}", range.start(), range.end());
-        let resp = self
-            .send_request(url, Some(&header), "GET", ctx)
-            .await
-            .map_err(|err| HttpError::Msg(format!("GET: {err}")))?;
-        tracing::trace!(
-            status = resp.status(),
-            start = *range.start(),
-            end = *range.end(),
-            "http read response"
-        );
-        if !(resp.ok() || resp.status() == 206) {
-            return Err(HttpError::Msg(format!("GET status {}", resp.status())));
+        let mut last_err = HttpError::Msg("range read did not run".into());
+
+        for attempt in 1..=READ_RANGE_MAX_ATTEMPTS {
+            let resp = match self.send_request(url, Some(&header), "GET", ctx).await {
+                Ok(resp) => resp,
+                Err(err) => {
+                    last_err = HttpError::Msg(format!("GET: {err}"));
+                    tracing::warn!(
+                        attempt,
+                        max_attempts = READ_RANGE_MAX_ATTEMPTS,
+                        start,
+                        end,
+                        error = %last_err,
+                        "http read attempt failed before response"
+                    );
+                    continue;
+                }
+            };
+
+            let status = resp.status();
+            let (content_range, content_length) = {
+                let headers = resp.headers();
+                let content_range = match header_value(&headers, CONTENT_RANGE.as_str()) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        last_err = err;
+                        tracing::warn!(
+                            attempt,
+                            max_attempts = READ_RANGE_MAX_ATTEMPTS,
+                            start,
+                            end,
+                            error = %last_err,
+                            "http read attempt failed reading Content-Range header"
+                        );
+                        continue;
+                    }
+                };
+                let content_length = match header_value(&headers, CONTENT_LENGTH.as_str()) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        last_err = err;
+                        tracing::warn!(
+                            attempt,
+                            max_attempts = READ_RANGE_MAX_ATTEMPTS,
+                            start,
+                            end,
+                            error = %last_err,
+                            "http read attempt failed reading Content-Length header"
+                        );
+                        continue;
+                    }
+                };
+                (content_range, content_length)
+            };
+
+            tracing::trace!(
+                attempt,
+                status,
+                start,
+                end,
+                content_range = ?content_range,
+                content_length = ?content_length,
+                "http read response"
+            );
+
+            if let Err(message) = validate_range_response(
+                status,
+                content_range.as_deref(),
+                content_length.as_deref(),
+                start,
+                end,
+                expected_len,
+            ) {
+                last_err = HttpError::Msg(message);
+                tracing::warn!(
+                    attempt,
+                    max_attempts = READ_RANGE_MAX_ATTEMPTS,
+                    start,
+                    end,
+                    error = %last_err,
+                    "http read attempt received invalid range response"
+                );
+                continue;
+            }
+
+            let promise = match resp.array_buffer() {
+                Ok(promise) => promise,
+                Err(err) => {
+                    last_err = HttpError::Msg(format!("array_buffer: {err:?}"));
+                    tracing::warn!(
+                        attempt,
+                        max_attempts = READ_RANGE_MAX_ATTEMPTS,
+                        start,
+                        end,
+                        error = %last_err,
+                        "http read attempt failed creating array_buffer"
+                    );
+                    continue;
+                }
+            };
+            let buffer = match SendJsFuture::from(promise).await {
+                Ok(buffer) => buffer,
+                Err(err) => {
+                    last_err = HttpError::Msg(format!("array_buffer await: {err:?}"));
+                    tracing::warn!(
+                        attempt,
+                        max_attempts = READ_RANGE_MAX_ATTEMPTS,
+                        start,
+                        end,
+                        error = %last_err,
+                        "http read attempt failed awaiting array_buffer"
+                    );
+                    continue;
+                }
+            };
+
+            let array = Uint8Array::new(&buffer);
+            let read = array.length() as usize;
+            if read != expected_len {
+                last_err = HttpError::Msg(format!(
+                    "range body length mismatch: got {read}, expected {expected_len}"
+                ));
+                tracing::warn!(
+                    attempt,
+                    max_attempts = READ_RANGE_MAX_ATTEMPTS,
+                    start,
+                    end,
+                    error = %last_err,
+                    "http read attempt returned unexpected body length"
+                );
+                continue;
+            }
+
+            array.copy_to(&mut buf[..expected_len]);
+            tracing::trace!(
+                attempt,
+                read = expected_len,
+                expected = buf.len(),
+                "http read done"
+            );
+            return Ok(expected_len);
         }
-        let promise = resp
-            .array_buffer()
-            .map_err(|err| HttpError::Msg(format!("array_buffer: {err:?}")))?;
-        let buffer = SendJsFuture::from(promise)
-            .await
-            .map_err(|err| HttpError::Msg(format!("array_buffer await: {err:?}")))?;
-        let array = Uint8Array::new(&buffer);
-        let read = array.length() as usize;
-        let copy_len = buf.len().min(read);
-        array.slice(0, copy_len as u32).copy_to(buf);
-        tracing::trace!(read = copy_len, expected = buf.len(), "http read done");
-        Ok(copy_len)
+
+        Err(last_err)
     }
 
     async fn send_request(
@@ -196,6 +321,57 @@ fn priority_header_value(ctx: ReadContext) -> &'static str {
     }
 }
 
+fn range_len(start: u64, end: u64) -> Result<usize, HttpError> {
+    end.checked_sub(start)
+        .and_then(|delta| delta.checked_add(1))
+        .and_then(|len| usize::try_from(len).ok())
+        .ok_or_else(|| HttpError::Msg("range length overflow".into()))
+}
+
+fn header_value(headers: &Headers, name: &str) -> Result<Option<String>, HttpError> {
+    headers
+        .get(name)
+        .map_err(|err| HttpError::Msg(format!("read {name} header: {err:?}")))
+}
+
+fn validate_range_response(
+    status: u16,
+    content_range: Option<&str>,
+    content_length: Option<&str>,
+    expected_start: u64,
+    expected_end: u64,
+    expected_len: usize,
+) -> Result<(), String> {
+    if status != PARTIAL_CONTENT_STATUS {
+        return Err(format!(
+            "GET status {status} (expected {PARTIAL_CONTENT_STATUS} Partial Content)"
+        ));
+    }
+
+    let content_range =
+        content_range.ok_or_else(|| "missing Content-Range on partial response".to_string())?;
+    let (start, end, _) = parse_content_range(content_range)
+        .ok_or_else(|| format!("invalid Content-Range header '{content_range}'"))?;
+    if start != expected_start || end != expected_end {
+        return Err(format!(
+            "content-range mismatch: got bytes {start}-{end}, expected bytes {expected_start}-{expected_end}"
+        ));
+    }
+
+    if let Some(content_length) = content_length {
+        let parsed_len = content_length
+            .parse::<usize>()
+            .map_err(|_| format!("invalid Content-Length header '{content_length}'"))?;
+        if parsed_len != expected_len {
+            return Err(format!(
+                "content-length mismatch: got {parsed_len}, expected {expected_len}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn fetch_priority_value(ctx: ReadContext) -> &'static str {
     match ctx.priority {
         ReadPriority::High => "high",
@@ -205,10 +381,20 @@ fn fetch_priority_value(ctx: ReadContext) -> &'static str {
 }
 
 fn parse_content_range_total(hdr: &str) -> Option<u64> {
+    parse_content_range(hdr).and_then(|(_, _, total)| total)
+}
+
+fn parse_content_range(hdr: &str) -> Option<(u64, u64, Option<u64>)> {
     // e.g. "bytes 0-0/12345"
-    let parts: Vec<&str> = hdr.split('/').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    parts[1].parse::<u64>().ok()
+    let hdr = hdr.trim().strip_prefix("bytes ")?;
+    let (span, total) = hdr.split_once('/')?;
+    let (start, end) = span.split_once('-')?;
+    let start = start.parse::<u64>().ok()?;
+    let end = end.parse::<u64>().ok()?;
+    let total = if total == "*" {
+        None
+    } else {
+        Some(total.parse::<u64>().ok()?)
+    };
+    Some((start, end, total))
 }
