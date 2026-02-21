@@ -160,6 +160,13 @@ impl GptBlockReader {
                 ReadContext::FOREGROUND,
             )
             .await?;
+        let partition_table_crc32 = crc32_ieee(&partition_table);
+        if partition_table_crc32 != header.partition_entry_array_crc32 {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "GPT partition table CRC mismatch",
+            ));
+        }
 
         let selected = select_partition_entry(
             &partition_table,
@@ -308,6 +315,7 @@ struct GptHeader {
     partition_entries_lba: u64,
     partition_entry_count: u32,
     partition_entry_size: u32,
+    partition_entry_array_crc32: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -362,6 +370,16 @@ fn parse_gpt_header(raw: &[u8], total_blocks: u64) -> GibbloxResult<GptHeader> {
             "GPT header size is invalid",
         ));
     }
+    let expected_header_crc32 = read_u32_le(raw, 16)?;
+    let mut header_for_crc = raw[..header_size].to_vec();
+    header_for_crc[16..20].fill(0);
+    let actual_header_crc32 = crc32_ieee(&header_for_crc);
+    if actual_header_crc32 != expected_header_crc32 {
+        return Err(GibbloxError::with_message(
+            GibbloxErrorKind::InvalidInput,
+            "GPT header CRC mismatch",
+        ));
+    }
 
     let current_lba = read_u64_le(raw, 24)?;
     let backup_lba = read_u64_le(raw, 32)?;
@@ -370,6 +388,7 @@ fn parse_gpt_header(raw: &[u8], total_blocks: u64) -> GibbloxResult<GptHeader> {
     let partition_entries_lba = read_u64_le(raw, 72)?;
     let partition_entry_count = read_u32_le(raw, 80)?;
     let partition_entry_size = read_u32_le(raw, 84)?;
+    let partition_entry_array_crc32 = read_u32_le(raw, 88)?;
 
     if current_lba >= total_blocks {
         return Err(GibbloxError::with_message(
@@ -414,6 +433,7 @@ fn parse_gpt_header(raw: &[u8], total_blocks: u64) -> GibbloxResult<GptHeader> {
         partition_entries_lba,
         partition_entry_count,
         partition_entry_size,
+        partition_entry_array_crc32,
     })
 }
 
@@ -602,6 +622,18 @@ fn decode_hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
+fn crc32_ieee(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for byte in data {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xedb8_8320u32 & mask);
+        }
+    }
+    !crc
+}
+
 fn read_u32_le(raw: &[u8], start: usize) -> GibbloxResult<u32> {
     let end = start.checked_add(4).ok_or_else(|| {
         GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "field offset overflow")
@@ -662,15 +694,32 @@ impl SourceByteReader {
         let bs = self.block_size as u64;
         let aligned_start = (offset / bs) * bs;
         let aligned_end = end.div_ceil(bs) * bs;
-        let aligned_len = (aligned_end - aligned_start) as usize;
+        let aligned_len = usize::try_from(aligned_end - aligned_start).map_err(|_| {
+            GibbloxError::with_message(
+                GibbloxErrorKind::OutOfRange,
+                "aligned read length exceeds addressable memory",
+            )
+        })?;
 
         let mut scratch = vec![0u8; aligned_len];
         let mut filled = 0usize;
         while filled < scratch.len() {
-            let lba = (aligned_start as usize + filled) / self.block_size;
+            let filled_u64 = u64::try_from(filled).map_err(|_| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::OutOfRange,
+                    "aligned read offset exceeds u64 range",
+                )
+            })?;
+            let read_offset = aligned_start.checked_add(filled_u64).ok_or_else(|| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::OutOfRange,
+                    "aligned read offset overflow",
+                )
+            })?;
+            let lba = read_offset / bs;
             let read = self
                 .inner
-                .read_blocks(lba as u64, &mut scratch[filled..], ctx)
+                .read_blocks(lba, &mut scratch[filled..], ctx)
                 .await?;
             if read == 0 {
                 return Err(GibbloxError::with_message(
@@ -684,10 +733,20 @@ impl SourceByteReader {
                     "unaligned short read from block source",
                 ));
             }
-            filled += read;
+            filled = filled.checked_add(read).ok_or_else(|| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::OutOfRange,
+                    "aligned read progress overflow",
+                )
+            })?;
         }
 
-        let head = (offset - aligned_start) as usize;
+        let head = usize::try_from(offset - aligned_start).map_err(|_| {
+            GibbloxError::with_message(
+                GibbloxErrorKind::OutOfRange,
+                "aligned read head offset exceeds addressable memory",
+            )
+        })?;
         out.copy_from_slice(&scratch[head..head + out.len()]);
         Ok(())
     }
@@ -850,30 +909,86 @@ mod tests {
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
     }
 
+    #[test]
+    fn gpt_reader_rejects_invalid_header_crc() {
+        let (mut disk, _partition_one_data) = build_test_gpt_disk();
+        let header_start = TEST_BLOCK_SIZE;
+        disk[header_start + 16..header_start + 20].copy_from_slice(&0u32.to_le_bytes());
+
+        let reader = FakeReader {
+            block_size: TEST_BLOCK_SIZE as u32,
+            data: disk,
+        };
+
+        let err = block_on(GptBlockReader::new(
+            reader,
+            GptPartitionSelector::index(0),
+            TEST_BLOCK_SIZE as u32,
+        ))
+        .err()
+        .expect("invalid header crc should fail");
+        assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn gpt_reader_rejects_invalid_partition_table_crc() {
+        let (mut disk, _partition_one_data) = build_test_gpt_disk();
+        let table_start = TEST_BLOCK_SIZE * 2;
+        disk[table_start] ^= 0x01;
+
+        let reader = FakeReader {
+            block_size: TEST_BLOCK_SIZE as u32,
+            data: disk,
+        };
+
+        let err = block_on(GptBlockReader::new(
+            reader,
+            GptPartitionSelector::index(0),
+            TEST_BLOCK_SIZE as u32,
+        ))
+        .err()
+        .expect("invalid partition table crc should fail");
+        assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
+    }
+
     fn build_test_gpt_disk() -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>) {
         let mut disk = vec![0u8; TEST_BLOCK_SIZE * TEST_TOTAL_BLOCKS];
 
-        let header = &mut disk[TEST_BLOCK_SIZE..TEST_BLOCK_SIZE * 2];
-        header[..8].copy_from_slice(GPT_SIGNATURE);
-        header[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
-        header[12..16].copy_from_slice(&(GPT_MIN_HEADER_SIZE as u32).to_le_bytes());
-        header[24..32].copy_from_slice(&1u64.to_le_bytes());
-        header[32..40].copy_from_slice(&((TEST_TOTAL_BLOCKS - 1) as u64).to_le_bytes());
-        header[40..48].copy_from_slice(&34u64.to_le_bytes());
-        header[48..56].copy_from_slice(&((TEST_TOTAL_BLOCKS - 34) as u64).to_le_bytes());
-        header[56..72].copy_from_slice(
-            &parse_guid_text_to_disk_bytes("00112233-4455-6677-8899-aabbccddeeff")
-                .expect("disk guid"),
-        );
-        header[72..80].copy_from_slice(&2u64.to_le_bytes());
-        header[80..84].copy_from_slice(&(TEST_ENTRY_COUNT as u32).to_le_bytes());
-        header[84..88].copy_from_slice(&(TEST_ENTRY_SIZE as u32).to_le_bytes());
+        let header_start = TEST_BLOCK_SIZE;
+        let header_end = TEST_BLOCK_SIZE * 2;
+        {
+            let header = &mut disk[header_start..header_end];
+            header[..8].copy_from_slice(GPT_SIGNATURE);
+            header[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+            header[12..16].copy_from_slice(&(GPT_MIN_HEADER_SIZE as u32).to_le_bytes());
+            header[24..32].copy_from_slice(&1u64.to_le_bytes());
+            header[32..40].copy_from_slice(&((TEST_TOTAL_BLOCKS - 1) as u64).to_le_bytes());
+            header[40..48].copy_from_slice(&34u64.to_le_bytes());
+            header[48..56].copy_from_slice(&((TEST_TOTAL_BLOCKS - 34) as u64).to_le_bytes());
+            header[56..72].copy_from_slice(
+                &parse_guid_text_to_disk_bytes("00112233-4455-6677-8899-aabbccddeeff")
+                    .expect("disk guid"),
+            );
+            header[72..80].copy_from_slice(&2u64.to_le_bytes());
+            header[80..84].copy_from_slice(&(TEST_ENTRY_COUNT as u32).to_le_bytes());
+            header[84..88].copy_from_slice(&(TEST_ENTRY_SIZE as u32).to_le_bytes());
+        }
 
         let table_start = TEST_BLOCK_SIZE * 2;
         let table_end = table_start + TEST_ENTRY_SIZE * TEST_ENTRY_COUNT;
         let table = &mut disk[table_start..table_end];
         write_partition_entry(table, 0, TEST_PART1_UUID, 40, 42);
         write_partition_entry(table, 1, TEST_PART2_UUID, 50, 51);
+        let table_crc32 = crc32_ieee(table);
+        {
+            let header = &mut disk[header_start..header_end];
+            header[88..92].copy_from_slice(&table_crc32.to_le_bytes());
+
+            let mut header_for_crc = header[..GPT_MIN_HEADER_SIZE].to_vec();
+            header_for_crc[16..20].fill(0);
+            let header_crc32 = crc32_ieee(&header_for_crc);
+            header[16..20].copy_from_slice(&header_crc32.to_le_bytes());
+        }
 
         let partition_one_offset = 40 * TEST_BLOCK_SIZE;
         let partition_one_data: alloc::vec::Vec<u8> =
