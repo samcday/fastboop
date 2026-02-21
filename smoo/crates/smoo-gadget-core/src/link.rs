@@ -17,6 +17,15 @@ pub enum LinkCommand {
     Fatal,
 }
 
+/// Most recent reason the link transitioned Offline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkOfflineReason {
+    Ep0Disable,
+    Ep0Unbind,
+    IoError,
+    LivenessTimeout,
+}
+
 /// Drives link state transitions based on ep0 lifecycle events, heartbeat pings,
 /// endpoint I/O errors, and periodic liveness ticks.
 ///
@@ -26,6 +35,7 @@ pub enum LinkCommand {
 pub struct LinkController {
     state: LinkState,
     last_status: Option<Instant>,
+    last_offline_reason: Option<LinkOfflineReason>,
     liveness_timeout: Duration,
     reopen_backoff: Duration,
     reopen_backoff_max: Duration,
@@ -39,6 +49,7 @@ impl LinkController {
         Self {
             state: LinkState::Offline,
             last_status: None,
+            last_offline_reason: None,
             liveness_timeout,
             reopen_backoff: Duration::from_secs(1),
             reopen_backoff_max: Duration::from_secs(30),
@@ -52,6 +63,11 @@ impl LinkController {
         self.state
     }
 
+    /// Most recent reason the link moved Offline.
+    pub fn last_offline_reason(&self) -> Option<LinkOfflineReason> {
+        self.last_offline_reason
+    }
+
     /// Notify the controller of an ep0 lifecycle event.
     pub fn on_ep0_event(&mut self, event: Event) {
         match event {
@@ -59,8 +75,11 @@ impl LinkController {
                 self.reset_reopen_backoff();
                 self.enter_ready();
             }
-            Event::Disable | Event::Unbind => {
-                self.enter_offline();
+            Event::Disable => {
+                self.enter_offline(LinkOfflineReason::Ep0Disable);
+            }
+            Event::Unbind => {
+                self.enter_offline(LinkOfflineReason::Ep0Unbind);
             }
             Event::Suspend => {
                 // The bus may briefly suspend while the host reconfigures; keep the data plane
@@ -103,14 +122,14 @@ impl LinkController {
             .reopen_backoff
             .saturating_mul(2)
             .min(self.reopen_backoff_max);
-        self.enter_offline();
+        self.enter_offline(LinkOfflineReason::IoError);
     }
 
     /// Advance the controller based on the current time to detect liveness timeouts.
     pub fn tick(&mut self, now: Instant) {
         if let Some(last) = self.last_status {
             if now.saturating_duration_since(last) > self.liveness_timeout {
-                self.enter_offline();
+                self.enter_offline(LinkOfflineReason::LivenessTimeout);
             }
         }
     }
@@ -127,12 +146,14 @@ impl LinkController {
     fn enter_ready(&mut self) {
         self.state = LinkState::Ready;
         self.reopen_not_before = None;
+        self.last_offline_reason = None;
         self.pending_drop = false;
     }
 
-    fn enter_offline(&mut self) {
+    fn enter_offline(&mut self, reason: LinkOfflineReason) {
         self.state = LinkState::Offline;
         self.last_status = None;
+        self.last_offline_reason = Some(reason);
         self.pending_drop = true;
     }
 
@@ -161,6 +182,7 @@ mod tests {
         let err = io::Error::from_raw_os_error(libc::EPIPE);
         ctrl.on_io_error(&err);
         assert_eq!(ctrl.state(), LinkState::Offline);
+        assert_eq!(ctrl.last_offline_reason(), Some(LinkOfflineReason::IoError));
         assert_eq!(ctrl.take_command(), Some(LinkCommand::Fatal));
     }
 
@@ -173,6 +195,10 @@ mod tests {
         let now = Instant::now() + Duration::from_millis(250);
         ctrl.tick(now);
         assert_eq!(ctrl.state(), LinkState::Offline);
+        assert_eq!(
+            ctrl.last_offline_reason(),
+            Some(LinkOfflineReason::LivenessTimeout)
+        );
         assert_eq!(ctrl.take_command(), Some(LinkCommand::Fatal));
     }
 }

@@ -938,6 +938,7 @@ async fn run_event_loop(
     let ep0_notify = ep0_signals.notifier();
 
     let mut io_error = None;
+    let mut exit_reason: Option<String> = None;
     let mut recovery_exit = false;
     let mut shutdown_state = ShutdownState::Running;
     let mut last_status_seq = ep0_signals.status_seq();
@@ -966,6 +967,10 @@ async fn run_event_loop(
             if let Some(task) = runtime.io_pump_task.take() {
                 let _ = task.await;
             }
+            warn!(
+                epoch = runtime.data_plane_epoch,
+                "io pump task exited unexpectedly; notifying data plane"
+            );
             notify_data_plane_error(
                 &data_plane_tx,
                 runtime.data_plane_epoch,
@@ -981,6 +986,7 @@ async fn run_event_loop(
         }
 
         if matches!(shutdown_state, ShutdownState::Forceful) {
+            note_exit_reason(&mut exit_reason, "forceful shutdown state entered");
             break;
         }
 
@@ -1004,6 +1010,7 @@ async fn run_event_loop(
                     }
                     ShutdownState::Graceful { .. } => {
                         warn!("second shutdown signal; forcing shutdown");
+                        note_exit_reason(&mut exit_reason, "second shutdown signal received");
                         shutdown_state = ShutdownState::Forceful;
                         break;
                     }
@@ -1012,6 +1019,7 @@ async fn run_event_loop(
             }
             Some(_) = hup.recv() => {
                 info!("SIGHUP received; initiating user recovery");
+                note_exit_reason(&mut exit_reason, "SIGHUP received; entering user recovery");
                 let _ = control_stop.send(true);
                 begin_user_recovery(ublk, &mut runtime).await?;
                 recovery_exit = true;
@@ -1026,6 +1034,11 @@ async fn run_event_loop(
                     )
                     .await
                     {
+                        warn!(error = ?err, "run_event_loop: data plane event handling failed");
+                        note_exit_reason(
+                            &mut exit_reason,
+                            format!("data plane event handling failed: {err:#}"),
+                        );
                         io_error = Some(err);
                         break;
                     }
@@ -1058,6 +1071,11 @@ async fn run_event_loop(
                     )
                     .await
                     {
+                        warn!(error = ?err, "run_event_loop: queue event handling failed");
+                        note_exit_reason(
+                            &mut exit_reason,
+                            format!("queue event handling failed: {err:#}"),
+                        );
                         io_error = Some(err);
                         break;
                     }
@@ -1070,6 +1088,11 @@ async fn run_event_loop(
                     )
                     .await
                     {
+                        warn!(error = ?err, "run_event_loop: queue batch drain failed");
+                        note_exit_reason(
+                            &mut exit_reason,
+                            format!("queue batch drain failed: {err:#}"),
+                        );
                         io_error = Some(err);
                         break;
                     }
@@ -1081,6 +1104,11 @@ async fn run_event_loop(
                         queue_tx.as_ref(),
                         false,
                     ).await {
+                        warn!(error = ?err, "run_event_loop: drive_runtime failed after queue events");
+                        note_exit_reason(
+                            &mut exit_reason,
+                            format!("drive_runtime after queue events failed: {err:#}"),
+                        );
                         io_error = Some(err);
                         break;
                     }
@@ -1095,6 +1123,11 @@ async fn run_event_loop(
                     queue_tx.as_ref(),
                     false,
                 ).await {
+                    warn!(error = ?err, "run_event_loop: drive_runtime failed on liveness tick");
+                    note_exit_reason(
+                        &mut exit_reason,
+                        format!("drive_runtime on liveness tick failed: {err:#}"),
+                    );
                     io_error = Some(err);
                     break;
                 }
@@ -1109,6 +1142,11 @@ async fn run_event_loop(
                     queue_tx.as_ref(),
                     allow_reconcile,
                 ).await {
+                    warn!(error = ?err, "run_event_loop: drive_runtime failed on idle maintenance");
+                    note_exit_reason(
+                        &mut exit_reason,
+                        format!("drive_runtime on idle maintenance failed: {err:#}"),
+                    );
                     io_error = Some(err);
                     break;
                 }
@@ -1126,21 +1164,34 @@ async fn run_event_loop(
             )
             .await
             {
+                warn!(error = ?err, "run_event_loop: drive_runtime failed during graceful shutdown");
+                note_exit_reason(
+                    &mut exit_reason,
+                    format!("drive_runtime during graceful shutdown failed: {err:#}"),
+                );
                 io_error = Some(err);
                 break;
             }
             let outstanding_empty = outstanding.is_empty();
             let queue_drained = queue_rx.is_closed() && queue_rx.is_empty();
             if outstanding_empty && queue_drained {
+                note_exit_reason(&mut exit_reason, "graceful shutdown complete");
                 info!("graceful shutdown complete; exiting");
                 break;
             }
             if Instant::now() >= deadline {
                 warn!("graceful shutdown deadline reached; forcing shutdown");
+                note_exit_reason(&mut exit_reason, "graceful shutdown deadline reached");
                 shutdown_state = ShutdownState::Forceful;
                 shutdown = None;
             }
         }
+    }
+
+    if let Some(reason) = exit_reason.as_deref() {
+        warn!(%reason, recovery_exit, "event loop exiting");
+    } else {
+        info!(recovery_exit, "event loop exiting");
     }
 
     if let Some(pump) = runtime.io_pump.take() {
@@ -1156,12 +1207,12 @@ async fn run_event_loop(
     }
 
     let _ = control_stop.send(true);
-    cleanup_ublk_devices(
-        ublk,
-        &mut runtime,
-        matches!(shutdown_state, ShutdownState::Forceful),
-    )
-    .await?;
+    let forceful = matches!(shutdown_state, ShutdownState::Forceful);
+    info!(
+        shutdown_reason = exit_reason.as_deref().unwrap_or("unspecified"),
+        forceful, "cleaning up ublk devices"
+    );
+    cleanup_ublk_devices(ublk, &mut runtime, exit_reason.as_deref(), forceful).await?;
     runtime.status().set_export_count(0).await;
 
     if let Err(err) = runtime.state_store().remove_file() {
@@ -1833,6 +1884,7 @@ fn to_owned_fd(file: File) -> OwnedFd {
 async fn cleanup_ublk_devices(
     ublk: &mut SmooUblk,
     runtime: &mut RuntimeState,
+    shutdown_reason: Option<&str>,
     forceful: bool,
 ) -> Result<()> {
     for (_, tasks) in runtime.queue_tasks.drain() {
@@ -1847,11 +1899,19 @@ async fn cleanup_ublk_devices(
         if let Some((ctrl, queues)) = controller.take_device_handles() {
             let dev_id = ctrl.dev_id();
             if forceful {
-                info!(dev_id, "forceful shutdown: dropping ublk device handles");
+                info!(
+                    dev_id,
+                    shutdown_reason = shutdown_reason.unwrap_or("unspecified"),
+                    "forceful shutdown: dropping ublk device handles"
+                );
                 drop(SmooUblkDevice::from_parts(ctrl, queues));
                 force_remove_ids.push(dev_id);
             } else {
-                info!(dev_id, "stopping ublk device");
+                info!(
+                    dev_id,
+                    shutdown_reason = shutdown_reason.unwrap_or("unspecified"),
+                    "stopping ublk device"
+                );
                 if let Err(err) = ublk
                     .stop_dev(SmooUblkDevice::from_parts(ctrl, queues), true)
                     .await
@@ -1929,8 +1989,15 @@ async fn process_link_commands(
     link: &mut LinkController,
 ) -> Result<()> {
     if let Some(LinkCommand::Fatal) = link.take_command() {
-        let _ = runtime;
-        anyhow::bail!("link controller entered offline state");
+        let reason = link.last_offline_reason();
+        let active_exports = count_active_exports(&runtime.exports);
+        warn!(
+            ?reason,
+            state = ?link.state(),
+            active_exports,
+            "link controller emitted fatal command"
+        );
+        anyhow::bail!("link controller entered offline state (reason: {reason:?})");
     }
     Ok(())
 }
@@ -1950,7 +2017,12 @@ async fn handle_data_plane_event(
                 );
                 return Ok(());
             }
-            warn!(error = ?error, "data plane error; dropping link");
+            warn!(
+                error = ?error,
+                event_epoch = epoch,
+                current_epoch = runtime.data_plane_epoch,
+                "data plane I/O error; requesting link offline"
+            );
             link.on_io_error(&error);
         }
     }
@@ -2019,7 +2091,16 @@ async fn handle_queue_event(
                 let io_err = io_error_from_anyhow(&err);
                 link.on_io_error(&io_err);
                 park_request(outstanding, export_id, dev_id, queues.clone(), request);
-                warn!(export_id, queue = request.queue_id, tag = request.tag, error = ?err, "link error handling request; parked for retry");
+                warn!(
+                    export_id,
+                    dev_id,
+                    queue = request.queue_id,
+                    tag = request.tag,
+                    io_kind = ?io_err.kind(),
+                    io_errno = io_err.raw_os_error(),
+                    error = ?err,
+                    "request dispatch failed; parked and forcing link offline"
+                );
             }
         }
         QueueEvent::QueueError {
@@ -2027,6 +2108,12 @@ async fn handle_queue_event(
             dev_id,
             error,
         } => {
+            warn!(
+                export_id,
+                dev_id,
+                error = ?error,
+                "queue task error; marking export failed and forcing link offline"
+            );
             if let Some(ctrl) = runtime.exports.get_mut(&export_id) {
                 ctrl.fail_device(format!("device {dev_id} queue task error: {error:#}"));
             }
@@ -2086,6 +2173,12 @@ fn io_error_from_anyhow(err: &anyhow::Error) -> io::Error {
         io::Error::new(cause.kind(), cause.to_string())
     } else {
         io::Error::other(err.to_string())
+    }
+}
+
+fn note_exit_reason(exit_reason: &mut Option<String>, reason: impl Into<String>) {
+    if exit_reason.is_none() {
+        *exit_reason = Some(reason.into());
     }
 }
 

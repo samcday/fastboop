@@ -31,7 +31,7 @@ mod runtime;
 mod state_store;
 
 use crate::dma::{BufferPool, dmabuf_transfer_blocking};
-pub use link::{LinkCommand, LinkController, LinkState};
+pub use link::{LinkCommand, LinkController, LinkOfflineReason, LinkState};
 #[cfg(feature = "metrics")]
 pub use metrics::*;
 pub use pump::{IoPumpHandle, IoWork};
