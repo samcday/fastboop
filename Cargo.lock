@@ -3017,7 +3017,6 @@ dependencies = [
  "fastboop-core",
  "gibblox-core",
  "gibblox-ext4",
- "gibblox-paged-lru",
 ]
 
 [[package]]
