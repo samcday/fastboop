@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use fastboop_core::RootfsProvider;
+use fastboop_core::{LruBlockReader, PagedBlockReader, RootfsEntryType, RootfsProvider};
 use gibblox_core::BlockReader;
-use gibblox_ext4::Ext4Fs;
-use gibblox_paged_lru::PagedLruBlockReader;
+use gibblox_ext4::{Ext4EntryType, Ext4Fs};
 
 pub const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
 
@@ -15,10 +14,13 @@ pub struct Ext4Rootfs {
 
 impl Ext4Rootfs {
     pub async fn new(reader: Arc<dyn BlockReader>) -> Result<Self> {
-        let paged_lru = PagedLruBlockReader::new(reader, Default::default())
+        let lru = LruBlockReader::new(reader, Default::default())
             .await
-            .map_err(|err| anyhow!("initialize paged LRU for rootfs reader: {err}"))?;
-        let fs = Ext4Fs::open(Arc::new(paged_lru))
+            .map_err(|err| anyhow!("initialize LRU for rootfs reader: {err}"))?;
+        let paged = PagedBlockReader::new(lru, Default::default())
+            .await
+            .map_err(|err| anyhow!("initialize paged reader for rootfs reader: {err}"))?;
+        let fs = Ext4Fs::open(paged)
             .await
             .map_err(|err| anyhow!("open ext4 rootfs image: {err}"))?;
         Ok(Self { fs })
@@ -47,6 +49,28 @@ impl RootfsProvider for Ext4Rootfs {
             .read_dir(path)
             .await
             .map_err(|err| anyhow!("read ext4 directory {path}: {err}"))
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<RootfsEntryType>> {
+        let entry_type = self
+            .fs
+            .entry_type(path)
+            .await
+            .map_err(|err| anyhow!("read ext4 path type {path}: {err}"))?;
+
+        Ok(entry_type.map(|entry_type| match entry_type {
+            Ext4EntryType::File => RootfsEntryType::File,
+            Ext4EntryType::Directory => RootfsEntryType::Directory,
+            Ext4EntryType::Symlink => RootfsEntryType::Symlink,
+            Ext4EntryType::Other => RootfsEntryType::Other,
+        }))
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String> {
+        self.fs
+            .read_link(path)
+            .await
+            .map_err(|err| anyhow!("read ext4 symlink {path}: {err}"))
     }
 
     async fn exists(&self, path: &str) -> Result<bool> {

@@ -8,7 +8,6 @@ license.workspace = true
 anyhow = "1.0.91"
 fastboop-core = { path = "../fastboop-core" }
 gibblox-ext4 = { path = "../../gibblox/crates/gibblox-ext4" }
-gibblox-paged-lru = { path = "../../gibblox/crates/gibblox-paged-lru", features = ["std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gibblox-core = { path = "../../gibblox/crates/gibblox-core" }
