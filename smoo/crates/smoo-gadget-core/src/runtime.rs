@@ -237,7 +237,9 @@ impl ExportController {
 
     pub fn needs_reconcile(&self, now: Instant) -> bool {
         match &self.state {
-            ExportState::New | ExportState::RecoveringPending { .. } => true,
+            ExportState::New | ExportState::RecoveringPending { .. } => {
+                self.next_retry_at.is_none_or(|retry_at| now >= retry_at)
+            }
             ExportState::Device(handle) => match handle {
                 DeviceHandle::Online { .. } => false,
                 DeviceHandle::Failed { .. } => {

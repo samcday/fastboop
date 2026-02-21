@@ -847,7 +847,11 @@ async fn run_reconcile_slice(
             )
             .await
             {
-                Ok(res) => res?,
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    warn!(export_id, error = ?err, "reconcile failed; backing off");
+                    controller.fail_device(format!("reconcile failed: {err:#}"));
+                }
                 Err(_) => {
                     warn!(export_id, "reconcile timed out; backing off");
                     controller.fail_device("reconcile timed out".to_string());
@@ -1995,9 +1999,8 @@ async fn process_link_commands(
             ?reason,
             state = ?link.state(),
             active_exports,
-            "link controller emitted fatal command"
+            "link controller emitted fatal command; keeping ublk runtime alive"
         );
-        anyhow::bail!("link controller entered offline state (reason: {reason:?})");
     }
     Ok(())
 }
