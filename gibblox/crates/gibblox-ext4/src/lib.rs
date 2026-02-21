@@ -18,6 +18,14 @@ use tracing::{info, trace};
 
 pub use ext4_view as ext4_view_rs;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ext4EntryType {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
 /// Async-friendly ext4 filesystem wrapper backed by a gibblox `BlockReader`.
 #[derive(Clone)]
 pub struct Ext4Fs {
@@ -118,6 +126,42 @@ impl Ext4Fs {
             names.push(name.to_string());
         }
         Ok(names)
+    }
+
+    pub async fn entry_type(&self, path: &str) -> GibbloxResult<Option<Ext4EntryType>> {
+        let normalized = normalize_path(path)?;
+        match self.fs.symlink_metadata(normalized.as_str()) {
+            Ok(metadata) => {
+                let file_type = metadata.file_type();
+                let entry_type = if file_type.is_regular_file() {
+                    Ext4EntryType::File
+                } else if file_type.is_dir() {
+                    Ext4EntryType::Directory
+                } else if file_type.is_symlink() {
+                    Ext4EntryType::Symlink
+                } else {
+                    Ext4EntryType::Other
+                };
+                Ok(Some(entry_type))
+            }
+            Err(ext4_view_rs::Ext4Error::NotFound) => Ok(None),
+            Err(err) => Err(map_ext4_err("read ext4 path metadata")(err)),
+        }
+    }
+
+    pub async fn read_link(&self, path: &str) -> GibbloxResult<String> {
+        let normalized = normalize_path(path)?;
+        let target = self
+            .fs
+            .read_link(normalized.as_str())
+            .map_err(map_ext4_err("read ext4 symlink target"))?;
+        let target = target.to_str().map_err(|err| {
+            GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                format!("ext4 symlink target is not UTF-8: {err}"),
+            )
+        })?;
+        Ok(target.to_string())
     }
 
     pub async fn exists(&self, path: &str) -> GibbloxResult<bool> {
@@ -260,10 +304,15 @@ impl Ext4ReadAsync for AsyncBlockAdapter {
         let mut scratch = vec![0u8; aligned_len];
         let mut filled = 0usize;
         while filled < scratch.len() {
-            let lba = (aligned_start as usize + filled) / self.block_size;
+            let filled_u64 = u64::try_from(filled)
+                .map_err(|_| adapter_box_error("ext4 adapter offset conversion overflow"))?;
+            let lba = aligned_start
+                .checked_add(filled_u64)
+                .ok_or_else(|| adapter_box_error("ext4 adapter read offset overflow"))?
+                / bs;
             let read = self
                 .inner
-                .read_blocks(lba as u64, &mut scratch[filled..], ReadContext::FOREGROUND)
+                .read_blocks(lba, &mut scratch[filled..], ReadContext::FOREGROUND)
                 .await
                 .map_err(|err| adapter_box_error(format!("block read failed: {err}")))?;
             if read == 0 {
