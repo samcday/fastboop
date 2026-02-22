@@ -1,0 +1,18 @@
+[package]
+name = "gibblox-android-sparse"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[features]
+default = []
+std = ["gibblox-core/std"]
+
+[dependencies]
+async-trait = "0.1.89"
+gibblox-core = { path = "../gibblox-core", default-features = false }
+tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
+
+[dev-dependencies]
+futures = { version = "0.3.31", default-features = false, features = ["executor"] }
