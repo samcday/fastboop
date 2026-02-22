@@ -26,3 +26,5 @@ spec:
     prometheus:
       servicemonitor:
         enabled: true
+    startupapicheck:
+      enabled: false
