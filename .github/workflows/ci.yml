@@ -25,6 +25,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          lfs: true
           submodules: recursive
 
       - name: Install system dependencies
@@ -119,6 +120,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          lfs: true
           submodules: recursive
 
       - name: Install system dependencies
