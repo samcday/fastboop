@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/gibblox-core",
+    "crates/gibblox-android-sparse",
     "crates/gibblox-zip",
     "crates/gibblox-casync",
     "crates/gibblox-casync-std",
