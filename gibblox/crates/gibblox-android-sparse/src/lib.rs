@@ -93,7 +93,20 @@ where
             ));
         }
 
-        let total_chunks = usize::try_from(sparse_header.total_chunks).map_err(|_| {
+        let total_chunks_u64 = u64::from(sparse_header.total_chunks);
+        let available_chunk_header_bytes = source_size_bytes - chunk_cursor;
+        let max_chunk_headers = available_chunk_header_bytes / chunk_header_size;
+        if total_chunks_u64 > max_chunk_headers {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                format!(
+                    "declared sparse chunk count {} exceeds maximum {} for available bytes",
+                    total_chunks_u64, max_chunk_headers
+                ),
+            ));
+        }
+
+        let total_chunks = usize::try_from(total_chunks_u64).map_err(|_| {
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "chunk count overflow")
         })?;
         let mut chunks = Vec::with_capacity(total_chunks);
@@ -835,6 +848,20 @@ mod tests {
     fn rejects_crc_chunk_with_non_zero_chunk_size() {
         let mut image = sparse_header(4, 0, 1, 28, 12);
         append_crc32_chunk(&mut image, 0xAABB_CCDD, 12, 1);
+
+        let source = FakeReader {
+            block_size: 8,
+            data: image,
+        };
+        let err = block_on(AndroidSparseBlockReader::new(source))
+            .err()
+            .expect("construction should fail");
+        assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn rejects_chunk_count_that_cannot_fit_chunk_headers() {
+        let image = sparse_header(4, 0, 2, 28, 12);
 
         let source = FakeReader {
             block_size: 8,
