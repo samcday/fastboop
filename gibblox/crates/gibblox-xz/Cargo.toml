@@ -1,0 +1,21 @@
+[package]
+name = "gibblox-xz"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[features]
+default = []
+std = ["gibblox-core/std"]
+
+[dependencies]
+async-lock = { version = "3.4", default-features = false }
+async-trait = "0.1.89"
+crc32fast = { version = "1.5.0", default-features = false }
+gibblox-core = { path = "../gibblox-core", default-features = false }
+tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
+xz4rust = { version = "0.2.1", default-features = false, features = ["alloc", "bcj", "crc64", "delta", "sha256"] }
+
+[dev-dependencies]
+futures = { version = "0.3.31", default-features = false, features = ["executor"] }
