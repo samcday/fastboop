@@ -2,9 +2,17 @@
 
 `༼;´༎ຶ ۝ ༎ຶ༽つ ┳━┳`  pl0x gib bl0x.
 
-gibblox fetches blocks of data. Maybe they're on another computer. Maybe they're wrapped in
-GPT/MBR part tables. Or nested in an EroFS inside an ext4 inside an ISO9660. gibblox doesn't
-give a flying fuck. gibblox just gives blocks.
+gibblox fetches blocks of data.
+
+Maybe they're on another computer.
+
+Maybe they're in an EroFS in an ISO9660.
+
+Maybe they're in an ext4 in a GPT in an Android sparse image in an XZ stream.
+
+gibblox doesn't give a flying fuck.
+
+gibblox just gives blocks.
 
 This project is primarily intended to serve [smoo][] and [fastboop][]. Maybe you have some
 other boring-ass use case that calls for some blocks. gibblox doesn't discriminate.
