@@ -52,3 +52,15 @@ variable "state_passphrase" {
   description = "Passphrase for OpenTofu state encryption (min 16 chars)."
   sensitive   = true
 }
+
+variable "docs_hostname" {
+  type        = string
+  description = "Hostname for user-facing docs (GitHub Pages)."
+  default     = "docs.fastboop.win"
+}
+
+variable "github_pages_cname_target" {
+  type        = string
+  description = "DNS target for GitHub Pages custom domain."
+  default     = "samcday.github.io"
+}

@@ -32,6 +32,6 @@ cargo run -p fastboop-cli -- boot --help
 ## Where to read next
 
 - Contributor and architecture notes: `HACKING.md`
-- Device profile model: `docs/DEVICE_PROFILES.md`
-- Stage0 contract and behavior: `docs/STAGE0.md`
-- UI stack notes: `docs/DIOXUS.md`
+- Device profile model: `docs/dev/DEVICE_PROFILES.md`
+- Stage0 contract and behavior: `docs/dev/STAGE0.md`
+- UI stack notes: `docs/dev/DIOXUS.md`
