@@ -7,7 +7,7 @@ This file is for contributors. It captures architecture and operational details 
 At a high level, fastboop:
 
 1. Detects devices in supported vendor boot modes (currently fastboot flow in v0).
-2. Matches/probes them using DevPro (`docs/DEVICE_PROFILES.md`).
+2. Matches/probes them using DevPro (`docs/dev/DEVICE_PROFILES.md`).
 3. Consumes an unmodified rootfs artifact.
 4. Synthesizes stage0 (`/init`) with required kernel/modules glue.
 5. Boots ephemerally into RAM via vendor bootloader.
@@ -24,7 +24,7 @@ No flashing, no slot changes, no persistent writes.
 
 ## Stage0 (current behavior)
 
-Stage0 details are normative in `docs/STAGE0.md`; this is the short operational view:
+Stage0 details are normative in `docs/dev/STAGE0.md`; this is the short operational view:
 
 - PID1 is `fastboop-stage0`.
 - Stage0 mounts core virtual filesystems and loads required modules.
@@ -41,7 +41,7 @@ If gadget runtime fails before handoff, stage0 fails loudly.
 - Non-mutating invariant is hard: no flash/erase/format/set_active/oem/unlock flows.
 - v0 supports one boot mechanism per profile.
 
-See `docs/DEVICE_PROFILES.md` for schema and semantics.
+See `docs/dev/DEVICE_PROFILES.md` for schema and semantics.
 
 ## Workspace map
 
