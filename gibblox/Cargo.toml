@@ -4,6 +4,7 @@ members = [
     "crates/gibblox-core",
     "crates/gibblox-android-sparse",
     "crates/gibblox-zip",
+    "crates/gibblox-xz",
     "crates/gibblox-casync",
     "crates/gibblox-casync-std",
     "crates/gibblox-casync-web",
