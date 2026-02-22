@@ -41,13 +41,11 @@ jobs:
             equivs \
             fakeroot \
             git \
-            git-lfs \
             linux-libc-dev \
             musl-tools
 
       - uses: actions/checkout@v4
         with:
-          lfs: true
           submodules: recursive
 
       - name: Install Rust toolchain via rustup
