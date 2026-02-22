@@ -648,6 +648,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-xz"
+version = "0.0.1"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "crc32fast",
+ "futures",
+ "gibblox-core",
+ "tracing",
+ "xz4rust",
+]
+
+[[package]]
 name = "gibblox-zip"
 version = "0.0.1"
 dependencies = [
@@ -2326,6 +2339,15 @@ name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
+
+[[package]]
+name = "xz4rust"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1053c1562c16e3760559c390d3b690ae6b524c200eb9a7ddb5d43c77d000832d"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "yoke"
