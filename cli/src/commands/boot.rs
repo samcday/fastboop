@@ -15,6 +15,7 @@ use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_rootfs_erofs::{ErofsRootfs, OstreeRootfs};
+use fastboop_rootfs_ext4::Ext4Rootfs;
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_core::{BlockReader, block_identity_string};
 use gibblox_zip::ZipEntryBlockReader;
@@ -49,7 +50,7 @@ struct ResolvedDetectedFastbootDevice {
 
 #[derive(Args)]
 pub struct BootStage0Args {
-    /// Path or HTTP(S) URL to an EROFS image, or HTTP(S) casync blob index (.caibx), containing kernel/modules.
+    /// Path or HTTP(S) URL to rootfs image (EROFS/ext4), or HTTP(S) casync blob index (.caibx), containing kernel/modules.
     #[arg(value_name = "ROOTFS")]
     pub rootfs: PathBuf,
     /// Resolve kernel/modules inside this OSTree deployment path (`--ostree` auto-detects).
@@ -295,56 +296,93 @@ async fn run_boot_inner(
         let image_size_bytes = total_blocks * reader.block_size() as u64;
         let image_identity = block_identity_string(reader.as_ref());
 
-        // Wrap in EROFS
-        let provider = ErofsRootfs::new(reader.clone(), image_size_bytes).await?;
+        let build = match ErofsRootfs::new(reader.clone(), image_size_bytes).await {
+            Ok(provider) => {
+                let selected_ostree = match &ostree_arg {
+                    OstreeArg::Disabled => None,
+                    OstreeArg::AutoDetect => {
+                        let detected = auto_detect_ostree_deployment_path(&provider).await?;
+                        debug!(ostree = %detected, "auto-detected ostree deployment path");
+                        Some(detected)
+                    }
+                    OstreeArg::Explicit(path) => Some(path.clone()),
+                };
 
-        let selected_ostree = match &ostree_arg {
-            OstreeArg::Disabled => None,
-            OstreeArg::AutoDetect => {
-                let detected = auto_detect_ostree_deployment_path(&provider).await?;
-                debug!(ostree = %detected, "auto-detected ostree deployment path");
-                Some(detected)
+                let mut extra_parts = Vec::new();
+                if let Some(ostree) = selected_ostree.as_deref() {
+                    extra_parts.push(format!("ostree=/{ostree}"));
+                }
+                if let Some(cmdline) = cmdline_append.as_deref() {
+                    extra_parts.push(cmdline.to_string());
+                }
+                if let Some(system_time) = system_time_part.as_deref() {
+                    extra_parts.push(system_time.to_string());
+                }
+                let extra_cmdline = if extra_parts.is_empty() {
+                    None
+                } else {
+                    Some(extra_parts.join(" "))
+                };
+
+                if let Some(ostree) = selected_ostree.as_deref() {
+                    let resolved_ostree =
+                        OstreeRootfs::resolve_deployment_path(&provider, ostree).await?;
+                    debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
+                    let provider = OstreeRootfs::new(provider, &resolved_ostree)?;
+                    build_stage0(
+                        &profile,
+                        &provider,
+                        &opts,
+                        extra_cmdline.as_deref(),
+                        existing.as_deref(),
+                    )
+                    .await
+                } else {
+                    build_stage0(
+                        &profile,
+                        &provider,
+                        &opts,
+                        extra_cmdline.as_deref(),
+                        existing.as_deref(),
+                    )
+                    .await
+                }
             }
-            OstreeArg::Explicit(path) => Some(path.clone()),
-        };
+            Err(erofs_err) => {
+                let provider = Ext4Rootfs::new(reader.clone()).await.map_err(|ext4_err| {
+                    anyhow!(
+                        "rootfs is neither EROFS nor ext4 (erofs: {erofs_err}; ext4: {ext4_err})"
+                    )
+                })?;
 
-        let mut extra_parts = Vec::new();
-        if let Some(ostree) = selected_ostree.as_deref() {
-            extra_parts.push(format!("ostree=/{ostree}"));
-        }
-        if let Some(cmdline) = cmdline_append.as_deref() {
-            extra_parts.push(cmdline.to_string());
-        }
-        if let Some(system_time) = system_time_part.as_deref() {
-            extra_parts.push(system_time.to_string());
-        }
-        let extra_cmdline = if extra_parts.is_empty() {
-            None
-        } else {
-            Some(extra_parts.join(" "))
-        };
+                if !matches!(&ostree_arg, OstreeArg::Disabled) {
+                    bail!(
+                        "--ostree requires an EROFS rootfs; ext4 rootfs images do not support OSTree path resolution"
+                    );
+                }
 
-        let build = if let Some(ostree) = selected_ostree.as_deref() {
-            let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree).await?;
-            debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
-            let provider = OstreeRootfs::new(provider, &resolved_ostree)?;
-            build_stage0(
-                &profile,
-                &provider,
-                &opts,
-                extra_cmdline.as_deref(),
-                existing.as_deref(),
-            )
-            .await
-        } else {
-            build_stage0(
-                &profile,
-                &provider,
-                &opts,
-                extra_cmdline.as_deref(),
-                existing.as_deref(),
-            )
-            .await
+                let mut extra_parts = Vec::new();
+                if let Some(cmdline) = cmdline_append.as_deref() {
+                    extra_parts.push(cmdline.to_string());
+                }
+                if let Some(system_time) = system_time_part.as_deref() {
+                    extra_parts.push(system_time.to_string());
+                }
+                let extra_cmdline = if extra_parts.is_empty() {
+                    None
+                } else {
+                    Some(extra_parts.join(" "))
+                };
+
+                build_stage0(
+                    &profile,
+                    &provider,
+                    &opts,
+                    extra_cmdline.as_deref(),
+                    existing.as_deref(),
+                )
+                .await
+            }
         };
         anyhow::Ok((reader, image_size_bytes, image_identity, build))
     }?;
@@ -813,10 +851,7 @@ fn resolve_profile_by_id(
     profiles.get(requested).cloned().with_context(|| {
         let mut ids: Vec<_> = profiles.keys().cloned().collect();
         ids.sort();
-        format!(
-            "device profile '{}' not found in {:?}; available ids: {:?}",
-            requested, devpro_dirs, ids
-        )
+        format!("device profile '{requested}' not found in {devpro_dirs:?}; available ids: {ids:?}")
     })
 }
 

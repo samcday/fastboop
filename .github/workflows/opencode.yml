@@ -23,6 +23,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          lfs: true
           persist-credentials: false
 
       - name: Run opencode
