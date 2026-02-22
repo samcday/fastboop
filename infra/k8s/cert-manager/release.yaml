@@ -1,0 +1,28 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  chart:
+    spec:
+      chart: cert-manager
+      sourceRef:
+        kind: HelmRepository
+        name: jetstack
+        namespace: flux-system
+      version: v1.19.3
+  interval: 1h
+  install:
+    crds: Create
+  upgrade:
+    crds: CreateReplace
+  values:
+    # https://github.com/cert-manager/cert-manager/blob/master/deploy/charts/cert-manager/values.yaml
+    config:
+      apiVersion: controller.config.cert-manager.io/v1alpha1
+      kind: ControllerConfiguration
+      enableGatewayAPI: false
+    prometheus:
+      servicemonitor:
+        enabled: true

@@ -1,0 +1,35 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: community-tooling-charts
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://community-tooling.github.io/charts
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: external-dns
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://kubernetes-sigs.github.io/external-dns
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: ingress-nginx
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://kubernetes.github.io/ingress-nginx
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: jetstack
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://charts.jetstack.io

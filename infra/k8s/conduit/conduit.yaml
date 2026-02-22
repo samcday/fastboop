@@ -1,0 +1,70 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: conduit
+  namespace: conduit
+spec:
+  chart:
+    spec:
+      chart: generic
+      sourceRef:
+        kind: HelmRepository
+        name: community-tooling-charts
+        namespace: flux-system
+      version: 8.1.3
+  interval: 1h
+  values:
+    # https://github.com/community-tooling/charts/blob/main/charts/generic/values.yaml
+    configMap:
+      enabled: true
+      data:
+        conduit.toml: |-
+          [global]
+          server_name = "fastboop.win"
+          database_backend = "sqlite"
+          database_path = "/var/lib/matrix-conduit/"
+          address = "0.0.0.0"
+          port = 6167
+          allow_encryption = true
+          allow_federation = true
+          allow_registration = false
+          trusted_servers = ["matrix.org"]
+
+          [global.well_known]
+          client = "https://matrix.fastboop.win"
+          server = "matrix.fastboop.win:443"
+      mountFiles:
+        - subPath: conduit.toml
+          mountPath: /etc/conduit/conduit.toml
+    deploymentStrategy:
+      type: Recreate
+    env:
+      CONDUIT_CONFIG: /etc/conduit/conduit.toml
+    image:
+      repository: docker.io/matrixconduit/matrix-conduit
+      tag: latest
+    ingress:
+      enabled: false
+    livenessProbe:
+      httpGet:
+        path: /_matrix/client/versions
+        port: http
+    persistence:
+      enabled: true
+      mountPath: /var/lib/matrix-conduit
+      storage: 20Gi
+      accessMode: ReadWriteOnce
+      storageClassName: hcloud-volumes
+    ports:
+      - name: http
+        containerPort: 6167
+    readinessProbe:
+      httpGet:
+        path: /_matrix/client/versions
+        port: http
+    service:
+      ports:
+        - targetPort: http
+          protocol: TCP
+          name: http
+          port: 80

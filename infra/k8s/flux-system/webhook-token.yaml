@@ -1,0 +1,22 @@
+apiVersion: ENC[AES256_GCM,data:kA4=,iv:DWih9cZ9/GKHUiBnLNy8zg60ph6aFmHNVFa1gdbT6Ro=,tag:LbQKCqdlYYVF08geuvb43w==,type:str]
+kind: ENC[AES256_GCM,data:pXSQ56Yq,iv:VTj4IlGqJ1trcuXAl3oFg9ZPpwTzap7NS+xiH8c2l6g=,tag:kFN+j1o17rDljLs7JENxzQ==,type:str]
+metadata:
+    name: ENC[AES256_GCM,data:bDVOiFYAtxfL5niidQ==,iv:aQBYttnukuNP3/tITqbSbu1mLMtTuyr+bacMZDytI9s=,tag:cGmUfNHAgCITsg7jaxV2rg==,type:str]
+    namespace: ENC[AES256_GCM,data:14MJwhhY2HLHpLI=,iv:KEEpN8Bbz031ksxO1vjTD1VpwiErcGzVLwn51bCldeo=,tag:hSZ4gTzyawzqez78vDEe1g==,type:str]
+stringData:
+    token: ENC[AES256_GCM,data:7LEl63bU6xTzYcVydrTLkVJJSEnR5KPQrc0kXsaJiF5o0E3sn2MoitYrFAP9m/fdZMRRNafhcwmtPW3duhRrqw==,iv:GGLdC5uawhGwgsbVZuKBf5UhiBezAEc3dH9avL86ef4=,tag:prx01ZFj0geFW42/WsMqeQ==,type:str]
+sops:
+    age:
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBDS04wVEcyOWZ5aC82NjVz
+            SnV1T25tZ0JCdk9OUEo5UW8zTU5UbkxmSnpvCkh5RERYSDAxMkJaWEc0Y0VBSCtm
+            YXNwenVvYWlPbXRFbVpQT1pNYm5YV00KLS0tIFllWGJzaXhxOUlUWnRaR090Z09o
+            RkEveStsU0Rtb0RlN0ZsUlR5SndaWFEKF7wAl7deoMNYbL1rZqFU91+/GXK9bjhO
+            VkfvJmy2JZ3nf6WZPl2WOkShPYMPxYpufSzdOuYkeblaupdYfrtAJA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-02-22T10:47:29Z"
+    mac: ENC[AES256_GCM,data:DAOKETU8RrEGjc4aR1UGJvD0xsbeNYcs9N13pjnlV+q2zxDxzoxwad/ss5iA0VkFpDzm3ZxgEUIYdMrPNBkiPUfytVQPU88kTkLXb31R43vVT8jzJgtCxQBYFjGpNyPPILsVVqW9ARzSMafelJPNa8Qh/NmXUgdVlbQd7oZWCaY=,iv:JxpxOJK2Y/3oSPjMR2zYvbMlidQuqmknLIvxGv+hjEs=,tag:4pj0crq3/Ovz44EfV8d0YQ==,type:str]
+    unencrypted_suffix: _unencrypted
+    version: 3.11.0
