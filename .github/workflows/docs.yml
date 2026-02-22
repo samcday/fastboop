@@ -1,0 +1,44 @@
+name: docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - mkdocs.yml
+      - docs/**
+      - requirements-docs.txt
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install docs dependencies
+        run: pip install -r requirements-docs.txt
+
+      - name: Build docs site
+        run: mkdocs build --strict
+
+      - name: Set Pages CNAME
+        run: echo "docs.fastboop.win" > site/CNAME
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./site
+          force_orphan: true

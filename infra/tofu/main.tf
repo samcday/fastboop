@@ -61,6 +61,16 @@ resource "cloudflare_record" "bleeding" {
   allow_overwrite = true
 }
 
+
+resource "cloudflare_record" "docs" {
+  zone_id         = local.zone_id
+  name            = var.docs_hostname
+  type            = "CNAME"
+  content         = var.github_pages_cname_target
+  proxied         = false
+  allow_overwrite = true
+}
+
 resource "cloudflare_api_token" "r2_bleeding" {
   name = "fastboop-bleeding-r2"
 
