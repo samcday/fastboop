@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
 
 use fastboop_core::{
-    decode_boot_profile, encode_boot_profile, resolve_effective_boot_profile_stage0,
-    validate_boot_profile, BootProfile, BootProfileArtifactSource, BootProfileArtifactSourceCasync,
+    BootProfile, BootProfileArtifactSource, BootProfileArtifactSourceCasync,
     BootProfileArtifactSourceCasyncSource, BootProfileArtifactSourceFileSource,
     BootProfileArtifactSourceGpt, BootProfileArtifactSourceGptSource,
     BootProfileArtifactSourceHttpSource, BootProfileArtifactSourceMbr,
     BootProfileArtifactSourceMbrSource, BootProfileCodecError, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
     BootProfileRootfsExt4Source, BootProfileStage0, BootProfileValidationError,
+    decode_boot_profile, encode_boot_profile, resolve_effective_boot_profile_stage0,
+    validate_boot_profile,
 };
 
 #[test]
