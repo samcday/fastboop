@@ -3,4 +3,5 @@ kind: Kustomization
 resources:
   - cert-manager-issuer-kustomization.yaml
   - webhook-token.yaml
+  - webhook-policy.yaml
   - receiver.yaml
