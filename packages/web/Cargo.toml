@@ -10,6 +10,7 @@ dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
 fastboop-rootfs-erofs = { path = "../../crates/fastboop-rootfs-erofs" }
+fastboop-rootfs-ext4 = { path = "../../crates/fastboop-rootfs-ext4" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
 gibblox-core = { path = "../../gibblox/crates/gibblox-core" }

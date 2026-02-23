@@ -6,7 +6,8 @@ use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
 use fastboop_rootfs_erofs::ErofsRootfs;
-use fastboop_stage0_generator::{build_stage0, Stage0Options};
+use fastboop_rootfs_ext4::Ext4Rootfs;
+use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
 #[cfg(target_arch = "wasm32")]
@@ -88,23 +89,15 @@ pub async fn boot_selected_device(
     } else {
         Vec::new()
     };
-    let stage0_opts = Stage0Options {
-        extra_modules: vec!["erofs".to_string()],
-        kernel_override: None,
-        dtb_override: None,
-        dtbo_overlays,
-        enable_serial: boot_config.enable_serial,
-        mimic_fastboot: true,
-        smoo_vendor: Some(session.device.vid),
-        smoo_product: Some(session.device.pid),
-        smoo_serial: webusb_serial_number(&session.device.handle),
-        personalization: Some(personalization_from_browser()),
-    };
     let profile_id = session.device.profile.id.clone();
     let (build, runtime) = build_stage0_artifacts(
         session.device.profile.clone(),
-        stage0_opts,
         boot_config.clone(),
+        dtbo_overlays,
+        session.device.vid,
+        session.device.pid,
+        webusb_serial_number(&session.device.handle),
+        Some(personalization_from_browser()),
     )
     .await
     .with_context(|| {
@@ -202,8 +195,12 @@ pub async fn boot_selected_device(
 
 async fn build_stage0_artifacts(
     profile: fastboop_core::DeviceProfile,
-    stage0_opts: Stage0Options,
     boot_config: BootConfig,
+    dtbo_overlays: Vec<Vec<u8>>,
+    smoo_vendor: u16,
+    smoo_product: u16,
+    smoo_serial: Option<String>,
+    personalization: Option<Personalization>,
 ) -> anyhow::Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
     use futures_channel::oneshot;
 
@@ -217,19 +214,52 @@ async fn build_stage0_artifacts(
     wasm_bindgen_futures::spawn_local(async move {
         let result: anyhow::Result<_> = async {
             tracing::info!(profile = %profile.id, rootfs = %rootfs_artifact, "opening rootfs for web boot");
+            let make_opts = |switchroot_fs: Stage0SwitchrootFs| Stage0Options {
+                switchroot_fs,
+                extra_modules: Vec::new(),
+                kernel_override: None,
+                dtb_override: None,
+                dtbo_overlays: dtbo_overlays.clone(),
+                enable_serial: boot_config.enable_serial,
+                mimic_fastboot: true,
+                smoo_vendor: Some(smoo_vendor),
+                smoo_product: Some(smoo_product),
+                smoo_serial: smoo_serial.clone(),
+                personalization: personalization.clone(),
+            };
+
             #[cfg(target_arch = "wasm32")]
-            let (provider, size_bytes, gibblox_worker, rootfs_identity) = {
+            let (build, size_bytes, gibblox_worker, rootfs_identity) = {
                 let gibblox_worker = spawn_gibblox_worker(rootfs_artifact.clone()).await?;
-                let reader_for_erofs = gibblox_worker.create_reader().await.map_err(|err| {
+                let reader_for_rootfs = gibblox_worker.create_reader().await.map_err(|err| {
                     anyhow::anyhow!("attach gibblox block reader for stage0: {err}")
                 })?;
-                let size_bytes = reader_size_bytes(&reader_for_erofs).await?;
-                let rootfs_identity = block_identity_string(&reader_for_erofs);
-                let provider = ErofsRootfs::new(Arc::new(reader_for_erofs), size_bytes).await?;
-                (provider, size_bytes, Some(gibblox_worker), rootfs_identity)
+                let reader = Arc::new(reader_for_rootfs);
+                let size_bytes = reader_size_bytes(reader.as_ref()).await?;
+                let rootfs_identity = block_identity_string(reader.as_ref());
+                let build = match ErofsRootfs::new(reader.clone(), size_bytes).await {
+                    Ok(provider) => {
+                        let opts = make_opts(Stage0SwitchrootFs::Erofs);
+                        build_stage0(&profile, &provider, &opts, nonempty(&extra_kargs), None)
+                            .await
+                            .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?
+                    }
+                    Err(erofs_err) => {
+                        let provider = Ext4Rootfs::new(reader.clone()).await.map_err(|ext4_err| {
+                            anyhow::anyhow!(
+                                "rootfs is neither EROFS nor ext4 (erofs: {erofs_err}; ext4: {ext4_err})"
+                            )
+                        })?;
+                        let opts = make_opts(Stage0SwitchrootFs::Ext4);
+                        build_stage0(&profile, &provider, &opts, nonempty(&extra_kargs), None)
+                            .await
+                            .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?
+                    }
+                };
+                (build, size_bytes, Some(gibblox_worker), rootfs_identity)
             };
             #[cfg(not(target_arch = "wasm32"))]
-            let (provider, size_bytes, rootfs_identity) = {
+            let (build, size_bytes, rootfs_identity) = {
                 let url = Url::parse(&rootfs_artifact)
                     .map_err(|err| anyhow::anyhow!("parse rootfs URL {rootfs_artifact}: {err}"))?;
                 let http_reader = HttpBlockReader::new(
@@ -249,24 +279,32 @@ async fn build_stage0_artifacts(
                     None => reader,
                 };
                 let size_bytes = reader_size_bytes(reader.as_ref()).await?;
-                let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
+                let build = match ErofsRootfs::new(reader.clone(), size_bytes).await {
+                    Ok(provider) => {
+                        let opts = make_opts(Stage0SwitchrootFs::Erofs);
+                        build_stage0(&profile, &provider, &opts, nonempty(&extra_kargs), None)
+                            .await
+                            .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?
+                    }
+                    Err(erofs_err) => {
+                        let provider = Ext4Rootfs::new(reader.clone()).await.map_err(|ext4_err| {
+                            anyhow::anyhow!(
+                                "rootfs is neither EROFS nor ext4 (erofs: {erofs_err}; ext4: {ext4_err})"
+                            )
+                        })?;
+                        let opts = make_opts(Stage0SwitchrootFs::Ext4);
+                        build_stage0(&profile, &provider, &opts, nonempty(&extra_kargs), None)
+                            .await
+                            .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?
+                    }
+                };
                 let identity = block_identity_string(reader.as_ref());
-                (provider, size_bytes, identity)
+                (build, size_bytes, identity)
             };
 
             tracing::info!(profile = %profile.id, "building stage0 payload");
             #[cfg(target_arch = "wasm32")]
             gloo_timers::future::sleep(std::time::Duration::from_millis(100)).await;
-
-            let build = build_stage0(
-                &profile,
-                &provider,
-                &stage0_opts,
-                nonempty(&extra_kargs),
-                None,
-            )
-            .await
-            .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?;
 
             Ok((
                 build,

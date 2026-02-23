@@ -1,15 +1,14 @@
 use std::collections::BTreeMap;
 
 use fastboop_core::{
-    BootProfile, BootProfileArtifactSource, BootProfileArtifactSourceCasync,
+    decode_boot_profile, encode_boot_profile, resolve_effective_boot_profile_stage0,
+    validate_boot_profile, BootProfile, BootProfileArtifactSource, BootProfileArtifactSourceCasync,
     BootProfileArtifactSourceCasyncSource, BootProfileArtifactSourceFileSource,
     BootProfileArtifactSourceGpt, BootProfileArtifactSourceGptSource,
     BootProfileArtifactSourceHttpSource, BootProfileArtifactSourceMbr,
     BootProfileArtifactSourceMbrSource, BootProfileCodecError, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
     BootProfileRootfsExt4Source, BootProfileStage0, BootProfileValidationError,
-    decode_boot_profile, encode_boot_profile, resolve_effective_boot_profile_stage0,
-    validate_boot_profile,
 };
 
 #[test]
@@ -34,7 +33,7 @@ fn rejects_boot_profile_with_invalid_magic() {
 fn resolves_effective_stage0_for_device_override() {
     let profile = sample_profile();
     let resolved = resolve_effective_boot_profile_stage0(&profile, "oneplus-fajita");
-    assert_eq!(resolved.extra_modules, vec!["erofs", "qcom-foo"]);
+    assert_eq!(resolved.extra_modules, vec!["stage0-base", "qcom-foo"]);
     assert_eq!(
         resolved.extra_cmdline,
         Some("selinux=0 console=ttyMSM0,115200n8".to_string())
@@ -195,7 +194,7 @@ fn sample_profile() -> BootProfile {
         dt_overlays: vec![vec![0xAA]],
         extra_cmdline: Some("selinux=0".to_string()),
         stage0: BootProfileStage0 {
-            extra_modules: vec!["erofs".to_string()],
+            extra_modules: vec!["stage0-base".to_string()],
             devices,
         },
     }

@@ -12,7 +12,8 @@ use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
 use fastboop_rootfs_erofs::ErofsRootfs;
-use fastboop_stage0_generator::{build_stage0, Stage0Options};
+use fastboop_rootfs_ext4::Ext4Rootfs;
+use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
 use gibblox_core::{block_identity_string, BlockReader};
@@ -85,22 +86,17 @@ pub async fn boot_selected_device(
     } else {
         Vec::new()
     };
-    let stage0_opts = Stage0Options {
-        extra_modules: vec!["erofs".to_string()],
-        kernel_override: None,
-        dtb_override: None,
+    let (build, runtime) = build_stage0_artifacts(
+        session.device.profile.clone(),
+        boot_config,
         dtbo_overlays,
-        enable_serial: boot_config.enable_serial,
-        mimic_fastboot: true,
-        smoo_vendor: Some(session.device.vid),
-        smoo_product: Some(session.device.pid),
-        smoo_serial: session.device.serial.clone(),
-        personalization: Some(personalization_from_host()),
-    };
-    let (build, runtime) =
-        build_stage0_artifacts(session.device.profile.clone(), stage0_opts, boot_config)
-            .await
-            .context("open rootfs and build stage0")?;
+        session.device.vid,
+        session.device.pid,
+        session.device.serial.clone(),
+        Some(personalization_from_host()),
+    )
+    .await
+    .context("open rootfs and build stage0")?;
 
     update_session_phase(
         sessions,
@@ -191,8 +187,12 @@ pub async fn boot_selected_device(
 
 async fn build_stage0_artifacts(
     profile: fastboop_core::DeviceProfile,
-    stage0_opts: Stage0Options,
     boot_config: BootConfig,
+    dtbo_overlays: Vec<Vec<u8>>,
+    smoo_vendor: u16,
+    smoo_product: u16,
+    smoo_serial: Option<String>,
+    personalization: Option<Personalization>,
 ) -> Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
     let rootfs_artifact = boot_config.rootfs_artifact.trim().to_string();
     if rootfs_artifact.is_empty() {
@@ -236,12 +236,41 @@ async fn build_stage0_artifacts(
                         cached
                     };
                     let size_bytes = reader_size_bytes(reader.as_ref()).await?;
-                    let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
+                    let make_opts = |switchroot_fs: Stage0SwitchrootFs| Stage0Options {
+                        switchroot_fs,
+                        extra_modules: Vec::new(),
+                        kernel_override: None,
+                        dtb_override: None,
+                        dtbo_overlays: dtbo_overlays.clone(),
+                        enable_serial: boot_config.enable_serial,
+                        mimic_fastboot: true,
+                        smoo_vendor: Some(smoo_vendor),
+                        smoo_product: Some(smoo_product),
+                        smoo_serial: smoo_serial.clone(),
+                        personalization: personalization.clone(),
+                    };
                     info!(profile = %profile.id, "building stage0 payload");
-                    let build =
-                        build_stage0(&profile, &provider, &stage0_opts, nonempty(&extra_kargs), None)
-                            .await
-                            .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
+                    let build = match ErofsRootfs::new(reader.clone(), size_bytes).await {
+                        Ok(provider) => {
+                            let opts = make_opts(Stage0SwitchrootFs::Erofs);
+                            build_stage0(&profile, &provider, &opts, nonempty(&extra_kargs), None)
+                                .await
+                                .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?
+                        }
+                        Err(erofs_err) => {
+                            let provider = Ext4Rootfs::new(reader.clone()).await.map_err(
+                                |ext4_err| {
+                                    anyhow!(
+                                        "rootfs is neither EROFS nor ext4 (erofs: {erofs_err}; ext4: {ext4_err})"
+                                    )
+                                },
+                            )?;
+                            let opts = make_opts(Stage0SwitchrootFs::Ext4);
+                            build_stage0(&profile, &provider, &opts, nonempty(&extra_kargs), None)
+                                .await
+                                .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?
+                        }
+                    };
                     let rootfs_identity = block_identity_string(reader.as_ref());
                     Ok((
                         build,

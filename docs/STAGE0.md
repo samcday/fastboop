@@ -30,7 +30,7 @@ Stage0 must do *only* the following:
 1. Mount minimal virtual filesystems (`/proc`, `/sys`, `/dev`, `/run`)
 2. Load a host-generated kernel module list deterministically (no `modprobe`)
 3. Configure gadget stack + FunctionFS, then spawn embedded `smoo-gadget-app`
-4. Wait for smoo-exported block device and mount root (`erofs` lower + tmpfs `overlay` upper)
+4. Wait for smoo-exported block device and mount root (`erofs` or `ext4` lower + tmpfs `overlay` upper)
 5. Exec distro init (`/lib/systemd/systemd` or `/sbin/init`)
 
 Anything beyond this is out of scope for v0.

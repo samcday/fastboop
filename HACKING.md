@@ -29,7 +29,7 @@ Stage0 details are normative in `docs/STAGE0.md`; this is the short operational 
 - PID1 is `fastboop-stage0`.
 - Stage0 mounts core virtual filesystems and loads required modules.
 - Stage0 configures gadget/FunctionFS and starts embedded `smoo-gadget-app` as a child process.
-- Stage0 waits for exported block device, mounts lower EROFS + upper tmpfs overlay.
+- Stage0 waits for exported block device, mounts lower rootfs (`erofs` or `ext4`) + upper tmpfs overlay.
 - Stage0 switches root and execs distro init (`/lib/systemd/systemd` or `/sbin/init`).
 
 If gadget runtime fails before handoff, stage0 fails loudly.
