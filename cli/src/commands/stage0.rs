@@ -15,13 +15,14 @@ use url::Url;
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
 
 use super::{
-    OstreeArg, auto_detect_ostree_deployment_path, open_rootfs_block_reader, parse_ostree_arg,
-    read_dtbo_overlays, read_existing_initrd,
+    ArtifactReaderResolver, OstreeArg, RootfsKindHint, auto_detect_ostree_deployment_path,
+    parse_ostree_arg, read_dtbo_overlays, read_existing_initrd,
+    resolve_boot_profile_source_overrides,
 };
 
 #[derive(Args)]
 pub struct Stage0Args {
-    /// Path or HTTP(S) URL to rootfs image (EROFS/ext4), or HTTP(S) casync blob index (.caibx), containing kernel/modules.
+    /// Path/URL to rootfs image pipeline input, or a compiled BootProfile binary file.
     #[arg(value_name = "ROOTFS")]
     pub rootfs: PathBuf,
     /// Resolve kernel/modules inside this OSTree deployment path (`--ostree` auto-detects).
@@ -63,7 +64,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         )
     })?;
 
-    let dtb_override = match &args.dtb {
+    let cli_dtb_override = match &args.dtb {
         Some(path) => {
             Some(std::fs::read(path).with_context(|| format!("reading dtb {}", path.display()))?)
         }
@@ -72,18 +73,8 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
 
     let dtbo_overlays = read_dtbo_overlays(&args.dtbo)?;
     let ostree_arg = parse_ostree_arg(args.ostree.as_ref())?;
-    let opts = Stage0Options {
-        extra_modules: args.require_modules,
-        dtb_override,
-        dtbo_overlays,
-
-        enable_serial: args.serial,
-        mimic_fastboot: false,
-        smoo_vendor: None,
-        smoo_product: None,
-        smoo_serial: None,
-        personalization: None,
-    };
+    let extra_modules = args.require_modules;
+    let serial_enabled = args.serial;
 
     let existing = read_existing_initrd(&args.augment)?;
     let cmdline_append = args
@@ -93,25 +84,51 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
+    let mut artifact_resolver = ArtifactReaderResolver::new();
     let build = {
         let rootfs_str = args.rootfs.to_string_lossy();
-        let reader = open_rootfs_block_reader(&args.rootfs).await?;
+        let input = artifact_resolver.open_rootfs_input(&args.rootfs).await?;
+        let profile_source_overrides = resolve_boot_profile_source_overrides(
+            input.boot_profile.as_ref(),
+            profile,
+            &mut artifact_resolver,
+        )
+        .await?;
+        let reader = input.reader;
 
-        let reader: Arc<dyn BlockReader> = match zip_entry_name_from_rootfs(&rootfs_str)? {
-            Some(entry_name) => {
-                let zip_reader = ZipEntryBlockReader::new(&entry_name, reader)
-                    .await
-                    .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
-                Arc::new(zip_reader)
-            }
-            None => reader,
+        let reader: Arc<dyn BlockReader> = match input.allow_zip_entry_probe {
+            true => match zip_entry_name_from_rootfs(&rootfs_str)? {
+                Some(entry_name) => {
+                    let zip_reader = ZipEntryBlockReader::new(&entry_name, reader)
+                        .await
+                        .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
+                    Arc::new(zip_reader)
+                }
+                None => reader,
+            },
+            false => reader,
         };
 
         let total_blocks = reader.total_blocks().await?;
         let image_size_bytes = total_blocks * reader.block_size() as u64;
+        let opts = Stage0Options {
+            extra_modules,
+            kernel_override: profile_source_overrides.kernel_override,
+            dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
+            dtbo_overlays,
+            enable_serial: serial_enabled,
+            mimic_fastboot: false,
+            smoo_vendor: None,
+            smoo_product: None,
+            smoo_serial: None,
+            personalization: None,
+        };
 
-        let build = match ErofsRootfs::new(reader.clone(), image_size_bytes).await {
-            Ok(provider) => {
+        let build = match input.kind_hint {
+            Some(RootfsKindHint::Erofs) => {
+                let provider = ErofsRootfs::new(reader.clone(), image_size_bytes)
+                    .await
+                    .map_err(|err| anyhow!("boot profile rootfs declared EROFS but reader failed: {err}"))?;
                 let selected_ostree = match &ostree_arg {
                     OstreeArg::Disabled => None,
                     OstreeArg::AutoDetect => {
@@ -159,10 +176,10 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                     .await
                 }
             }
-            Err(erofs_err) => {
+            Some(RootfsKindHint::Ext4) => {
                 let provider = Ext4Rootfs::new(reader).await.map_err(|ext4_err| {
                     anyhow!(
-                        "rootfs is neither EROFS nor ext4 (erofs: {erofs_err}; ext4: {ext4_err})"
+                        "boot profile rootfs declared ext4 but reader failed: {ext4_err}"
                     )
                 })?;
 
@@ -181,6 +198,78 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                 )
                 .await
             }
+            None => match ErofsRootfs::new(reader.clone(), image_size_bytes).await {
+                Ok(provider) => {
+                    let selected_ostree = match &ostree_arg {
+                        OstreeArg::Disabled => None,
+                        OstreeArg::AutoDetect => {
+                            let detected = auto_detect_ostree_deployment_path(&provider).await?;
+                            debug!(ostree = %detected, "auto-detected ostree deployment path");
+                            Some(detected)
+                        }
+                        OstreeArg::Explicit(path) => Some(path.clone()),
+                    };
+
+                    let mut extra_parts = Vec::new();
+                    if let Some(ostree) = selected_ostree.as_deref() {
+                        extra_parts.push(format!("ostree=/{ostree}"));
+                    }
+                    if let Some(cmdline) = cmdline_append.as_deref() {
+                        extra_parts.push(cmdline.to_string());
+                    }
+                    let extra_cmdline = if extra_parts.is_empty() {
+                        None
+                    } else {
+                        Some(extra_parts.join(" "))
+                    };
+
+                    if let Some(ostree) = selected_ostree.as_deref() {
+                        let resolved_ostree =
+                            OstreeRootfs::resolve_deployment_path(&provider, ostree).await?;
+                        debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
+                        let provider = OstreeRootfs::new(provider, &resolved_ostree)?;
+                        build_stage0(
+                            profile,
+                            &provider,
+                            &opts,
+                            extra_cmdline.as_deref(),
+                            existing.as_deref(),
+                        )
+                        .await
+                    } else {
+                        build_stage0(
+                            profile,
+                            &provider,
+                            &opts,
+                            extra_cmdline.as_deref(),
+                            existing.as_deref(),
+                        )
+                        .await
+                    }
+                }
+                Err(erofs_err) => {
+                    let provider = Ext4Rootfs::new(reader).await.map_err(|ext4_err| {
+                        anyhow!(
+                            "rootfs is neither EROFS nor ext4 (erofs: {erofs_err}; ext4: {ext4_err})"
+                        )
+                    })?;
+
+                    if !matches!(&ostree_arg, OstreeArg::Disabled) {
+                        bail!(
+                            "--ostree requires an EROFS rootfs; ext4 rootfs images do not support OSTree path resolution"
+                        );
+                    }
+
+                    build_stage0(
+                        profile,
+                        &provider,
+                        &opts,
+                        cmdline_append.as_deref(),
+                        existing.as_deref(),
+                    )
+                    .await
+                }
+            },
         };
         anyhow::Ok(build)
     }?

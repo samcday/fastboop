@@ -25,6 +25,8 @@ gibblox-cache = { path = "../gibblox/crates/gibblox-cache", features = ["std"] }
 gibblox-cache-store-std = { path = "../gibblox/crates/gibblox-cache-store-std" }
 gibblox-file = { path = "../gibblox/crates/gibblox-file" }
 gibblox-http = { path = "../gibblox/crates/gibblox-http", default-features = false, features = ["native-client"] }
+gibblox-android-sparse = { path = "../gibblox/crates/gibblox-android-sparse", features = ["std"] }
+gibblox-xz = { path = "../gibblox/crates/gibblox-xz", features = ["std"] }
 gibblox-zip = { path = "../gibblox/crates/gibblox-zip", features = ["std"] }
 smoo-host-core = { path = "../smoo/crates/smoo-host-core" }
 smoo-host-session = { path = "../smoo/crates/smoo-host-session" }

@@ -2901,6 +2901,7 @@ dependencies = [
  "fastboop-rootfs-erofs",
  "fastboop-rootfs-ext4",
  "fastboop-stage0-generator",
+ "gibblox-android-sparse",
  "gibblox-cache",
  "gibblox-cache-store-std",
  "gibblox-casync",
@@ -2908,6 +2909,7 @@ dependencies = [
  "gibblox-core",
  "gibblox-file",
  "gibblox-http",
+ "gibblox-xz",
  "gibblox-zip",
  "ratatui",
  "serde",
@@ -3559,6 +3561,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-android-sparse"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "tracing",
+]
+
+[[package]]
 name = "gibblox-blockreader-messageport"
 version = "0.0.1"
 dependencies = [
@@ -3709,6 +3721,19 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "gibblox-xz"
+version = "0.0.1"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "crc32fast",
+ "futures",
+ "gibblox-core",
+ "tracing",
+ "xz4rust",
 ]
 
 [[package]]
@@ -10835,6 +10860,15 @@ name = "xxhash-rust"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
+
+[[package]]
+name = "xz4rust"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1053c1562c16e3760559c390d3b690ae6b524c200eb9a7ddb5d43c77d000832d"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "yazi"
