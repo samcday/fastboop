@@ -504,11 +504,9 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
     }
     info!("pid1: switched root");
 
-    ensure_kernel_mounts()?;
     log_mountinfo("before exec /sbin/init");
     for path in [
         "/proc/self/mountinfo",
-        "/sys/fs/cgroup",
         "/dev/console",
         "/proc",
         "/sys",
@@ -700,94 +698,6 @@ fn log_mountinfo(context: &str) {
             warn!("pid1: failed to read mountinfo ({context}): {err}");
         }
     }
-}
-
-fn ensure_kernel_mounts() -> Result<()> {
-    ensure_cgroup2_mount()?;
-    ensure_bpffs_mount()?;
-    ensure_securityfs_mount()?;
-    ensure_devpts_mount()?;
-    ensure_dev_shm_mount()?;
-    Ok(())
-}
-
-fn ensure_cgroup2_mount() -> Result<()> {
-    let cgroup_path = "/sys/fs/cgroup";
-    std::fs::create_dir_all(cgroup_path).ok();
-    if is_mount_point(cgroup_path)? {
-        info!("pid1: cgroup already mounted at {cgroup_path}");
-    } else {
-        mount_fs(Some("cgroup2"), cgroup_path, Some("cgroup2"), 0, None)
-            .context("mount cgroup2")?;
-        info!("pid1: mounted cgroup2 at {cgroup_path}");
-    }
-    if let Ok(controllers) = std::fs::read_to_string("/sys/fs/cgroup/cgroup.controllers") {
-        let controllers = controllers.trim();
-        info!(
-            "pid1: cgroup controllers: {}",
-            if controllers.is_empty() {
-                "<empty>"
-            } else {
-                controllers
-            }
-        );
-    }
-    Ok(())
-}
-
-fn ensure_bpffs_mount() -> Result<()> {
-    let path = "/sys/fs/bpf";
-    std::fs::create_dir_all(path).ok();
-    if is_mount_point(path)? {
-        info!("pid1: bpffs already mounted at {path}");
-        return Ok(());
-    }
-    mount_fs(Some("bpffs"), path, Some("bpf"), 0, None).context("mount bpffs")?;
-    info!("pid1: mounted bpffs at {path}");
-    Ok(())
-}
-
-fn ensure_securityfs_mount() -> Result<()> {
-    let path = "/sys/kernel/security";
-    std::fs::create_dir_all(path).ok();
-    if is_mount_point(path)? {
-        info!("pid1: securityfs already mounted at {path}");
-        return Ok(());
-    }
-    mount_fs(Some("securityfs"), path, Some("securityfs"), 0, None).context("mount securityfs")?;
-    info!("pid1: mounted securityfs at {path}");
-    Ok(())
-}
-
-fn ensure_devpts_mount() -> Result<()> {
-    let path = "/dev/pts";
-    std::fs::create_dir_all(path).ok();
-    if is_mount_point(path)? {
-        info!("pid1: devpts already mounted at {path}");
-        return Ok(());
-    }
-    mount_fs(
-        Some("devpts"),
-        path,
-        Some("devpts"),
-        0,
-        Some("mode=620,ptmxmode=666"),
-    )
-    .context("mount devpts")?;
-    info!("pid1: mounted devpts at {path}");
-    Ok(())
-}
-
-fn ensure_dev_shm_mount() -> Result<()> {
-    let path = "/dev/shm";
-    std::fs::create_dir_all(path).ok();
-    if is_mount_point(path)? {
-        info!("pid1: tmpfs already mounted at {path}");
-        return Ok(());
-    }
-    mount_fs(Some("tmpfs"), path, Some("tmpfs"), 0, Some("mode=1777")).context("mount /dev/shm")?;
-    info!("pid1: mounted tmpfs at {path}");
-    Ok(())
 }
 
 fn cmdline_u16(key: &str) -> Option<u16> {
