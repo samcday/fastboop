@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use fastboop_rootfs_erofs::{ErofsRootfs, OstreeRootfs};
 use fastboop_rootfs_ext4::Ext4Rootfs;
-use fastboop_stage0_generator::{Stage0Options, build_stage0};
+use fastboop_stage0_generator::{Stage0Options, Stage0SwitchrootFs, build_stage0};
 use gibblox_core::BlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 use tracing::debug;
@@ -111,11 +111,14 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
 
         let total_blocks = reader.total_blocks().await?;
         let image_size_bytes = total_blocks * reader.block_size() as u64;
-        let opts = Stage0Options {
-            extra_modules,
-            kernel_override: profile_source_overrides.kernel_override,
-            dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
-            dtbo_overlays,
+        let kernel_override = profile_source_overrides.kernel_override;
+        let dtb_override = cli_dtb_override.or(profile_source_overrides.dtb_override);
+        let make_opts = |switchroot_fs: Stage0SwitchrootFs| Stage0Options {
+            switchroot_fs,
+            extra_modules: extra_modules.clone(),
+            kernel_override: kernel_override.clone(),
+            dtb_override: dtb_override.clone(),
+            dtbo_overlays: dtbo_overlays.clone(),
             enable_serial: serial_enabled,
             mimic_fastboot: false,
             smoo_vendor: None,
@@ -126,6 +129,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
 
         let build = match input.kind_hint {
             Some(RootfsKindHint::Erofs) => {
+                let opts = make_opts(Stage0SwitchrootFs::Erofs);
                 let provider = ErofsRootfs::new(reader.clone(), image_size_bytes)
                     .await
                     .map_err(|err| anyhow!("boot profile rootfs declared EROFS but reader failed: {err}"))?;
@@ -177,6 +181,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                 }
             }
             Some(RootfsKindHint::Ext4) => {
+                let opts = make_opts(Stage0SwitchrootFs::Ext4);
                 let provider = Ext4Rootfs::new(reader).await.map_err(|ext4_err| {
                     anyhow!(
                         "boot profile rootfs declared ext4 but reader failed: {ext4_err}"
@@ -200,6 +205,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
             }
             None => match ErofsRootfs::new(reader.clone(), image_size_bytes).await {
                 Ok(provider) => {
+                    let opts = make_opts(Stage0SwitchrootFs::Erofs);
                     let selected_ostree = match &ostree_arg {
                         OstreeArg::Disabled => None,
                         OstreeArg::AutoDetect => {
@@ -248,6 +254,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                     }
                 }
                 Err(erofs_err) => {
+                    let opts = make_opts(Stage0SwitchrootFs::Ext4);
                     let provider = Ext4Rootfs::new(reader).await.map_err(|ext4_err| {
                         anyhow!(
                             "rootfs is neither EROFS nor ext4 (erofs: {erofs_err}; ext4: {ext4_err})"

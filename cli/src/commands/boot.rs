@@ -16,7 +16,7 @@ use fastboop_core::fastboot::{boot, download};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_rootfs_erofs::{ErofsRootfs, OstreeRootfs};
 use fastboop_rootfs_ext4::Ext4Rootfs;
-use fastboop_stage0_generator::{Stage0Options, build_stage0};
+use fastboop_stage0_generator::{Stage0Options, Stage0SwitchrootFs, build_stage0};
 use gibblox_core::{BlockReader, block_identity_string};
 use gibblox_zip::ZipEntryBlockReader;
 use tokio_util::sync::CancellationToken;
@@ -298,23 +298,30 @@ async fn run_boot_inner(
         let total_blocks = reader.total_blocks().await?;
         let image_size_bytes = total_blocks * reader.block_size() as u64;
         let image_identity = block_identity_string(reader.as_ref());
-        let opts = Stage0Options {
-            extra_modules,
-            kernel_override: profile_source_overrides.kernel_override,
-            dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
-            dtbo_overlays,
+        let kernel_override = profile_source_overrides.kernel_override;
+        let dtb_override = cli_dtb_override.or(profile_source_overrides.dtb_override);
+        let smoo_vendor = detected_device.as_ref().map(|device| device.vid);
+        let smoo_product = detected_device.as_ref().map(|device| device.pid);
+        let smoo_serial = detected_device
+            .as_ref()
+            .and_then(|device| device.serial.clone());
+        let make_opts = |switchroot_fs: Stage0SwitchrootFs| Stage0Options {
+            switchroot_fs,
+            extra_modules: extra_modules.clone(),
+            kernel_override: kernel_override.clone(),
+            dtb_override: dtb_override.clone(),
+            dtbo_overlays: dtbo_overlays.clone(),
             enable_serial: serial_enabled,
             mimic_fastboot: false,
-            smoo_vendor: detected_device.as_ref().map(|device| device.vid),
-            smoo_product: detected_device.as_ref().map(|device| device.pid),
-            smoo_serial: detected_device
-                .as_ref()
-                .and_then(|device| device.serial.clone()),
-            personalization,
+            smoo_vendor,
+            smoo_product,
+            smoo_serial: smoo_serial.clone(),
+            personalization: personalization.clone(),
         };
 
         let build = match input.kind_hint {
             Some(RootfsKindHint::Erofs) => {
+                let opts = make_opts(Stage0SwitchrootFs::Erofs);
                 let provider = ErofsRootfs::new(reader.clone(), image_size_bytes)
                     .await
                     .map_err(|err| {
@@ -371,6 +378,7 @@ async fn run_boot_inner(
                 }
             }
             Some(RootfsKindHint::Ext4) => {
+                let opts = make_opts(Stage0SwitchrootFs::Ext4);
                 let provider = Ext4Rootfs::new(reader.clone()).await.map_err(|ext4_err| {
                     anyhow!("boot profile rootfs declared ext4 but reader failed: {ext4_err}")
                 })?;
@@ -405,6 +413,7 @@ async fn run_boot_inner(
             }
             None => match ErofsRootfs::new(reader.clone(), image_size_bytes).await {
                 Ok(provider) => {
+                    let opts = make_opts(Stage0SwitchrootFs::Erofs);
                     let selected_ostree = match &ostree_arg {
                         OstreeArg::Disabled => None,
                         OstreeArg::AutoDetect => {
@@ -456,6 +465,7 @@ async fn run_boot_inner(
                     }
                 }
                 Err(erofs_err) => {
+                    let opts = make_opts(Stage0SwitchrootFs::Ext4);
                     let provider = Ext4Rootfs::new(reader.clone()).await.map_err(|ext4_err| {
                         anyhow!(
                             "rootfs is neither EROFS nor ext4 (erofs: {erofs_err}; ext4: {ext4_err})"
