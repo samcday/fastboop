@@ -26,6 +26,7 @@ use gibblox_casync_std::{
     StdCasyncIndexLocator, StdCasyncIndexSource,
 };
 use gibblox_core::{BlockReader, GptBlockReader, GptPartitionSelector, ReadContext};
+use gibblox_fat::FatFs;
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
@@ -73,12 +74,13 @@ impl ArtifactReaderResolver {
         if let Some(profile) = try_decode_boot_profile_from_rootfs_arg(rootfs).await? {
             let reader = self.open_artifact_source(profile.rootfs.source()).await?;
             let kind_hint = match &profile.rootfs {
-                BootProfileRootfs::Erofs(_) => RootfsKindHint::Erofs,
-                BootProfileRootfs::Ext4(_) => RootfsKindHint::Ext4,
+                BootProfileRootfs::Erofs(_) => Some(RootfsKindHint::Erofs),
+                BootProfileRootfs::Ext4(_) => Some(RootfsKindHint::Ext4),
+                BootProfileRootfs::Fat(_) => None,
             };
             return Ok(RootfsInput {
                 reader,
-                kind_hint: Some(kind_hint),
+                kind_hint,
                 allow_zip_entry_probe: false,
                 boot_profile: Some(profile),
             });
@@ -504,6 +506,7 @@ pub(crate) async fn resolve_boot_profile_source_overrides(
 enum ProfileSourceRootfs {
     Erofs(ErofsRootfs),
     Ext4(Ext4Rootfs),
+    Fat(FatFs),
 }
 
 impl ProfileSourceRootfs {
@@ -525,6 +528,12 @@ impl ProfileSourceRootfs {
                     .map_err(|err| anyhow!("open boot profile ext4 source: {err}"))?;
                 Ok(Self::Ext4(rootfs))
             }
+            BootProfileRootfs::Fat(_) => {
+                let rootfs = FatFs::open(reader)
+                    .await
+                    .map_err(|err| anyhow!("open boot profile fat source: {err}"))?;
+                Ok(Self::Fat(rootfs))
+            }
         }
     }
 
@@ -538,6 +547,10 @@ impl ProfileSourceRootfs {
                 .read_all(path)
                 .await
                 .map_err(|err| anyhow!("read boot profile ext4 path {path}: {err}")),
+            Self::Fat(rootfs) => rootfs
+                .read_all(path)
+                .await
+                .map_err(|err| anyhow!("read boot profile fat path {path}: {err}")),
         }
     }
 
@@ -551,6 +564,10 @@ impl ProfileSourceRootfs {
                 .exists(path)
                 .await
                 .map_err(|err| anyhow!("check boot profile ext4 path {path}: {err}")),
+            Self::Fat(rootfs) => rootfs
+                .exists(path)
+                .await
+                .map_err(|err| anyhow!("check boot profile fat path {path}: {err}")),
         }
     }
 }

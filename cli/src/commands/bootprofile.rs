@@ -2,10 +2,10 @@ use std::fs;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
 use fastboop_core::{
-    BootProfileManifest, decode_boot_profile, encode_boot_profile, validate_boot_profile,
+    decode_boot_profile, encode_boot_profile, validate_boot_profile, BootProfileManifest,
 };
 
 #[derive(Args)]
@@ -286,6 +286,53 @@ rootfs:
                 }
             }
             other => panic!("expected ext4 rootfs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_fat_profile_sources() {
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: pmos-fajita
+rootfs:
+  ext4:
+    gpt:
+      index: 1
+      android_sparseimg:
+        xz:
+          file: /tmp/rootfs.img.xz
+kernel:
+  path: /vmlinuz
+  fat:
+    gpt:
+      index: 0
+      android_sparseimg:
+        xz:
+          file: /tmp/rootfs.img.xz
+dtbs:
+  path: /dtbs
+  fat:
+    gpt:
+      index: 0
+      android_sparseimg:
+        xz:
+          file: /tmp/rootfs.img.xz
+"#,
+        )
+        .expect("parse manifest");
+
+        let kernel = manifest.kernel.expect("kernel source");
+        assert_eq!(kernel.path, "/vmlinuz");
+        match kernel.source {
+            BootProfileRootfs::Fat(_) => {}
+            other => panic!("expected fat kernel source, got {other:?}"),
+        }
+
+        let dtbs = manifest.dtbs.expect("dtbs source");
+        assert_eq!(dtbs.path, "/dtbs");
+        match dtbs.source {
+            BootProfileRootfs::Fat(_) => {}
+            other => panic!("expected fat dtbs source, got {other:?}"),
         }
     }
 }

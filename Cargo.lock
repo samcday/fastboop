@@ -2907,6 +2907,7 @@ dependencies = [
  "gibblox-casync",
  "gibblox-casync-std",
  "gibblox-core",
+ "gibblox-fat",
  "gibblox-file",
  "gibblox-http",
  "gibblox-mbr",
@@ -3673,6 +3674,16 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "ext4-view",
+ "gibblox-core",
+ "tracing",
+]
+
+[[package]]
+name = "gibblox-fat"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
  "gibblox-core",
  "tracing",
 ]

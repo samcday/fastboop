@@ -445,6 +445,7 @@ impl BootProfileDeviceStage0 {
 pub enum BootProfileRootfs {
     Erofs(BootProfileRootfsErofsSource),
     Ext4(BootProfileRootfsExt4Source),
+    Fat(BootProfileRootfsFatSource),
 }
 
 impl BootProfileRootfs {
@@ -452,6 +453,7 @@ impl BootProfileRootfs {
         match self {
             Self::Erofs(source) => &source.erofs,
             Self::Ext4(source) => &source.ext4,
+            Self::Fat(source) => &source.fat,
         }
     }
 }
@@ -482,6 +484,13 @@ pub struct BootProfileRootfsErofsSource {
 #[serde(deny_unknown_fields)]
 pub struct BootProfileRootfsExt4Source {
     pub ext4: BootProfileArtifactSource,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileRootfsFatSource {
+    pub fat: BootProfileArtifactSource,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
