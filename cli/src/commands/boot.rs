@@ -14,7 +14,7 @@ use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, 
 use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
-use fastboop_stage0_generator::{Stage0Options, build_stage0};
+use fastboop_stage0_generator::{Stage0Options, Stage0SwitchrootFs, build_stage0};
 use gibblox_core::{BlockReader, block_identity_string};
 use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_core::OstreeFs as OstreeRootfs;
@@ -242,6 +242,7 @@ async fn run_boot_inner(
     let dtbo_overlays = read_dtbo_overlays(&args.stage0.dtbo)?;
     let ostree_arg = parse_ostree_arg(args.stage0.ostree.as_ref())?;
     let opts = Stage0Options {
+        switchroot_fs: Stage0SwitchrootFs::Erofs,
         extra_modules: args.stage0.require_modules,
         dtb_override,
         dtbo_overlays,

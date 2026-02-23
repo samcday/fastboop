@@ -75,6 +75,36 @@ enum Stage0Role {
     FramebufferChild,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Stage0Rootfs {
+    Erofs,
+    Ext4,
+}
+
+impl Stage0Rootfs {
+    fn from_stage0_value(value: &str) -> Option<Self> {
+        match value {
+            "erofs" => Some(Self::Erofs),
+            "ext4" => Some(Self::Ext4),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Erofs => "erofs",
+            Self::Ext4 => "ext4",
+        }
+    }
+
+    fn mount_data(self) -> Option<&'static str> {
+        match self {
+            Self::Erofs => None,
+            Self::Ext4 => Some("noload"),
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "fastboop-stage0", version)]
 #[command(about = "fastboop stage0 PID1", long_about = None)]
@@ -260,18 +290,15 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
         }
     }
 
-    let default_modules = [
-        "configfs",
-        "ublk",
-        "ublk_drv",
-        "overlay",
-        "erofs",
-        "libcomposite",
-        "usb_f_fs",
-    ];
+    let switchroot_fs = stage0_rootfs().context("resolve switchroot rootfs")?;
+    info!(
+        switchroot_fs = switchroot_fs.as_str(),
+        "pid1: switchroot filesystem configured"
+    );
+
     let modules = load_modules_from_dir("/etc/modules-load.d")
-        .filter(|list| !list.is_empty())
-        .unwrap_or_else(|| default_modules.iter().map(|s| s.to_string()).collect());
+        .ok_or_else(|| anyhow!("read module load list from /etc/modules-load.d"))?;
+    debug!(module_count = modules.len(), "pid1: loaded module list");
     match ModuleIndex::load() {
         Ok(module_index) => {
             for module in modules {
@@ -347,16 +374,22 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
     std::fs::create_dir_all("/upper").ok();
     std::fs::create_dir_all("/newroot").ok();
 
-    debug!("pid1: mounting lower erofs from {ublk_dev}");
+    debug!(
+        switchroot_fs = switchroot_fs.as_str(),
+        "pid1: mounting lower rootfs from {ublk_dev}"
+    );
     mount_fs(
         Some(ublk_dev),
         "/lower",
-        Some("erofs"),
+        Some(switchroot_fs.as_str()),
         libc::MS_RDONLY as libc::c_ulong,
-        None,
+        switchroot_fs.mount_data(),
     )
-    .context("mount erofs lower")?;
-    debug!("pid1: mounted lower EROFS");
+    .with_context(|| format!("mount {} lower", switchroot_fs.as_str()))?;
+    debug!(
+        switchroot_fs = switchroot_fs.as_str(),
+        "pid1: mounted lower rootfs"
+    );
     debug!("pid1: mounting upper tmpfs");
     mount_fs(Some("tmpfs"), "/upper", Some("tmpfs"), 0, None).context("mount tmpfs upper")?;
     std::fs::create_dir_all("/upper/upper").ok();
@@ -560,6 +593,14 @@ fn cmdline_bool(key: &str) -> bool {
         };
     }
     cmdline_flag(key)
+}
+
+fn stage0_rootfs() -> Result<Stage0Rootfs> {
+    let Some(raw) = cmdline_value("stage0.rootfs") else {
+        return Err(anyhow!("missing required stage0.rootfs setting"));
+    };
+    Stage0Rootfs::from_stage0_value(raw.as_str())
+        .ok_or_else(|| anyhow!("invalid stage0.rootfs value '{raw}' (expected 'erofs' or 'ext4')"))
 }
 
 fn stage0_config() -> &'static HashMap<String, String> {
@@ -1781,5 +1822,18 @@ mod tests {
             parse_stage0_role(Some(OsStr::new("weird-value"))),
             Stage0Role::Pid1
         );
+    }
+
+    #[test]
+    fn stage0_rootfs_parser_accepts_supported_filesystems() {
+        assert_eq!(
+            Stage0Rootfs::from_stage0_value("erofs"),
+            Some(Stage0Rootfs::Erofs)
+        );
+        assert_eq!(
+            Stage0Rootfs::from_stage0_value("ext4"),
+            Some(Stage0Rootfs::Ext4)
+        );
+        assert_eq!(Stage0Rootfs::from_stage0_value("xfs"), None);
     }
 }

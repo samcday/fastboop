@@ -41,8 +41,8 @@ pub enum Stage0Error {
     KernelDecode(&'static str),
 }
 
-#[derive(Default)]
 pub struct Stage0Options {
+    pub switchroot_fs: Stage0SwitchrootFs,
     pub extra_modules: Vec<String>,
     pub dtb_override: Option<Vec<u8>>,
     pub dtbo_overlays: Vec<Vec<u8>>,
@@ -54,6 +54,24 @@ pub struct Stage0Options {
     pub personalization: Option<Personalization>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Stage0SwitchrootFs {
+    Erofs,
+    Ext4,
+}
+
+impl Stage0SwitchrootFs {
+    fn as_stage0_value(self) -> &'static str {
+        match self {
+            Self::Erofs => "erofs",
+            Self::Ext4 => "ext4",
+        }
+    }
+
+    fn module_name(self) -> &'static str {
+        self.as_stage0_value()
+    }
+}
 /// Resulting artifacts and recommended kernel cmdline additions.
 pub struct Stage0Build {
     pub kernel_image: Vec<u8>,
@@ -84,9 +102,10 @@ pub async fn build_stage0<P: Filesystem>(
     existing_cpio: Option<&[u8]>,
 ) -> Result<Stage0Build, Stage0Error> {
     let init_path = INIT_BIN_PATH.to_string();
-    let needs_modules = !opts.extra_modules.is_empty() || !profile.stage0.kernel_modules.is_empty();
+    let needs_modules = true;
     tracing::debug!(
         needs_modules,
+        switchroot_fs = opts.switchroot_fs.as_stage0_value(),
         profile_module_count = profile.stage0.kernel_modules.len(),
         extra_module_count = opts.extra_modules.len(),
         dtb_override = opts.dtb_override.is_some(),
@@ -278,6 +297,10 @@ pub async fn build_stage0<P: Filesystem>(
             cmdline_parts.extend(passthrough);
         }
     }
+    stage0_settings.insert(
+        "stage0.rootfs".to_string(),
+        opts.switchroot_fs.as_stage0_value().to_string(),
+    );
     tracing::debug!(
         stage0_setting_count = stage0_settings.len(),
         cmdline_passthrough_count = cmdline_parts.len(),
@@ -382,6 +405,7 @@ fn is_stage0_config_key(key: &str) -> bool {
         key,
         "ostree"
             | "stage0.fb"
+            | "stage0.rootfs"
             | "smoo.acm"
             | "smoo.break"
             | "smoo.queue_count"
@@ -1282,6 +1306,11 @@ fn collect_required_modules(
     for m in BASE_REQUIRED_MODULES {
         push_module_unique(&mut required, &mut required_set, m);
     }
+    push_module_unique(
+        &mut required,
+        &mut required_set,
+        opts.switchroot_fs.module_name(),
+    );
     for m in &profile.stage0.kernel_modules {
         push_module_unique(&mut required, &mut required_set, m);
     }
