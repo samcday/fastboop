@@ -22,7 +22,8 @@ spec:
     crds:
       enabled: true
     webhook:
-      enabled: false
+      hostNetwork: true
+      securePort: 10260
     config:
       apiVersion: controller.config.cert-manager.io/v1alpha1
       kind: ControllerConfiguration
