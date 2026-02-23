@@ -452,6 +452,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-android-sparse"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "tracing",
+]
+
+[[package]]
 name = "gibblox-blockreader-messageport"
 version = "0.0.1"
 dependencies = [
