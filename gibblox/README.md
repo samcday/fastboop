@@ -28,6 +28,7 @@ To gibblox you will always be just another block.
 ## Crates
 - `gibblox-core`: core traits and error types.
 - `gibblox-android-sparse`: Android sparse image block reader.
+- `gibblox-mbr`: MBR partition-backed block reader.
 - `gibblox-zip`: ZIP file entry-backed block reader (stored and deflate entries).
 - `gibblox-casync`: no_std casync index + reconstruction core.
 - `gibblox-casync-std`: native index/chunk source + integrated chunk cache/store.
