@@ -2,10 +2,10 @@ use std::fs;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Subcommand};
 use fastboop_core::{
-    decode_boot_profile, encode_boot_profile, validate_boot_profile, BootProfileManifest,
+    BootProfileManifest, decode_boot_profile, encode_boot_profile, validate_boot_profile,
 };
 
 #[derive(Args)]
