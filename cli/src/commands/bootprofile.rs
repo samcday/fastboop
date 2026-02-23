@@ -108,10 +108,22 @@ fn run_dtc(args: &[&str], input: &[u8], context: &str) -> Result<Vec<u8>> {
         .stdin
         .take()
         .ok_or_else(|| anyhow!("failed to open dtc stdin"))?;
-    stdin
-        .write_all(input)
-        .with_context(|| format!("writing input to dtc for {context}"))?;
+    let write_result = stdin.write_all(input);
     drop(stdin);
+
+    if let Err(err) = write_result {
+        let output = child
+            .wait_with_output()
+            .with_context(|| format!("waiting for dtc after write failure for {context}"))?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            return Err(err).with_context(|| format!("writing input to dtc for {context}"));
+        }
+        return Err(anyhow!(
+            "writing input to dtc for {context}: {err}; dtc stderr: {stderr}"
+        ));
+    }
 
     let output = child
         .wait_with_output()
@@ -157,5 +169,92 @@ fn io_label(path: &str) -> String {
         "stdin/stdout".to_string()
     } else {
         path.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fastboop_core::{BootProfileArtifactSource, BootProfileRootfs};
+
+    #[test]
+    fn parses_nested_rootfs_pipeline_yaml() {
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: pmos-fajita
+rootfs:
+  ext4:
+    gpt:
+      partlabel: rootfs
+      android_sparseimg:
+        xz:
+          http: https://images.postmarketos.org/example.img.xz
+"#,
+        )
+        .expect("parse manifest");
+
+        match manifest.rootfs {
+            BootProfileRootfs::Ext4(_) => {}
+            other => panic!("expected ext4 rootfs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_file_rootfs_source_yaml() {
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: local-erofs
+rootfs:
+  erofs:
+    file: ./images/rootfs.ero
+"#,
+        )
+        .expect("parse manifest");
+
+        let source = manifest.rootfs.source();
+        match source {
+            BootProfileArtifactSource::File(source) => {
+                assert_eq!(source.file, "./images/rootfs.ero")
+            }
+            other => panic!("expected file source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_kernel_and_dtbs_profile_sources() {
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: pmos-fajita
+rootfs:
+  ext4:
+    gpt:
+      index: 1
+      android_sparseimg:
+        xz:
+          file: /tmp/rootfs.img.xz
+kernel:
+  path: /vmlinuz
+  ext4:
+    gpt:
+      index: 0
+      android_sparseimg:
+        xz:
+          file: /tmp/rootfs.img.xz
+dtbs:
+  path: /dtbs
+  ext4:
+    gpt:
+      index: 0
+      android_sparseimg:
+        xz:
+          file: /tmp/rootfs.img.xz
+"#,
+        )
+        .expect("parse manifest");
+
+        let kernel = manifest.kernel.expect("kernel source");
+        assert_eq!(kernel.path, "/vmlinuz");
+        let dtbs = manifest.dtbs.expect("dtbs source");
+        assert_eq!(dtbs.path, "/dtbs");
     }
 }

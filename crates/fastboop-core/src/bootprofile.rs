@@ -1,14 +1,16 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use fastboop_schema::BootProfile;
 use fastboop_schema::bin::{
-    BOOT_PROFILE_BIN_FORMAT_VERSION, BootProfileBin, BootProfileEnvelopeBin,
+    BOOT_PROFILE_BIN_FORMAT_VERSION, BOOT_PROFILE_BIN_HEADER_LEN, BOOT_PROFILE_BIN_MAGIC,
+    BootProfileBin,
 };
+use fastboop_schema::{BootProfile, BootProfileArtifactPathSource, BootProfileArtifactSource};
 
 #[derive(Debug)]
 pub enum BootProfileCodecError {
     Decode(postcard::Error),
+    InvalidMagic,
     UnsupportedFormatVersion(u16),
 }
 
@@ -16,11 +18,16 @@ impl core::fmt::Display for BootProfileCodecError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Decode(err) => write!(f, "decode boot profile: {err}"),
+            Self::InvalidMagic => {
+                write!(
+                    f,
+                    "invalid boot profile magic (expected {BOOT_PROFILE_BIN_MAGIC:?})"
+                )
+            }
             Self::UnsupportedFormatVersion(version) => {
                 write!(
                     f,
-                    "unsupported boot profile format version {version} (expected {})",
-                    BOOT_PROFILE_BIN_FORMAT_VERSION
+                    "unsupported boot profile format version {version} (expected {BOOT_PROFILE_BIN_FORMAT_VERSION})"
                 )
             }
         }
@@ -34,21 +41,40 @@ impl From<postcard::Error> for BootProfileCodecError {
 }
 
 pub fn decode_boot_profile(bytes: &[u8]) -> Result<BootProfile, BootProfileCodecError> {
-    let envelope: BootProfileEnvelopeBin = postcard::from_bytes(bytes)?;
-    if envelope.format_version != BOOT_PROFILE_BIN_FORMAT_VERSION {
+    let Some(format_version) = boot_profile_bin_header_version(bytes) else {
+        return Err(BootProfileCodecError::InvalidMagic);
+    };
+    if format_version != BOOT_PROFILE_BIN_FORMAT_VERSION {
         return Err(BootProfileCodecError::UnsupportedFormatVersion(
-            envelope.format_version,
+            format_version,
         ));
     }
-    Ok(BootProfile::from(envelope.profile))
+
+    let payload = &bytes[BOOT_PROFILE_BIN_HEADER_LEN..];
+    let profile: BootProfileBin = postcard::from_bytes(payload)?;
+    Ok(BootProfile::from(profile))
 }
 
 pub fn encode_boot_profile(profile: &BootProfile) -> Result<Vec<u8>, postcard::Error> {
-    let envelope = BootProfileEnvelopeBin {
-        format_version: BOOT_PROFILE_BIN_FORMAT_VERSION,
-        profile: BootProfileBin::from(profile.clone()),
-    };
-    postcard::to_allocvec(&envelope)
+    let payload = postcard::to_allocvec(&BootProfileBin::from(profile.clone()))?;
+    let mut out = Vec::with_capacity(BOOT_PROFILE_BIN_HEADER_LEN + payload.len());
+    out.extend_from_slice(&BOOT_PROFILE_BIN_MAGIC);
+    out.extend_from_slice(&BOOT_PROFILE_BIN_FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&payload);
+    Ok(out)
+}
+
+pub fn boot_profile_bin_header_version(bytes: &[u8]) -> Option<u16> {
+    if bytes.len() < BOOT_PROFILE_BIN_HEADER_LEN {
+        return None;
+    }
+    if bytes[..BOOT_PROFILE_BIN_MAGIC.len()] != BOOT_PROFILE_BIN_MAGIC {
+        return None;
+    }
+    Some(u16::from_le_bytes([
+        bytes[BOOT_PROFILE_BIN_MAGIC.len()],
+        bytes[BOOT_PROFILE_BIN_MAGIC.len() + 1],
+    ]))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -83,6 +109,12 @@ pub fn resolve_effective_boot_profile_stage0(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootProfileValidationError {
     UnsupportedCasyncArchiveIndex { index: String },
+    PipelineDepthExceeded { max_depth: usize },
+    InvalidGptSelectorCount { selectors: usize },
+    EmptyGptPartlabel,
+    EmptyGptPartuuid,
+    EmptyKernelPath,
+    EmptyDtbsPath,
 }
 
 impl core::fmt::Display for BootProfileValidationError {
@@ -92,18 +124,39 @@ impl core::fmt::Display for BootProfileValidationError {
                 f,
                 "unsupported casync archive index (.caidx) in boot profile: {index}; expected casync blob index (.caibx)"
             ),
+            Self::PipelineDepthExceeded { max_depth } => {
+                write!(
+                    f,
+                    "boot profile rootfs pipeline exceeds max depth {max_depth}"
+                )
+            }
+            Self::InvalidGptSelectorCount { selectors } => write!(
+                f,
+                "boot profile gpt step must specify exactly one selector (partlabel, partuuid, or index); found {selectors}"
+            ),
+            Self::EmptyGptPartlabel => {
+                write!(f, "boot profile gpt partlabel must not be empty")
+            }
+            Self::EmptyGptPartuuid => {
+                write!(f, "boot profile gpt partuuid must not be empty")
+            }
+            Self::EmptyKernelPath => {
+                write!(f, "boot profile kernel path must not be empty")
+            }
+            Self::EmptyDtbsPath => {
+                write!(f, "boot profile dtbs path must not be empty")
+            }
         }
     }
 }
 
 pub fn validate_boot_profile(profile: &BootProfile) -> Result<(), BootProfileValidationError> {
-    if let Some(casync) = profile.rootfs.casync() {
-        let index_path = strip_query_and_fragment(casync.index.as_str());
-        if index_path.ends_with(".caidx") {
-            return Err(BootProfileValidationError::UnsupportedCasyncArchiveIndex {
-                index: casync.index.clone(),
-            });
-        }
+    validate_artifact_source(profile.rootfs.source(), 0)?;
+    if let Some(kernel) = profile.kernel.as_ref() {
+        validate_profile_artifact_path_source(kernel, BootProfileValidationError::EmptyKernelPath)?;
+    }
+    if let Some(dtbs) = profile.dtbs.as_ref() {
+        validate_profile_artifact_path_source(dtbs, BootProfileValidationError::EmptyDtbsPath)?;
     }
     Ok(())
 }
@@ -128,4 +181,72 @@ fn strip_query_and_fragment(value: &str) -> &str {
         end = end.min(pos);
     }
     &value[..end]
+}
+
+const MAX_ROOTFS_PIPELINE_DEPTH: usize = 16;
+
+fn validate_artifact_source(
+    source: &BootProfileArtifactSource,
+    depth: usize,
+) -> Result<(), BootProfileValidationError> {
+    if depth > MAX_ROOTFS_PIPELINE_DEPTH {
+        return Err(BootProfileValidationError::PipelineDepthExceeded {
+            max_depth: MAX_ROOTFS_PIPELINE_DEPTH,
+        });
+    }
+
+    match source {
+        BootProfileArtifactSource::Casync(source) => {
+            let index_path = strip_query_and_fragment(source.casync.index.as_str());
+            if index_path.ends_with(".caidx") {
+                return Err(BootProfileValidationError::UnsupportedCasyncArchiveIndex {
+                    index: source.casync.index.clone(),
+                });
+            }
+            Ok(())
+        }
+        BootProfileArtifactSource::Http(_) => Ok(()),
+        BootProfileArtifactSource::File(_) => Ok(()),
+        BootProfileArtifactSource::Xz(source) => {
+            validate_artifact_source(source.xz.as_ref(), depth + 1)
+        }
+        BootProfileArtifactSource::AndroidSparseImg(source) => {
+            validate_artifact_source(source.android_sparseimg.as_ref(), depth + 1)
+        }
+        BootProfileArtifactSource::Gpt(source) => {
+            let mut selectors = 0usize;
+
+            if let Some(partlabel) = source.gpt.partlabel.as_deref() {
+                if partlabel.trim().is_empty() {
+                    return Err(BootProfileValidationError::EmptyGptPartlabel);
+                }
+                selectors += 1;
+            }
+            if let Some(partuuid) = source.gpt.partuuid.as_deref() {
+                if partuuid.trim().is_empty() {
+                    return Err(BootProfileValidationError::EmptyGptPartuuid);
+                }
+                selectors += 1;
+            }
+            if source.gpt.index.is_some() {
+                selectors += 1;
+            }
+
+            if selectors != 1 {
+                return Err(BootProfileValidationError::InvalidGptSelectorCount { selectors });
+            }
+
+            validate_artifact_source(source.gpt.source.as_ref(), depth + 1)
+        }
+    }
+}
+
+fn validate_profile_artifact_path_source(
+    source: &BootProfileArtifactPathSource,
+    empty_path_err: BootProfileValidationError,
+) -> Result<(), BootProfileValidationError> {
+    if source.path.trim().is_empty() {
+        return Err(empty_path_err);
+    }
+    validate_artifact_source(source.artifact_source(), 0)
 }

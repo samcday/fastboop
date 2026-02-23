@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -5,39 +6,72 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Boot, BootProfile, BootProfileDevice, BootProfileDeviceStage0, BootProfileRootfs,
-    BootProfileRootfsCasync, BootProfileRootfsCasyncSource, BootProfileRootfsHttpSource,
-    BootProfileStage0, DeviceProfile, ExistsFlag, FastbootGetvarEq, FastbootGetvarExists,
-    FastbootGetvarNotEq, FastbootGetvarNotExists, InjectMac, MatchRule, NotExistsFlag, ProbeStep,
-    Stage0,
+    Boot, BootProfile, BootProfileArtifactPathSource, BootProfileArtifactSource,
+    BootProfileArtifactSourceAndroidSparseImgSource, BootProfileArtifactSourceCasync,
+    BootProfileArtifactSourceCasyncSource, BootProfileArtifactSourceFileSource,
+    BootProfileArtifactSourceGpt, BootProfileArtifactSourceGptSource,
+    BootProfileArtifactSourceHttpSource, BootProfileArtifactSourceXzSource, BootProfileDevice,
+    BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
+    BootProfileRootfsExt4Source, BootProfileStage0, DeviceProfile, ExistsFlag, FastbootGetvarEq,
+    FastbootGetvarExists, FastbootGetvarNotEq, FastbootGetvarNotExists, InjectMac, MatchRule,
+    NotExistsFlag, ProbeStep, Stage0,
 };
 
-pub const BOOT_PROFILE_BIN_FORMAT_VERSION: u16 = 1;
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct BootProfileEnvelopeBin {
-    pub format_version: u16,
-    pub profile: BootProfileBin,
-}
+pub const BOOT_PROFILE_BIN_FORMAT_VERSION: u16 = 3;
+pub const BOOT_PROFILE_BIN_MAGIC: [u8; 8] = *b"FBOOPROF";
+pub const BOOT_PROFILE_BIN_HEADER_LEN: usize = 10;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BootProfileBin {
     pub id: String,
     pub display_name: Option<String>,
     pub rootfs: BootProfileRootfsBin,
+    pub kernel: Option<BootProfileArtifactPathSourceBin>,
+    pub dtbs: Option<BootProfileArtifactPathSourceBin>,
     pub dt_overlays: Vec<Vec<u8>>,
     pub extra_cmdline: Option<String>,
     pub stage0: BootProfileStage0Bin,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BootProfileArtifactPathSourceBin {
+    pub path: String,
+    pub source: BootProfileRootfsBin,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum BootProfileRootfsBin {
+    Erofs {
+        source: BootProfileArtifactSourceBin,
+    },
+    Ext4 {
+        source: BootProfileArtifactSourceBin,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum BootProfileArtifactSourceBin {
     Casync {
         index: String,
         chunk_store: Option<String>,
     },
     Http {
         url: String,
+    },
+    Xz {
+        source: Box<BootProfileArtifactSourceBin>,
+    },
+    AndroidSparseImg {
+        source: Box<BootProfileArtifactSourceBin>,
+    },
+    Gpt {
+        partlabel: Option<String>,
+        partuuid: Option<String>,
+        index: Option<u32>,
+        source: Box<BootProfileArtifactSourceBin>,
+    },
+    File {
+        path: String,
     },
 }
 
@@ -204,6 +238,8 @@ impl From<BootProfile> for BootProfileBin {
             id: profile.id,
             display_name: profile.display_name,
             rootfs: BootProfileRootfsBin::from(profile.rootfs),
+            kernel: profile.kernel.map(BootProfileArtifactPathSourceBin::from),
+            dtbs: profile.dtbs.map(BootProfileArtifactPathSourceBin::from),
             dt_overlays: profile.dt_overlays,
             extra_cmdline: profile.extra_cmdline,
             stage0: BootProfileStage0Bin::from(profile.stage0),
@@ -217,6 +253,8 @@ impl From<BootProfileBin> for BootProfile {
             id: profile.id,
             display_name: profile.display_name,
             rootfs: BootProfileRootfs::from(profile.rootfs),
+            kernel: profile.kernel.map(BootProfileArtifactPathSource::from),
+            dtbs: profile.dtbs.map(BootProfileArtifactPathSource::from),
             dt_overlays: profile.dt_overlays,
             extra_cmdline: profile.extra_cmdline,
             stage0: BootProfileStage0::from(profile.stage0),
@@ -224,15 +262,33 @@ impl From<BootProfileBin> for BootProfile {
     }
 }
 
+impl From<BootProfileArtifactPathSource> for BootProfileArtifactPathSourceBin {
+    fn from(source: BootProfileArtifactPathSource) -> Self {
+        Self {
+            path: source.path,
+            source: BootProfileRootfsBin::from(source.source),
+        }
+    }
+}
+
+impl From<BootProfileArtifactPathSourceBin> for BootProfileArtifactPathSource {
+    fn from(source: BootProfileArtifactPathSourceBin) -> Self {
+        Self {
+            path: source.path,
+            source: BootProfileRootfs::from(source.source),
+        }
+    }
+}
+
 impl From<BootProfileRootfs> for BootProfileRootfsBin {
     fn from(rootfs: BootProfileRootfs) -> Self {
         match rootfs {
-            BootProfileRootfs::Casync(BootProfileRootfsCasyncSource {
-                casync: BootProfileRootfsCasync { index, chunk_store },
-            }) => Self::Casync { index, chunk_store },
-            BootProfileRootfs::Http(BootProfileRootfsHttpSource { http }) => {
-                Self::Http { url: http }
-            }
+            BootProfileRootfs::Erofs(BootProfileRootfsErofsSource { erofs }) => Self::Erofs {
+                source: BootProfileArtifactSourceBin::from(erofs),
+            },
+            BootProfileRootfs::Ext4(BootProfileRootfsExt4Source { ext4 }) => Self::Ext4 {
+                source: BootProfileArtifactSourceBin::from(ext4),
+            },
         }
     }
 }
@@ -240,13 +296,90 @@ impl From<BootProfileRootfs> for BootProfileRootfsBin {
 impl From<BootProfileRootfsBin> for BootProfileRootfs {
     fn from(rootfs: BootProfileRootfsBin) -> Self {
         match rootfs {
-            BootProfileRootfsBin::Casync { index, chunk_store } => {
-                Self::Casync(BootProfileRootfsCasyncSource {
-                    casync: BootProfileRootfsCasync { index, chunk_store },
+            BootProfileRootfsBin::Erofs { source } => Self::Erofs(BootProfileRootfsErofsSource {
+                erofs: BootProfileArtifactSource::from(source),
+            }),
+            BootProfileRootfsBin::Ext4 { source } => Self::Ext4(BootProfileRootfsExt4Source {
+                ext4: BootProfileArtifactSource::from(source),
+            }),
+        }
+    }
+}
+
+impl From<BootProfileArtifactSource> for BootProfileArtifactSourceBin {
+    fn from(source: BootProfileArtifactSource) -> Self {
+        match source {
+            BootProfileArtifactSource::Casync(BootProfileArtifactSourceCasyncSource {
+                casync: BootProfileArtifactSourceCasync { index, chunk_store },
+            }) => Self::Casync { index, chunk_store },
+            BootProfileArtifactSource::Http(BootProfileArtifactSourceHttpSource { http }) => {
+                Self::Http { url: http }
+            }
+            BootProfileArtifactSource::Xz(BootProfileArtifactSourceXzSource { xz }) => Self::Xz {
+                source: Box::new(Self::from(*xz)),
+            },
+            BootProfileArtifactSource::AndroidSparseImg(
+                BootProfileArtifactSourceAndroidSparseImgSource { android_sparseimg },
+            ) => Self::AndroidSparseImg {
+                source: Box::new(Self::from(*android_sparseimg)),
+            },
+            BootProfileArtifactSource::Gpt(BootProfileArtifactSourceGptSource {
+                gpt:
+                    BootProfileArtifactSourceGpt {
+                        partlabel,
+                        partuuid,
+                        index,
+                        source,
+                    },
+            }) => Self::Gpt {
+                partlabel,
+                partuuid,
+                index,
+                source: Box::new(Self::from(*source)),
+            },
+            BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource { file }) => {
+                Self::File { path: file }
+            }
+        }
+    }
+}
+
+impl From<BootProfileArtifactSourceBin> for BootProfileArtifactSource {
+    fn from(source: BootProfileArtifactSourceBin) -> Self {
+        match source {
+            BootProfileArtifactSourceBin::Casync { index, chunk_store } => {
+                Self::Casync(BootProfileArtifactSourceCasyncSource {
+                    casync: BootProfileArtifactSourceCasync { index, chunk_store },
                 })
             }
-            BootProfileRootfsBin::Http { url } => {
-                Self::Http(BootProfileRootfsHttpSource { http: url })
+            BootProfileArtifactSourceBin::Http { url } => {
+                Self::Http(BootProfileArtifactSourceHttpSource { http: url })
+            }
+            BootProfileArtifactSourceBin::Xz { source } => {
+                Self::Xz(BootProfileArtifactSourceXzSource {
+                    xz: Box::new(Self::from(*source)),
+                })
+            }
+            BootProfileArtifactSourceBin::AndroidSparseImg { source } => {
+                Self::AndroidSparseImg(BootProfileArtifactSourceAndroidSparseImgSource {
+                    android_sparseimg: Box::new(Self::from(*source)),
+                })
+            }
+            BootProfileArtifactSourceBin::Gpt {
+                partlabel,
+                partuuid,
+                index,
+                source,
+            } => Self::Gpt(BootProfileArtifactSourceGptSource {
+                gpt: BootProfileArtifactSourceGpt {
+                    partlabel,
+                    partuuid,
+                    index,
+                    source: Box::new(Self::from(*source)),
+                },
+            }),
+            BootProfileArtifactSourceBin::File { path } => {
+                Self::File(BootProfileArtifactSourceFileSource { file: path })
             }
         }
     }
