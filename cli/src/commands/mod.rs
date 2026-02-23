@@ -28,6 +28,7 @@ use gibblox_casync_std::{
 use gibblox_core::{BlockReader, GptBlockReader, GptPartitionSelector, ReadContext};
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
+use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 use gibblox_xz::XzBlockReader;
 use tracing::info;
 use url::Url;
@@ -154,6 +155,23 @@ impl ArtifactReaderResolver {
                         .map_err(|err| anyhow!("open android sparse reader: {err}"))?;
                     Arc::new(reader)
                 }
+                BootProfileArtifactSource::Mbr(source) => {
+                    let selector = if let Some(partuuid) = source.mbr.partuuid.as_deref() {
+                        MbrPartitionSelector::part_uuid(partuuid)
+                    } else if let Some(index) = source.mbr.index {
+                        MbrPartitionSelector::index(index)
+                    } else {
+                        bail!("boot profile MBR source missing selector")
+                    };
+
+                    let upstream = self
+                        .open_artifact_source(source.mbr.source.as_ref())
+                        .await?;
+                    let reader = MbrBlockReader::new(upstream, selector, DEFAULT_IMAGE_BLOCK_SIZE)
+                        .await
+                        .map_err(|err| anyhow!("open MBR partition reader: {err}"))?;
+                    Arc::new(reader)
+                }
                 BootProfileArtifactSource::Gpt(source) => {
                     let selector = if let Some(partlabel) = source.gpt.partlabel.as_deref() {
                         GptPartitionSelector::part_label(partlabel)
@@ -202,6 +220,20 @@ fn artifact_source_cache_key(source: &BootProfileArtifactSource) -> Result<Strin
             "android_sparseimg:{}",
             artifact_source_cache_key(source.android_sparseimg.as_ref())?
         )),
+        BootProfileArtifactSource::Mbr(source) => {
+            let selector = if let Some(partuuid) = source.mbr.partuuid.as_deref() {
+                format!("partuuid={partuuid}")
+            } else if let Some(index) = source.mbr.index {
+                format!("index={index}")
+            } else {
+                bail!("boot profile MBR source missing selector")
+            };
+            Ok(format!(
+                "mbr:{}:{}",
+                selector,
+                artifact_source_cache_key(source.mbr.source.as_ref())?
+            ))
+        }
         BootProfileArtifactSource::Gpt(source) => {
             let selector = if let Some(partlabel) = source.gpt.partlabel.as_deref() {
                 format!("partlabel={partlabel}")

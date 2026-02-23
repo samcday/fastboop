@@ -257,4 +257,35 @@ dtbs:
         let dtbs = manifest.dtbs.expect("dtbs source");
         assert_eq!(dtbs.path, "/dtbs");
     }
+
+    #[test]
+    fn parses_mbr_rootfs_source_yaml() {
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: pmos-arrow
+rootfs:
+  ext4:
+    mbr:
+      index: 1
+      android_sparseimg:
+        xz:
+          file: /var/home/sam/src/pmos/local-artifacts/arrow-db410c-console-20260223-1636.img.xz
+"#,
+        )
+        .expect("parse manifest");
+
+        match manifest.rootfs {
+            BootProfileRootfs::Ext4(_) => {
+                let source = manifest.rootfs.source();
+                match source {
+                    BootProfileArtifactSource::Mbr(source) => {
+                        assert_eq!(source.mbr.index, Some(1));
+                        assert_eq!(source.mbr.partuuid, None);
+                    }
+                    other => panic!("expected mbr source, got {other:?}"),
+                }
+            }
+            other => panic!("expected ext4 rootfs, got {other:?}"),
+        }
+    }
 }

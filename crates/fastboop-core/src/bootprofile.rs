@@ -110,6 +110,8 @@ pub fn resolve_effective_boot_profile_stage0(
 pub enum BootProfileValidationError {
     UnsupportedCasyncArchiveIndex { index: String },
     PipelineDepthExceeded { max_depth: usize },
+    InvalidMbrSelectorCount { selectors: usize },
+    EmptyMbrPartuuid,
     InvalidGptSelectorCount { selectors: usize },
     EmptyGptPartlabel,
     EmptyGptPartuuid,
@@ -129,6 +131,13 @@ impl core::fmt::Display for BootProfileValidationError {
                     f,
                     "boot profile rootfs pipeline exceeds max depth {max_depth}"
                 )
+            }
+            Self::InvalidMbrSelectorCount { selectors } => write!(
+                f,
+                "boot profile mbr step must specify exactly one selector (partuuid or index); found {selectors}"
+            ),
+            Self::EmptyMbrPartuuid => {
+                write!(f, "boot profile mbr partuuid must not be empty")
             }
             Self::InvalidGptSelectorCount { selectors } => write!(
                 f,
@@ -212,6 +221,25 @@ fn validate_artifact_source(
         }
         BootProfileArtifactSource::AndroidSparseImg(source) => {
             validate_artifact_source(source.android_sparseimg.as_ref(), depth + 1)
+        }
+        BootProfileArtifactSource::Mbr(source) => {
+            let mut selectors = 0usize;
+
+            if let Some(partuuid) = source.mbr.partuuid.as_deref() {
+                if partuuid.trim().is_empty() {
+                    return Err(BootProfileValidationError::EmptyMbrPartuuid);
+                }
+                selectors += 1;
+            }
+            if source.mbr.index.is_some() {
+                selectors += 1;
+            }
+
+            if selectors != 1 {
+                return Err(BootProfileValidationError::InvalidMbrSelectorCount { selectors });
+            }
+
+            validate_artifact_source(source.mbr.source.as_ref(), depth + 1)
         }
         BootProfileArtifactSource::Gpt(source) => {
             let mut selectors = 0usize;

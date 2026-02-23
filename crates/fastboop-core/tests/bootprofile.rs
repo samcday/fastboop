@@ -4,7 +4,8 @@ use fastboop_core::{
     BootProfile, BootProfileArtifactSource, BootProfileArtifactSourceCasync,
     BootProfileArtifactSourceCasyncSource, BootProfileArtifactSourceFileSource,
     BootProfileArtifactSourceGpt, BootProfileArtifactSourceGptSource,
-    BootProfileArtifactSourceHttpSource, BootProfileCodecError, BootProfileDevice,
+    BootProfileArtifactSourceHttpSource, BootProfileArtifactSourceMbr,
+    BootProfileArtifactSourceMbrSource, BootProfileCodecError, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
     BootProfileRootfsExt4Source, BootProfileStage0, BootProfileValidationError,
     decode_boot_profile, encode_boot_profile, resolve_effective_boot_profile_stage0,
@@ -94,6 +95,38 @@ fn rejects_gpt_step_without_selector() {
     assert_eq!(
         err,
         BootProfileValidationError::InvalidGptSelectorCount { selectors: 0 }
+    );
+}
+
+#[test]
+fn rejects_mbr_step_without_selector() {
+    let profile = BootProfile {
+        id: "bad-mbr".to_string(),
+        display_name: None,
+        rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+            ext4: BootProfileArtifactSource::Mbr(BootProfileArtifactSourceMbrSource {
+                mbr: BootProfileArtifactSourceMbr {
+                    partuuid: None,
+                    index: None,
+                    source: Box::new(BootProfileArtifactSource::Http(
+                        BootProfileArtifactSourceHttpSource {
+                            http: "https://example.invalid/rootfs.img".to_string(),
+                        },
+                    )),
+                },
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    let err = validate_boot_profile(&profile).expect_err("mbr selector validation should fail");
+    assert_eq!(
+        err,
+        BootProfileValidationError::InvalidMbrSelectorCount { selectors: 0 }
     );
 }
 

@@ -10,14 +10,15 @@ use crate::{
     BootProfileArtifactSourceAndroidSparseImgSource, BootProfileArtifactSourceCasync,
     BootProfileArtifactSourceCasyncSource, BootProfileArtifactSourceFileSource,
     BootProfileArtifactSourceGpt, BootProfileArtifactSourceGptSource,
-    BootProfileArtifactSourceHttpSource, BootProfileArtifactSourceXzSource, BootProfileDevice,
+    BootProfileArtifactSourceHttpSource, BootProfileArtifactSourceMbr,
+    BootProfileArtifactSourceMbrSource, BootProfileArtifactSourceXzSource, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
     BootProfileRootfsExt4Source, BootProfileStage0, DeviceProfile, ExistsFlag, FastbootGetvarEq,
     FastbootGetvarExists, FastbootGetvarNotEq, FastbootGetvarNotExists, InjectMac, MatchRule,
     NotExistsFlag, ProbeStep, Stage0,
 };
 
-pub const BOOT_PROFILE_BIN_FORMAT_VERSION: u16 = 3;
+pub const BOOT_PROFILE_BIN_FORMAT_VERSION: u16 = 4;
 pub const BOOT_PROFILE_BIN_MAGIC: [u8; 8] = *b"FBOOPROF";
 pub const BOOT_PROFILE_BIN_HEADER_LEN: usize = 10;
 
@@ -62,6 +63,11 @@ pub enum BootProfileArtifactSourceBin {
         source: Box<BootProfileArtifactSourceBin>,
     },
     AndroidSparseImg {
+        source: Box<BootProfileArtifactSourceBin>,
+    },
+    Mbr {
+        partuuid: Option<String>,
+        index: Option<u32>,
         source: Box<BootProfileArtifactSourceBin>,
     },
     Gpt {
@@ -323,6 +329,18 @@ impl From<BootProfileArtifactSource> for BootProfileArtifactSourceBin {
             ) => Self::AndroidSparseImg {
                 source: Box::new(Self::from(*android_sparseimg)),
             },
+            BootProfileArtifactSource::Mbr(BootProfileArtifactSourceMbrSource {
+                mbr:
+                    BootProfileArtifactSourceMbr {
+                        partuuid,
+                        index,
+                        source,
+                    },
+            }) => Self::Mbr {
+                partuuid,
+                index,
+                source: Box::new(Self::from(*source)),
+            },
             BootProfileArtifactSource::Gpt(BootProfileArtifactSourceGptSource {
                 gpt:
                     BootProfileArtifactSourceGpt {
@@ -365,6 +383,17 @@ impl From<BootProfileArtifactSourceBin> for BootProfileArtifactSource {
                     android_sparseimg: Box::new(Self::from(*source)),
                 })
             }
+            BootProfileArtifactSourceBin::Mbr {
+                partuuid,
+                index,
+                source,
+            } => Self::Mbr(BootProfileArtifactSourceMbrSource {
+                mbr: BootProfileArtifactSourceMbr {
+                    partuuid,
+                    index,
+                    source: Box::new(Self::from(*source)),
+                },
+            }),
             BootProfileArtifactSourceBin::Gpt {
                 partlabel,
                 partuuid,

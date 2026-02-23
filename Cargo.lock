@@ -2909,6 +2909,7 @@ dependencies = [
  "gibblox-core",
  "gibblox-file",
  "gibblox-http",
+ "gibblox-mbr",
  "gibblox-xz",
  "gibblox-zip",
  "ratatui",
@@ -3704,6 +3705,16 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "gibblox-mbr"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "tracing",
 ]
 
 [[package]]

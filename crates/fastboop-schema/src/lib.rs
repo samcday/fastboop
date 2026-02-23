@@ -493,6 +493,7 @@ pub enum BootProfileArtifactSource {
     File(BootProfileArtifactSourceFileSource),
     Xz(BootProfileArtifactSourceXzSource),
     AndroidSparseImg(BootProfileArtifactSourceAndroidSparseImgSource),
+    Mbr(BootProfileArtifactSourceMbrSource),
     Gpt(BootProfileArtifactSourceGptSource),
 }
 
@@ -529,6 +530,24 @@ pub struct BootProfileArtifactSourceXzSource {
 #[serde(deny_unknown_fields)]
 pub struct BootProfileArtifactSourceAndroidSparseImgSource {
     pub android_sparseimg: Box<BootProfileArtifactSource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileArtifactSourceMbrSource {
+    pub mbr: BootProfileArtifactSourceMbr,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct BootProfileArtifactSourceMbr {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partuuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
+    #[serde(flatten)]
+    pub source: Box<BootProfileArtifactSource>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
