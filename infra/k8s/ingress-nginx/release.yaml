@@ -23,4 +23,5 @@ spec:
         annotations:
           load-balancer.hetzner.cloud/location: nbg1
           load-balancer.hetzner.cloud/name: fastboop-ingress
+          load-balancer.hetzner.cloud/use-private-ip: 'true'
         type: LoadBalancer
