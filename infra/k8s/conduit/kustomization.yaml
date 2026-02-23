@@ -3,4 +3,4 @@ kind: Kustomization
 resources:
   - conduit.yaml
   - well-known.yaml
-  - ingress.yaml
+  - routes.yaml

@@ -1,0 +1,39 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: matrix
+  namespace: conduit
+spec:
+  hostnames:
+    - matrix.fastboop.win
+  parentRefs:
+    - name: public
+      namespace: ingress-nginx
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: conduit-generic
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: matrix-well-known
+  namespace: conduit
+spec:
+  hostnames:
+    - fastboop.win
+  parentRefs:
+    - name: public
+      namespace: ingress-nginx
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /.well-known/matrix
+      backendRefs:
+        - name: matrix-well-known
+          port: 80
