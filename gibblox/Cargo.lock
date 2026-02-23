@@ -543,6 +543,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-fat"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "tracing",
+]
+
+[[package]]
 name = "gibblox-file"
 version = "0.0.1"
 dependencies = [
