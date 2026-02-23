@@ -21,6 +21,8 @@ spec:
     # https://github.com/cert-manager/cert-manager/blob/master/deploy/charts/cert-manager/values.yaml
     crds:
       enabled: true
+    webhook:
+      enabled: false
     config:
       apiVersion: controller.config.cert-manager.io/v1alpha1
       kind: ControllerConfiguration

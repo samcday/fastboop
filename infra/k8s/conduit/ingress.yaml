@@ -6,6 +6,7 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+    external-dns.alpha.kubernetes.io/target: 46.225.35.65,2a01:4f8:1c1d:371::1
 spec:
   ingressClassName: nginx
   tls:
@@ -32,6 +33,7 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+    external-dns.alpha.kubernetes.io/target: 46.225.35.65,2a01:4f8:1c1d:371::1
 spec:
   ingressClassName: nginx
   tls:
