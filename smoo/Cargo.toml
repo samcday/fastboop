@@ -19,3 +19,4 @@ hyper = "0.14"
 metrics-exporter-prometheus = { version = "0.13", default-features = false }
 serde = "1.0.228"
 usb-gadget = "0.7.6"
+js-sys = "0.3.82"

@@ -32,7 +32,7 @@ web-sys = { version = "0.3.72", features = [
     "UsbTransferStatus",
     "console",
 ] }
-js-sys = "0.3.72"
+js-sys = { workspace = true }
 console_error_panic_hook = "0.1.7"
 url = { workspace = true }
 tracing = { version = "0.1.41", features = ["release_max_level_debug"] }
