@@ -17,8 +17,8 @@ mod tui;
 
 use boot_ui::BootEvent;
 use commands::{
-    BootArgs, BootProfileArgs, DetectArgs, Stage0Args, run_boot, run_bootprofile, run_detect,
-    run_stage0,
+    BootArgs, BootProfileArgs, DetectArgs, DevProfileArgs, Stage0Args, run_boot, run_bootprofile,
+    run_detect, run_devprofile, run_stage0,
 };
 
 #[derive(Parser)]
@@ -34,6 +34,8 @@ enum Commands {
     Boot(BootArgs),
     /// Compile or inspect boot profile binaries.
     Bootprofile(BootProfileArgs),
+    /// Compile or inspect device profile binaries.
+    Devprofile(DevProfileArgs),
     /// Detect connected fastboot devices that match a DevPro.
     Detect(DetectArgs),
     /// Synthesize a stage0 initrd from a channel artifact and device profile; writes cpio to stdout.
@@ -46,6 +48,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Boot(args) => run_boot(args).await,
         Commands::Bootprofile(args) => run_bootprofile(args),
+        Commands::Devprofile(args) => run_devprofile(args),
         Commands::Detect(args) => {
             setup_default_tracing();
             run_detect(args).await
