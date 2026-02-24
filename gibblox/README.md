@@ -28,6 +28,7 @@ To gibblox you will always be just another block.
 ## Crates
 - `gobblytes-core`: core filesystem abstraction traits, OSTree wrapper, and test helpers.
 - `gobblytes-erofs`: EROFS-backed filesystem adapter.
+- `gobblytes-fat`: FAT32-backed filesystem adapter.
 - `gibblox-core`: core traits and error types.
 - `gibblox-android-sparse`: Android sparse image block reader.
 - `gibblox-mbr`: MBR partition-backed block reader.

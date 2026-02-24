@@ -18,6 +18,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.102"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+
+[[package]]
 name = "async-lock"
 version = "3.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -558,17 +564,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gibblox-fat"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "futures",
- "gibblox-core",
- "hadris-fat",
- "tracing",
-]
-
-[[package]]
 name = "gibblox-file"
 version = "0.0.1"
 dependencies = [
@@ -658,6 +653,35 @@ dependencies = [
  "futures-core",
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "gobblytes-core"
+version = "0.0.1"
+dependencies = [
+ "futures",
+]
+
+[[package]]
+name = "gobblytes-erofs"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "gibblox-core",
+ "gobblytes-core",
+]
+
+[[package]]
+name = "gobblytes-fat"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "gobblytes-core",
+ "hadris-fat",
+ "tracing",
 ]
 
 [[package]]
