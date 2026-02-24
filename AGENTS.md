@@ -9,9 +9,9 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
 - Then read only the docs relevant to the task from the index below.
 
 ## Read-on-demand index
-- `docs/DEVICE_PROFILES.md`: DevPro schema, matching/probing semantics, boot constraints.
-- `docs/STAGE0.md`: stage0 contract, PID1 flow, handoff behavior.
-- `docs/DIOXUS.md`: Dioxus 0.7 usage in `packages/*`.
+- `docs/dev/DEVICE_PROFILES.md`: DevPro schema, matching/probing semantics, boot constraints.
+- `docs/dev/STAGE0.md`: stage0 contract, PID1 flow, handoff behavior.
+- `docs/dev/DIOXUS.md`: Dioxus 0.7 usage in `packages/*`.
 - `docs/k8s-infra.yaml`: required when touching `infra/k8s/` or any `*.fastboop.win` infrastructure.
 - `smoo/AGENTS.md`: required when touching `smoo/` or behavior coupled to smoo protocol/runtime invariants.
 - `gibblox/AGENTS.md`: required when touching `gibblox/` or any `gibblox-*` crate integration.
