@@ -60,16 +60,17 @@ stage0:
 
 ## Match
 
-`match` is the cheap first-pass filter used before deeper probing.
+`match` is the cheap USB prefilter used before deeper probing.
 
-Use it to narrow candidates fast (usually USB VID/PID for fastboot devices), not to prove final identity.
-Think of `match` as "could be this family" and `probe` as "yes, this exact target."
+For fastboot profiles, this is primarily USB VID/PID tuples. fastboop uses these tuples to decide which
+devices to probe, and web targets use the same tuples when requesting USB device access.
+
+`match` is not the final identity check; `probe` is.
 
 Guidelines:
 
-- Keep match conditions broad enough to catch valid devices in that family.
-- Keep match conditions strict enough to avoid probing every random fastboot handle.
-- Prefer stable identifiers (VID/PID) over brittle assumptions.
+- List the exact VID/PID pair(s) used by this profile's bootloader mode.
+- Similar devices may share the same VID/PID, we disambiguate in `probe`.
 
 ## Probe
 
@@ -89,7 +90,6 @@ Practical guidance:
 
 - Put highly discriminating checks early to fail fast.
 - Use multiple checks when one getvar is ambiguous across sibling devices.
-- Do not add mutating commands; probing must stay safe and repeatable.
 
 ## Boot
 
@@ -112,14 +112,22 @@ Keep this list focused: enough for consistent boot/handoff, not a generic module
 
 As always, keep profiles non-mutating: no write/flash semantics.
 
-## How To Bang On It
+## Building a new Device Profile
+
+1. Start from a nearby built-in profile in `devprofiles.d/`.
+2. Set `match` to the exact USB VID/PID pair(s), then use strict `probe` checks for identity.
+3. Run a fast schema check before hardware testing.
+4. Validate profile matching in `detect`.
+5. Smoke-test payload generation with `boot` or `bootprofile`.
+
+For focused debug output, pass `--device-profile` so only one profile is probed:
 
 ```sh
 # ensure schema and profile code still type-checks
 cargo check -p fastboop-core
 
-# with hardware in fastboot mode, verify match+probe flow
-cargo run -p fastboop-cli -- detect --wait 5
+# with hardware in fastboot mode, verify match+probe flow for a specific profile
+RUST_LOG=trace cargo run -p fastboop-cli -- detect --device-profile <id> --wait 5
 
 # offline: ensure this profile can drive payload assembly
 cargo run -p fastboop-cli -- boot <rootfs-or-bootprofile> --device-profile <id> --output /tmp/boot.img
