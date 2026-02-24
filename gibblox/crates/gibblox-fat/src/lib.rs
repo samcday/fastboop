@@ -6,27 +6,37 @@ extern crate alloc;
 extern crate std;
 
 use alloc::{
-    collections::BTreeSet,
+    boxed::Box,
     format,
+    rc::Rc,
     string::{String, ToString},
     sync::Arc,
-    vec,
     vec::Vec,
 };
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+use gibblox_core::{
+    BlockReader, ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
+    block_identity_string,
+};
+use hadris_fat::FatError as HFatError;
+use hadris_fat::r#async::{
+    dir::{DirectoryEntry as HDirectoryEntry, FileEntry as HFileEntry},
+    fat_table::FatType as HFatType,
+    fs::FatFs as HFatFs,
+    io::{
+        Error as HIoError, ErrorKind as HIoErrorKind, IoResult as HIoResult, Read as HIoRead,
+        Seek as HIoSeek, SeekFrom as HIoSeekFrom,
+    },
+    read::FileReader as HFileReader,
+};
 use tracing::info;
-
-const BOOT_SECTOR_LEN: usize = 512;
-const FAT_ENTRY_SIZE_BYTES: u64 = 4;
 
 const FAT_ATTR_DIRECTORY: u8 = 0x10;
 const FAT_ATTR_VOLUME_ID: u8 = 0x08;
+#[cfg(test)]
 const FAT_ATTR_LFN: u8 = 0x0f;
 
-const FAT32_EOC_MIN: u32 = 0x0fff_fff8;
-const FAT32_BAD_CLUSTER: u32 = 0x0fff_fff7;
+type HFatDir<'a> = hadris_fat::r#async::dir::FatDir<'a, BlockReaderIo>;
 
-const FAT32_CLUSTER_MIN: u32 = 2;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FatEntryType {
     File,
@@ -36,62 +46,17 @@ pub enum FatEntryType {
 
 #[derive(Clone)]
 pub struct FatFs {
-    source: Arc<dyn BlockReader>,
-    source_block_size: usize,
-    source_size_bytes: u64,
+    inner: Rc<FatFsInner>,
+}
+
+struct FatFsInner {
+    fs: HFatFs<BlockReaderIo>,
     source_identity: String,
-    params: Fat32Params,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Fat32Params {
-    bytes_per_sector: u16,
-    sectors_per_cluster: u8,
-    reserved_sector_count: u16,
-    first_data_sector: u32,
-    cluster_count: u32,
-    root_cluster: u32,
-    filesystem_size_bytes: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FatType {
-    Fat12,
-    Fat16,
-    Fat32,
-}
-
-#[derive(Clone, Debug)]
-struct DirectoryEntry {
-    name: String,
-    attr: u8,
-    first_cluster: u32,
-    size: u32,
-}
-
-impl DirectoryEntry {
-    fn root(root_cluster: u32) -> Self {
-        Self {
-            name: "/".to_string(),
-            attr: FAT_ATTR_DIRECTORY,
-            first_cluster: root_cluster,
-            size: 0,
-        }
-    }
-
-    fn is_directory(&self) -> bool {
-        (self.attr & FAT_ATTR_DIRECTORY) != 0
-    }
-
-    fn entry_type(&self) -> FatEntryType {
-        if self.is_directory() {
-            FatEntryType::Directory
-        } else if (self.attr & FAT_ATTR_VOLUME_ID) == 0 {
-            FatEntryType::File
-        } else {
-            FatEntryType::Other
-        }
-    }
+enum ResolvedEntry {
+    Root,
+    Entry(Box<HFileEntry>),
 }
 
 impl FatFs {
@@ -106,198 +71,71 @@ impl FatFs {
 
         let source_total_blocks = source.total_blocks().await?;
         let source_size_bytes = source_total_blocks
-            .checked_mul(source_block_size_u32 as u64)
+            .checked_mul(u64::from(source_block_size_u32))
             .ok_or_else(|| {
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "source size overflow")
             })?;
+        let source_identity = block_identity_string(&source);
 
         let source: Arc<dyn BlockReader> = Arc::new(source);
-        let source_identity = gibblox_core::block_identity_string(source.as_ref());
-        let source_block_size = source_block_size_u32 as usize;
-        let byte_reader = SourceByteReader {
-            inner: Arc::clone(&source),
-            block_size: source_block_size,
-            size_bytes: source_size_bytes,
-        };
-
-        let mut boot_sector = [0u8; BOOT_SECTOR_LEN];
-        byte_reader
-            .read_exact_at(0, &mut boot_sector, ReadContext::FOREGROUND)
-            .await?;
-        if boot_sector[510] != 0x55 || boot_sector[511] != 0xaa {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "FAT boot sector signature is missing",
-            ));
-        }
-
-        let bytes_per_sector = le_u16(&boot_sector[11..13]);
-        let sectors_per_cluster = boot_sector[13];
-        let reserved_sector_count = le_u16(&boot_sector[14..16]);
-        let fat_count = boot_sector[16];
-        let root_entry_count = le_u16(&boot_sector[17..19]);
-        let total_sectors_16 = le_u16(&boot_sector[19..21]);
-        let sectors_per_fat_16 = le_u16(&boot_sector[22..24]);
-        let total_sectors_32 = le_u32(&boot_sector[32..36]);
-        let sectors_per_fat_32 = le_u32(&boot_sector[36..40]);
-        let root_cluster = le_u32(&boot_sector[44..48]);
-
-        if bytes_per_sector < 512 || !bytes_per_sector.is_power_of_two() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "FAT bytes-per-sector must be a power of two >= 512",
-            ));
-        }
-        if sectors_per_cluster == 0 || !sectors_per_cluster.is_power_of_two() {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "FAT sectors-per-cluster must be a non-zero power of two",
-            ));
-        }
-        if reserved_sector_count == 0 {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "FAT reserved-sector count must be non-zero",
-            ));
-        }
-        if fat_count == 0 {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "FAT must contain at least one FAT table",
-            ));
-        }
-
-        let total_sectors = if total_sectors_16 != 0 {
-            u32::from(total_sectors_16)
-        } else {
-            total_sectors_32
-        };
-        if total_sectors == 0 {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "FAT total sector count is zero",
-            ));
-        }
-
-        let sectors_per_fat = if sectors_per_fat_16 != 0 {
-            u32::from(sectors_per_fat_16)
-        } else {
-            sectors_per_fat_32
-        };
-        if sectors_per_fat == 0 {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "FAT sectors-per-FAT is zero",
-            ));
-        }
-
-        let bytes_per_sector_u32 = u32::from(bytes_per_sector);
-        let root_dir_sectors = (u32::from(root_entry_count) * 32).div_ceil(bytes_per_sector_u32);
-        let first_data_sector = u32::from(reserved_sector_count)
-            .checked_add(
-                u32::from(fat_count)
-                    .checked_mul(sectors_per_fat)
-                    .ok_or_else(|| {
-                        GibbloxError::with_message(
-                            GibbloxErrorKind::OutOfRange,
-                            "FAT metadata sector range overflow",
-                        )
-                    })?,
-            )
-            .and_then(|v| v.checked_add(root_dir_sectors))
-            .ok_or_else(|| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "FAT first-data-sector overflow",
-                )
-            })?;
-        if first_data_sector >= total_sectors {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "FAT first data sector is outside total sector range",
-            ));
-        }
-
-        let data_sectors = total_sectors - first_data_sector;
-        let cluster_count = data_sectors / u32::from(sectors_per_cluster);
-        if cluster_count == 0 {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "FAT contains no data clusters",
-            ));
-        }
-
-        let fat_type = determine_fat_type(
-            root_entry_count,
-            sectors_per_fat_16,
-            sectors_per_fat_32,
-            cluster_count,
+        let byte_reader = ByteRangeReader::new(
+            Arc::clone(&source),
+            source_block_size_u32 as usize,
+            source_size_bytes,
         );
-        if fat_type != FatType::Fat32 {
+        let adapter = BlockReaderIo {
+            byte_reader,
+            size_bytes: source_size_bytes,
+            position: 0,
+        };
+
+        let fs = HFatFs::open(adapter)
+            .await
+            .map_err(|err| map_fat_error("open FAT image", err))?;
+
+        if fs.fat_type() != HFatType::Fat32 {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::Unsupported,
                 "only FAT32 is currently supported",
             ));
         }
-        if root_cluster < FAT32_CLUSTER_MIN {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "FAT32 root cluster is invalid",
-            ));
-        }
-
-        let filesystem_size_bytes = u64::from(total_sectors)
-            .checked_mul(u64::from(bytes_per_sector))
-            .ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "filesystem size overflow")
-            })?;
-        if filesystem_size_bytes > source_size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "filesystem size exceeds source size",
-            ));
-        }
 
         info!(
-            bytes_per_sector,
-            sectors_per_cluster,
-            reserved_sector_count,
-            fat_count,
-            sectors_per_fat,
-            total_sectors,
-            root_cluster,
-            "opened FAT32 filesystem"
+            source_block_size = source_block_size_u32,
+            source_total_blocks, source_size_bytes, "opened FAT32 filesystem"
         );
 
         Ok(Self {
-            source,
-            source_block_size,
-            source_size_bytes,
-            source_identity,
-            params: Fat32Params {
-                bytes_per_sector,
-                sectors_per_cluster,
-                reserved_sector_count,
-                first_data_sector,
-                cluster_count,
-                root_cluster,
-                filesystem_size_bytes,
-            },
+            inner: Rc::new(FatFsInner {
+                fs,
+                source_identity,
+            }),
         })
     }
 
     pub fn source_identity(&self) -> &str {
-        self.source_identity.as_str()
+        self.inner.source_identity.as_str()
     }
 
     pub async fn read_all(&self, path: &str) -> GibbloxResult<Vec<u8>> {
-        let entry = self.resolve_required_entry(path).await?;
-        if entry.entry_type() != FatEntryType::File {
+        let resolved = self.resolve_required_entry(path).await?;
+        let entry = match resolved {
+            ResolvedEntry::Root => {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    format!("FAT path is not a regular file: {path}"),
+                ));
+            }
+            ResolvedEntry::Entry(entry) => *entry,
+        };
+
+        if classify_entry(&entry) != FatEntryType::File {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
                 format!("FAT path is not a regular file: {path}"),
             ));
         }
+
         self.read_file_data(&entry).await
     }
 
@@ -318,30 +156,66 @@ impl FatFs {
     }
 
     pub async fn read_dir(&self, path: &str) -> GibbloxResult<Vec<String>> {
-        let entry = self.resolve_required_entry(path).await?;
-        if entry.entry_type() != FatEntryType::Directory {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                format!("FAT path is not a directory: {path}"),
-            ));
-        }
+        let resolved = self.resolve_required_entry(path).await?;
+        match resolved {
+            ResolvedEntry::Root => {
+                let root = self.inner.fs.root_dir();
+                self.collect_dir_names(&root).await
+            }
+            ResolvedEntry::Entry(entry) => {
+                if classify_entry(entry.as_ref()) != FatEntryType::Directory {
+                    return Err(GibbloxError::with_message(
+                        GibbloxErrorKind::InvalidInput,
+                        format!("FAT path is not a directory: {path}"),
+                    ));
+                }
 
-        let entries = self.read_directory_entries(entry.first_cluster).await?;
-        Ok(entries.into_iter().map(|entry| entry.name).collect())
+                let dir = self
+                    .inner
+                    .fs
+                    .open_dir_entry(&entry)
+                    .map_err(|err| map_fat_error("open FAT directory", err))?;
+                self.collect_dir_names(&dir).await
+            }
+        }
     }
 
     pub async fn entry_type(&self, path: &str) -> GibbloxResult<Option<FatEntryType>> {
-        Ok(self
-            .resolve_entry(path)
-            .await?
-            .map(|entry| entry.entry_type()))
+        Ok(match self.resolve_entry(path).await? {
+            Some(ResolvedEntry::Root) => Some(FatEntryType::Directory),
+            Some(ResolvedEntry::Entry(entry)) => Some(classify_entry(entry.as_ref())),
+            None => None,
+        })
     }
 
     pub async fn exists(&self, path: &str) -> GibbloxResult<bool> {
         Ok(self.resolve_entry(path).await?.is_some())
     }
 
-    async fn resolve_required_entry(&self, path: &str) -> GibbloxResult<DirectoryEntry> {
+    async fn read_file_data(&self, entry: &HFileEntry) -> GibbloxResult<Vec<u8>> {
+        let mut reader = HFileReader::new(&self.inner.fs, entry)
+            .map_err(|err| map_fat_error("open FAT file", err))?;
+        reader
+            .read_to_vec()
+            .await
+            .map_err(|err| map_fat_error("read FAT file", err))
+    }
+
+    async fn collect_dir_names(&self, dir: &HFatDir<'_>) -> GibbloxResult<Vec<String>> {
+        let mut out = Vec::new();
+        let mut iter = dir.entries();
+        while let Some(next) = iter.next_entry().await {
+            let HDirectoryEntry::Entry(entry) =
+                next.map_err(|err| map_fat_error("read FAT directory entry", err))?;
+            if is_dot_name(entry.name()) || is_volume_label(&entry) {
+                continue;
+            }
+            out.push(entry.name().to_string());
+        }
+        Ok(out)
+    }
+
+    async fn resolve_required_entry(&self, path: &str) -> GibbloxResult<ResolvedEntry> {
         self.resolve_entry(path).await?.ok_or_else(|| {
             GibbloxError::with_message(
                 GibbloxErrorKind::InvalidInput,
@@ -350,388 +224,178 @@ impl FatFs {
         })
     }
 
-    async fn resolve_entry(&self, path: &str) -> GibbloxResult<Option<DirectoryEntry>> {
+    async fn resolve_entry(&self, path: &str) -> GibbloxResult<Option<ResolvedEntry>> {
         let components = split_path(path)?;
         if components.is_empty() {
-            return Ok(Some(DirectoryEntry::root(self.params.root_cluster)));
+            return Ok(Some(ResolvedEntry::Root));
         }
 
-        let mut current = DirectoryEntry::root(self.params.root_cluster);
-        for component in components {
-            if current.entry_type() != FatEntryType::Directory {
-                return Ok(None);
-            }
-
-            let entries = self.read_directory_entries(current.first_cluster).await?;
-            let mut matched = None;
-            for entry in entries {
-                if fat_name_eq(entry.name.as_str(), component.as_str()) {
-                    matched = Some(entry);
-                    break;
-                }
-            }
-
-            let Some(next) = matched else {
+        let mut current_dir = self.inner.fs.root_dir();
+        for (index, component) in components.iter().enumerate() {
+            let Some(entry) = self
+                .find_entry_casefold(&current_dir, component.as_str())
+                .await?
+            else {
                 return Ok(None);
             };
-            current = next;
-        }
 
-        Ok(Some(current))
-    }
-
-    async fn read_file_data(&self, entry: &DirectoryEntry) -> GibbloxResult<Vec<u8>> {
-        let file_size = entry.size as usize;
-        if file_size == 0 {
-            return Ok(Vec::new());
-        }
-        if entry.first_cluster < FAT32_CLUSTER_MIN {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "file has invalid start cluster",
-            ));
-        }
-
-        let mut out = Vec::with_capacity(file_size);
-        let mut remaining = file_size;
-        let chain = self.read_cluster_chain(entry.first_cluster).await?;
-        for cluster in chain {
-            let data = self.read_cluster(cluster).await?;
-            let take = remaining.min(data.len());
-            out.extend_from_slice(&data[..take]);
-            remaining -= take;
-            if remaining == 0 {
-                break;
-            }
-        }
-
-        if remaining != 0 {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::Io,
-                "file cluster chain ended before advertised size",
-            ));
-        }
-        Ok(out)
-    }
-
-    async fn read_directory_entries(
-        &self,
-        start_cluster: u32,
-    ) -> GibbloxResult<Vec<DirectoryEntry>> {
-        if start_cluster < FAT32_CLUSTER_MIN {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "directory has invalid start cluster",
-            ));
-        }
-
-        let chain = self.read_cluster_chain(start_cluster).await?;
-        let mut entries = Vec::new();
-        let mut pending_lfn = Vec::<[u8; 32]>::new();
-
-        for cluster in chain {
-            let data = self.read_cluster(cluster).await?;
-            for raw in data.chunks_exact(32) {
-                let first = raw[0];
-                if first == 0x00 {
-                    return Ok(entries);
-                }
-                if first == 0xe5 {
-                    pending_lfn.clear();
-                    continue;
-                }
-
-                let attr = raw[11];
-                if attr == FAT_ATTR_LFN {
-                    let mut entry = [0u8; 32];
-                    entry.copy_from_slice(raw);
-                    pending_lfn.push(entry);
-                    continue;
-                }
-
-                if (attr & FAT_ATTR_VOLUME_ID) != 0 {
-                    pending_lfn.clear();
-                    continue;
-                }
-
-                let short_name = parse_short_name(raw)?;
-                let name = decode_lfn_name(&pending_lfn).unwrap_or(short_name);
-                pending_lfn.clear();
-
-                if name == "." || name == ".." {
-                    continue;
-                }
-
-                let first_cluster =
-                    (u32::from(le_u16(&raw[20..22])) << 16) | u32::from(le_u16(&raw[26..28]));
-                let size = le_u32(&raw[28..32]);
-                entries.push(DirectoryEntry {
-                    name,
-                    attr,
-                    first_cluster,
-                    size,
-                });
-            }
-        }
-
-        Ok(entries)
-    }
-
-    async fn read_cluster_chain(&self, start_cluster: u32) -> GibbloxResult<Vec<u32>> {
-        if start_cluster < FAT32_CLUSTER_MIN {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "invalid FAT32 cluster index",
-            ));
-        }
-
-        let mut chain = Vec::new();
-        let mut seen = BTreeSet::new();
-        let max_cluster = self.max_cluster_index()?;
-        let mut terminated = false;
-
-        let mut cluster = start_cluster;
-        for _ in 0..=usize::try_from(self.params.cluster_count).unwrap_or(usize::MAX) {
-            if cluster < FAT32_CLUSTER_MIN || cluster > max_cluster {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::InvalidInput,
-                    "cluster chain points outside FAT data range",
-                ));
-            }
-            if !seen.insert(cluster) {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::InvalidInput,
-                    "cluster chain loop detected",
-                ));
+            let last = index + 1 == components.len();
+            if last {
+                return Ok(Some(ResolvedEntry::Entry(Box::new(entry))));
             }
 
-            chain.push(cluster);
-            let next = self.read_fat_entry(cluster).await?;
-            if next >= FAT32_EOC_MIN {
-                terminated = true;
-                break;
+            if classify_entry(&entry) != FatEntryType::Directory {
+                return Ok(None);
             }
-            if next == FAT32_BAD_CLUSTER {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "cluster chain reached bad-cluster marker",
-                ));
-            }
-            cluster = next;
-        }
 
-        if !terminated {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "cluster chain exceeds maximum expected length",
-            ));
-        }
-
-        Ok(chain)
-    }
-
-    async fn read_fat_entry(&self, cluster: u32) -> GibbloxResult<u32> {
-        let bps = u64::from(self.params.bytes_per_sector);
-        let fat_start_sector = u64::from(self.params.reserved_sector_count);
-        let fat_start = fat_start_sector.checked_mul(bps).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "FAT start offset overflow")
-        })?;
-        let entry_offset = u64::from(cluster)
-            .checked_mul(FAT_ENTRY_SIZE_BYTES)
-            .ok_or_else(|| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "FAT entry offset overflow",
-                )
-            })?;
-        let byte_offset = fat_start.checked_add(entry_offset).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "FAT byte offset overflow")
-        })?;
-
-        let mut raw = [0u8; 4];
-        self.byte_reader()
-            .read_exact_at(byte_offset, &mut raw, ReadContext::FOREGROUND)
-            .await?;
-        Ok(le_u32(&raw) & 0x0fff_ffff)
-    }
-
-    async fn read_cluster(&self, cluster: u32) -> GibbloxResult<Vec<u8>> {
-        let cluster_size = self.cluster_size_bytes()?;
-        let offset = self.cluster_offset_bytes(cluster)?;
-        let mut out = vec![0u8; cluster_size];
-        self.byte_reader()
-            .read_exact_at(offset, &mut out, ReadContext::FOREGROUND)
-            .await?;
-        Ok(out)
-    }
-
-    fn cluster_offset_bytes(&self, cluster: u32) -> GibbloxResult<u64> {
-        let max_cluster = self.max_cluster_index()?;
-        if cluster < FAT32_CLUSTER_MIN || cluster > max_cluster {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "cluster index out of range",
-            ));
-        }
-
-        let sector = u64::from(self.params.first_data_sector)
-            .checked_add(
-                u64::from(cluster - FAT32_CLUSTER_MIN)
-                    .checked_mul(u64::from(self.params.sectors_per_cluster))
-                    .ok_or_else(|| {
-                        GibbloxError::with_message(
-                            GibbloxErrorKind::OutOfRange,
-                            "cluster sector offset overflow",
-                        )
-                    })?,
-            )
-            .ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "cluster sector overflow")
-            })?;
-        let offset = sector
-            .checked_mul(u64::from(self.params.bytes_per_sector))
-            .ok_or_else(|| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "cluster byte offset overflow",
-                )
-            })?;
-        let end = offset
-            .checked_add(u64::try_from(self.cluster_size_bytes()?).unwrap_or(u64::MAX))
-            .ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "cluster end overflow")
-            })?;
-        if end > self.params.filesystem_size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "cluster extends past FAT filesystem bounds",
-            ));
-        }
-        Ok(offset)
-    }
-
-    fn max_cluster_index(&self) -> GibbloxResult<u32> {
-        self.params
-            .cluster_count
-            .checked_add(FAT32_CLUSTER_MIN - 1)
-            .ok_or_else(|| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "max cluster index overflow",
-                )
-            })
-    }
-
-    fn cluster_size_bytes(&self) -> GibbloxResult<usize> {
-        let bytes = u32::from(self.params.bytes_per_sector)
-            .checked_mul(u32::from(self.params.sectors_per_cluster))
-            .ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "cluster size overflow")
-            })?;
-        usize::try_from(bytes).map_err(|_| {
-            GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "cluster size does not fit usize",
-            )
-        })
-    }
-
-    fn byte_reader(&self) -> SourceByteReader {
-        SourceByteReader {
-            inner: Arc::clone(&self.source),
-            block_size: self.source_block_size,
-            size_bytes: self.source_size_bytes,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct SourceByteReader {
-    inner: Arc<dyn BlockReader>,
-    block_size: usize,
-    size_bytes: u64,
-}
-
-impl SourceByteReader {
-    async fn read_exact_at(
-        &self,
-        offset: u64,
-        out: &mut [u8],
-        ctx: ReadContext,
-    ) -> GibbloxResult<()> {
-        if out.is_empty() {
-            return Ok(());
-        }
-
-        let end = offset.checked_add(out.len() as u64).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "read range overflow")
-        })?;
-        if end > self.size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "read range exceeds source size",
-            ));
-        }
-
-        let block_size = self.block_size as u64;
-        let aligned_start = (offset / block_size) * block_size;
-        let aligned_end = end
-            .div_ceil(block_size)
-            .checked_mul(block_size)
-            .ok_or_else(|| {
-                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "aligned read overflow")
-            })?;
-        let aligned_len = usize::try_from(aligned_end - aligned_start).map_err(|_| {
-            GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "aligned read length exceeds addressable memory",
-            )
-        })?;
-
-        let mut scratch = vec![0u8; aligned_len];
-        let mut filled = 0usize;
-        while filled < scratch.len() {
-            let lba = (aligned_start as usize + filled) / self.block_size;
-            let read = self
+            current_dir = self
                 .inner
-                .read_blocks(lba as u64, &mut scratch[filled..], ctx)
-                .await?;
-            if read == 0 {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "unexpected EOF during aligned block read",
-                ));
-            }
-            if read % self.block_size != 0 && filled + read < scratch.len() {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "unaligned short read from block source",
-                ));
-            }
-            filled += read;
+                .fs
+                .open_dir_entry(&entry)
+                .map_err(|err| map_fat_error("open FAT directory", err))?;
         }
 
-        let head = (offset - aligned_start) as usize;
-        out.copy_from_slice(&scratch[head..head + out.len()]);
-        Ok(())
+        Ok(Some(ResolvedEntry::Root))
+    }
+
+    async fn find_entry_casefold(
+        &self,
+        dir: &HFatDir<'_>,
+        wanted: &str,
+    ) -> GibbloxResult<Option<HFileEntry>> {
+        let mut iter = dir.entries();
+        while let Some(next) = iter.next_entry().await {
+            let HDirectoryEntry::Entry(entry) =
+                next.map_err(|err| map_fat_error("read FAT directory entry", err))?;
+
+            if is_dot_name(entry.name()) || is_volume_label(&entry) {
+                continue;
+            }
+
+            if fat_name_eq(entry.name(), wanted) || entry.short_name().matches(wanted) {
+                return Ok(Some(entry));
+            }
+        }
+
+        Ok(None)
     }
 }
 
-fn determine_fat_type(
-    root_entry_count: u16,
-    sectors_per_fat_16: u16,
-    sectors_per_fat_32: u32,
-    cluster_count: u32,
-) -> FatType {
-    if sectors_per_fat_16 == 0 && root_entry_count == 0 && sectors_per_fat_32 != 0 {
-        return FatType::Fat32;
-    }
-    if cluster_count < 4_085 {
-        FatType::Fat12
-    } else if cluster_count < 65_525 {
-        FatType::Fat16
+fn classify_entry(entry: &HFileEntry) -> FatEntryType {
+    let attr = entry.attributes().bits();
+    if (attr & FAT_ATTR_DIRECTORY) != 0 {
+        FatEntryType::Directory
+    } else if (attr & FAT_ATTR_VOLUME_ID) == 0 {
+        FatEntryType::File
     } else {
-        FatType::Fat32
+        FatEntryType::Other
+    }
+}
+
+fn is_volume_label(entry: &HFileEntry) -> bool {
+    (entry.attributes().bits() & FAT_ATTR_VOLUME_ID) != 0
+}
+
+fn is_dot_name(name: &str) -> bool {
+    name == "." || name == ".."
+}
+
+struct BlockReaderIo {
+    byte_reader: ByteRangeReader,
+    size_bytes: u64,
+    position: u64,
+}
+
+impl HIoSeek for BlockReaderIo {
+    async fn seek(&mut self, pos: HIoSeekFrom) -> HIoResult<u64> {
+        let next = match pos {
+            HIoSeekFrom::Start(offset) => i128::from(offset),
+            HIoSeekFrom::End(offset) => i128::from(self.size_bytes)
+                .checked_add(i128::from(offset))
+                .ok_or_else(|| HIoError::from(HIoErrorKind::InvalidInput))?,
+            HIoSeekFrom::Current(offset) => i128::from(self.position)
+                .checked_add(i128::from(offset))
+                .ok_or_else(|| HIoError::from(HIoErrorKind::InvalidInput))?,
+        };
+
+        if next < 0 {
+            return Err(HIoErrorKind::InvalidInput.into());
+        }
+
+        let next = u64::try_from(next).map_err(|_| HIoErrorKind::InvalidInput)?;
+        self.position = next;
+        Ok(self.position)
+    }
+}
+
+impl HIoRead for BlockReaderIo {
+    async fn read(&mut self, out: &mut [u8]) -> HIoResult<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        if self.position >= self.size_bytes {
+            return Ok(0);
+        }
+
+        let remaining = self.size_bytes - self.position;
+        let read_len = out
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        if read_len == 0 {
+            return Ok(0);
+        }
+
+        self.byte_reader
+            .read_exact_at(self.position, &mut out[..read_len], ReadContext::FOREGROUND)
+            .await
+            .map_err(map_block_error)?;
+
+        self.position = self
+            .position
+            .checked_add(u64::try_from(read_len).unwrap_or(u64::MAX))
+            .ok_or_else(|| HIoError::from(HIoErrorKind::InvalidInput))?;
+        Ok(read_len)
+    }
+}
+
+fn map_block_error(err: GibbloxError) -> HIoError {
+    let kind = match err.kind() {
+        GibbloxErrorKind::InvalidInput => HIoErrorKind::InvalidInput,
+        GibbloxErrorKind::OutOfRange => HIoErrorKind::UnexpectedEof,
+        GibbloxErrorKind::Io | GibbloxErrorKind::Unsupported | GibbloxErrorKind::Other => {
+            HIoErrorKind::Other
+        }
+    };
+    kind.into()
+}
+
+fn map_fat_error(op: &'static str, err: HFatError) -> GibbloxError {
+    let kind = match &err {
+        HFatError::UnsupportedFatType(_) => GibbloxErrorKind::Unsupported,
+        HFatError::ClusterOutOfBounds { .. } => GibbloxErrorKind::OutOfRange,
+        HFatError::BadCluster { .. } | HFatError::UnexpectedEndOfChain { .. } => {
+            GibbloxErrorKind::Io
+        }
+        HFatError::Io(inner) => map_hio_error_kind(inner.kind()),
+        HFatError::InvalidBootSignature { .. }
+        | HFatError::InvalidFsInfoSignature { .. }
+        | HFatError::InvalidShortFilename
+        | HFatError::NotAFile
+        | HFatError::NotADirectory
+        | HFatError::EntryNotFound
+        | HFatError::InvalidPath => GibbloxErrorKind::InvalidInput,
+        #[allow(unreachable_patterns)]
+        _ => GibbloxErrorKind::Other,
+    };
+
+    GibbloxError::with_message(kind, format!("{op}: {err}"))
+}
+
+fn map_hio_error_kind(kind: HIoErrorKind) -> GibbloxErrorKind {
+    match kind {
+        HIoErrorKind::InvalidInput => GibbloxErrorKind::InvalidInput,
+        HIoErrorKind::UnexpectedEof => GibbloxErrorKind::OutOfRange,
+        _ => GibbloxErrorKind::Io,
     }
 }
 
@@ -756,116 +420,18 @@ fn fat_name_eq(candidate: &str, wanted: &str) -> bool {
     if candidate.eq_ignore_ascii_case(wanted) {
         return true;
     }
+
     candidate
         .chars()
         .flat_map(char::to_lowercase)
         .eq(wanted.chars().flat_map(char::to_lowercase))
 }
 
-fn parse_short_name(raw: &[u8]) -> GibbloxResult<String> {
-    if raw.len() < 32 {
-        return Err(GibbloxError::with_message(
-            GibbloxErrorKind::InvalidInput,
-            "short directory entry is truncated",
-        ));
-    }
-
-    let mut name_bytes = [0u8; 8];
-    name_bytes.copy_from_slice(&raw[0..8]);
-    if name_bytes[0] == 0x05 {
-        name_bytes[0] = 0xe5;
-    }
-
-    let base = bytes_to_trimmed_ascii(&name_bytes);
-    let ext = bytes_to_trimmed_ascii(&raw[8..11]);
-    if base.is_empty() {
-        return Err(GibbloxError::with_message(
-            GibbloxErrorKind::InvalidInput,
-            "short directory entry has empty filename",
-        ));
-    }
-    if ext.is_empty() {
-        Ok(base)
-    } else {
-        Ok(format!("{base}.{ext}"))
-    }
-}
-
-fn decode_lfn_name(entries: &[[u8; 32]]) -> Option<String> {
-    if entries.is_empty() {
-        return None;
-    }
-
-    let mut units = Vec::new();
-    for entry in entries.iter().rev() {
-        append_lfn_units(entry, &mut units);
-    }
-
-    let end = units
-        .iter()
-        .position(|unit| *unit == 0x0000)
-        .unwrap_or(units.len());
-    let mut filtered = Vec::new();
-    for unit in &units[..end] {
-        if *unit == 0xffff {
-            continue;
-        }
-        filtered.push(*unit);
-    }
-    if filtered.is_empty() {
-        return None;
-    }
-
-    let mut out = String::new();
-    for ch in core::char::decode_utf16(filtered.into_iter()) {
-        match ch {
-            Ok(ch) => out.push(ch),
-            Err(_) => out.push('\u{fffd}'),
-        }
-    }
-    if out.is_empty() { None } else { Some(out) }
-}
-
-fn append_lfn_units(entry: &[u8; 32], out: &mut Vec<u16>) {
-    append_utf16_pairs(&entry[1..11], out);
-    append_utf16_pairs(&entry[14..26], out);
-    append_utf16_pairs(&entry[28..32], out);
-}
-
-fn append_utf16_pairs(raw: &[u8], out: &mut Vec<u16>) {
-    for chunk in raw.chunks_exact(2) {
-        out.push(u16::from_le_bytes([chunk[0], chunk[1]]));
-    }
-}
-
-fn bytes_to_trimmed_ascii(raw: &[u8]) -> String {
-    let mut out = String::new();
-    for &byte in raw {
-        if byte == b' ' {
-            continue;
-        }
-        let ch = if byte.is_ascii_graphic() {
-            byte as char
-        } else {
-            '_'
-        };
-        out.push(ch);
-    }
-    out
-}
-
-fn le_u16(raw: &[u8]) -> u16 {
-    u16::from_le_bytes([raw[0], raw[1]])
-}
-
-fn le_u32(raw: &[u8]) -> u32 {
-    u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::boxed::Box;
+    use alloc::vec;
     use async_trait::async_trait;
     use core::fmt;
     use futures::executor::block_on;
