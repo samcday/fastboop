@@ -727,7 +727,14 @@ impl SourceByteReader {
                     "unexpected EOF while servicing aligned read",
                 ));
             }
-            if read % self.block_size != 0 && filled + read < scratch.len() {
+            let remaining = scratch.len() - filled;
+            if read > remaining {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::Io,
+                    "block source returned more bytes than requested",
+                ));
+            }
+            if read % self.block_size != 0 && read < remaining {
                 return Err(GibbloxError::with_message(
                     GibbloxErrorKind::Io,
                     "unaligned short read from block source",
@@ -768,6 +775,11 @@ mod tests {
     struct FakeReader {
         block_size: u32,
         data: alloc::vec::Vec<u8>,
+    }
+
+    struct OverReportingReader {
+        inner: FakeReader,
+        overreport_bytes: usize,
     }
 
     #[async_trait]
@@ -813,6 +825,36 @@ mod tests {
                 buf[read..].fill(0);
             }
             Ok(buf.len())
+        }
+    }
+
+    #[async_trait]
+    impl BlockReader for OverReportingReader {
+        fn block_size(&self) -> u32 {
+            self.inner.block_size()
+        }
+
+        async fn total_blocks(&self) -> GibbloxResult<u64> {
+            self.inner.total_blocks().await
+        }
+
+        fn write_identity(&self, out: &mut dyn fmt::Write) -> fmt::Result {
+            self.inner.write_identity(out)
+        }
+
+        async fn read_blocks(
+            &self,
+            lba: u64,
+            buf: &mut [u8],
+            ctx: ReadContext,
+        ) -> GibbloxResult<usize> {
+            let read = self.inner.read_blocks(lba, buf, ctx).await?;
+            read.checked_add(self.overreport_bytes).ok_or_else(|| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::OutOfRange,
+                    "synthetic over-report exceeds usize range",
+                )
+            })
         }
     }
 
@@ -949,6 +991,27 @@ mod tests {
         .err()
         .expect("invalid partition table crc should fail");
         assert_eq!(err.kind(), GibbloxErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn gpt_reader_rejects_over_reported_source_reads() {
+        let (disk, _partition_one_data) = build_test_gpt_disk();
+        let reader = OverReportingReader {
+            inner: FakeReader {
+                block_size: TEST_BLOCK_SIZE as u32,
+                data: disk,
+            },
+            overreport_bytes: 1,
+        };
+
+        let err = block_on(GptBlockReader::new(
+            reader,
+            GptPartitionSelector::index(0),
+            TEST_BLOCK_SIZE as u32,
+        ))
+        .err()
+        .expect("over-reported source read should fail");
+        assert_eq!(err.kind(), GibbloxErrorKind::Io);
     }
 
     fn build_test_gpt_disk() -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>) {
