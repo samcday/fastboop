@@ -1,30 +1,26 @@
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use fastboop_core::resolve_effective_boot_profile_stage0;
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
-use gibblox_core::BlockReader;
-use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_core::OstreeFs as OstreeRootfs;
 use tracing::debug;
-use url::Url;
 
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
 
 use super::{
-    ArtifactReaderResolver, OstreeArg, Stage0RootfsProvider, auto_detect_ostree_deployment_path,
-    parse_ostree_arg, read_dtbo_overlays, read_existing_initrd,
-    resolve_boot_profile_source_overrides, resolve_rootfs_kind,
+    ArtifactReaderResolver, OstreeArg, Stage0CoalescingFilesystem,
+    auto_detect_ostree_deployment_path, parse_ostree_arg, read_dtbo_overlays,
+    read_existing_initrd, resolve_boot_profile_source_overrides,
 };
 
 #[derive(Args)]
 pub struct Stage0Args {
-    /// Path/URL to rootfs image pipeline input, or a compiled BootProfile binary file.
-    #[arg(value_name = "ROOTFS")]
-    pub rootfs: PathBuf,
+    /// Path or HTTP(S) URL to a channel artifact containing kernel/modules.
+    #[arg(value_name = "CHANNEL")]
+    pub channel: PathBuf,
     /// Resolve kernel/modules inside this OSTree deployment path (`--ostree` auto-detects).
     #[arg(long, value_name = "PATH", num_args = 0..=1)]
     pub ostree: Option<Option<String>>,
@@ -86,8 +82,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
 
     let mut artifact_resolver = ArtifactReaderResolver::new();
     let build = {
-        let rootfs_str = args.rootfs.to_string_lossy();
-        let input = artifact_resolver.open_rootfs_input(&args.rootfs).await?;
+        let input = artifact_resolver.open_channel_input(&args.channel).await?;
         let profile_source_overrides = resolve_boot_profile_source_overrides(
             input.boot_profile.as_ref(),
             profile,
@@ -99,25 +94,9 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
             .as_ref()
             .map(|boot_profile| resolve_effective_boot_profile_stage0(boot_profile, &profile.id))
             .unwrap_or_default();
-        let reader = input.reader;
+        let stage0_readers = input.stage0_readers;
 
-        let reader: Arc<dyn BlockReader> = match input.allow_zip_entry_probe {
-            true => match zip_entry_name_from_rootfs(&rootfs_str)? {
-                Some(entry_name) => {
-                    let zip_reader = ZipEntryBlockReader::new(&entry_name, reader)
-                        .await
-                        .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
-                    Arc::new(zip_reader)
-                }
-                None => reader,
-            },
-            false => reader,
-        };
-
-        let total_blocks = reader.total_blocks().await?;
-        let image_size_bytes = total_blocks * reader.block_size() as u64;
-        let rootfs_kind = resolve_rootfs_kind(input.boot_profile.as_ref(), reader.as_ref()).await?;
-        let provider = Stage0RootfsProvider::open(rootfs_kind, reader, image_size_bytes).await?;
+        let provider = Stage0CoalescingFilesystem::open(stage0_readers).await?;
 
         let mut extra_modules = profile_stage0.extra_modules;
         extra_modules.extend(cli_extra_modules.iter().cloned());
@@ -219,35 +198,4 @@ fn join_cmdline(left: Option<&str>, right: Option<&str>) -> Option<String> {
         (None, Some(b)) => Some(b.to_string()),
         (None, None) => None,
     }
-}
-
-fn zip_entry_name_from_rootfs(rootfs: &str) -> Result<Option<String>> {
-    let trimmed = rootfs.trim();
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        let url = Url::parse(trimmed).with_context(|| format!("parse rootfs URL {trimmed}"))?;
-        let file_name = url
-            .path_segments()
-            .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back());
-        return zip_entry_name_from_file_name(file_name);
-    }
-
-    let file_name = std::path::Path::new(trimmed)
-        .file_name()
-        .and_then(|name| name.to_str());
-    zip_entry_name_from_file_name(file_name)
-}
-
-fn zip_entry_name_from_file_name(file_name: Option<&str>) -> Result<Option<String>> {
-    let Some(file_name) = file_name else {
-        return Ok(None);
-    };
-    if !file_name.to_ascii_lowercase().ends_with(".zip") {
-        return Ok(None);
-    }
-
-    let stem = &file_name[..file_name.len() - 4];
-    if stem.is_empty() {
-        return Err(anyhow!("zip artifact name must include a filename stem"));
-    }
-    Ok(Some(format!("{stem}.ero")))
 }

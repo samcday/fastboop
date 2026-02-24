@@ -36,7 +36,7 @@ enum Commands {
     Bootprofile(BootProfileArgs),
     /// Detect connected fastboot devices that match a DevPro.
     Detect(DetectArgs),
-    /// Synthesize a stage0 initrd from a rootfs and device profile; writes cpio to stdout.
+    /// Synthesize a stage0 initrd from a channel artifact and device profile; writes cpio to stdout.
     Stage0(Stage0Args),
 }
 

@@ -9,8 +9,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow, bail};
 use fastboop_core::fastboot::{FastbootProtocolError, ProbeError};
 use fastboop_core::{
-    BootProfileArtifactSource, BootProfileRootfs, DeviceProfile, boot_profile_bin_header_version,
-    decode_boot_profile, validate_boot_profile,
+    BootProfileArtifactSource, BootProfileRootfs, CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamKind,
+    DeviceProfile, boot_profile_bin_header_version, classify_channel_prefix, decode_boot_profile,
+    validate_boot_profile,
 };
 use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
 use gibblox_android_sparse::AndroidSparseBlockReader;
@@ -27,6 +28,7 @@ use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 use gibblox_xz::XzBlockReader;
+use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_core::{Filesystem, FilesystemEntryType, normalize_ostree_deployment_path};
 use gobblytes_erofs::{DEFAULT_IMAGE_BLOCK_SIZE, ErofsRootfs};
 use gobblytes_fat::FatFs;
@@ -43,9 +45,9 @@ pub use bootprofile::{BootProfileArgs, run_bootprofile};
 pub use detect::{DetectArgs, run_detect};
 pub use stage0::{Stage0Args, run_stage0};
 
-pub(crate) struct RootfsInput {
+pub(crate) struct ChannelInput {
     pub(crate) reader: Arc<dyn BlockReader>,
-    pub(crate) allow_zip_entry_probe: bool,
+    pub(crate) stage0_readers: Vec<Arc<dyn BlockReader>>,
     pub(crate) boot_profile: Option<fastboop_core::BootProfile>,
 }
 
@@ -53,6 +55,7 @@ pub(crate) struct RootfsInput {
 pub(crate) enum RootfsKind {
     Erofs,
     Ext4,
+    Fat,
 }
 
 #[derive(Clone)]
@@ -125,6 +128,7 @@ impl Filesystem for Ext4Rootfs {
 pub(crate) enum Stage0RootfsProvider {
     Erofs(ErofsRootfs),
     Ext4(Ext4Rootfs),
+    Fat(FatFs),
 }
 
 impl Stage0RootfsProvider {
@@ -144,13 +148,20 @@ impl Stage0RootfsProvider {
                 let rootfs = Ext4Rootfs::open(reader).await?;
                 Ok(Self::Ext4(rootfs))
             }
+            RootfsKind::Fat => {
+                let rootfs = FatFs::open(reader)
+                    .await
+                    .map_err(|err| anyhow!("open fat rootfs: {err}"))?;
+                Ok(Self::Fat(rootfs))
+            }
         }
     }
 
-    pub(crate) fn switchroot_fs(&self) -> Stage0SwitchrootFs {
+    pub(crate) fn switchroot_fs(&self) -> Option<Stage0SwitchrootFs> {
         match self {
-            Self::Erofs(_) => Stage0SwitchrootFs::Erofs,
-            Self::Ext4(_) => Stage0SwitchrootFs::Ext4,
+            Self::Erofs(_) => Some(Stage0SwitchrootFs::Erofs),
+            Self::Ext4(_) => Some(Stage0SwitchrootFs::Ext4),
+            Self::Fat(_) => None,
         }
     }
 }
@@ -162,6 +173,10 @@ impl Filesystem for Stage0RootfsProvider {
         match self {
             Self::Erofs(rootfs) => rootfs.read_all(path).await,
             Self::Ext4(rootfs) => rootfs.read_all(path).await,
+            Self::Fat(rootfs) => rootfs
+                .read_all(path)
+                .await
+                .map_err(|err| anyhow!("read fat path {path}: {err}")),
         }
     }
 
@@ -169,6 +184,10 @@ impl Filesystem for Stage0RootfsProvider {
         match self {
             Self::Erofs(rootfs) => rootfs.read_range(path, offset, len).await,
             Self::Ext4(rootfs) => rootfs.read_range(path, offset, len).await,
+            Self::Fat(rootfs) => rootfs
+                .read_range(path, offset, len)
+                .await
+                .map_err(|err| anyhow!("read fat path range {path}@{offset}+{len}: {err}")),
         }
     }
 
@@ -176,6 +195,10 @@ impl Filesystem for Stage0RootfsProvider {
         match self {
             Self::Erofs(rootfs) => rootfs.read_dir(path).await,
             Self::Ext4(rootfs) => rootfs.read_dir(path).await,
+            Self::Fat(rootfs) => rootfs
+                .read_dir(path)
+                .await
+                .map_err(|err| anyhow!("read fat directory {path}: {err}")),
         }
     }
 
@@ -183,6 +206,9 @@ impl Filesystem for Stage0RootfsProvider {
         match self {
             Self::Erofs(rootfs) => rootfs.entry_type(path).await,
             Self::Ext4(rootfs) => rootfs.entry_type(path).await,
+            Self::Fat(rootfs) => <FatFs as Filesystem>::entry_type(rootfs, path)
+                .await
+                .map_err(|err| anyhow!("read fat entry type {path}: {err}")),
         }
     }
 
@@ -190,6 +216,10 @@ impl Filesystem for Stage0RootfsProvider {
         match self {
             Self::Erofs(rootfs) => rootfs.read_link(path).await,
             Self::Ext4(rootfs) => rootfs.read_link(path).await,
+            Self::Fat(rootfs) => rootfs
+                .read_link(path)
+                .await
+                .map_err(|err| anyhow!("read fat symlink target {path}: {err}")),
         }
     }
 
@@ -197,6 +227,134 @@ impl Filesystem for Stage0RootfsProvider {
         match self {
             Self::Erofs(rootfs) => rootfs.exists(path).await,
             Self::Ext4(rootfs) => rootfs.exists(path).await,
+            Self::Fat(rootfs) => rootfs
+                .exists(path)
+                .await
+                .map_err(|err| anyhow!("check fat path {path}: {err}")),
+        }
+    }
+}
+
+pub(crate) struct Stage0CoalescingFilesystem {
+    providers: Vec<Stage0RootfsProvider>,
+    switchroot_fs: Stage0SwitchrootFs,
+}
+
+impl Stage0CoalescingFilesystem {
+    pub(crate) async fn open(readers: Vec<Arc<dyn BlockReader>>) -> Result<Self> {
+        if readers.is_empty() {
+            bail!("channel did not resolve any filesystem providers")
+        }
+
+        let mut providers = Vec::new();
+        for reader in readers {
+            let total_blocks = reader.total_blocks().await?;
+            let image_size_bytes = total_blocks
+                .checked_mul(reader.block_size() as u64)
+                .ok_or_else(|| anyhow!("channel image size overflow"))?;
+            let Some(kind) = detect_rootfs_kind(reader.as_ref()).await? else {
+                continue;
+            };
+            let provider = Stage0RootfsProvider::open(kind, reader, image_size_bytes).await?;
+            providers.push(provider);
+        }
+
+        if providers.is_empty() {
+            bail!("channel did not contain a supported filesystem (erofs/ext4/fat)")
+        }
+
+        let switchroot_fs = providers
+            .iter()
+            .find_map(Stage0RootfsProvider::switchroot_fs)
+            .ok_or_else(|| {
+                anyhow!("channel did not contain a bootable root filesystem (erofs/ext4)")
+            })?;
+
+        Ok(Self {
+            providers,
+            switchroot_fs,
+        })
+    }
+
+    pub(crate) fn switchroot_fs(&self) -> Stage0SwitchrootFs {
+        self.switchroot_fs
+    }
+}
+
+impl Filesystem for Stage0CoalescingFilesystem {
+    type Error = anyhow::Error;
+
+    async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
+        let mut last_err = None;
+        for provider in &self.providers {
+            match provider.read_all(path).await {
+                Ok(data) => return Ok(data),
+                Err(err) => last_err = Some(err),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("missing path {path}")))
+    }
+
+    async fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let mut last_err = None;
+        for provider in &self.providers {
+            match provider.read_range(path, offset, len).await {
+                Ok(data) => return Ok(data),
+                Err(err) => last_err = Some(err),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("missing path {path}")))
+    }
+
+    async fn read_dir(&self, path: &str) -> Result<Vec<String>> {
+        let Some(first) = self.providers.first() else {
+            bail!("channel filesystem provider list is empty")
+        };
+        first.read_dir(path).await
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>> {
+        let mut last_err = None;
+        for provider in &self.providers {
+            match provider.entry_type(path).await {
+                Ok(Some(ty)) => return Ok(Some(ty)),
+                Ok(None) => {}
+                Err(err) => last_err = Some(err),
+            }
+        }
+
+        if let Some(err) = last_err {
+            Err(err)
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String> {
+        let mut last_err = None;
+        for provider in &self.providers {
+            match provider.read_link(path).await {
+                Ok(target) => return Ok(target),
+                Err(err) => last_err = Some(err),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("missing symlink {path}")))
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool> {
+        let mut last_err = None;
+        for provider in &self.providers {
+            match provider.exists(path).await {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(err) => last_err = Some(err),
+            }
+        }
+
+        if let Some(err) = last_err {
+            Err(err)
+        } else {
+            Ok(false)
         }
     }
 }
@@ -214,20 +372,22 @@ impl ArtifactReaderResolver {
         Self::default()
     }
 
-    pub(crate) async fn open_rootfs_input(&mut self, rootfs: &Path) -> Result<RootfsInput> {
-        if let Some(profile) = try_decode_boot_profile_from_rootfs_arg(rootfs).await? {
+    pub(crate) async fn open_channel_input(&mut self, channel: &Path) -> Result<ChannelInput> {
+        if let Some(profile) = try_decode_boot_profile_from_channel_arg(channel).await? {
             let reader = self.open_artifact_source(profile.rootfs.source()).await?;
-            return Ok(RootfsInput {
+            let stage0_readers = derive_stage0_readers(reader.clone()).await?;
+            return Ok(ChannelInput {
                 reader,
-                allow_zip_entry_probe: false,
+                stage0_readers,
                 boot_profile: Some(profile),
             });
         }
 
-        let reader = open_rootfs_block_reader(rootfs).await?;
-        Ok(RootfsInput {
+        let reader = open_channel_block_reader(channel).await?;
+        let stage0_readers = derive_stage0_readers(reader.clone()).await?;
+        Ok(ChannelInput {
             reader,
-            allow_zip_entry_probe: true,
+            stage0_readers,
             boot_profile: None,
         })
     }
@@ -392,20 +552,28 @@ fn artifact_source_cache_key(source: &BootProfileArtifactSource) -> Result<Strin
     }
 }
 
-pub(crate) async fn open_rootfs_block_reader(rootfs: &Path) -> Result<Arc<dyn BlockReader>> {
-    let rootfs_str = rootfs.to_string_lossy();
-    if rootfs_str.ends_with(".caidx") {
+const CHANNEL_UNWRAP_MAX_DEPTH: usize = 16;
+const CHANNEL_PARTITION_PROBE_LIMIT: u32 = 16;
+
+pub(crate) async fn open_channel_block_reader(channel: &Path) -> Result<Arc<dyn BlockReader>> {
+    let source = open_channel_source_reader(channel).await?;
+    unwrap_channel_reader(source, Some(channel)).await
+}
+
+async fn open_channel_source_reader(channel: &Path) -> Result<Arc<dyn BlockReader>> {
+    let channel_str = channel.to_string_lossy();
+    if channel_str.ends_with(".caidx") {
         bail!(
-            "casync archive indexes (.caidx) are not supported for rootfs block reads; provide a casync blob index (.caibx)"
+            "casync archive indexes (.caidx) are not supported for channel block reads; provide a casync blob index (.caibx)"
         );
     }
 
-    if rootfs_str.starts_with("http://") || rootfs_str.starts_with("https://") {
+    if channel_str.starts_with("http://") || channel_str.starts_with("https://") {
         let url =
-            Url::parse(&rootfs_str).with_context(|| format!("parse rootfs URL {rootfs_str}"))?;
+            Url::parse(&channel_str).with_context(|| format!("parse channel URL {channel_str}"))?;
 
         if url.path().ends_with(".caibx") {
-            info!(index_url = %url, "using casync blob-index rootfs reader pipeline");
+            info!(index_url = %url, "using casync blob-index channel reader pipeline");
             return open_casync_reader(url, None, true).await;
         }
 
@@ -413,32 +581,212 @@ pub(crate) async fn open_rootfs_block_reader(rootfs: &Path) -> Result<Arc<dyn Bl
     }
 
     let canonical =
-        fs::canonicalize(rootfs).with_context(|| format!("canonicalize {}", rootfs.display()))?;
+        fs::canonicalize(channel).with_context(|| format!("canonicalize {}", channel.display()))?;
     let file_reader = StdFileBlockReader::open(&canonical, DEFAULT_IMAGE_BLOCK_SIZE)
         .map_err(|err| anyhow!("open file {}: {err}", canonical.display()))?;
     Ok(Arc::new(file_reader))
 }
 
-pub(crate) async fn resolve_rootfs_kind(
-    boot_profile: Option<&fastboop_core::BootProfile>,
-    reader: &dyn BlockReader,
-) -> Result<RootfsKind> {
-    if let Some(profile) = boot_profile {
-        return match &profile.rootfs {
-            BootProfileRootfs::Erofs(_) => Ok(RootfsKind::Erofs),
-            BootProfileRootfs::Ext4(_) => Ok(RootfsKind::Ext4),
-            BootProfileRootfs::Fat(_) => {
+async fn unwrap_channel_reader(
+    mut reader: Arc<dyn BlockReader>,
+    channel_hint: Option<&Path>,
+) -> Result<Arc<dyn BlockReader>> {
+    for _depth in 0..CHANNEL_UNWRAP_MAX_DEPTH {
+        let kind = classify_channel_reader(reader.as_ref()).await?;
+        match kind {
+            ChannelStreamKind::ProfileBundleV1 => {
                 bail!(
-                    "boot profile rootfs 'fat' is not bootable as stage0 lower root; use 'erofs' or 'ext4'"
+                    "channel is a profile bundle; boot/stage0 commands require an artifact channel"
                 )
             }
-        };
+            ChannelStreamKind::Xz => {
+                let wrapped = XzBlockReader::new(reader)
+                    .await
+                    .map_err(|err| anyhow!("open xz block reader: {err}"))?;
+                reader = Arc::new(wrapped);
+            }
+            ChannelStreamKind::AndroidSparse => {
+                let wrapped = AndroidSparseBlockReader::new(reader)
+                    .await
+                    .map_err(|err| anyhow!("open android sparse reader: {err}"))?;
+                reader = Arc::new(wrapped);
+            }
+            ChannelStreamKind::Zip => {
+                let Some(entry_name) = zip_entry_name_from_channel_hint(channel_hint)? else {
+                    bail!(
+                        "channel ZIP input requires a .zip filename stem so fastboop can infer the entry name"
+                    )
+                };
+                let wrapped = ZipEntryBlockReader::new(&entry_name, reader)
+                    .await
+                    .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
+                reader = Arc::new(wrapped);
+            }
+            ChannelStreamKind::Unknown => {
+                bail!("unsupported or unrecognized channel format")
+            }
+            ChannelStreamKind::Gpt
+            | ChannelStreamKind::Iso9660
+            | ChannelStreamKind::Erofs
+            | ChannelStreamKind::Ext4
+            | ChannelStreamKind::Fat
+            | ChannelStreamKind::Mbr => {
+                return Ok(reader);
+            }
+        }
     }
 
-    match detect_rootfs_kind(reader).await? {
-        Some(kind) => Ok(kind),
-        None => Ok(RootfsKind::Erofs),
+    bail!("channel unwrap depth exceeded {CHANNEL_UNWRAP_MAX_DEPTH}")
+}
+
+async fn derive_stage0_readers(reader: Arc<dyn BlockReader>) -> Result<Vec<Arc<dyn BlockReader>>> {
+    let kind = classify_channel_reader(reader.as_ref()).await?;
+    match kind {
+        ChannelStreamKind::Gpt => discover_gpt_partition_readers(reader).await,
+        ChannelStreamKind::Mbr => discover_mbr_partition_readers(reader).await,
+        _ => Ok(vec![reader]),
     }
+}
+
+async fn discover_gpt_partition_readers(
+    source: Arc<dyn BlockReader>,
+) -> Result<Vec<Arc<dyn BlockReader>>> {
+    let mut out = Vec::new();
+    for index in 0..CHANNEL_PARTITION_PROBE_LIMIT {
+        let partition = match GptBlockReader::new(
+            source.clone(),
+            GptPartitionSelector::index(index),
+            DEFAULT_IMAGE_BLOCK_SIZE,
+        )
+        .await
+        {
+            Ok(reader) => Arc::new(reader) as Arc<dyn BlockReader>,
+            Err(_) => continue,
+        };
+
+        let partition = match unwrap_channel_reader(partition, None).await {
+            Ok(reader) => reader,
+            Err(_) => continue,
+        };
+        let partition_kind = match classify_channel_reader(partition.as_ref()).await {
+            Ok(kind) => kind,
+            Err(_) => continue,
+        };
+        if matches!(
+            partition_kind,
+            ChannelStreamKind::Erofs | ChannelStreamKind::Ext4 | ChannelStreamKind::Fat
+        ) {
+            out.push(partition);
+        }
+    }
+
+    if out.is_empty() {
+        bail!("channel GPT input did not expose any EROFS/ext4/FAT partitions")
+    }
+    Ok(out)
+}
+
+async fn discover_mbr_partition_readers(
+    source: Arc<dyn BlockReader>,
+) -> Result<Vec<Arc<dyn BlockReader>>> {
+    let mut out = Vec::new();
+    for index in 0..CHANNEL_PARTITION_PROBE_LIMIT {
+        let partition = match MbrBlockReader::new(
+            source.clone(),
+            MbrPartitionSelector::index(index),
+            DEFAULT_IMAGE_BLOCK_SIZE,
+        )
+        .await
+        {
+            Ok(reader) => Arc::new(reader) as Arc<dyn BlockReader>,
+            Err(_) => continue,
+        };
+
+        let partition = match unwrap_channel_reader(partition, None).await {
+            Ok(reader) => reader,
+            Err(_) => continue,
+        };
+        let partition_kind = match classify_channel_reader(partition.as_ref()).await {
+            Ok(kind) => kind,
+            Err(_) => continue,
+        };
+        if matches!(
+            partition_kind,
+            ChannelStreamKind::Erofs | ChannelStreamKind::Ext4 | ChannelStreamKind::Fat
+        ) {
+            out.push(partition);
+        }
+    }
+
+    if out.is_empty() {
+        bail!("channel MBR input did not expose any EROFS/ext4/FAT partitions")
+    }
+    Ok(out)
+}
+
+async fn classify_channel_reader<R: BlockReader + ?Sized>(reader: &R) -> Result<ChannelStreamKind> {
+    let prefix = read_channel_prefix(reader, CHANNEL_SNIFF_PREFIX_LEN).await?;
+    Ok(classify_channel_prefix(&prefix))
+}
+
+async fn read_channel_prefix<R: BlockReader + ?Sized>(reader: &R, cap: usize) -> Result<Vec<u8>> {
+    let block_size = reader.block_size() as usize;
+    if block_size == 0 {
+        bail!("channel reader block size is zero")
+    }
+
+    let total_blocks = reader.total_blocks().await?;
+    let total_bytes = total_blocks
+        .checked_mul(block_size as u64)
+        .ok_or_else(|| anyhow!("channel size overflow"))?;
+    let prefix_len = core::cmp::min(cap as u64, total_bytes) as usize;
+    if prefix_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    let blocks_to_read = prefix_len.div_ceil(block_size);
+    let mut scratch = vec![0u8; blocks_to_read * block_size];
+    let read = reader
+        .read_blocks(0, &mut scratch, ReadContext::FOREGROUND)
+        .await?;
+    scratch.truncate(core::cmp::min(read, prefix_len));
+    Ok(scratch)
+}
+
+fn zip_entry_name_from_channel_hint(channel_hint: Option<&Path>) -> Result<Option<String>> {
+    let Some(channel) = channel_hint else {
+        return Ok(None);
+    };
+
+    let raw = channel.to_string_lossy();
+    let trimmed = raw.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        let url = Url::parse(trimmed).with_context(|| format!("parse channel URL {trimmed}"))?;
+        let file_name = url
+            .path_segments()
+            .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back());
+        return zip_entry_name_from_file_name(file_name);
+    }
+
+    let file_name = Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str());
+    zip_entry_name_from_file_name(file_name)
+}
+
+fn zip_entry_name_from_file_name(file_name: Option<&str>) -> Result<Option<String>> {
+    let Some(file_name) = file_name else {
+        return Ok(None);
+    };
+    if !file_name.to_ascii_lowercase().ends_with(".zip") {
+        return Ok(None);
+    }
+
+    let stem = &file_name[..file_name.len() - 4];
+    if stem.is_empty() {
+        bail!("zip channel filename must include a non-empty stem")
+    }
+    Ok(Some(format!("{stem}.ero")))
 }
 
 async fn detect_rootfs_kind<R: BlockReader + ?Sized>(reader: &R) -> Result<Option<RootfsKind>> {
@@ -448,28 +796,31 @@ async fn detect_rootfs_kind<R: BlockReader + ?Sized>(reader: &R) -> Result<Optio
     if reader_has_ext4_magic(reader).await? {
         return Ok(Some(RootfsKind::Ext4));
     }
+    if reader_has_fat_magic(reader).await? {
+        return Ok(Some(RootfsKind::Fat));
+    }
     Ok(None)
 }
 
-async fn try_decode_boot_profile_from_rootfs_arg(
-    rootfs: &Path,
+async fn try_decode_boot_profile_from_channel_arg(
+    channel: &Path,
 ) -> Result<Option<fastboop_core::BootProfile>> {
-    let rootfs_str = rootfs.to_string_lossy();
-    if rootfs_str.starts_with("http://") || rootfs_str.starts_with("https://") {
+    let channel_str = channel.to_string_lossy();
+    if channel_str.starts_with("http://") || channel_str.starts_with("https://") {
         return Ok(None);
     }
 
     let mut header = [0u8; 16];
-    let mut file = fs::File::open(rootfs)
-        .with_context(|| format!("opening rootfs argument {}", rootfs.display()))?;
+    let mut file = fs::File::open(channel)
+        .with_context(|| format!("opening channel argument {}", channel.display()))?;
     let read = std::io::Read::read(&mut file, &mut header)
-        .with_context(|| format!("reading rootfs argument header {}", rootfs.display()))?;
+        .with_context(|| format!("reading channel argument header {}", channel.display()))?;
     if boot_profile_bin_header_version(&header[..read]).is_none() {
         return Ok(None);
     }
 
-    let bytes = fs::read(rootfs)
-        .with_context(|| format!("reading boot profile binary {}", rootfs.display()))?;
+    let bytes = fs::read(channel)
+        .with_context(|| format!("reading boot profile binary {}", channel.display()))?;
     let profile = decode_boot_profile(&bytes).map_err(|err| anyhow!("{err}"))?;
     validate_boot_profile(&profile).map_err(|err| anyhow!("{err}"))?;
     Ok(Some(profile))
@@ -560,6 +911,28 @@ async fn reader_has_ext4_magic<R: BlockReader + ?Sized>(reader: &R) -> Result<bo
     Ok(magic == EXT4_MAGIC)
 }
 
+async fn reader_has_fat_magic<R: BlockReader + ?Sized>(reader: &R) -> Result<bool> {
+    let Some(boot_signature) = read_magic_bytes(reader, 510, 2).await? else {
+        return Ok(false);
+    };
+    if boot_signature.as_slice() != [0x55, 0xAA] {
+        return Ok(false);
+    }
+
+    let fat12 = read_magic_bytes(reader, 54, 5).await?;
+    if fat12.as_deref() == Some(b"FAT12") {
+        return Ok(true);
+    }
+
+    let fat16 = read_magic_bytes(reader, 54, 5).await?;
+    if fat16.as_deref() == Some(b"FAT16") {
+        return Ok(true);
+    }
+
+    let fat32 = read_magic_bytes(reader, 82, 5).await?;
+    Ok(fat32.as_deref() == Some(b"FAT32"))
+}
+
 async fn read_magic_bytes<R: BlockReader + ?Sized>(
     reader: &R,
     offset: u64,
@@ -571,15 +944,15 @@ async fn read_magic_bytes<R: BlockReader + ?Sized>(
 
     let block_size = reader.block_size() as u64;
     if block_size == 0 {
-        bail!("rootfs reader block size is zero");
+        bail!("channel reader block size is zero");
     }
     let total_blocks = reader.total_blocks().await?;
     let total_bytes = total_blocks
         .checked_mul(block_size)
-        .ok_or_else(|| anyhow!("rootfs blob size overflow"))?;
+        .ok_or_else(|| anyhow!("channel blob size overflow"))?;
     let required_end = offset
         .checked_add(len as u64)
-        .ok_or_else(|| anyhow!("rootfs magic offset overflow"))?;
+        .ok_or_else(|| anyhow!("channel magic offset overflow"))?;
     if total_bytes < required_end {
         return Ok(None);
     }

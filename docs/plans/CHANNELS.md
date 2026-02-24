@@ -9,6 +9,15 @@ Move fastboop from a positional `rootfs` artifact model to a single `channel` in
 
 The runtime sniffs the channel and decides what it is, instead of relying on file extensions or separate command flows.
 
+## First Pass Focus (Current)
+
+- CLI-only delivery (`fastboop boot` first, `stage0` where practical).
+- Support two channel shapes in boot flow:
+  - naked artifact channel (recursive unwrap/sniff as today)
+  - bootprofile-leading stream (one or more `.bootpro` records, optionally followed by artifact bytes)
+- DevProfiles embedded in channel stream are explicitly out of scope for this first pass.
+- Desktop/web integration is tracked but not part of first-pass implementation gating.
+
 This plan tracks the ongoing BootProfile direction from `fastboop-boot-profiles` and issue `#20`.
 
 ## Non-negotiables
@@ -26,12 +35,20 @@ Given one `channel` input:
 3. If profile bundle:
    - parse all profiles
    - validate entries
-   - ingest into local profile store
-   - apply precedence (`channel DevProfiles` override built-ins; BootProfiles are not built-in)
-   - report ingest results to user/UI
+   - load DevProfiles + BootProfiles into session-scoped in-memory state
+   - constrain device matching/probing to bundle DevProfiles only
+   - after selecting a device/profile, show only compatible BootProfiles for that device
+   - report load/validation results to user/UI
+   - do not persist profile records locally
 4. If not a profile bundle:
    - run the "I am Feeling Lucky" unwrap/sniff pipeline (xz/sparse/zip/gpt/mbr/filesystem)
    - discover kernel/modules/stage0 inputs from resulting filesystem providers
+   - treat channel as a generic artifact input (no channel-constrained device/profile list)
+
+First-pass stream rule:
+
+- If the stream starts with a boot profile record, continue consuming boot profile records from the head, then keep processing the remaining bytes as channel artifact input via the same recursive unwrap/sniff pipeline.
+- Bootprofile-head parsing must be forward-only and side-effect free.
 
 ## Stream Classification Contract (Draft v1)
 
@@ -63,7 +80,8 @@ Notes:
   - desktop/web boot config models and forms
   - shared UI data structs
 - Add channel sniff/dispatch path in core.
-- Add profile-bundle ingestion + local persistence.
+- Add session-scoped profile-bundle loading/selection path with no local persistence (later phase).
+- Add CLI first-pass support for bootprofile-leading stream handling.
 - Keep artifact unwrap path working for existing known formats.
 - Add a simple multi-filesystem coalescing abstraction as the final phase.
 
@@ -72,16 +90,28 @@ Notes:
 - Full policy engine for artifact ranking beyond deterministic heuristics.
 - Complex union/overlay semantics between filesystems.
 - Any mutating install workflow.
+- Channel-stream DevProfile ingestion/selection in first-pass CLI rollout.
 
 ## Phased Rollout
+
+### Phase 0: CLI First Pass (In Progress)
+
+- Wire `fastboop boot` to accept:
+  - naked artifact channels
+  - bootprofile-leading streams
+- Implement stream-head bootprofile parsing and continue artifact detection on remaining bytes.
+- Keep behavior deterministic:
+  - if multiple bootprofiles are discovered, require explicit selection policy/flag or fail with clear list
+  - no persistent writes
+- Descope channel-stream DevProfiles in this phase.
+
+Deliverable: CLI can boot from either plain artifact channels or bootprofile-leading streams without local persistence.
 
 ### Phase 1: Surface Migration (`rootfs` -> `channel`)
 
 - Rename user-facing parameters and config fields to `channel`.
-- Keep compatibility aliases for one transition window:
-  - accept old field names
-  - emit deprecation warnings in CLI/UI logs
-- Ensure desktop/web serialization can read old saved config and write new shape.
+- Project is unreleased: do not add compatibility aliases or deprecation warnings.
+- Session startup requires a non-empty `channel` in CLI/desktop/web flows.
 
 Deliverable: all frontends treat channel as the single source input.
 
@@ -98,24 +128,30 @@ Phase gate:
 
 Deliverable: one core entrypoint that classifies channel as profile-bundle or artifact pipeline input.
 
-### Phase 3: Profile Bundle Ingest
+### Phase 3: Profile Bundle Session Runtime (Non-Persistent)
 
 - Reuse/adapt BootProfile schema/codec work from `fastboop-boot-profiles`.
 - Define bundle framing contract (magic + `format_version` + payload table).
-- Introduce local profile store schema for persisted DevProfiles/BootProfiles.
-- Implement ingest behavior:
+- Implement bundle session behavior:
   - validate all records
+  - build an in-memory session model (`DevProfiles`, `BootProfiles`)
+  - constrain device probe/match to in-session DevProfiles
+  - provide BootProfile selection filtered by selected device compatibility
   - partial success reporting (accepted/rejected counts + reasons)
-  - deterministic upsert/update semantics
+  - no persistent writes (bundle handling is side-effect free)
+
+Compatibility rule for BootProfile selection (v0):
+
+- If `boot_profile.stage0.devices` is empty, the BootProfile is treated as compatible with all known devices.
+- Otherwise, the BootProfile is compatible only when `selected_device_profile.id` exists as a key in `boot_profile.stage0.devices`.
 
 Phase gate:
 
-- Ingest must be idempotent and transaction-safe (invalid bundle does not corrupt existing store).
-- Implement precedence at resolve time:
-  - channel-ingested DevProfiles override built-in DevProfiles by id
-  - BootProfiles come from ingest/store only (no built-in BootProfiles)
+- Bundle handling must be deterministic and side-effect free.
+- Invalid or partially invalid bundles must never modify host state.
+- Given the same bundle + selected device profile id, BootProfile compatibility output is deterministic.
 
-Deliverable: dropping a profile bundle channel updates the local profile DB and immediately affects matching/selection logic.
+Deliverable: starting a session from a profile-bundle channel constrains detection and exposes only compatible BootProfile variants without writing local state.
 
 ### Phase 4: Artifact "Feeling Lucky" Pipeline
 
@@ -191,8 +227,12 @@ For substantial implementation phases, run Tier 2 gate from `HACKING.md` before 
 
 ## Acceptance Criteria
 
-- User can provide one `channel` input in CLI/desktop/web for both profile bundles and artifacts.
-- Profile bundle channels ingest successfully with clear reporting and precedence behavior.
+- User can provide one `channel` input in CLI session startup flows for first pass.
+- Profile-bundle channels load DevProfiles/BootProfiles in-memory for that session only.
+- Device matching for a profile-bundle session is constrained to channel DevProfiles.
+- BootProfile options shown after device/profile selection include only compatible variants (`stage0.devices = {}` means compatible with all known devices).
+- Naked artifact channels are treated as generic artifacts (assumed bootable for any matched device; no channel-provided profile constraints).
+- Bootprofile-leading streams continue artifact recursive unwrap/detection on trailing bytes after parsed bootprofile records.
 - Existing artifact types still boot through channel intake.
 - Coalescing filesystem resolves kernel/modules from different providers using first-hit fallback order.
 - No mutating device actions are introduced.

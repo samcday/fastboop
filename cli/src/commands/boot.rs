@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,11 +15,9 @@ use fastboop_core::{DeviceProfile, resolve_effective_boot_profile_stage0};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_core::{BlockReader, block_identity_string};
-use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_core::OstreeFs as OstreeRootfs;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
-use url::Url;
 
 use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
 use crate::devpros::{dedup_profiles, load_device_profiles, resolve_devpro_dirs};
@@ -29,9 +26,9 @@ use crate::smoo_host::run_host_daemon;
 use crate::tui::{TuiOutcome, run_boot_tui};
 
 use super::{
-    ArtifactReaderResolver, OstreeArg, Stage0RootfsProvider, auto_detect_ostree_deployment_path,
-    format_probe_error, parse_ostree_arg, read_dtbo_overlays, read_existing_initrd,
-    resolve_boot_profile_source_overrides, resolve_rootfs_kind,
+    ArtifactReaderResolver, OstreeArg, Stage0CoalescingFilesystem,
+    auto_detect_ostree_deployment_path, format_probe_error, parse_ostree_arg,
+    read_dtbo_overlays, read_existing_initrd, resolve_boot_profile_source_overrides,
 };
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -50,9 +47,9 @@ struct ResolvedDetectedFastbootDevice {
 
 #[derive(Args)]
 pub struct BootStage0Args {
-    /// Path/URL to rootfs image pipeline input, or a compiled BootProfile binary file.
-    #[arg(value_name = "ROOTFS")]
-    pub rootfs: PathBuf,
+    /// Path or HTTP(S) URL to a channel artifact containing kernel/modules.
+    #[arg(value_name = "CHANNEL")]
+    pub channel: PathBuf,
     /// Resolve kernel/modules inside this OSTree deployment path (`--ostree` auto-detects).
     #[arg(long, value_name = "PATH", num_args = 0..=1)]
     pub ostree: Option<Option<String>>,
@@ -269,9 +266,8 @@ async fn run_boot_inner(
 
     let mut artifact_resolver = ArtifactReaderResolver::new();
     let (block_reader, image_size_bytes, image_identity, build) = {
-        let rootfs_str = args.stage0.rootfs.to_string_lossy();
         let input = artifact_resolver
-            .open_rootfs_input(&args.stage0.rootfs)
+            .open_channel_input(&args.stage0.channel)
             .await?;
         let profile_source_overrides = resolve_boot_profile_source_overrides(
             input.boot_profile.as_ref(),
@@ -285,26 +281,12 @@ async fn run_boot_inner(
             .map(|boot_profile| resolve_effective_boot_profile_stage0(boot_profile, &profile.id))
             .unwrap_or_default();
         let reader = input.reader;
-
-        let reader: Arc<dyn BlockReader> = match input.allow_zip_entry_probe {
-            true => match zip_entry_name_from_rootfs(&rootfs_str)? {
-                Some(entry_name) => {
-                    let zip_reader = ZipEntryBlockReader::new(&entry_name, reader)
-                        .await
-                        .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
-                    Arc::new(zip_reader)
-                }
-                None => reader,
-            },
-            false => reader,
-        };
+        let stage0_readers = input.stage0_readers;
 
         let total_blocks = reader.total_blocks().await?;
         let image_size_bytes = total_blocks * reader.block_size() as u64;
         let image_identity = block_identity_string(reader.as_ref());
-        let rootfs_kind = resolve_rootfs_kind(input.boot_profile.as_ref(), reader.as_ref()).await?;
-        let provider =
-            Stage0RootfsProvider::open(rootfs_kind, reader.clone(), image_size_bytes).await?;
+        let provider = Stage0CoalescingFilesystem::open(stage0_readers).await?;
 
         let mut extra_modules = profile_stage0.extra_modules;
         extra_modules.extend(cli_extra_modules.iter().cloned());
@@ -486,37 +468,6 @@ async fn run_boot_inner(
     .await
     .context("running smoo host daemon after boot")?;
     Ok(())
-}
-
-fn zip_entry_name_from_rootfs(rootfs: &str) -> Result<Option<String>> {
-    let trimmed = rootfs.trim();
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        let url = Url::parse(trimmed).with_context(|| format!("parse rootfs URL {trimmed}"))?;
-        let file_name = url
-            .path_segments()
-            .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back());
-        return zip_entry_name_from_file_name(file_name);
-    }
-
-    let file_name = std::path::Path::new(trimmed)
-        .file_name()
-        .and_then(|name| name.to_str());
-    zip_entry_name_from_file_name(file_name)
-}
-
-fn zip_entry_name_from_file_name(file_name: Option<&str>) -> Result<Option<String>> {
-    let Some(file_name) = file_name else {
-        return Ok(None);
-    };
-    if !file_name.to_ascii_lowercase().ends_with(".zip") {
-        return Ok(None);
-    }
-
-    let stem = &file_name[..file_name.len() - 4];
-    if stem.is_empty() {
-        return Err(anyhow!("zip artifact name must include a filename stem"));
-    }
-    Ok(Some(format!("{stem}.ero")))
 }
 
 async fn wait_for_fastboot_device(
