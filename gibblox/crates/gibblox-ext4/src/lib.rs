@@ -64,20 +64,17 @@ impl Ext4Fs {
             source_block_size as usize,
             source_size_bytes,
         );
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
+        let (request_tx, request_rx) = mpsc::channel();
+        thread::Builder::new()
+            .name("gibblox-ext4-sync-reader".to_string())
+            .spawn(move || sync_block_worker(byte_reader, request_rx))
             .map_err(|err| {
                 GibbloxError::with_message(
                     GibbloxErrorKind::Io,
-                    format!("create ext4 reader runtime: {err}"),
+                    format!("spawn ext4 sync reader worker: {err}"),
                 )
             })?;
-        let adapter = SyncBlockAdapter {
-            reader: byte_reader,
-            runtime,
-        };
+        let adapter = SyncBlockAdapter { request_tx };
 
         info!(
             source_block_size,
@@ -364,8 +361,13 @@ impl BlockReader for Ext4FileBlockReader {
 }
 
 struct SyncBlockAdapter {
-    reader: ByteRangeReader,
-    runtime: tokio::runtime::Runtime,
+    request_tx: Sender<SyncReadRequest>,
+}
+
+struct SyncReadRequest {
+    start_byte: u64,
+    len: usize,
+    respond_to: mpsc::SyncSender<GibbloxResult<Vec<u8>>>,
 }
 
 impl Ext4Read for SyncBlockAdapter {
@@ -374,13 +376,56 @@ impl Ext4Read for SyncBlockAdapter {
         start_byte: u64,
         dst: &mut [u8],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let _runtime = self.runtime.enter();
-        self.runtime
-            .block_on(
-                self.reader
-                    .read_exact_at(start_byte, dst, ReadContext::FOREGROUND),
-            )
-            .map_err(|err| adapter_box_error(format!("ext4 image read failed: {err}")))
+        if dst.is_empty() {
+            return Ok(());
+        }
+
+        let (respond_to, recv) = mpsc::sync_channel(1);
+        self.request_tx
+            .send(SyncReadRequest {
+                start_byte,
+                len: dst.len(),
+                respond_to,
+            })
+            .map_err(|_| adapter_box_error("ext4 sync reader worker unavailable"))?;
+
+        let data = recv
+            .recv()
+            .map_err(|_| adapter_box_error("ext4 sync reader worker dropped response"))?
+            .map_err(|err| adapter_box_error(format!("ext4 image read failed: {err}")))?;
+        if data.len() != dst.len() {
+            return Err(adapter_box_error("ext4 sync reader returned short read"));
+        }
+        dst.copy_from_slice(&data);
+        Ok(())
+    }
+}
+
+fn sync_block_worker(reader: ByteRangeReader, request_rx: mpsc::Receiver<SyncReadRequest>) {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            let message = format!("create ext4 sync reader runtime: {err}");
+            while let Ok(request) = request_rx.recv() {
+                let _ = request.respond_to.send(Err(GibbloxError::with_message(
+                    GibbloxErrorKind::Io,
+                    message.clone(),
+                )));
+            }
+            return;
+        }
+    };
+
+    while let Ok(request) = request_rx.recv() {
+        let mut data = vec![0u8; request.len];
+        let result = runtime
+            .block_on(reader.read_exact_at(request.start_byte, &mut data, ReadContext::FOREGROUND))
+            .map(|()| data);
+        let _ = request.respond_to.send(result);
     }
 }
 
