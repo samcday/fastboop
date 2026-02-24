@@ -13,9 +13,10 @@ use crate::{
     BootProfileArtifactSourceHttpSource, BootProfileArtifactSourceMbr,
     BootProfileArtifactSourceMbrSource, BootProfileArtifactSourceXzSource, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
-    BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileStage0, DeviceProfile,
-    ExistsFlag, FastbootGetvarEq, FastbootGetvarExists, FastbootGetvarNotEq,
-    FastbootGetvarNotExists, InjectMac, MatchRule, NotExistsFlag, ProbeStep, Stage0,
+    BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileRootfsFilesystemSource,
+    BootProfileRootfsOstreeSource, BootProfileStage0, DeviceProfile, ExistsFlag, FastbootGetvarEq,
+    FastbootGetvarExists, FastbootGetvarNotEq, FastbootGetvarNotExists, InjectMac, MatchRule,
+    NotExistsFlag, ProbeStep, Stage0,
 };
 
 pub const BOOT_PROFILE_BIN_FORMAT_VERSION: u16 = 1;
@@ -42,6 +43,22 @@ pub struct BootProfileArtifactPathSourceBin {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum BootProfileRootfsBin {
+    Ostree {
+        source: BootProfileRootfsFilesystemBin,
+    },
+    Erofs {
+        source: BootProfileArtifactSourceBin,
+    },
+    Ext4 {
+        source: BootProfileArtifactSourceBin,
+    },
+    Fat {
+        source: BootProfileArtifactSourceBin,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum BootProfileRootfsFilesystemBin {
     Erofs {
         source: BootProfileArtifactSourceBin,
     },
@@ -292,6 +309,9 @@ impl From<BootProfileArtifactPathSourceBin> for BootProfileArtifactPathSource {
 impl From<BootProfileRootfs> for BootProfileRootfsBin {
     fn from(rootfs: BootProfileRootfs) -> Self {
         match rootfs {
+            BootProfileRootfs::Ostree(BootProfileRootfsOstreeSource { ostree }) => Self::Ostree {
+                source: BootProfileRootfsFilesystemBin::from(ostree),
+            },
             BootProfileRootfs::Erofs(BootProfileRootfsErofsSource { erofs }) => Self::Erofs {
                 source: BootProfileArtifactSourceBin::from(erofs),
             },
@@ -308,6 +328,11 @@ impl From<BootProfileRootfs> for BootProfileRootfsBin {
 impl From<BootProfileRootfsBin> for BootProfileRootfs {
     fn from(rootfs: BootProfileRootfsBin) -> Self {
         match rootfs {
+            BootProfileRootfsBin::Ostree { source } => {
+                Self::Ostree(BootProfileRootfsOstreeSource {
+                    ostree: BootProfileRootfsFilesystemSource::from(source),
+                })
+            }
             BootProfileRootfsBin::Erofs { source } => Self::Erofs(BootProfileRootfsErofsSource {
                 erofs: BootProfileArtifactSource::from(source),
             }),
@@ -317,6 +342,50 @@ impl From<BootProfileRootfsBin> for BootProfileRootfs {
             BootProfileRootfsBin::Fat { source } => Self::Fat(BootProfileRootfsFatSource {
                 fat: BootProfileArtifactSource::from(source),
             }),
+        }
+    }
+}
+
+impl From<BootProfileRootfsFilesystemSource> for BootProfileRootfsFilesystemBin {
+    fn from(source: BootProfileRootfsFilesystemSource) -> Self {
+        match source {
+            BootProfileRootfsFilesystemSource::Erofs(BootProfileRootfsErofsSource { erofs }) => {
+                Self::Erofs {
+                    source: BootProfileArtifactSourceBin::from(erofs),
+                }
+            }
+            BootProfileRootfsFilesystemSource::Ext4(BootProfileRootfsExt4Source { ext4 }) => {
+                Self::Ext4 {
+                    source: BootProfileArtifactSourceBin::from(ext4),
+                }
+            }
+            BootProfileRootfsFilesystemSource::Fat(BootProfileRootfsFatSource { fat }) => {
+                Self::Fat {
+                    source: BootProfileArtifactSourceBin::from(fat),
+                }
+            }
+        }
+    }
+}
+
+impl From<BootProfileRootfsFilesystemBin> for BootProfileRootfsFilesystemSource {
+    fn from(source: BootProfileRootfsFilesystemBin) -> Self {
+        match source {
+            BootProfileRootfsFilesystemBin::Erofs { source } => {
+                Self::Erofs(BootProfileRootfsErofsSource {
+                    erofs: BootProfileArtifactSource::from(source),
+                })
+            }
+            BootProfileRootfsFilesystemBin::Ext4 { source } => {
+                Self::Ext4(BootProfileRootfsExt4Source {
+                    ext4: BootProfileArtifactSource::from(source),
+                })
+            }
+            BootProfileRootfsFilesystemBin::Fat { source } => {
+                Self::Fat(BootProfileRootfsFatSource {
+                    fat: BootProfileArtifactSource::from(source),
+                })
+            }
         }
     }
 }

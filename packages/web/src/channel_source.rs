@@ -7,22 +7,20 @@ mod wasm {
     use gibblox_http::HttpBlockReader;
     use gibblox_zip::ZipEntryBlockReader;
     use std::sync::Arc;
-    use ui::DEFAULT_ROOTFS_ARTIFACT;
+    use ui::DEFAULT_CHANNEL;
     use url::Url;
 
     const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
 
-    pub async fn build_rootfs_reader_pipeline(
-        rootfs_artifact: &str,
-    ) -> Result<Arc<dyn BlockReader>> {
-        let rootfs_artifact = rootfs_artifact.trim();
-        let rootfs_artifact = if rootfs_artifact.is_empty() {
-            DEFAULT_ROOTFS_ARTIFACT
+    pub async fn build_channel_reader_pipeline(channel: &str) -> Result<Arc<dyn BlockReader>> {
+        let channel = channel.trim();
+        let channel = if channel.is_empty() {
+            DEFAULT_CHANNEL
         } else {
-            rootfs_artifact
+            channel
         };
-        let url = Url::parse(rootfs_artifact)
-            .map_err(|err| anyhow!("parse rootfs URL {rootfs_artifact}: {err}"))?;
+        let url =
+            Url::parse(channel).map_err(|err| anyhow!("parse channel URL {channel}: {err}"))?;
         let http_reader = HttpBlockReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
             .await
             .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
@@ -73,8 +71,8 @@ pub use wasm::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
-pub fn build_rootfs_reader_pipeline(
-    _rootfs_artifact: &str,
+pub fn build_channel_reader_pipeline(
+    _channel: &str,
 ) -> anyhow::Result<std::sync::Arc<dyn gibblox_core::BlockReader>> {
-    anyhow::bail!("rootfs reader pipeline is only available on wasm32 targets")
+    anyhow::bail!("channel reader pipeline is only available on wasm32 targets")
 }

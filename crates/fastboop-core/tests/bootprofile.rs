@@ -7,8 +7,9 @@ use fastboop_core::{
     BootProfileArtifactSourceHttpSource, BootProfileArtifactSourceMbr,
     BootProfileArtifactSourceMbrSource, BootProfileCodecError, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
-    BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileStage0,
-    BootProfileValidationError, decode_boot_profile, encode_boot_profile,
+    BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileRootfsFilesystemSource,
+    BootProfileRootfsOstreeSource, BootProfileStage0, BootProfileValidationError,
+    decode_boot_profile, decode_boot_profile_prefix, encode_boot_profile,
     resolve_effective_boot_profile_stage0, validate_boot_profile,
 };
 
@@ -18,6 +19,18 @@ fn boot_profile_roundtrip_binary_codec() {
     let encoded = encode_boot_profile(&profile).expect("encode boot profile");
     let decoded = decode_boot_profile(&encoded).expect("decode boot profile");
     assert_eq!(decoded, profile);
+}
+
+#[test]
+fn boot_profile_prefix_decode_returns_consumed_length() {
+    let profile = sample_profile();
+    let mut encoded = encode_boot_profile(&profile).expect("encode boot profile");
+    encoded.extend_from_slice(b"TAIL");
+
+    let (decoded, consumed) =
+        decode_boot_profile_prefix(&encoded).expect("decode boot profile prefix");
+    assert_eq!(decoded, profile);
+    assert_eq!(consumed, encoded.len() - 4);
 }
 
 #[test]
@@ -85,6 +98,121 @@ fn rejects_casync_archive_indexes() {
     };
 
     assert!(validate_boot_profile(&profile).is_err());
+}
+
+#[test]
+fn accepts_casync_blob_indexes() {
+    let profile = BootProfile {
+        id: "good".to_string(),
+        display_name: None,
+        rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+            ext4: BootProfileArtifactSource::Casync(BootProfileArtifactSourceCasyncSource {
+                casync: BootProfileArtifactSourceCasync {
+                    index: "https://bleeding.fastboop.win/live-pocket-fedora/casync/indexes/compose-22240659617-1-bf887e869003.caibx"
+                        .to_string(),
+                    chunk_store: None,
+                },
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    validate_boot_profile(&profile).expect("casync blob index should validate");
+}
+
+#[test]
+fn accepts_gpt_over_casync_pipeline() {
+    let profile = BootProfile {
+        id: "good-gpt-casync".to_string(),
+        display_name: None,
+        rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+            ext4: BootProfileArtifactSource::Gpt(BootProfileArtifactSourceGptSource {
+                gpt: BootProfileArtifactSourceGpt {
+                    partlabel: Some("rootfs".to_string()),
+                    partuuid: None,
+                    index: None,
+                    source: Box::new(BootProfileArtifactSource::Casync(
+                        BootProfileArtifactSourceCasyncSource {
+                            casync: BootProfileArtifactSourceCasync {
+                                index: "https://bleeding.fastboop.win/live-pocket-fedora/casync/indexes/compose-22240659617-1-bf887e869003.caibx"
+                                    .to_string(),
+                                chunk_store: Some(
+                                    "https://bleeding.fastboop.win/live-pocket-fedora/casync/chunks/"
+                                        .to_string(),
+                                ),
+                            },
+                        },
+                    )),
+                },
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    validate_boot_profile(&profile).expect("gpt over casync pipeline should validate");
+}
+
+#[test]
+fn accepts_ostree_over_erofs_rootfs() {
+    let profile = BootProfile {
+        id: "ostree-erofs".to_string(),
+        display_name: None,
+        rootfs: BootProfileRootfs::Ostree(BootProfileRootfsOstreeSource {
+            ostree: BootProfileRootfsFilesystemSource::Erofs(BootProfileRootfsErofsSource {
+                erofs: BootProfileArtifactSource::Casync(BootProfileArtifactSourceCasyncSource {
+                    casync: BootProfileArtifactSourceCasync {
+                        index: "https://example.invalid/rootfs.caibx".to_string(),
+                        chunk_store: None,
+                    },
+                }),
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    validate_boot_profile(&profile).expect("ostree erofs rootfs should validate");
+
+    let encoded = encode_boot_profile(&profile).expect("encode boot profile");
+    let decoded = decode_boot_profile(&encoded).expect("decode boot profile");
+    assert_eq!(decoded.rootfs, profile.rootfs);
+}
+
+#[test]
+fn rejects_ostree_over_fat_rootfs_for_stage0_switchroot() {
+    let profile = BootProfile {
+        id: "ostree-fat-rootfs".to_string(),
+        display_name: None,
+        rootfs: BootProfileRootfs::Ostree(BootProfileRootfsOstreeSource {
+            ostree: BootProfileRootfsFilesystemSource::Fat(BootProfileRootfsFatSource {
+                fat: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
+                    file: "./rootfs.fat".to_string(),
+                }),
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    let err = validate_boot_profile(&profile).expect_err("ostree over fat should be rejected");
+    assert_eq!(
+        err,
+        BootProfileValidationError::UnsupportedRootfsFilesystem { filesystem: "fat" }
+    );
 }
 
 #[test]

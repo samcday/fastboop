@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use ui::{
     apply_selected_profiles, build_probe_snapshot, selected_profile_option,
     update_profile_selection, Hero, ProbeSnapshot, ProbeState, ProfileSelectionMap, TransportKind,
-    DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS, DEFAULT_ROOTFS_ARTIFACT,
+    DEFAULT_CHANNEL, DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS,
 };
 
 use crate::Route;
@@ -132,7 +132,7 @@ pub fn Home() -> Element {
                     serial: device.serial,
                 },
                 boot_config: BootConfig::new(
-                    DEFAULT_ROOTFS_ARTIFACT,
+                    DEFAULT_CHANNEL,
                     DEFAULT_EXTRA_KARGS,
                     DEFAULT_ENABLE_SERIAL,
                 ),

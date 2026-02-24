@@ -10,6 +10,8 @@ pub mod block_reader;
 pub mod bootimg;
 pub mod bootprofile;
 pub mod builtin;
+pub mod channel_profile_bundle;
+pub mod channel_stream;
 pub mod device;
 pub mod devpro;
 pub mod fastboot;
@@ -20,6 +22,8 @@ use alloc::{string::String, vec::Vec};
 
 pub use block_reader::*;
 pub use bootprofile::*;
+pub use channel_profile_bundle::*;
+pub use channel_stream::*;
 pub use device::*;
 pub use devpro::*;
 pub use personalization::*;

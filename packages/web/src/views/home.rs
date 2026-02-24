@@ -5,8 +5,8 @@ use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 use js_sys::Reflect;
 use ui::{
     apply_selected_profiles, selected_profile_option, update_profile_selection, Hero,
-    ProbeSnapshot, ProbeState, ProfileSelectionMap, DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS,
-    DEFAULT_ROOTFS_ARTIFACT,
+    ProbeSnapshot, ProbeState, ProfileSelectionMap, DEFAULT_CHANNEL, DEFAULT_ENABLE_SERIAL,
+    DEFAULT_EXTRA_KARGS,
 };
 #[cfg(target_arch = "wasm32")]
 use ui::{build_probe_snapshot, TransportKind};
@@ -230,7 +230,7 @@ pub fn Home() -> Element {
                     pid: device.pid,
                 },
                 boot_config: BootConfig::new(
-                    DEFAULT_ROOTFS_ARTIFACT,
+                    DEFAULT_CHANNEL,
                     DEFAULT_EXTRA_KARGS,
                     DEFAULT_ENABLE_SERIAL,
                 ),

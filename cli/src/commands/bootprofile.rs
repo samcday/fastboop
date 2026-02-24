@@ -175,7 +175,9 @@ fn io_label(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fastboop_core::{BootProfileArtifactSource, BootProfileRootfs};
+    use fastboop_core::{
+        BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
+    };
 
     #[test]
     fn parses_nested_rootfs_pipeline_yaml() {
@@ -359,6 +361,61 @@ dtbs:
         match dtbs.source {
             BootProfileRootfs::Fat(_) => {}
             other => panic!("expected fat dtbs source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_casync_rootfs_source_yaml() {
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: fedora-pocket
+rootfs:
+  ext4:
+    casync:
+      index: https://bleeding.fastboop.win/live-pocket-fedora/casync/indexes/compose-22240659617-1-bf887e869003.caibx
+"#,
+        )
+        .expect("parse manifest");
+
+        let source = manifest.rootfs.source();
+        match source {
+            BootProfileArtifactSource::Casync(source) => {
+                assert!(source.casync.index.ends_with(".caibx"));
+                assert_eq!(source.casync.chunk_store, None);
+            }
+            other => panic!("expected casync source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_ostree_rootfs_with_casync_shorthand_yaml() {
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: live-pocket-fedora
+display_name: live-pocket-fedora
+rootfs:
+  ostree:
+    erofs:
+      casync: https://bleeding.fastboop.win/live-pocket-fedora/casync/indexes/compose-22240659617-1-bf887e869003.caibx
+"#,
+        )
+        .expect("parse manifest");
+
+        match &manifest.rootfs {
+            BootProfileRootfs::Ostree(source) => match &source.ostree {
+                BootProfileRootfsFilesystemSource::Erofs(_) => {}
+                other => panic!("expected ostree erofs source, got {other:?}"),
+            },
+            other => panic!("expected ostree rootfs, got {other:?}"),
+        }
+
+        let source = manifest.rootfs.source();
+        match source {
+            BootProfileArtifactSource::Casync(source) => {
+                assert!(source.casync.index.ends_with(".caibx"));
+                assert_eq!(source.casync.chunk_store, None);
+            }
+            other => panic!("expected casync source, got {other:?}"),
         }
     }
 }

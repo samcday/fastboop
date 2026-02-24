@@ -59,12 +59,16 @@ fn BootConfigDevice(session_id: String) -> Element {
         return rsx! {};
     };
 
-    let mut sessions_for_rootfs = sessions;
-    let session_id_for_rootfs = session_id.clone();
-    let on_rootfs_change = move |value: String| {
-        update_session_boot_config(&mut sessions_for_rootfs, &session_id_for_rootfs, |config| {
-            config.rootfs_artifact = value;
-        });
+    let mut sessions_for_channel = sessions;
+    let session_id_for_channel = session_id.clone();
+    let on_channel_change = move |value: String| {
+        update_session_boot_config(
+            &mut sessions_for_channel,
+            &session_id_for_channel,
+            |config| {
+                config.channel = value;
+            },
+        );
     };
 
     let mut sessions_for_kargs = sessions;
@@ -100,10 +104,10 @@ fn BootConfigDevice(session_id: String) -> Element {
             device_name: session.device.name,
             device_id: format!("{:04x}:{:04x}", session.device.vid, session.device.pid),
             profile_id: session.device.profile.id,
-            rootfs_artifact: session.boot_config.rootfs_artifact,
+            channel: session.boot_config.channel,
             extra_kargs: session.boot_config.extra_kargs,
             enable_serial: session.boot_config.enable_serial,
-            on_rootfs_change,
+            on_channel_change,
             on_extra_kargs_change,
             on_enable_serial_change,
             on_start_boot,
@@ -170,11 +174,11 @@ fn BootedDevice(session_id: String) -> Element {
             (
                 s.device.vid,
                 s.device.pid,
-                s.boot_config.rootfs_artifact.clone(),
+                s.boot_config.channel.clone(),
                 s.phase.clone(),
             )
         });
-    let Some((device_vid, device_pid, rootfs_artifact, phase)) = state else {
+    let Some((device_vid, device_pid, channel, phase)) = state else {
         return rsx! {};
     };
 
@@ -307,7 +311,7 @@ fn BootedDevice(session_id: String) -> Element {
                 p { class: "landing__eyebrow", "Active" }
                 h1 { "We're live." }
                 p { class: "landing__lede", "Please don't close this page while the session is active." }
-                p { class: "landing__note", "Rootfs: {rootfs_artifact}" }
+                p { class: "landing__note", "Channel: {channel}" }
                 if let Some(smoo_stats) = smoo_stats {
                     SmooStatsPanel { stats: smoo_stats }
                 }

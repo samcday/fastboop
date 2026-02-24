@@ -103,7 +103,7 @@ pub fn Hero(
                 ol { class: "landing__steps",
                     li { "Plug a device in fastboot mode" }
                     li { "Verify the DevPro match" }
-                    li { "Stage0 is built from your rootfs" }
+                    li { "Stage0 is built from your channel" }
                     li { "Ephemeral RAM boot into smoo" }
                 }
 

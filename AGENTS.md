@@ -19,6 +19,7 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
 
 ## Minimal working rules
 - Keep diffs focused and reviewable.
+- fastboop is currently unreleased: do not add migration shims, compatibility aliases, or deprecation warnings unless explicitly requested by the user.
 - Preserve non-mutating behavior (no flash/erase/format/slot toggles/unlock paths).
 - Keep platform-agnostic logic in core crates and platform bindings in leaf crates.
 - Strict `no_std + alloc` boundary (do not introduce `std` unless user explicitly asks):
