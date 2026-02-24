@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
@@ -215,6 +217,366 @@ pub enum Compression {
 pub struct AndroidInitrd {
     #[serde(default)]
     pub compress: Option<Compression>,
+}
+
+/// Authoring schema for boot profiles (YAML/JSON).
+///
+/// This shape keeps DT overlays as inline DTS/DTSO text. Runtime code should consume
+/// [`BootProfile`], where overlays are compiled DTB/DTBO blobs.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileManifest {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub rootfs: BootProfileRootfs,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<BootProfileArtifactPathSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dtbs: Option<BootProfileArtifactPathSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dt_overlays: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_cmdline: Option<String>,
+    #[serde(default, skip_serializing_if = "BootProfileManifestStage0::is_empty")]
+    pub stage0: BootProfileManifestStage0,
+}
+
+impl BootProfileManifest {
+    pub fn compile_dt_overlays<E, F>(&self, mut compile: F) -> Result<BootProfile, E>
+    where
+        F: FnMut(&str) -> Result<Vec<u8>, E>,
+    {
+        let mut dt_overlays = Vec::with_capacity(self.dt_overlays.len());
+        for overlay in &self.dt_overlays {
+            dt_overlays.push(compile(overlay)?);
+        }
+
+        let mut devices = BTreeMap::new();
+        for (device_id, device) in &self.stage0.devices {
+            let mut device_overlays = Vec::with_capacity(device.dt_overlays.len());
+            for overlay in &device.dt_overlays {
+                device_overlays.push(compile(overlay)?);
+            }
+            devices.insert(
+                device_id.clone(),
+                BootProfileDevice {
+                    dt_overlays: device_overlays,
+                    extra_cmdline: device.extra_cmdline.clone(),
+                    stage0: BootProfileDeviceStage0 {
+                        extra_modules: device.stage0.extra_modules.clone(),
+                    },
+                },
+            );
+        }
+
+        Ok(BootProfile {
+            id: self.id.clone(),
+            display_name: self.display_name.clone(),
+            rootfs: self.rootfs.clone(),
+            kernel: self.kernel.clone(),
+            dtbs: self.dtbs.clone(),
+            dt_overlays,
+            extra_cmdline: self.extra_cmdline.clone(),
+            stage0: BootProfileStage0 {
+                extra_modules: self.stage0.extra_modules.clone(),
+                devices,
+            },
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileManifestStage0 {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_modules: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub devices: BTreeMap<String, BootProfileManifestDevice>,
+}
+
+impl BootProfileManifestStage0 {
+    pub fn is_empty(&self) -> bool {
+        self.extra_modules.is_empty() && self.devices.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileManifestDevice {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dt_overlays: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_cmdline: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "BootProfileManifestDeviceStage0::is_empty"
+    )]
+    pub stage0: BootProfileManifestDeviceStage0,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileManifestDeviceStage0 {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_modules: Vec<String>,
+}
+
+impl BootProfileManifestDeviceStage0 {
+    pub fn is_empty(&self) -> bool {
+        self.extra_modules.is_empty()
+    }
+}
+
+/// Runtime boot profile with precompiled DT overlays.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfile {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub rootfs: BootProfileRootfs,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<BootProfileArtifactPathSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dtbs: Option<BootProfileArtifactPathSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dt_overlays: Vec<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_cmdline: Option<String>,
+    #[serde(default, skip_serializing_if = "BootProfileStage0::is_empty")]
+    pub stage0: BootProfileStage0,
+}
+
+impl BootProfile {
+    pub fn decompile_dt_overlays<E, F>(&self, mut decompile: F) -> Result<BootProfileManifest, E>
+    where
+        F: FnMut(&[u8]) -> Result<String, E>,
+    {
+        let mut dt_overlays = Vec::with_capacity(self.dt_overlays.len());
+        for overlay in &self.dt_overlays {
+            dt_overlays.push(decompile(overlay)?);
+        }
+
+        let mut devices = BTreeMap::new();
+        for (device_id, device) in &self.stage0.devices {
+            let mut device_overlays = Vec::with_capacity(device.dt_overlays.len());
+            for overlay in &device.dt_overlays {
+                device_overlays.push(decompile(overlay)?);
+            }
+            devices.insert(
+                device_id.clone(),
+                BootProfileManifestDevice {
+                    dt_overlays: device_overlays,
+                    extra_cmdline: device.extra_cmdline.clone(),
+                    stage0: BootProfileManifestDeviceStage0 {
+                        extra_modules: device.stage0.extra_modules.clone(),
+                    },
+                },
+            );
+        }
+
+        Ok(BootProfileManifest {
+            id: self.id.clone(),
+            display_name: self.display_name.clone(),
+            rootfs: self.rootfs.clone(),
+            kernel: self.kernel.clone(),
+            dtbs: self.dtbs.clone(),
+            dt_overlays,
+            extra_cmdline: self.extra_cmdline.clone(),
+            stage0: BootProfileManifestStage0 {
+                extra_modules: self.stage0.extra_modules.clone(),
+                devices,
+            },
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileStage0 {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_modules: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub devices: BTreeMap<String, BootProfileDevice>,
+}
+
+impl BootProfileStage0 {
+    pub fn is_empty(&self) -> bool {
+        self.extra_modules.is_empty() && self.devices.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileDevice {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dt_overlays: Vec<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_cmdline: Option<String>,
+    #[serde(default, skip_serializing_if = "BootProfileDeviceStage0::is_empty")]
+    pub stage0: BootProfileDeviceStage0,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileDeviceStage0 {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_modules: Vec<String>,
+}
+
+impl BootProfileDeviceStage0 {
+    pub fn is_empty(&self) -> bool {
+        self.extra_modules.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(untagged)]
+pub enum BootProfileRootfs {
+    Erofs(BootProfileRootfsErofsSource),
+    Fat(BootProfileRootfsFatSource),
+}
+
+impl BootProfileRootfs {
+    pub fn source(&self) -> &BootProfileArtifactSource {
+        match self {
+            Self::Erofs(source) => &source.erofs,
+            Self::Fat(source) => &source.fat,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct BootProfileArtifactPathSource {
+    pub path: String,
+    #[serde(flatten)]
+    pub source: BootProfileRootfs,
+}
+
+impl BootProfileArtifactPathSource {
+    pub fn artifact_source(&self) -> &BootProfileArtifactSource {
+        self.source.source()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileRootfsErofsSource {
+    pub erofs: BootProfileArtifactSource,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileRootfsFatSource {
+    pub fat: BootProfileArtifactSource,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(untagged)]
+pub enum BootProfileArtifactSource {
+    Casync(BootProfileArtifactSourceCasyncSource),
+    Http(BootProfileArtifactSourceHttpSource),
+    File(BootProfileArtifactSourceFileSource),
+    Xz(BootProfileArtifactSourceXzSource),
+    AndroidSparseImg(BootProfileArtifactSourceAndroidSparseImgSource),
+    Mbr(BootProfileArtifactSourceMbrSource),
+    Gpt(BootProfileArtifactSourceGptSource),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileArtifactSourceCasyncSource {
+    pub casync: BootProfileArtifactSourceCasync,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileArtifactSourceHttpSource {
+    pub http: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileArtifactSourceFileSource {
+    pub file: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileArtifactSourceXzSource {
+    pub xz: Box<BootProfileArtifactSource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileArtifactSourceAndroidSparseImgSource {
+    pub android_sparseimg: Box<BootProfileArtifactSource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileArtifactSourceMbrSource {
+    pub mbr: BootProfileArtifactSourceMbr,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct BootProfileArtifactSourceMbr {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partuuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
+    #[serde(flatten)]
+    pub source: Box<BootProfileArtifactSource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileArtifactSourceGptSource {
+    pub gpt: BootProfileArtifactSourceGpt,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct BootProfileArtifactSourceGpt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partlabel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partuuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
+    #[serde(flatten)]
+    pub source: Box<BootProfileArtifactSource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileArtifactSourceCasync {
+    pub index: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_store: Option<String>,
 }
 
 pub mod bin;

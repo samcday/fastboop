@@ -44,6 +44,7 @@ pub enum Stage0Error {
 pub struct Stage0Options {
     pub switchroot_fs: Stage0SwitchrootFs,
     pub extra_modules: Vec<String>,
+    pub kernel_override: Option<Stage0KernelOverride>,
     pub dtb_override: Option<Vec<u8>>,
     pub dtbo_overlays: Vec<Vec<u8>>,
     pub enable_serial: bool,
@@ -69,6 +70,12 @@ impl Stage0SwitchrootFs {
     fn module_name(self) -> &'static str {
         self.as_stage0_value()
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct Stage0KernelOverride {
+    pub path: String,
+    pub image: Vec<u8>,
 }
 /// Resulting artifacts and recommended kernel cmdline additions.
 pub struct Stage0Build {
@@ -111,6 +118,19 @@ pub async fn build_stage0<P: Filesystem>(
     );
 
     let kernel_future = async {
+        if let Some(kernel_override) = opts.kernel_override.as_ref() {
+            let kernel_path = trim_leading_slash(kernel_override.path.as_str())?.to_string();
+            tracing::debug!(
+                kernel_path = %kernel_path,
+                kernel_bytes = kernel_override.image.len(),
+                "build_stage0: using kernel override"
+            );
+            return Ok::<(String, Vec<u8>), Stage0Error>((
+                kernel_path,
+                kernel_override.image.clone(),
+            ));
+        }
+
         tracing::debug!("build_stage0: detecting kernel");
         let kernel_path = detect_kernel(rootfs).await?;
         tracing::debug!(kernel_path = %kernel_path, "build_stage0: kernel detected");

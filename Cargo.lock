@@ -1146,6 +1146,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono"
+version = "0.4.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "ciborium"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2861,6 +2870,7 @@ dependencies = [
  "fastboop-core",
  "fastboop-fastboot-rusb",
  "fastboop-stage0-generator",
+ "gibblox-android-sparse",
  "gibblox-cache",
  "gibblox-cache-store-std",
  "gibblox-casync",
@@ -2868,9 +2878,12 @@ dependencies = [
  "gibblox-core",
  "gibblox-file",
  "gibblox-http",
+ "gibblox-mbr",
+ "gibblox-xz",
  "gibblox-zip",
  "gobblytes-core",
  "gobblytes-erofs",
+ "gobblytes-fat",
  "ratatui",
  "serde",
  "serde_json",
@@ -3498,6 +3511,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-android-sparse"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "tracing",
+]
+
+[[package]]
 name = "gibblox-blockreader-messageport"
 version = "0.0.1"
 dependencies = [
@@ -3628,6 +3651,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-mbr"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "bytemuck",
+ "futures",
+ "gibblox-core",
+ "hadris-part",
+ "tracing",
+]
+
+[[package]]
 name = "gibblox-web-worker"
 version = "0.0.1"
 dependencies = [
@@ -3641,6 +3676,19 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "gibblox-xz"
+version = "0.0.1"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "crc32fast",
+ "futures",
+ "gibblox-core",
+ "tracing",
+ "xz4rust",
 ]
 
 [[package]]
@@ -3882,6 +3930,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gobblytes-fat"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "gobblytes-core",
+ "hadris-fat",
+ "tracing",
+]
+
+[[package]]
 name = "gobject-sys"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4061,6 +4121,61 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "hadris-common"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16faa9f708c5ad3aafafc0761cf98c461582949991b5c901e39c7b65a7b4560b"
+dependencies = [
+ "hadris-io",
+ "noalloc",
+]
+
+[[package]]
+name = "hadris-fat"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52777e9a7523f78480927c0fb9188030fc9e526e9b885c6eb643ee842a90d8a9"
+dependencies = [
+ "bitflags 2.10.0",
+ "bytemuck",
+ "chrono",
+ "hadris-common",
+ "hadris-io",
+ "hadris-macros",
+ "spin 0.10.0",
+]
+
+[[package]]
+name = "hadris-io"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1168755badc3b0c63b3c02f5db27f4b34c06828a208e1a30866cdd8217019af"
+dependencies = [
+ "bytemuck",
+ "cfg-if",
+]
+
+[[package]]
+name = "hadris-macros"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af87dad5059eb288d6c8a3e539146136f55464ad16ecc5b72b8334e9f33019a6"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
+name = "hadris-part"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1955de1ac95fb0b4db1a1758e08d1f6347a7c4404cd3dcf96990ab628d483148"
+dependencies = [
+ "bytemuck",
+ "hadris-io",
+ "hadris-macros",
 ]
 
 [[package]]
@@ -5595,6 +5710,12 @@ dependencies = [
  "cfg_aliases 0.2.1",
  "libc 0.2.180",
 ]
+
+[[package]]
+name = "noalloc"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a2537501480803dd22fbd79a39ea83318caba3ba936f7554f7139f4180faa94"
 
 [[package]]
 name = "nodrop"
@@ -8035,6 +8156,9 @@ name = "spin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "spirv"
@@ -10762,6 +10886,15 @@ name = "xxhash-rust"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
+
+[[package]]
+name = "xz4rust"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1053c1562c16e3760559c390d3b690ae6b524c200eb9a7ddb5d43c77d000832d"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "yazi"
