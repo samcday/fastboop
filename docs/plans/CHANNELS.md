@@ -2,23 +2,25 @@
 
 ## Goal
 
-Move fastboop from a positional `rootfs` artifact model to a single `channel` input that can represent:
+Move fastboop from a positional `rootfs` artifact model to a single `channel` input.
 
-- a rootfs/image artifact (local file or URL)
-- a profile bundle stream (DevProfiles + BootProfiles)
+Core model:
 
-The runtime sniffs the channel and decides what it is, instead of relying on file extensions or separate command flows.
+- A channel is just a stream of bytes.
+- We do in-band autodetection on that stream.
+- We do not model a separate concrete "bundle" container type.
+- In later phases, we may accept out-of-band hints (for example mime-type), but byte-stream detection remains authoritative.
 
 ## First Pass Focus (Current)
 
-- CLI-only delivery (`fastboop boot` first, `stage0` where practical).
-- Support two channel shapes in boot flow:
-  - naked artifact channel (recursive unwrap/sniff as today)
-  - bootprofile-leading stream (one or more `.bootpro` records, optionally followed by artifact bytes)
-- DevProfiles embedded in channel stream are explicitly out of scope for this first pass.
-- Desktop/web integration is tracked but not part of first-pass implementation gating.
+- CLI-first delivery (`fastboop boot`, `fastboop stage0`).
+- Support:
+  - naked artifact channels (recursive unwrap/sniff)
+  - bootprofile-leading streams (`.bootpro` records at stream head)
+- Keep DevProfile channel records as the next incremental step (not yet wired in this pass).
+- Desktop/web parity is tracked, but not first-pass gating.
 
-This plan tracks the ongoing BootProfile direction from `fastboop-boot-profiles` and issue `#20`.
+This plan tracks the ongoing channel direction from issue `#20` and related bootprofile work.
 
 ## Non-negotiables
 
@@ -31,41 +33,52 @@ This plan tracks the ongoing BootProfile direction from `fastboop-boot-profiles`
 Given one `channel` input:
 
 1. Open it as a readable source (path/URL/stream).
-2. Sniff initial bytes for profile-bundle magic + `format_version`.
-3. If profile bundle:
-   - parse all profiles
-   - validate entries
-   - load DevProfiles + BootProfiles into session-scoped in-memory state
-   - constrain device matching/probing to bundle DevProfiles only
-   - after selecting a device/profile, show only compatible BootProfiles for that device
-   - report load/validation results to user/UI
-   - do not persist profile records locally
-4. If not a profile bundle:
-   - run the "I am Feeling Lucky" unwrap/sniff pipeline (xz/sparse/zip/gpt/mbr/filesystem)
-   - discover kernel/modules/stage0 inputs from resulting filesystem providers
-   - treat channel as a generic artifact input (no channel-constrained device/profile list)
+2. Attempt profile-record scan from stream head, forward-only:
+   - if next bytes decode as BootProfile binary record, accept and continue
+   - if next bytes decode as DevProfile binary record, accept and continue
+   - if next bytes are not a known profile-record header, stop scan and treat remaining bytes as artifact tail
+3. Validation/error boundary:
+   - if record decode/validation fails before any valid record is accepted, fail
+   - if one or more valid records were already accepted, stop at first invalid record and continue with trailing bytes; emit warning
+4. Session handling:
+   - accepted records are loaded into session-scoped in-memory state only
+   - no local persistence
+   - if DevProfiles were accepted from channel, constrain probe/match to those DevProfiles
+   - BootProfile choices are filtered by selected device compatibility
+5. Artifact handling:
+   - remaining bytes (if any) run through the recursive unwrap/sniff pipeline
+   - if no profile records are accepted at head, run unwrap/sniff from offset 0 as usual
 
-First-pass stream rule:
+Example this model must support:
 
-- If the stream starts with a boot profile record, continue consuming boot profile records from the head, then keep processing the remaining bytes as channel artifact input via the same recursive unwrap/sniff pipeline.
-- Bootprofile-head parsing must be forward-only and side-effect free.
+- prepend one or more DevProfile/BootProfile binary records to a normal `.xz` rootfs artifact
+- treat the whole byte stream as one valid channel
 
-## Stream Classification Contract (Draft v1)
+## Record + Stream Classification Contract (Draft v1)
 
-To reduce ambiguity and regressions, channel sniffing uses a fixed probe order over a bounded prefix read.
+Channel intake is split into two deterministic parts:
+
+1. Profile-record head scan (offset-relative, forward-only)
+2. Artifact classifier (bounded prefix + fixed probe order)
+
+Profile-record headers:
+
+- BootProfile v1: `FBOOPROF` magic + `format_version=1`
+- DevProfile v1: **TBD** (needs stable magic/version framing)
+
+Artifact classifier:
 
 - Prefix window: first `64 KiB` (`CHANNEL_SNIFF_PREFIX_LEN` in `fastboop-core`).
 - Probe order (first match wins):
-  1. Profile bundle v1 (`FBCH` magic + `format_version=1`)
-  2. XZ (`FD 37 7A 58 5A 00`)
-  3. ZIP (`PK\x03\x04`, `PK\x05\x06`, `PK\x07\x08`)
-  4. Android sparse (`0xED26FF3A` LE)
-  5. GPT (`EFI PART` at LBA1 / offset 512)
-  6. ISO9660 (`CD001` at sector 16 descriptor)
-  7. EROFS (superblock magic `0xE0F5E1E2` at offset 1024)
-  8. ext4 (`0xEF53` at offset 1080)
-  9. FAT (`FAT12/16/32` markers + `0x55AA`)
-  10. MBR (`0x55AA` + non-empty partition entry type)
+  1. XZ (`FD 37 7A 58 5A 00`)
+  2. ZIP (`PK\x03\x04`, `PK\x05\x06`, `PK\x07\x08`)
+  3. Android sparse (`0xED26FF3A` LE)
+  4. GPT (`EFI PART` at LBA1 / offset 512)
+  5. ISO9660 (`CD001` at sector 16 descriptor)
+  6. EROFS (superblock magic `0xE0F5E1E2` at offset 1024)
+  7. ext4 (`0xEF53` at offset 1080)
+  8. FAT (`FAT12/16/32` markers + `0x55AA`)
+  9. MBR (`0x55AA` + non-empty partition entry type)
 
 Notes:
 
@@ -75,98 +88,90 @@ Notes:
 
 ## Scope
 
-- Replace `rootfs` / `rootfs_artifact` input naming with `channel` across:
-  - CLI (`boot`, `stage0`, and related help text/errors)
-  - desktop/web boot config models and forms
-  - shared UI data structs
-- Add channel sniff/dispatch path in core.
-- Add session-scoped profile-bundle loading/selection path with no local persistence (later phase).
-- Add CLI first-pass support for bootprofile-leading stream handling.
+- Replace `rootfs` / `rootfs_artifact` naming with `channel` across CLI + desktop + web + shared UI structs.
+- Keep and extend channel sniff/dispatch path in core.
+- Add profile-record head scanning support for mixed BootProfile/DevProfile streams.
+- Add session-scoped loading of accepted profile records (no local persistence).
 - Keep artifact unwrap path working for existing known formats.
-- Add a simple multi-filesystem coalescing abstraction as the final phase.
+- Keep simple multi-filesystem coalescing as the final phase.
 
 ## Out of Scope (for this iteration)
 
 - Full policy engine for artifact ranking beyond deterministic heuristics.
 - Complex union/overlay semantics between filesystems.
 - Any mutating install workflow.
-- Channel-stream DevProfile ingestion/selection in first-pass CLI rollout.
+- Out-of-band channel hint protocol (mime-types, sidecar manifests, etc.) beyond future design notes.
 
 ## Phased Rollout
 
-### Phase 0: CLI First Pass (In Progress)
+### Phase 0: CLI First Pass (Mostly Landed)
 
-- Wire `fastboop boot` to accept:
-  - naked artifact channels
-  - bootprofile-leading streams
-- Implement stream-head bootprofile parsing and continue artifact detection on remaining bytes.
-- Keep behavior deterministic:
-  - if multiple bootprofiles are discovered, require explicit selection policy/flag or fail with clear list
-  - no persistent writes
-- Descope channel-stream DevProfiles in this phase.
+- `fastboop boot` and `fastboop stage0` accept channel artifact intake.
+- Bootprofile-leading streams at channel head are parsed and validated.
+- Trailing bytes continue through artifact unwrap/sniff.
+- Deterministic selection and explicit `--boot-profile` behavior are in place.
 
-Deliverable: CLI can boot from either plain artifact channels or bootprofile-leading streams without local persistence.
+Deliverable: CLI can boot from either plain artifact channels or bootprofile-leading streams, without local persistence.
 
-Status (current branch):
+Status:
 
-- [x] CLI `boot`/`stage0` accept channel artifact intake through recursive unwrap/sniff.
-- [x] CLI channel intake parses bootprofile-leading stream heads and validates boot profiles.
+- [x] CLI `boot`/`stage0` channel artifact intake through recursive unwrap/sniff.
+- [x] CLI bootprofile-leading stream head parsing.
 - [x] CLI boot profile compatibility uses `stage0.devices` rule (`{}` => all devices).
-- [x] CLI supports explicit `--boot-profile` selection for stream-provided profiles.
-- [x] CLI stream EOF/tail detection uses exact channel byte size (ignores block padding).
-- [x] BootProfile schema/validation covers casync `.caibx` sources (including nested GPT selection).
-- [ ] Channel-stream DevProfiles (still intentionally descoped in first pass).
-- [ ] Desktop/web session integration.
+- [x] CLI explicit `--boot-profile` selection.
+- [x] CLI stream EOF/tail detection uses exact channel byte size.
+- [x] BootProfile schema/validation supports casync `.caibx` sources (including nested GPT selection).
+- [ ] Channel-stream DevProfile record ingestion.
+- [ ] Desktop/web parity with CLI channel intake behavior.
 
 ### Phase 1: Surface Migration (`rootfs` -> `channel`)
 
 - Rename user-facing parameters and config fields to `channel`.
 - Project is unreleased: do not add compatibility aliases or deprecation warnings.
-- Session startup requires a non-empty `channel` in CLI/desktop/web flows.
+- Session startup requires non-empty `channel` in CLI/desktop/web.
 
 Deliverable: all frontends treat channel as the single source input.
 
-### Phase 2: Core Channel Intake and Sniffing
+### Phase 2: Core Channel Intake Unification
 
-- Add a shared channel open API (path/URL with existing reader stack).
-- Implement ordered sniff dispatcher with bounded recursion and cycle guards.
-- Probe by magic/signature first, not filename extension.
-- Keep existing open paths (including casync/EROFS behavior) behind the new entrypoint.
+- Provide one shared channel intake entrypoint for CLI/desktop/web.
+- Keep profile-record scan + artifact unwrap logic consistent across frontends.
+- Keep probe-by-signature behavior (not extension-driven).
 
 Phase gate:
 
-- New stream classifier must pass fixture harness parity tests before becoming default path.
+- Shared path passes fixture parity tests and replaces duplicated frontend-specific intake code.
 
-Deliverable: one core entrypoint that classifies channel as profile-bundle or artifact pipeline input.
+Deliverable: one reusable channel intake stack for all runtimes.
 
-### Phase 3: Profile Bundle Session Runtime (Non-Persistent)
+### Phase 3: DevProfile Records in Channel Streams
 
-- Reuse/adapt BootProfile schema/codec work from `fastboop-boot-profiles`.
-- Define bundle framing contract (magic + `format_version` + payload table).
-- Implement bundle session behavior:
-  - validate all records
-  - build an in-memory session model (`DevProfiles`, `BootProfiles`)
-  - constrain device probe/match to in-session DevProfiles
-  - provide BootProfile selection filtered by selected device compatibility
-  - partial success reporting (accepted/rejected counts + reasons)
-  - no persistent writes (bundle handling is side-effect free)
+- Finalize DevProfile binary framing contract (magic + format version).
+- Implement DevProfile decode/validate functions parallel to BootProfile binary path.
+- Support mixed/interleaved stream heads (`devpro`, `bootpro`, `devpro`, ...).
+- Build session model from accepted head records:
+  - accepted DevProfiles
+  - accepted BootProfiles
+  - accepted/rejected counters and reasons
+- Constrain matching/probing to channel DevProfiles when present.
+- Keep all handling side-effect free and non-persistent.
 
 Compatibility rule for BootProfile selection (v0):
 
-- If `boot_profile.stage0.devices` is empty, the BootProfile is treated as compatible with all known devices.
-- Otherwise, the BootProfile is compatible only when `selected_device_profile.id` exists as a key in `boot_profile.stage0.devices`.
+- If `boot_profile.stage0.devices` is empty, the BootProfile is compatible with all known devices.
+- Otherwise, compatible only when `selected_device_profile.id` exists in `boot_profile.stage0.devices`.
 
 Phase gate:
 
-- Bundle handling must be deterministic and side-effect free.
-- Invalid or partially invalid bundles must never modify host state.
-- Given the same bundle + selected device profile id, BootProfile compatibility output is deterministic.
+- Mixed profile-record streams are deterministic.
+- Invalid first record fails; invalid later record warns and stops head scan.
+- Given same channel + selected device profile id, compatibility output is deterministic.
 
-Deliverable: starting a session from a profile-bundle channel constrains detection and exposes only compatible BootProfile variants without writing local state.
+Deliverable: channel streams can carry mixed DevProfiles/BootProfiles at head and affect session behavior without host mutation.
 
 ### Phase 4: Artifact "Feeling Lucky" Pipeline
 
-- Build recursive unwrap chain for known wrappers/containers:
+- Keep recursive unwrap chain for known wrappers/containers:
   - xz
   - Android sparse
   - zip
@@ -175,7 +180,7 @@ Deliverable: starting a session from a profile-bundle channel constrains detecti
 - Expose discovered filesystem providers as ordered candidates.
 - Preserve and improve explicit failure reasons (wrong format, missing kernel/modules, unsupported nesting).
 
-Deliverable: channel artifact inputs continue to boot with improved sniffing and less extension coupling.
+Deliverable: artifact tails (or naked artifacts) continue to boot with robust sniffing and low extension coupling.
 
 ### Phase 5 (Last Phase / Victory Lap): Simple Coalescing Filesystem
 
@@ -184,38 +189,36 @@ Keep this intentionally simple and late.
 Add a `Filesystem` implementation that aggregates providers in order:
 
 - `CoalescingFilesystem([FS1, FS2, FS3, ...])`
-- For lookup/open calls:
+- lookup/open calls:
   - try FS1
   - if not found, try FS2
   - then FS3, etc.
-- Return first successful match.
+- return first successful match
 
-This is enough to support mixed-source discovery such as:
-
-- kernel in boot partition/provider
-- modules in rootfs partition/provider
-
-without introducing advanced union semantics.
+This supports mixed-source discovery (for example kernel from one provider and modules from another) without complex union semantics.
 
 Notes:
 
-- Ordering is the policy. Start with deterministic heuristics and keep it transparent.
+- Ordering is policy; keep it deterministic and transparent.
 - No cross-filesystem merge logic beyond first-hit fallback.
-- If needed, `read_dir` can be minimal (first provider only) in v1 of this phase.
+- `read_dir` may remain minimal in v1 of this phase.
 
-Deliverable: stage0 generator can resolve required files across multiple providers with first-hit fallback behavior.
+Deliverable: stage0 generator resolves required files across multiple providers with first-hit fallback.
 
 ## Derisk Harness
 
-We maintain deterministic, generated fixtures (not checked in) and classify them in tests.
+We maintain deterministic generated fixtures (not checked in) and classify them in tests.
 
 - Fixture generator script: `tools/channels/generate-fixtures.sh`
 - Default output dir (gitignored): `build/channels-fixtures`
 - Core fixture test: `crates/fastboop-core/tests/channel_stream_fixture_harness.rs`
 
-Fixture set includes:
+Fixture set should include:
 
-- profile bundle v1 header sample
+- bootprofile binary header sample
+- devprofile binary header sample (once framing is finalized)
+- mixed head streams (`bootpro+devpro+artifact`, `devpro+bootpro+artifact`)
+- invalid-head cases (truncated record first, truncated record after valid record)
 - xz/zip wrappers
 - Android sparse header sample
 - GPT/MBR signature samples
@@ -238,12 +241,13 @@ For substantial implementation phases, run Tier 2 gate from `HACKING.md` before 
 
 ## Acceptance Criteria
 
-- User can provide one `channel` input in CLI session startup flows for first pass.
-- Profile-bundle channels load DevProfiles/BootProfiles in-memory for that session only.
-- Device matching for a profile-bundle session is constrained to channel DevProfiles.
-- BootProfile options shown after device/profile selection include only compatible variants (`stage0.devices = {}` means compatible with all known devices).
-- Naked artifact channels are treated as generic artifacts (assumed bootable for any matched device; no channel-provided profile constraints).
-- Bootprofile-leading streams continue artifact recursive unwrap/detection on trailing bytes after parsed bootprofile records.
+- User provides one `channel` input in CLI session startup flows.
+- Channel streams with leading profile records load accepted records into memory only.
+- Mixed/interleaved DevProfile + BootProfile record heads are supported.
+- If the first record is invalid, fail loudly.
+- If an invalid record appears after at least one valid record, warn and continue with trailing bytes.
+- Naked artifact channels remain valid and are processed as generic artifacts.
+- BootProfile options after device/profile selection include only compatible variants (`stage0.devices = {}` means all devices).
 - Existing artifact types still boot through channel intake.
-- Coalescing filesystem resolves kernel/modules from different providers using first-hit fallback order.
+- Coalescing filesystem resolves kernel/modules from different providers using deterministic first-hit fallback order.
 - No mutating device actions are introduced.
