@@ -447,6 +447,27 @@ fn ext4_file_worker(
         }
     };
 
+    let mut file = {
+        let _runtime = runtime.enter();
+        match fs
+            .fs
+            .open(file_path.as_str())
+            .map_err(map_ext4_err("open ext4 file"))
+        {
+            Ok(file) => file,
+            Err(err) => {
+                let message = format!("open ext4 worker file handle: {err}");
+                while let Ok(request) = request_rx.recv() {
+                    let _ = request.respond_to.send(Err(GibbloxError::with_message(
+                        GibbloxErrorKind::Io,
+                        message.clone(),
+                    )));
+                }
+                return;
+            }
+        }
+    };
+
     let mut cache = CachedFileRange::default();
     while let Ok(request) = request_rx.recv() {
         let requested_end = match request.offset.checked_add(request.len as u64) {
@@ -478,7 +499,11 @@ fn ext4_file_worker(
                 .saturating_mul(block_size)
                 .max(request.len);
             let fetch_len = ((file_size_bytes - request.offset).min(readahead as u64)) as usize;
-            match runtime.block_on(fs.read_range(file_path.as_str(), request.offset, fetch_len)) {
+            let range = {
+                let _runtime = runtime.enter();
+                read_open_file_range(&mut file, request.offset, fetch_len)
+            };
+            match range {
                 Ok(data) => {
                     if data.len() < request.len {
                         Err(GibbloxError::with_message(
@@ -498,6 +523,31 @@ fn ext4_file_worker(
 
         let _ = request.respond_to.send(response);
     }
+}
+
+fn read_open_file_range(
+    file: &mut ext4_view_rs::File,
+    offset: u64,
+    len: usize,
+) -> GibbloxResult<Vec<u8>> {
+    if file.position() != offset {
+        file.seek_to(offset)
+            .map_err(map_ext4_err("seek ext4 file"))?;
+    }
+
+    let mut out = vec![0u8; len];
+    let mut total = 0usize;
+    while total < out.len() {
+        let read = file
+            .read_bytes(&mut out[total..])
+            .map_err(map_ext4_err("read ext4 file range"))?;
+        if read == 0 {
+            break;
+        }
+        total += read;
+    }
+    out.truncate(total);
+    Ok(out)
 }
 
 fn normalize_path(path: &str) -> GibbloxResult<String> {
