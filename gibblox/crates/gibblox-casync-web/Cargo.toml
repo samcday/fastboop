@@ -9,7 +9,7 @@ license = { workspace = true }
 gibblox-casync = { path = "../gibblox-casync" }
 gibblox-core = { path = "../gibblox-core", default-features = false }
 tracing = "0.1.41"
-url = "2.5.8"
+url = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 async-trait = { workspace = true }
