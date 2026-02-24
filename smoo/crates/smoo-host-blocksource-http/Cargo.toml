@@ -26,7 +26,7 @@ tokio = { workspace = true, features = ["rt", "net", "time"], optional = true }
 wasm-bindgen = { version = "0.2.95", optional = true }
 wasm-bindgen-futures = { version = "0.4.45", optional = true }
 js-sys = { version = "0.3.82", optional = true }
-futures-util = { version = "0.3.31", default-features = false, features = ["std"], optional = true }
+futures-util = { workspace = true, features = ["std"], optional = true }
 web-sys = { version = "0.3.72", optional = true, features = [
     "Window",
     "Request",

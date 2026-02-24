@@ -7,7 +7,7 @@ license = "GPL-3.0-only"
 
 [dependencies]
 futures-channel = "0.3.31"
-futures-util = { version = "0.3.31", default-features = false, features = ["alloc", "async-await", "async-await-macro"] }
+futures-util = { workspace = true, features = ["alloc", "async-await", "async-await-macro"] }
 gloo-timers = { version = "0.3.0", features = ["futures"] }
 gibblox-blockreader-messageport = { path = "../../../gibblox/crates/gibblox-blockreader-messageport" }
 gibblox-core = { path = "../../../gibblox/crates/gibblox-core" }

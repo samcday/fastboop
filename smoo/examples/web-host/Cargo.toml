@@ -43,7 +43,7 @@ tracing-subscriber = { version = "0.3.18", default-features = false, features = 
     "registry",
     "std",
 ] }
-futures-util = "0.3.31"
+futures-util = { workspace = true, features = ["std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 smoo-host-webusb = { path = "../../crates/smoo-host-webusb" }

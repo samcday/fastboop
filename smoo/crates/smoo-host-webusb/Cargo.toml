@@ -8,7 +8,7 @@ license = "GPL-3.0-only"
 [dependencies]
 async-trait = { workspace = true }
 smoo-host-core = { path = "../smoo-host-core" }
-futures-util = { version = "0.3.31", default-features = false, features = ["std"] }
+futures-util = { workspace = true, features = ["std"] }
 tracing = "0.1.41"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

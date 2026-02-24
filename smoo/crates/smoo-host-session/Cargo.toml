@@ -9,6 +9,6 @@ license = "GPL-3.0-only"
 default = []
 
 [dependencies]
-futures-util = { version = "0.3.31", default-features = false, features = ["alloc", "async-await", "async-await-macro"] }
+futures-util = { workspace = true, features = ["alloc", "async-await", "async-await-macro"] }
 smoo-host-core = { path = "../smoo-host-core", default-features = false }
 smoo-proto = { path = "../smoo-proto" }
