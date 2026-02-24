@@ -31,6 +31,6 @@ smoo-host-transport-rusb = { path = "../smoo/crates/smoo-host-transport-rusb" }
 smoo-host-blocksource-gibblox = { path = "../crates/smoo-host-blocksource-gibblox" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-util = "0.7.17"
-url = "2.5.4"
+url = { workspace = true }
 ratatui = "0.29.0"
 crossterm = "0.28.1"

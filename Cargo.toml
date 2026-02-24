@@ -29,6 +29,7 @@ fastboop-schema = { path = "crates/fastboop-schema", default-features = false }
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 tokio = "1.48.0"
+url = "2.5.4"
 bitflags = "2"
 memmap2 = { version = "0.9", default-features = false }
 rustix = { version = "1", default-features = false }
