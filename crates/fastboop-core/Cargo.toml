@@ -15,7 +15,7 @@ serde = { version = "1.0.217", default-features = false, features = ["derive", "
 tracing = { version = "0.1.44", default-features = false }
 
 [dev-dependencies]
-tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 
 [build-dependencies]
 fastboop-schema = { workspace = true }

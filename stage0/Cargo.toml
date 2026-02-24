@@ -10,7 +10,7 @@ clap = { version = "4.5.20", features = ["derive"] }
 drm = "0.14.1"
 libc = "0.2.177"
 smoo-gadget-app = { path = "../smoo/crates/smoo-gadget-app" }
-tokio = { version = "1.48.0", features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 usb-gadget = { version = "0.7.6", features = ["tokio"] }
