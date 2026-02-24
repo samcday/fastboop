@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use fastboop_core::DeviceProfile;
 use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, profile_filters};
@@ -18,6 +18,10 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Args)]
 pub struct DetectArgs {
+    /// Restrict probing to this device profile id.
+    #[arg(long)]
+    pub device_profile: Option<String>,
+
     /// Wait up to N seconds for a matching device (0 = infinite).
     #[arg(long, default_value_t = 0)]
     pub wait: u64,
@@ -26,7 +30,22 @@ pub struct DetectArgs {
 pub async fn run_detect(args: DetectArgs) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
     let profiles = load_device_profiles(&devpro_dirs)?;
-    let profiles = dedup_profiles(&profiles);
+    let profiles = match args.device_profile.as_deref() {
+        Some(requested) => {
+            let mut ids: Vec<_> = profiles.keys().cloned().collect();
+            ids.sort();
+            let Some(profile) = profiles.get(requested) else {
+                bail!(
+                    "device profile '{}' not found in {:?}; available ids: {:?}",
+                    requested,
+                    devpro_dirs,
+                    ids
+                )
+            };
+            vec![profile]
+        }
+        None => dedup_profiles(&profiles),
+    };
     let profiles: Vec<DeviceProfile> = profiles.into_iter().cloned().collect();
     let mut profiles_by_id = HashMap::new();
     for profile in &profiles {
