@@ -17,7 +17,7 @@ smoo-proto = { path = "../smoo-proto" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tracing = "0.1.41"
 usb-gadget = { version = "0.7.6", features = ["tokio"] }
-libc = "0.2.177"
+libc = { workspace = true }
 async-trait = { workspace = true }
 futures = "0.3.31"
 hyper = { version = "0.14", features = ["server", "http1", "tcp"] }

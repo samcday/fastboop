@@ -13,7 +13,7 @@ apkbuild = ["io-uring/bindgen"]
 anyhow = { workspace = true }
 async-channel = "2.5.0"
 io-uring = "0.7.11"
-libc = "0.2.177"
+libc = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }

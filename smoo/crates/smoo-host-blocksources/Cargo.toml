@@ -8,7 +8,7 @@ license = "GPL-3.0-only"
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-libc = "0.2.176"
+libc = { workspace = true }
 smoo-host-core = { path = "../smoo-host-core" }
 tokio = { workspace = true, features = ["fs", "io-util", "sync", "rt-multi-thread"] }
 tracing = "0.1.41"

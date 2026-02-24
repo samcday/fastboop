@@ -8,7 +8,7 @@ license = "GPL-3.0-only"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
-libc = "0.2.177"
+libc = { workspace = true }
 smoo-host-core = { path = "../../crates/smoo-host-core" }
 smoo-host-blocksources = { path = "../../crates/smoo-host-blocksources" }
 smoo-gadget-ublk = { path = "../../crates/smoo-gadget-ublk" }

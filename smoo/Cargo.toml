@@ -14,3 +14,4 @@ futures-util = { version = "0.3.31", default-features = false }
 tokio = "1.48.0"
 tokio-util = "0.7.17"
 url = "2.5.4"
+libc = "0.2.177"

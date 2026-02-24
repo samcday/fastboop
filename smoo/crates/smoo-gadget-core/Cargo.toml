@@ -14,7 +14,7 @@ metrics = ["dep:metrics"]
 anyhow = { workspace = true }
 bitflags = { version = "2.6.0", features = ["serde"] }
 dma-heap = "0.4.1"
-libc = "0.2.177"
+libc = { workspace = true }
 mmap = "0.1.1"
 nix = { version = "0.30.1", features = ["ioctl", "poll"] }
 rand = "0.8.5"
