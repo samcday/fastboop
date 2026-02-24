@@ -10,10 +10,11 @@ use alloc::{
 };
 use async_trait::async_trait;
 use core::{error::Error, fmt};
-use ext4_view::Ext4ReadAsync;
+use ext4_view::Ext4Read;
 use futures_channel::oneshot;
 use gibblox_core::{
-    BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext, block_identity_string,
+    BlockReader, ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
+    block_identity_string,
 };
 use std::{
     sync::mpsc::{self, Sender},
@@ -57,18 +58,33 @@ impl Ext4Fs {
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "source size overflow")
             })?;
 
+        let source: Arc<dyn BlockReader> = Arc::new(source);
+        let byte_reader = ByteRangeReader::new(
+            Arc::clone(&source),
+            source_block_size as usize,
+            source_size_bytes,
+        );
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|err| {
+                GibbloxError::with_message(
+                    GibbloxErrorKind::Io,
+                    format!("create ext4 reader runtime: {err}"),
+                )
+            })?;
+        let adapter = SyncBlockAdapter {
+            reader: byte_reader,
+            runtime,
+        };
+
         info!(
             source_block_size,
             total_blocks, source_size_bytes, "opening ext4 filesystem"
         );
-        let adapter = AsyncBlockAdapter {
-            inner: Arc::new(source),
-            block_size: source_block_size as usize,
-            size_bytes: source_size_bytes,
-        };
-        let fs = ext4_view_rs::Ext4::load_async(Box::new(adapter))
-            .await
-            .map_err(map_ext4_err("open ext4 image"))?;
+        let fs =
+            ext4_view_rs::Ext4::load(Box::new(adapter)).map_err(map_ext4_err("open ext4 image"))?;
 
         Ok(Self {
             fs,
@@ -347,64 +363,24 @@ impl BlockReader for Ext4FileBlockReader {
     }
 }
 
-#[derive(Clone)]
-struct AsyncBlockAdapter {
-    inner: Arc<dyn BlockReader>,
-    block_size: usize,
-    size_bytes: u64,
+struct SyncBlockAdapter {
+    reader: ByteRangeReader,
+    runtime: tokio::runtime::Runtime,
 }
 
-#[async_trait(?Send)]
-impl Ext4ReadAsync for AsyncBlockAdapter {
-    async fn read(
-        &self,
+impl Ext4Read for SyncBlockAdapter {
+    fn read(
+        &mut self,
         start_byte: u64,
         dst: &mut [u8],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        if dst.is_empty() {
-            return Ok(());
-        }
-
-        let end = start_byte
-            .checked_add(dst.len() as u64)
-            .ok_or_else(|| adapter_box_error("ext4 adapter read range overflow"))?;
-        if end > self.size_bytes {
-            return Err(adapter_box_error("ext4 adapter read past end of source"));
-        }
-
-        let bs = self.block_size as u64;
-        let aligned_start = (start_byte / bs) * bs;
-        let aligned_end = end.div_ceil(bs) * bs;
-        let aligned_len = (aligned_end - aligned_start) as usize;
-
-        let mut scratch = vec![0u8; aligned_len];
-        let mut filled = 0usize;
-        while filled < scratch.len() {
-            let filled_u64 = u64::try_from(filled)
-                .map_err(|_| adapter_box_error("ext4 adapter offset conversion overflow"))?;
-            let lba = aligned_start
-                .checked_add(filled_u64)
-                .ok_or_else(|| adapter_box_error("ext4 adapter read offset overflow"))?
-                / bs;
-            let read = self
-                .inner
-                .read_blocks(lba, &mut scratch[filled..], ReadContext::FOREGROUND)
-                .await
-                .map_err(|err| adapter_box_error(format!("block read failed: {err}")))?;
-            if read == 0 {
-                return Err(adapter_box_error(
-                    "unexpected EOF while servicing ext4 read",
-                ));
-            }
-            if read % self.block_size != 0 && filled + read < scratch.len() {
-                return Err(adapter_box_error("unaligned short read from block source"));
-            }
-            filled += read;
-        }
-
-        let head = (start_byte - aligned_start) as usize;
-        dst.copy_from_slice(&scratch[head..head + dst.len()]);
-        Ok(())
+        let _runtime = self.runtime.enter();
+        self.runtime
+            .block_on(
+                self.reader
+                    .read_exact_at(start_byte, dst, ReadContext::FOREGROUND),
+            )
+            .map_err(|err| adapter_box_error(format!("ext4 image read failed: {err}")))
     }
 }
 
@@ -447,24 +423,21 @@ fn ext4_file_worker(
         }
     };
 
-    let mut file = {
-        let _runtime = runtime.enter();
-        match fs
-            .fs
-            .open(file_path.as_str())
-            .map_err(map_ext4_err("open ext4 file"))
-        {
-            Ok(file) => file,
-            Err(err) => {
-                let message = format!("open ext4 worker file handle: {err}");
-                while let Ok(request) = request_rx.recv() {
-                    let _ = request.respond_to.send(Err(GibbloxError::with_message(
-                        GibbloxErrorKind::Io,
-                        message.clone(),
-                    )));
-                }
-                return;
+    let mut file = match fs
+        .fs
+        .open(file_path.as_str())
+        .map_err(map_ext4_err("open ext4 file"))
+    {
+        Ok(file) => file,
+        Err(err) => {
+            let message = format!("open ext4 worker file handle: {err}");
+            while let Ok(request) = request_rx.recv() {
+                let _ = request.respond_to.send(Err(GibbloxError::with_message(
+                    GibbloxErrorKind::Io,
+                    message.clone(),
+                )));
             }
+            return;
         }
     };
 
@@ -499,10 +472,7 @@ fn ext4_file_worker(
                 .saturating_mul(block_size)
                 .max(request.len);
             let fetch_len = ((file_size_bytes - request.offset).min(readahead as u64)) as usize;
-            let range = {
-                let _runtime = runtime.enter();
-                read_open_file_range(&mut file, request.offset, fetch_len)
-            };
+            let range = read_open_file_range(&mut file, request.offset, fetch_len);
             match range {
                 Ok(data) => {
                     if data.len() < request.len {
