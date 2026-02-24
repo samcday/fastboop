@@ -26,6 +26,7 @@ dioxus = { version = "0.7.1" }
 ui = { path = "packages/ui" }
 fastboop-core = { path = "crates/fastboop-core" }
 fastboop-schema = { path = "crates/fastboop-schema", default-features = false }
+async-trait = "0.1.89"
 bitflags = "2"
 memmap2 = { version = "0.9", default-features = false }
 rustix = { version = "1", default-features = false }

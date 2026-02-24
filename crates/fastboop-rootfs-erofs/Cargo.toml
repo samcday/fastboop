@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.91"
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 fastboop-core = { path = "../fastboop-core" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

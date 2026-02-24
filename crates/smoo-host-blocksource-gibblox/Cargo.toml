@@ -6,6 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 gibblox-core = { path = "../../gibblox/crates/gibblox-core" }
 smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }
