@@ -113,6 +113,7 @@ Status (current branch):
 - [x] CLI channel intake parses bootprofile-leading stream heads and validates boot profiles.
 - [x] CLI boot profile compatibility uses `stage0.devices` rule (`{}` => all devices).
 - [x] CLI supports explicit `--boot-profile` selection for stream-provided profiles.
+- [x] CLI stream EOF/tail detection uses exact channel byte size (ignores block padding).
 - [ ] Channel-stream DevProfiles (still intentionally descoped in first pass).
 - [ ] Desktop/web session integration.
 

@@ -55,6 +55,11 @@ pub(crate) struct ChannelInput {
     pub(crate) boot_profile: Option<fastboop_core::BootProfile>,
 }
 
+struct ChannelSourceReader {
+    reader: Arc<dyn BlockReader>,
+    exact_size_bytes: u64,
+}
+
 #[derive(Clone, Debug, Default)]
 struct BootProfileStreamHead {
     profiles: Vec<BootProfile>,
@@ -483,8 +488,9 @@ impl ArtifactReaderResolver {
         requested_boot_profile_id: Option<&str>,
     ) -> Result<ChannelInput> {
         let source = open_channel_source_reader(channel).await?;
-        let source_total_bytes = total_reader_bytes(source.as_ref()).await?;
-        let stream_head = read_boot_profile_stream_head(source.as_ref()).await?;
+        let source_total_bytes = source.exact_size_bytes;
+        let stream_head =
+            read_boot_profile_stream_head(source.reader.as_ref(), source_total_bytes).await?;
 
         if stream_head.profiles.is_empty() {
             if let Some(requested) = requested_boot_profile_id {
@@ -494,7 +500,7 @@ impl ArtifactReaderResolver {
                 );
             }
 
-            let reader = unwrap_channel_reader(source, Some(channel)).await?;
+            let reader = unwrap_channel_reader(source.reader, Some(channel)).await?;
             let stage0_readers = derive_stage0_readers(reader.clone()).await?;
             return Ok(ChannelInput {
                 reader,
@@ -511,7 +517,7 @@ impl ArtifactReaderResolver {
 
         let reader = if stream_head.consumed_bytes < source_total_bytes {
             let trailing = OffsetChannelBlockReader::new(
-                source,
+                source.reader,
                 stream_head.consumed_bytes,
                 source_total_bytes,
             )?;
@@ -544,7 +550,7 @@ impl ArtifactReaderResolver {
                 BootProfileArtifactSource::Http(source) => {
                     let url = Url::parse(source.http.as_str())
                         .with_context(|| format!("parse HTTP artifact URL {}", source.http))?;
-                    open_cached_http_reader(url).await?
+                    open_cached_http_reader(url).await?.reader
                 }
                 BootProfileArtifactSource::File(source) => {
                     let path = Path::new(source.file.as_str());
@@ -574,7 +580,9 @@ impl ArtifactReaderResolver {
                                 source.casync.chunk_store.as_deref().unwrap_or_default()
                             )
                         })?;
-                    open_casync_reader(index_url, chunk_store, false).await?
+                    open_casync_reader(index_url, chunk_store, false)
+                        .await?
+                        .reader
                 }
                 BootProfileArtifactSource::Xz(source) => {
                     let upstream = self.open_artifact_source(source.xz.as_ref()).await?;
@@ -697,8 +705,9 @@ const CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS: usize = 128;
 
 async fn read_boot_profile_stream_head<R: BlockReader + ?Sized>(
     reader: &R,
+    exact_total_bytes: u64,
 ) -> Result<BootProfileStreamHead> {
-    let total_bytes = total_reader_bytes(reader).await?;
+    let total_bytes = exact_total_bytes;
     if total_bytes == 0 {
         return Ok(BootProfileStreamHead::default());
     }
@@ -829,7 +838,7 @@ fn boot_profile_matches_device(profile: &BootProfile, device_profile_id: &str) -
     profile.stage0.devices.is_empty() || profile.stage0.devices.contains_key(device_profile_id)
 }
 
-async fn open_channel_source_reader(channel: &Path) -> Result<Arc<dyn BlockReader>> {
+async fn open_channel_source_reader(channel: &Path) -> Result<ChannelSourceReader> {
     let channel_str = channel.to_string_lossy();
     if channel_str.ends_with(".caidx") {
         bail!(
@@ -851,9 +860,14 @@ async fn open_channel_source_reader(channel: &Path) -> Result<Arc<dyn BlockReade
 
     let canonical =
         fs::canonicalize(channel).with_context(|| format!("canonicalize {}", channel.display()))?;
+    let metadata = fs::metadata(&canonical)
+        .with_context(|| format!("stat channel file {}", canonical.display()))?;
     let file_reader = StdFileBlockReader::open(&canonical, DEFAULT_IMAGE_BLOCK_SIZE)
         .map_err(|err| anyhow!("open file {}: {err}", canonical.display()))?;
-    Ok(Arc::new(file_reader))
+    Ok(ChannelSourceReader {
+        reader: Arc::new(file_reader),
+        exact_size_bytes: metadata.len(),
+    })
 }
 
 async fn unwrap_channel_reader(
@@ -1075,24 +1089,28 @@ async fn detect_rootfs_kind<R: BlockReader + ?Sized>(reader: &R) -> Result<Optio
     Ok(None)
 }
 
-async fn open_cached_http_reader(url: Url) -> Result<Arc<dyn BlockReader>> {
+async fn open_cached_http_reader(url: Url) -> Result<ChannelSourceReader> {
     let http_reader = HttpBlockReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
         .await
         .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
+    let exact_size_bytes = http_reader.size_bytes();
     let cache = StdCacheOps::open_default_for_reader(&http_reader)
         .await
         .map_err(|err| anyhow!("open std cache: {err}"))?;
     let cached = CachedBlockReader::new(http_reader, cache)
         .await
         .map_err(|err| anyhow!("initialize std cache: {err}"))?;
-    Ok(Arc::new(cached))
+    Ok(ChannelSourceReader {
+        reader: Arc::new(cached),
+        exact_size_bytes,
+    })
 }
 
 async fn open_casync_reader(
     index_url: Url,
     chunk_store_url: Option<Url>,
     require_supported_rootfs_magic: bool,
-) -> Result<Arc<dyn BlockReader>> {
+) -> Result<ChannelSourceReader> {
     let index_source = StdCasyncIndexSource::new(StdCasyncIndexLocator::url(index_url.clone()))
         .map_err(|err| anyhow!("open casync index source {index_url}: {err}"))?;
 
@@ -1123,13 +1141,17 @@ async fn open_casync_reader(
     )
     .await
     .map_err(|err| anyhow!("open casync reader {index_url}: {err}"))?;
+    let exact_size_bytes = reader.index().blob_size();
 
     if require_supported_rootfs_magic && !casync_blob_looks_like_supported_rootfs(&reader).await? {
         bail!(
             "casync blob index does not reference a supported raw rootfs image: {index_url}; expected EROFS or ext4 superblock magic"
         );
     }
-    Ok(Arc::new(reader))
+    Ok(ChannelSourceReader {
+        reader: Arc::new(reader),
+        exact_size_bytes,
+    })
 }
 
 async fn casync_blob_looks_like_supported_rootfs<R: BlockReader + ?Sized>(
@@ -1812,9 +1834,10 @@ stage0:
         stream.extend_from_slice(first_encoded.as_slice());
         stream.extend_from_slice(second_encoded.as_slice());
         stream.extend_from_slice(trailing.as_slice());
+        let stream_len = stream.len() as u64;
 
         let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(stream, 512));
-        let head = read_boot_profile_stream_head(source.as_ref())
+        let head = read_boot_profile_stream_head(source.as_ref(), stream_len)
             .await
             .unwrap();
         assert_eq!(head.profiles.len(), 2);
@@ -1825,13 +1848,34 @@ stage0:
             (first_encoded.len() + second_encoded.len()) as u64
         );
 
-        let total_bytes = total_reader_bytes(source.as_ref()).await.unwrap();
         let trailing_reader =
-            OffsetChannelBlockReader::new(source, head.consumed_bytes, total_bytes).unwrap();
+            OffsetChannelBlockReader::new(source, head.consumed_bytes, stream_len).unwrap();
         let trailing_reader: Arc<dyn BlockReader> = Arc::new(trailing_reader);
         let unwrapped = unwrap_channel_reader(trailing_reader, None).await.unwrap();
         let kind = classify_channel_reader(unwrapped.as_ref()).await.unwrap();
         assert_eq!(kind, ChannelStreamKind::Erofs);
+    }
+
+    #[tokio::test]
+    async fn bootprofile_stream_head_uses_exact_size_not_padded_blocks() {
+        let profile = compile_boot_profile(
+            r#"
+id: tiny
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+
+        let encoded = encode_boot_profile(&profile).unwrap();
+        let exact_len = encoded.len() as u64;
+        let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(encoded, 512));
+
+        let head = read_boot_profile_stream_head(source.as_ref(), exact_len)
+            .await
+            .unwrap();
+        assert_eq!(head.profiles.len(), 1);
+        assert_eq!(head.consumed_bytes, exact_len);
     }
 
     fn compile_boot_profile(yaml: &str) -> BootProfile {
