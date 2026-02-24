@@ -10,7 +10,7 @@ async-trait = { workspace = true }
 flate2 = { workspace = true, features = ["rust_backend"] }
 gibblox-casync = { path = "../gibblox-casync" }
 gibblox-core = { path = "../gibblox-core", features = ["std"] }
-lzma-rs = "0.3.0"
+lzma-rs = { workspace = true }
 reqwest = { version = "0.12.28", default-features = false, features = ["http2", "rustls-tls"] }
 ruzstd = "0.8.2"
 tokio = { workspace = true, features = ["fs", "sync"] }

@@ -15,7 +15,7 @@ url = { workspace = true }
 async-trait = { workspace = true }
 flate2 = { workspace = true, features = ["rust_backend"] }
 js-sys = "0.3.82"
-lzma-rs = "0.3.0"
+lzma-rs = { workspace = true }
 ruzstd = "0.8.2"
 wasm-bindgen = "0.2.105"
 wasm-bindgen-futures = "0.4.55"
