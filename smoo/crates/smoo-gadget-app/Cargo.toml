@@ -20,6 +20,6 @@ usb-gadget = { version = "0.7.6", features = ["tokio"] }
 libc = { workspace = true }
 async-trait = { workspace = true }
 futures = "0.3.31"
-hyper = { version = "0.14", features = ["server", "http1", "tcp"] }
+hyper = { workspace = true, features = ["server", "http1", "tcp"] }
 metrics-exporter-prometheus = { version = "0.13", default-features = false, features = ["http-listener"] }
 tokio-util = { workspace = true }
