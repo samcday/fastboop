@@ -6,7 +6,7 @@ rust-version = { workspace = true }
 license = "GPL-3.0-only"
 
 [dependencies]
-anyhow = "1.0.100"
+anyhow = { workspace = true }
 async-trait = "0.1.89"
 libc = "0.2.176"
 smoo-host-core = { path = "../smoo-host-core" }

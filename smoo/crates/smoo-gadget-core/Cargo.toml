@@ -11,7 +11,7 @@ apkbuild = ["smoo-gadget-ublk/apkbuild"]
 metrics = ["dep:metrics"]
 
 [dependencies]
-anyhow = "1.0.100"
+anyhow = { workspace = true }
 bitflags = { version = "2.6.0", features = ["serde"] }
 dma-heap = "0.4.1"
 libc = "0.2.177"

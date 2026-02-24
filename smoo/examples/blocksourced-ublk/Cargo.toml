@@ -6,7 +6,7 @@ rust-version = { workspace = true }
 license = "GPL-3.0-only"
 
 [dependencies]
-anyhow = "1.0.100"
+anyhow = { workspace = true }
 clap = { version = "4.5.20", features = ["derive"] }
 libc = "0.2.177"
 smoo-host-core = { path = "../../crates/smoo-host-core" }

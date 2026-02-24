@@ -6,7 +6,7 @@ rust-version = { workspace = true }
 license = "GPL-3.0-only"
 
 [dependencies]
-anyhow = "1.0.100"
+anyhow = { workspace = true }
 async-trait = "0.1.89"
 clap = { version = "4.5.20", features = ["derive"] }
 hyper = { version = "0.14", features = ["server", "http1", "tcp"] }

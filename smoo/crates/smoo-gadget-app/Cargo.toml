@@ -10,7 +10,7 @@ default = []
 apkbuild = ["smoo-gadget-core/apkbuild"]
 
 [dependencies]
-anyhow = "1.0.100"
+anyhow = { workspace = true }
 clap = { version = "4.5.20", features = ["derive"] }
 smoo-gadget-core = { path = "../smoo-gadget-core", features = ["metrics"] }
 smoo-proto = { path = "../smoo-proto" }
