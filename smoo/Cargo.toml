@@ -8,6 +8,7 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1.0.100"
+clap = { version = "4.5.20", features = ["derive"] }
 tokio = "1.48.0"
 tokio-util = "0.7.17"
 url = "2.5.4"

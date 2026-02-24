@@ -11,7 +11,7 @@ apkbuild = ["smoo-gadget-core/apkbuild"]
 
 [dependencies]
 anyhow = { workspace = true }
-clap = { version = "4.5.20", features = ["derive"] }
+clap = { workspace = true }
 smoo-gadget-core = { path = "../smoo-gadget-core", features = ["metrics"] }
 smoo-proto = { path = "../smoo-proto" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
