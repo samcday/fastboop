@@ -102,10 +102,17 @@ impl Ext4Fs {
             .map_err(map_ext4_err("seek ext4 file"))?;
 
         let mut out = vec![0u8; len];
-        let read = file
-            .read_bytes(&mut out)
-            .map_err(map_ext4_err("read ext4 file range"))?;
-        out.truncate(read);
+        let mut total = 0usize;
+        while total < out.len() {
+            let read = file
+                .read_bytes(&mut out[total..])
+                .map_err(map_ext4_err("read ext4 file range"))?;
+            if read == 0 {
+                break;
+            }
+            total += read;
+        }
+        out.truncate(total);
         Ok(out)
     }
 
