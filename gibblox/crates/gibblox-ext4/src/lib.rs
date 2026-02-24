@@ -178,7 +178,7 @@ pub struct Ext4FileBlockReader {
     file_size_bytes: u64,
     file_path: String,
     source_identity: String,
-    file_data: Vec<u8>,
+    source: Arc<dyn BlockReader>,
 }
 
 impl Ext4FileBlockReader {
@@ -196,10 +196,15 @@ impl Ext4FileBlockReader {
             ));
         }
 
-        let fs = Ext4Fs::open(source).await?;
-        let file_data = fs.read_all(path).await?;
+        let source: Arc<dyn BlockReader> = Arc::new(source);
+        let fs = Ext4Fs::open(Arc::clone(&source)).await?;
         let file_path = normalize_path(path)?;
-        let file_size_bytes = file_data.len() as u64;
+        let file_size_bytes = fs
+            .fs
+            .open(file_path.as_str())
+            .map_err(map_ext4_err("open ext4 file"))?
+            .metadata()
+            .len();
 
         info!(path = file_path, file_size_bytes, "resolved file from ext4");
         Ok(Self {
@@ -207,7 +212,7 @@ impl Ext4FileBlockReader {
             file_size_bytes,
             file_path,
             source_identity: fs.source_identity().to_string(),
-            file_data,
+            source,
         })
     }
 
@@ -261,9 +266,18 @@ impl BlockReader for Ext4FileBlockReader {
         }
 
         let read_len = ((buf.len() as u64).min(self.file_size_bytes - offset)) as usize;
-        let src_start = offset as usize;
-        let src_end = src_start + read_len;
-        buf[..read_len].copy_from_slice(&self.file_data[src_start..src_end]);
+        let data = pollster::block_on(async {
+            let fs = Ext4Fs::open(Arc::clone(&self.source)).await?;
+            fs.read_range(self.file_path.as_str(), offset, read_len)
+                .await
+        })?;
+        if data.len() < read_len {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::Io,
+                "short read from ext4 file",
+            ));
+        }
+        buf[..read_len].copy_from_slice(&data[..read_len]);
         if read_len < buf.len() {
             buf[read_len..].fill(0);
         }
