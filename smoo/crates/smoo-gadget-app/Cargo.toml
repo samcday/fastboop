@@ -22,4 +22,4 @@ async-trait = "0.1.83"
 futures = "0.3.31"
 hyper = { version = "0.14", features = ["server", "http1", "tcp"] }
 metrics-exporter-prometheus = { version = "0.13", default-features = false, features = ["http-listener"] }
-tokio-util = "0.7.17"
+tokio-util = { workspace = true }
