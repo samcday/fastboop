@@ -31,6 +31,7 @@ async-trait = "0.1.89"
 tokio = "1.48.0"
 tokio-util = "0.7.17"
 url = "2.5.4"
+serde_yaml = "0.9.34"
 bitflags = "2"
 memmap2 = { version = "0.9", default-features = false }
 rustix = { version = "1", default-features = false }
