@@ -7,11 +7,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
 use fastboop_core::fastboot::{FastbootProtocolError, ProbeError};
 use fastboop_core::{
-    BootProfileArtifactSource, BootProfileRootfs, CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamKind,
-    DeviceProfile, boot_profile_bin_header_version, classify_channel_prefix, decode_boot_profile,
-    validate_boot_profile,
+    BootProfile, BootProfileArtifactSource, BootProfileRootfs, CHANNEL_SNIFF_PREFIX_LEN,
+    ChannelStreamKind, DeviceProfile, boot_profile_bin_header_version, classify_channel_prefix,
+    decode_boot_profile_prefix, validate_boot_profile,
 };
 use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
 use gibblox_android_sparse::AndroidSparseBlockReader;
@@ -22,7 +23,10 @@ use gibblox_casync_std::{
     StdCasyncChunkStore, StdCasyncChunkStoreConfig, StdCasyncChunkStoreLocator,
     StdCasyncIndexLocator, StdCasyncIndexSource,
 };
-use gibblox_core::{BlockReader, GptBlockReader, GptPartitionSelector, ReadContext};
+use gibblox_core::{
+    BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, GptBlockReader,
+    GptPartitionSelector, ReadContext,
+};
 use gibblox_ext4::{Ext4EntryType, Ext4Fs};
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
@@ -49,6 +53,12 @@ pub(crate) struct ChannelInput {
     pub(crate) reader: Arc<dyn BlockReader>,
     pub(crate) stage0_readers: Vec<Arc<dyn BlockReader>>,
     pub(crate) boot_profile: Option<fastboop_core::BootProfile>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct BootProfileStreamHead {
+    profiles: Vec<BootProfile>,
+    consumed_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -359,6 +369,100 @@ impl Filesystem for Stage0CoalescingFilesystem {
     }
 }
 
+#[derive(Clone)]
+struct OffsetChannelBlockReader {
+    inner: Arc<dyn BlockReader>,
+    offset_bytes: u64,
+    size_bytes: u64,
+    inner_size_bytes: u64,
+    block_size: u32,
+}
+
+impl OffsetChannelBlockReader {
+    fn new(inner: Arc<dyn BlockReader>, offset_bytes: u64, inner_size_bytes: u64) -> Result<Self> {
+        let block_size = inner.block_size();
+        if block_size == 0 {
+            bail!("channel reader block size is zero");
+        }
+        if offset_bytes > inner_size_bytes {
+            bail!(
+                "channel stream offset {} exceeds source size {}",
+                offset_bytes,
+                inner_size_bytes
+            );
+        }
+
+        Ok(Self {
+            inner,
+            offset_bytes,
+            size_bytes: inner_size_bytes - offset_bytes,
+            inner_size_bytes,
+            block_size,
+        })
+    }
+}
+
+#[async_trait]
+impl BlockReader for OffsetChannelBlockReader {
+    fn block_size(&self) -> u32 {
+        self.block_size
+    }
+
+    async fn total_blocks(&self) -> GibbloxResult<u64> {
+        let block_size = self.block_size as u64;
+        if block_size == 0 {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "block size must be non-zero",
+            ));
+        }
+        Ok(self.size_bytes.div_ceil(block_size))
+    }
+
+    fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        self.inner.write_identity(out)?;
+        write!(out, "|offset:{}", self.offset_bytes)
+    }
+
+    async fn read_blocks(
+        &self,
+        lba: u64,
+        buf: &mut [u8],
+        ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let block_size = self.block_size as u64;
+        let local_offset = lba.checked_mul(block_size).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "channel read offset overflow")
+        })?;
+        if local_offset >= self.size_bytes {
+            return Ok(0);
+        }
+
+        let remaining = self.size_bytes - local_offset;
+        let max_read = core::cmp::min(buf.len() as u64, remaining) as usize;
+        let global_offset = self.offset_bytes.checked_add(local_offset).ok_or_else(|| {
+            GibbloxError::with_message(
+                GibbloxErrorKind::OutOfRange,
+                "channel global read offset overflow",
+            )
+        })?;
+
+        let byte_reader = gibblox_core::ByteRangeReader::new(
+            self.inner.clone(),
+            self.block_size as usize,
+            self.inner_size_bytes,
+        );
+        byte_reader
+            .read_exact_at(global_offset, &mut buf[..max_read], ctx)
+            .await?;
+        Ok(max_read)
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ArtifactReaderResolver {
     cache: HashMap<String, Arc<dyn BlockReader>>,
@@ -372,23 +476,57 @@ impl ArtifactReaderResolver {
         Self::default()
     }
 
-    pub(crate) async fn open_channel_input(&mut self, channel: &Path) -> Result<ChannelInput> {
-        if let Some(profile) = try_decode_boot_profile_from_channel_arg(channel).await? {
-            let reader = self.open_artifact_source(profile.rootfs.source()).await?;
+    pub(crate) async fn open_channel_input(
+        &mut self,
+        channel: &Path,
+        device_profile_id: &str,
+        requested_boot_profile_id: Option<&str>,
+    ) -> Result<ChannelInput> {
+        let source = open_channel_source_reader(channel).await?;
+        let source_total_bytes = total_reader_bytes(source.as_ref()).await?;
+        let stream_head = read_boot_profile_stream_head(source.as_ref()).await?;
+
+        if stream_head.profiles.is_empty() {
+            if let Some(requested) = requested_boot_profile_id {
+                bail!(
+                    "boot profile '{}' was requested, but channel does not start with a boot profile stream",
+                    requested
+                );
+            }
+
+            let reader = unwrap_channel_reader(source, Some(channel)).await?;
             let stage0_readers = derive_stage0_readers(reader.clone()).await?;
             return Ok(ChannelInput {
                 reader,
                 stage0_readers,
-                boot_profile: Some(profile),
+                boot_profile: None,
             });
         }
 
-        let reader = open_channel_block_reader(channel).await?;
+        let boot_profile = select_boot_profile_for_device(
+            stream_head.profiles.as_slice(),
+            device_profile_id,
+            requested_boot_profile_id,
+        )?;
+
+        let reader = if stream_head.consumed_bytes < source_total_bytes {
+            let trailing = OffsetChannelBlockReader::new(
+                source,
+                stream_head.consumed_bytes,
+                source_total_bytes,
+            )?;
+            let trailing: Arc<dyn BlockReader> = Arc::new(trailing);
+            unwrap_channel_reader(trailing, Some(channel)).await?
+        } else {
+            self.open_artifact_source(boot_profile.rootfs.source())
+                .await?
+        };
+
         let stage0_readers = derive_stage0_readers(reader.clone()).await?;
         Ok(ChannelInput {
             reader,
             stage0_readers,
-            boot_profile: None,
+            boot_profile: Some(boot_profile),
         })
     }
 
@@ -554,10 +692,141 @@ fn artifact_source_cache_key(source: &BootProfileArtifactSource) -> Result<Strin
 
 const CHANNEL_UNWRAP_MAX_DEPTH: usize = 16;
 const CHANNEL_PARTITION_PROBE_LIMIT: u32 = 16;
+const CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES: usize = 4 * 1024 * 1024;
+const CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS: usize = 128;
 
-pub(crate) async fn open_channel_block_reader(channel: &Path) -> Result<Arc<dyn BlockReader>> {
-    let source = open_channel_source_reader(channel).await?;
-    unwrap_channel_reader(source, Some(channel)).await
+async fn read_boot_profile_stream_head<R: BlockReader + ?Sized>(
+    reader: &R,
+) -> Result<BootProfileStreamHead> {
+    let total_bytes = total_reader_bytes(reader).await?;
+    if total_bytes == 0 {
+        return Ok(BootProfileStreamHead::default());
+    }
+
+    let scan_cap = core::cmp::min(
+        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
+        total_bytes,
+    );
+    let prefix = read_channel_prefix(reader, scan_cap as usize).await?;
+
+    let mut out = BootProfileStreamHead::default();
+    let mut cursor = 0usize;
+    while cursor < prefix.len() {
+        if out.profiles.len() >= CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS {
+            bail!(
+                "channel boot profile stream exceeds max profile count {}",
+                CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS
+            );
+        }
+
+        let remaining = &prefix[cursor..];
+        if boot_profile_bin_header_version(remaining).is_none() {
+            break;
+        }
+
+        let (profile, consumed) = match decode_boot_profile_prefix(remaining) {
+            Ok(decoded) => decoded,
+            Err(err) if scan_cap < total_bytes => {
+                bail!(
+                    "decode boot profile stream at offset {}: {}; stream head exceeds {} bytes",
+                    cursor,
+                    err,
+                    CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES
+                )
+            }
+            Err(err) => {
+                bail!("decode boot profile stream at offset {}: {}", cursor, err)
+            }
+        };
+        if consumed == 0 {
+            bail!("decoded boot profile consumed zero bytes at offset {cursor}");
+        }
+        validate_boot_profile(&profile).map_err(|err| {
+            anyhow!(
+                "validate boot profile '{}' at stream offset {}: {}",
+                profile.id,
+                cursor,
+                err
+            )
+        })?;
+
+        out.profiles.push(profile);
+        cursor = cursor
+            .checked_add(consumed)
+            .ok_or_else(|| anyhow!("channel boot profile cursor overflow"))?;
+    }
+
+    out.consumed_bytes = cursor as u64;
+    Ok(out)
+}
+
+fn select_boot_profile_for_device(
+    profiles: &[BootProfile],
+    device_profile_id: &str,
+    requested_boot_profile_id: Option<&str>,
+) -> Result<BootProfile> {
+    if profiles.is_empty() {
+        bail!("channel boot profile stream is empty");
+    }
+
+    if let Some(requested) = requested_boot_profile_id {
+        let Some(profile) = profiles.iter().find(|profile| profile.id == requested) else {
+            let ids = profiles
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "requested boot profile '{}' was not found in channel stream (available: {})",
+                requested,
+                ids
+            );
+        };
+        if !boot_profile_matches_device(profile, device_profile_id) {
+            bail!(
+                "boot profile '{}' is not compatible with device profile '{}'",
+                profile.id,
+                device_profile_id
+            );
+        }
+        return Ok(profile.clone());
+    }
+
+    let compatible = profiles
+        .iter()
+        .filter(|profile| boot_profile_matches_device(profile, device_profile_id))
+        .collect::<Vec<_>>();
+    match compatible.as_slice() {
+        [] => {
+            let ids = profiles
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "no compatible boot profile found for device profile '{}' in channel stream (available: {})",
+                device_profile_id,
+                ids
+            );
+        }
+        [profile] => Ok((*profile).clone()),
+        many => {
+            let ids = many
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "multiple compatible boot profiles found for device profile '{}' ({}); pass --boot-profile",
+                device_profile_id,
+                ids
+            );
+        }
+    }
+}
+
+fn boot_profile_matches_device(profile: &BootProfile, device_profile_id: &str) -> bool {
+    profile.stage0.devices.is_empty() || profile.stage0.devices.contains_key(device_profile_id)
 }
 
 async fn open_channel_source_reader(channel: &Path) -> Result<Arc<dyn BlockReader>> {
@@ -735,10 +1004,7 @@ async fn read_channel_prefix<R: BlockReader + ?Sized>(reader: &R, cap: usize) ->
         bail!("channel reader block size is zero")
     }
 
-    let total_blocks = reader.total_blocks().await?;
-    let total_bytes = total_blocks
-        .checked_mul(block_size as u64)
-        .ok_or_else(|| anyhow!("channel size overflow"))?;
+    let total_bytes = total_reader_bytes(reader).await?;
     let prefix_len = core::cmp::min(cap as u64, total_bytes) as usize;
     if prefix_len == 0 {
         return Ok(Vec::new());
@@ -751,6 +1017,13 @@ async fn read_channel_prefix<R: BlockReader + ?Sized>(reader: &R, cap: usize) ->
         .await?;
     scratch.truncate(core::cmp::min(read, prefix_len));
     Ok(scratch)
+}
+
+async fn total_reader_bytes<R: BlockReader + ?Sized>(reader: &R) -> Result<u64> {
+    let total_blocks = reader.total_blocks().await?;
+    total_blocks
+        .checked_mul(reader.block_size() as u64)
+        .ok_or_else(|| anyhow!("channel size overflow"))
 }
 
 fn zip_entry_name_from_channel_hint(channel_hint: Option<&Path>) -> Result<Option<String>> {
@@ -800,30 +1073,6 @@ async fn detect_rootfs_kind<R: BlockReader + ?Sized>(reader: &R) -> Result<Optio
         return Ok(Some(RootfsKind::Fat));
     }
     Ok(None)
-}
-
-async fn try_decode_boot_profile_from_channel_arg(
-    channel: &Path,
-) -> Result<Option<fastboop_core::BootProfile>> {
-    let channel_str = channel.to_string_lossy();
-    if channel_str.starts_with("http://") || channel_str.starts_with("https://") {
-        return Ok(None);
-    }
-
-    let mut header = [0u8; 16];
-    let mut file = fs::File::open(channel)
-        .with_context(|| format!("opening channel argument {}", channel.display()))?;
-    let read = std::io::Read::read(&mut file, &mut header)
-        .with_context(|| format!("reading channel argument header {}", channel.display()))?;
-    if boot_profile_bin_header_version(&header[..read]).is_none() {
-        return Ok(None);
-    }
-
-    let bytes = fs::read(channel)
-        .with_context(|| format!("reading boot profile binary {}", channel.display()))?;
-    let profile = decode_boot_profile(&bytes).map_err(|err| anyhow!("{err}"))?;
-    validate_boot_profile(&profile).map_err(|err| anyhow!("{err}"))?;
-    Ok(Some(profile))
 }
 
 async fn open_cached_http_reader(url: Url) -> Result<Arc<dyn BlockReader>> {
@@ -1417,6 +1666,7 @@ fn resolve_rooted(root: &Path, path: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fastboop_core::{BootProfileManifest, encode_boot_profile};
     use gobblytes_core::MockFilesystem;
 
     #[tokio::test]
@@ -1453,5 +1703,204 @@ mod tests {
             err.contains("no deployment symlink found"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn empty_stage0_device_map_matches_any_device_profile() {
+        let profile = compile_boot_profile(
+            r#"
+id: wildcard
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+        assert!(boot_profile_matches_device(&profile, "oneplus-fajita"));
+        assert!(boot_profile_matches_device(&profile, "pine64-pinephone"));
+    }
+
+    #[test]
+    fn select_boot_profile_requires_explicit_choice_when_multiple_match() {
+        let wildcard = compile_boot_profile(
+            r#"
+id: wildcard
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+        let specific = compile_boot_profile(
+            r#"
+id: specific
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+stage0:
+  devices:
+    oneplus-fajita: {}
+"#,
+        );
+
+        let err = select_boot_profile_for_device(&[wildcard, specific], "oneplus-fajita", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("pass --boot-profile"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn select_boot_profile_honors_requested_id() {
+        let wildcard = compile_boot_profile(
+            r#"
+id: wildcard
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+        let specific = compile_boot_profile(
+            r#"
+id: specific
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+stage0:
+  devices:
+    oneplus-fajita: {}
+"#,
+        );
+
+        let selected = select_boot_profile_for_device(
+            &[wildcard, specific],
+            "oneplus-fajita",
+            Some("specific"),
+        )
+        .unwrap();
+        assert_eq!(selected.id, "specific");
+    }
+
+    #[tokio::test]
+    async fn bootprofile_stream_head_consumes_profiles_then_trailing_artifact() {
+        let first = compile_boot_profile(
+            r#"
+id: first
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+        let second = compile_boot_profile(
+            r#"
+id: second
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+stage0:
+  devices:
+    oneplus-fajita: {}
+"#,
+        );
+
+        let first_encoded = encode_boot_profile(&first).unwrap();
+        let second_encoded = encode_boot_profile(&second).unwrap();
+        let mut trailing = vec![0u8; 2048];
+        trailing[1024..1028].copy_from_slice(&0xE0F5_E1E2u32.to_le_bytes());
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(first_encoded.as_slice());
+        stream.extend_from_slice(second_encoded.as_slice());
+        stream.extend_from_slice(trailing.as_slice());
+
+        let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(stream, 512));
+        let head = read_boot_profile_stream_head(source.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(head.profiles.len(), 2);
+        assert_eq!(head.profiles[0].id, "first");
+        assert_eq!(head.profiles[1].id, "second");
+        assert_eq!(
+            head.consumed_bytes,
+            (first_encoded.len() + second_encoded.len()) as u64
+        );
+
+        let total_bytes = total_reader_bytes(source.as_ref()).await.unwrap();
+        let trailing_reader =
+            OffsetChannelBlockReader::new(source, head.consumed_bytes, total_bytes).unwrap();
+        let trailing_reader: Arc<dyn BlockReader> = Arc::new(trailing_reader);
+        let unwrapped = unwrap_channel_reader(trailing_reader, None).await.unwrap();
+        let kind = classify_channel_reader(unwrapped.as_ref()).await.unwrap();
+        assert_eq!(kind, ChannelStreamKind::Erofs);
+    }
+
+    fn compile_boot_profile(yaml: &str) -> BootProfile {
+        let manifest: BootProfileManifest = serde_yaml::from_str(yaml).expect("parse manifest");
+        manifest
+            .compile_dt_overlays(|_| Ok::<Vec<u8>, anyhow::Error>(Vec::new()))
+            .expect("compile manifest")
+    }
+
+    struct TestBytesBlockReader {
+        bytes: Vec<u8>,
+        block_size: u32,
+    }
+
+    impl TestBytesBlockReader {
+        fn new(bytes: Vec<u8>, block_size: u32) -> Self {
+            Self { bytes, block_size }
+        }
+    }
+
+    #[async_trait]
+    impl BlockReader for TestBytesBlockReader {
+        fn block_size(&self) -> u32 {
+            self.block_size
+        }
+
+        async fn total_blocks(&self) -> GibbloxResult<u64> {
+            let block_size = self.block_size as usize;
+            if block_size == 0 {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    "block size must be non-zero",
+                ));
+            }
+            Ok(self.bytes.len().div_ceil(block_size) as u64)
+        }
+
+        fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+            out.write_str("test-bytes")
+        }
+
+        async fn read_blocks(
+            &self,
+            lba: u64,
+            buf: &mut [u8],
+            _ctx: ReadContext,
+        ) -> GibbloxResult<usize> {
+            let block_size = self.block_size as usize;
+            if block_size == 0 {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    "block size must be non-zero",
+                ));
+            }
+            let padded_size = self.bytes.len().div_ceil(block_size) * block_size;
+
+            let offset = lba.checked_mul(self.block_size as u64).ok_or_else(|| {
+                GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset overflow")
+            })? as usize;
+            if offset >= padded_size {
+                return Ok(0);
+            }
+
+            let read = core::cmp::min(offset + buf.len(), padded_size) - offset;
+            for (index, byte) in buf[..read].iter_mut().enumerate() {
+                let source_index = offset + index;
+                *byte = self.bytes.get(source_index).copied().unwrap_or(0);
+            }
+            Ok(read)
+        }
     }
 }

@@ -8,8 +8,8 @@ use fastboop_core::{
     BootProfileArtifactSourceMbrSource, BootProfileCodecError, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
     BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileStage0,
-    BootProfileValidationError, decode_boot_profile, encode_boot_profile,
-    resolve_effective_boot_profile_stage0, validate_boot_profile,
+    BootProfileValidationError, decode_boot_profile, decode_boot_profile_prefix,
+    encode_boot_profile, resolve_effective_boot_profile_stage0, validate_boot_profile,
 };
 
 #[test]
@@ -18,6 +18,18 @@ fn boot_profile_roundtrip_binary_codec() {
     let encoded = encode_boot_profile(&profile).expect("encode boot profile");
     let decoded = decode_boot_profile(&encoded).expect("decode boot profile");
     assert_eq!(decoded, profile);
+}
+
+#[test]
+fn boot_profile_prefix_decode_returns_consumed_length() {
+    let profile = sample_profile();
+    let mut encoded = encode_boot_profile(&profile).expect("encode boot profile");
+    encoded.extend_from_slice(b"TAIL");
+
+    let (decoded, consumed) =
+        decode_boot_profile_prefix(&encoded).expect("decode boot profile prefix");
+    assert_eq!(decoded, profile);
+    assert_eq!(consumed, encoded.len() - 4);
 }
 
 #[test]

@@ -12,8 +12,8 @@ use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
 
 use super::{
     ArtifactReaderResolver, OstreeArg, Stage0CoalescingFilesystem,
-    auto_detect_ostree_deployment_path, parse_ostree_arg, read_dtbo_overlays,
-    read_existing_initrd, resolve_boot_profile_source_overrides,
+    auto_detect_ostree_deployment_path, parse_ostree_arg, read_dtbo_overlays, read_existing_initrd,
+    resolve_boot_profile_source_overrides,
 };
 
 #[derive(Args)]
@@ -27,6 +27,9 @@ pub struct Stage0Args {
     /// Device profile id to use (must be present in loaded DevPros).
     #[arg(long, required = true)]
     pub device_profile: String,
+    /// Boot profile id to select when channel starts with a boot profile stream.
+    #[arg(long)]
+    pub boot_profile: Option<String>,
     /// Override DTB path (host path).
     #[arg(long)]
     pub dtb: Option<PathBuf>,
@@ -82,7 +85,13 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
 
     let mut artifact_resolver = ArtifactReaderResolver::new();
     let build = {
-        let input = artifact_resolver.open_channel_input(&args.channel).await?;
+        let input = artifact_resolver
+            .open_channel_input(
+                &args.channel,
+                profile.id.as_str(),
+                args.boot_profile.as_deref(),
+            )
+            .await?;
         let profile_source_overrides = resolve_boot_profile_source_overrides(
             input.boot_profile.as_ref(),
             profile,

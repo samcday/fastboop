@@ -57,6 +57,26 @@ pub fn decode_boot_profile(bytes: &[u8]) -> Result<BootProfile, BootProfileCodec
     Ok(BootProfile::from(profile))
 }
 
+pub fn decode_boot_profile_prefix(
+    bytes: &[u8],
+) -> Result<(BootProfile, usize), BootProfileCodecError> {
+    let Some(format_version) = boot_profile_bin_header_version(bytes) else {
+        return Err(BootProfileCodecError::InvalidMagic);
+    };
+    if format_version != BOOT_PROFILE_BIN_FORMAT_VERSION {
+        return Err(BootProfileCodecError::UnsupportedFormatVersion(
+            format_version,
+        ));
+    }
+
+    let payload = &bytes[BOOT_PROFILE_BIN_HEADER_LEN..];
+    let (profile, remaining): (BootProfileBin, &[u8]) = postcard::take_from_bytes(payload)?;
+    let consumed = BOOT_PROFILE_BIN_HEADER_LEN
+        .checked_add(payload.len() - remaining.len())
+        .expect("boot profile consumed length overflow");
+    Ok((BootProfile::from(profile), consumed))
+}
+
 pub fn encode_boot_profile(profile: &BootProfile) -> Result<Vec<u8>, postcard::Error> {
     let payload = postcard::to_allocvec(&BootProfileBin::from(profile.clone()))?;
     let mut out = Vec::with_capacity(BOOT_PROFILE_BIN_HEADER_LEN + payload.len());

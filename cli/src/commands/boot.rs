@@ -27,8 +27,8 @@ use crate::tui::{TuiOutcome, run_boot_tui};
 
 use super::{
     ArtifactReaderResolver, OstreeArg, Stage0CoalescingFilesystem,
-    auto_detect_ostree_deployment_path, format_probe_error, parse_ostree_arg,
-    read_dtbo_overlays, read_existing_initrd, resolve_boot_profile_source_overrides,
+    auto_detect_ostree_deployment_path, format_probe_error, parse_ostree_arg, read_dtbo_overlays,
+    read_existing_initrd, resolve_boot_profile_source_overrides,
 };
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -56,6 +56,9 @@ pub struct BootStage0Args {
     /// Device profile id to use. If omitted, fastboop auto-probes matching profiles.
     #[arg(long)]
     pub device_profile: Option<String>,
+    /// Boot profile id to select when channel starts with a boot profile stream.
+    #[arg(long)]
+    pub boot_profile: Option<String>,
     /// Override DTB path (host path).
     #[arg(long)]
     pub dtb: Option<PathBuf>,
@@ -267,7 +270,11 @@ async fn run_boot_inner(
     let mut artifact_resolver = ArtifactReaderResolver::new();
     let (block_reader, image_size_bytes, image_identity, build) = {
         let input = artifact_resolver
-            .open_channel_input(&args.stage0.channel)
+            .open_channel_input(
+                &args.stage0.channel,
+                &profile.id,
+                args.stage0.boot_profile.as_deref(),
+            )
             .await?;
         let profile_source_overrides = resolve_boot_profile_source_overrides(
             input.boot_profile.as_ref(),

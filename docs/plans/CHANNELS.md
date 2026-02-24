@@ -107,6 +107,15 @@ Notes:
 
 Deliverable: CLI can boot from either plain artifact channels or bootprofile-leading streams without local persistence.
 
+Status (current branch):
+
+- [x] CLI `boot`/`stage0` accept channel artifact intake through recursive unwrap/sniff.
+- [x] CLI channel intake parses bootprofile-leading stream heads and validates boot profiles.
+- [x] CLI boot profile compatibility uses `stage0.devices` rule (`{}` => all devices).
+- [x] CLI supports explicit `--boot-profile` selection for stream-provided profiles.
+- [ ] Channel-stream DevProfiles (still intentionally descoped in first pass).
+- [ ] Desktop/web session integration.
+
 ### Phase 1: Surface Migration (`rootfs` -> `channel`)
 
 - Rename user-facing parameters and config fields to `channel`.
