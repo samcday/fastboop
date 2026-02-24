@@ -114,23 +114,22 @@ As always, keep profiles non-mutating: no write/flash semantics.
 
 ## Building a new Device Profile
 
-1. Start from a nearby built-in profile in `devprofiles.d/`.
-2. Set `match` to the exact USB VID/PID pair(s), then use strict `probe` checks for identity.
-3. Run a fast schema check before hardware testing.
-4. Validate profile matching in `detect`.
-5. Smoke-test payload generation with `boot` or `bootprofile`.
+Start from a profile for a similar device in [`devprofiles.d/`](https://github.com/samcday/fastboop/tree/main/devprofiles.d). Copy it to `~/.config/fastboop/devpro/your-device.yaml` and update the `id:` + `display_name:` + `devicetree_name:` fields.
 
-For focused debug output, pass `--device-profile` so only one profile is probed:
+Ensure `match` + `probe` match your device. Test with the real device:
 
 ```sh
-# ensure schema and profile code still type-checks
-cargo check -p fastboop-core
+RUST_LOG=trace fastboop detect --device-profile your-device
+```
 
-# with hardware in fastboot mode, verify match+probe flow for a specific profile
-RUST_LOG=trace cargo run -p fastboop-cli -- detect --device-profile <id> --wait 5
+Smoke-test payload generation with `fastboop boot` or `fastboop stage0` (if you have a rootfs to test with):
 
-# offline: ensure this profile can drive payload assembly
-cargo run -p fastboop-cli -- boot <rootfs-or-bootprofile> --device-profile <id> --output /tmp/boot.img
+```
+# generate just the stage0 payload:
+fastboop stage0 --device-profile your-device rootfs.img
+
+# or the entire boot artifact:
+fastboop boot rootfs.img --device-profile your-device --output /tmp/boot.img
 ```
 
 ## Source of Truth
