@@ -10,7 +10,7 @@ default = []
 metrics = []
 
 [dependencies]
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 smoo-proto = { path = "../smoo-proto" }
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc", "async-await", "async-await-macro"] }
 futures-channel = { version = "0.3.31", default-features = false, features = ["alloc"] }

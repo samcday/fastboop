@@ -11,7 +11,7 @@ native-client = ["reqwest", "tokio"]
 wasm-client = ["wasm-bindgen-futures", "web-sys", "js-sys", "wasm-bindgen", "futures-util"]
 
 [dependencies]
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 thiserror = "1.0.69"
 http = "1.1.0"
 smoo-host-core = { path = "../smoo-host-core" }

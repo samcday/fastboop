@@ -6,7 +6,7 @@ rust-version = { workspace = true }
 license = "GPL-3.0-only"
 
 [dependencies]
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 crossbeam-channel = "0.5.13"
 rusb = "0.9.4"
 smoo-host-core = { path = "../smoo-host-core" }

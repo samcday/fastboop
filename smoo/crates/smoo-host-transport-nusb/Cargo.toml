@@ -6,7 +6,7 @@ rust-version.workspace = true
 license = "GPL-3.0-only"
 
 [dependencies]
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 nusb = { version = "0.2.1", features = ["tokio"] }
 smoo-host-core = { path = "../smoo-host-core" }
 tokio = { workspace = true, features = ["sync"] }
