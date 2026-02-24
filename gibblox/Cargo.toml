@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/gobblytes-core",
+    "crates/gobblytes-erofs",
+    "crates/gobblytes-fat",
     "crates/gibblox-core",
     "crates/gibblox-android-sparse",
     "crates/gibblox-zip",
@@ -10,7 +13,6 @@ members = [
     "crates/gibblox-casync-web",
     "crates/gibblox-iso9660",
     "crates/gibblox-mbr",
-    "crates/gibblox-fat",
     "crates/gibblox-file",
     "crates/gibblox-http",
     "crates/gibblox-cache",

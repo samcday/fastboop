@@ -17,6 +17,7 @@ use gibblox_core::{
     BlockReader, ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
     block_identity_string,
 };
+use gobblytes_core::{Filesystem, FilesystemEntryType};
 use hadris_fat::FatError as HFatError;
 use hadris_fat::r#async::{
     dir::{DirectoryEntry as HDirectoryEntry, FileEntry as HFileEntry},
@@ -42,6 +43,16 @@ pub enum FatEntryType {
     File,
     Directory,
     Other,
+}
+
+impl From<FatEntryType> for FilesystemEntryType {
+    fn from(value: FatEntryType) -> Self {
+        match value {
+            FatEntryType::File => Self::File,
+            FatEntryType::Directory => Self::Directory,
+            FatEntryType::Other => Self::Other,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -327,6 +338,44 @@ impl FatFs {
         }
 
         Ok(None)
+    }
+}
+
+impl Filesystem for FatFs {
+    type Error = GibbloxError;
+
+    async fn read_all(&self, path: &str) -> Result<Vec<u8>, Self::Error> {
+        FatFs::read_all(self, path).await
+    }
+
+    async fn read_range(
+        &self,
+        path: &str,
+        offset: u64,
+        len: usize,
+    ) -> Result<Vec<u8>, Self::Error> {
+        FatFs::read_range(self, path, offset, len).await
+    }
+
+    async fn read_dir(&self, path: &str) -> Result<Vec<String>, Self::Error> {
+        FatFs::read_dir(self, path).await
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>, Self::Error> {
+        FatFs::entry_type(self, path)
+            .await
+            .map(|entry_type| entry_type.map(FilesystemEntryType::from))
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String, Self::Error> {
+        Err(GibbloxError::with_message(
+            GibbloxErrorKind::Unsupported,
+            format!("FAT path is not a symlink: {path}"),
+        ))
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool, Self::Error> {
+        FatFs::exists(self, path).await
     }
 }
 

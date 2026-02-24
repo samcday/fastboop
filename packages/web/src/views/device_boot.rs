@@ -5,7 +5,6 @@ use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
-use fastboop_rootfs_erofs::ErofsRootfs;
 use fastboop_stage0_generator::{build_stage0, Stage0Options};
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
@@ -19,6 +18,7 @@ use gibblox_http::HttpBlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::sleep;
+use gobblytes_erofs::ErofsRootfs;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Reflect;
 #[cfg(target_arch = "wasm32")]
@@ -233,7 +233,7 @@ async fn build_stage0_artifacts(
                     .map_err(|err| anyhow::anyhow!("parse rootfs URL {rootfs_artifact}: {err}"))?;
                 let http_reader = HttpBlockReader::new(
                     url.clone(),
-                    fastboop_rootfs_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
+                    gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
                 )
                 .await
                 .map_err(|err| anyhow::anyhow!("open HTTP reader {url}: {err}"))?;

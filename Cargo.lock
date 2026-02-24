@@ -2860,7 +2860,6 @@ dependencies = [
  "crossterm",
  "fastboop-core",
  "fastboop-fastboot-rusb",
- "fastboop-rootfs-erofs",
  "fastboop-stage0-generator",
  "gibblox-cache",
  "gibblox-cache-store-std",
@@ -2870,6 +2869,8 @@ dependencies = [
  "gibblox-file",
  "gibblox-http",
  "gibblox-zip",
+ "gobblytes-core",
+ "gobblytes-erofs",
  "ratatui",
  "serde",
  "serde_json",
@@ -2906,13 +2907,13 @@ dependencies = [
  "dioxus",
  "fastboop-core",
  "fastboop-fastboot-rusb",
- "fastboop-rootfs-erofs",
  "fastboop-stage0-generator",
  "gibblox-cache",
  "gibblox-cache-store-std",
  "gibblox-core",
  "gibblox-http",
  "gibblox-zip",
+ "gobblytes-erofs",
  "smoo-host-blocksource-gibblox",
  "smoo-host-core",
  "smoo-host-session",
@@ -2961,16 +2962,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fastboop-rootfs-erofs"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "fastboop-core",
- "gibblox-core",
-]
-
-[[package]]
 name = "fastboop-schema"
 version = "0.0.1"
 dependencies = [
@@ -3000,6 +2991,7 @@ dependencies = [
  "dtoolkit",
  "fastboop-core",
  "futures-util",
+ "gobblytes-core",
  "miniz_oxide 0.8.9",
  "ruzstd 0.7.3",
  "tracing",
@@ -3013,7 +3005,6 @@ dependencies = [
  "dioxus",
  "fastboop-core",
  "fastboop-fastboot-webusb",
- "fastboop-rootfs-erofs",
  "fastboop-stage0-generator",
  "futures-channel",
  "futures-util",
@@ -3024,6 +3015,7 @@ dependencies = [
  "gibblox-web-worker",
  "gibblox-zip",
  "gloo-timers",
+ "gobblytes-erofs",
  "js-sys",
  "smoo-host-blocksource-gibblox",
  "smoo-host-core",
@@ -3870,6 +3862,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c4ee00b289aba7a9e5306d57c2d05499b2e5dc427f84ac708bd2c090212cf3e"
 dependencies = [
  "gl_generator",
+]
+
+[[package]]
+name = "gobblytes-core"
+version = "0.0.1"
+dependencies = [
+ "futures",
+]
+
+[[package]]
+name = "gobblytes-erofs"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "gibblox-core",
+ "gobblytes-core",
 ]
 
 [[package]]

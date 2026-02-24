@@ -9,7 +9,6 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
 fastboop-core = { path = "../crates/fastboop-core" }
-fastboop-rootfs-erofs = { path = "../crates/fastboop-rootfs-erofs" }
 fastboop-stage0-generator = { path = "../crates/fastboop-stage0-generator" }
 fastboop-fastboot-rusb = { path = "../crates/fastboop-fastboot-rusb" }
 serde = { version = "1.0.217", features = ["derive"] }
@@ -25,6 +24,8 @@ gibblox-cache-store-std = { path = "../gibblox/crates/gibblox-cache-store-std" }
 gibblox-file = { path = "../gibblox/crates/gibblox-file" }
 gibblox-http = { path = "../gibblox/crates/gibblox-http", default-features = false, features = ["native-client"] }
 gibblox-zip = { path = "../gibblox/crates/gibblox-zip", features = ["std"] }
+gobblytes-core = { path = "../gibblox/crates/gobblytes-core" }
+gobblytes-erofs = { path = "../gibblox/crates/gobblytes-erofs" }
 smoo-host-core = { path = "../smoo/crates/smoo-host-core" }
 smoo-host-session = { path = "../smoo/crates/smoo-host-session" }
 smoo-host-transport-rusb = { path = "../smoo/crates/smoo-host-transport-rusb" }

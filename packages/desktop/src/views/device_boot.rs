@@ -11,13 +11,13 @@ use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
-use fastboop_rootfs_erofs::ErofsRootfs;
 use fastboop_stage0_generator::{build_stage0, Stage0Options};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
 use gibblox_core::{block_identity_string, BlockReader};
 use gibblox_http::HttpBlockReader;
 use gibblox_zip::ZipEntryBlockReader;
+use gobblytes_erofs::ErofsRootfs;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{
     register_export, BlockSource, BlockSourceHandle, CountingTransport, TransportCounterSnapshot,
@@ -214,7 +214,7 @@ async fn build_stage0_artifacts(
                         .map_err(|err| anyhow!("parse rootfs URL {rootfs_artifact}: {err}"))?;
                     let http_reader = HttpBlockReader::new(
                         url.clone(),
-                        fastboop_rootfs_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
+                        gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
                     )
                     .await
                     .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;

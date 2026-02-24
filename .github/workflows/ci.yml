@@ -77,6 +77,24 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets
 
+      - name: Check smoo workspace
+        run: cargo check --manifest-path smoo/Cargo.toml --workspace --locked
+
+      - name: Clippy smoo workspace
+        run: cargo clippy --manifest-path smoo/Cargo.toml --workspace --all-targets --locked
+
+      - name: Test smoo workspace
+        run: cargo test --manifest-path smoo/Cargo.toml --workspace --locked
+
+      - name: Check gibblox workspace
+        run: cargo check --manifest-path gibblox/Cargo.toml --workspace --locked
+
+      - name: Clippy gibblox workspace
+        run: cargo clippy --manifest-path gibblox/Cargo.toml --workspace --all-targets --locked
+
+      - name: Test gibblox workspace
+        run: cargo test --manifest-path gibblox/Cargo.toml --workspace --locked
+
       - name: Test
         run: cargo test --workspace --locked
 
