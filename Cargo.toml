@@ -26,6 +26,7 @@ dioxus = { version = "0.7.1" }
 ui = { path = "packages/ui" }
 fastboop-core = { path = "crates/fastboop-core" }
 fastboop-schema = { path = "crates/fastboop-schema", default-features = false }
+anyhow = "1.0.100"
 async-trait = "0.1.89"
 tokio = "1.48.0"
 bitflags = "2"
