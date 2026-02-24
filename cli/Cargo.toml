@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow = "1.0.91"
 async-trait = { workspace = true }
-clap = { version = "4.5.21", features = ["derive"] }
+clap = { workspace = true }
 fastboop-core = { path = "../crates/fastboop-core" }
 fastboop-rootfs-erofs = { path = "../crates/fastboop-rootfs-erofs" }
 fastboop-stage0-generator = { path = "../crates/fastboop-stage0-generator" }
