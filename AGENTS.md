@@ -5,12 +5,14 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
 ## Session start (required)
 - Read `AGENTS.md`.
 - Read `HACKING.md`.
+- If the task touches `infra/k8s/` or any `*.fastboop.win` infrastructure, read `docs/k8s-infra.yaml`.
 - Then read only the docs relevant to the task from the index below.
 
 ## Read-on-demand index
 - `docs/DEVICE_PROFILES.md`: DevPro schema, matching/probing semantics, boot constraints.
 - `docs/STAGE0.md`: stage0 contract, PID1 flow, handoff behavior.
 - `docs/DIOXUS.md`: Dioxus 0.7 usage in `packages/*`.
+- `docs/k8s-infra.yaml`: required when touching `infra/k8s/` or any `*.fastboop.win` infrastructure.
 - `smoo/AGENTS.md`: required when touching `smoo/` or behavior coupled to smoo protocol/runtime invariants.
 - `gibblox/AGENTS.md`: required when touching `gibblox/` or any `gibblox-*` crate integration.
 - Cross-domain changes must include all relevant docs before editing.

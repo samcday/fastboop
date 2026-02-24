@@ -1,0 +1,82 @@
+schema_version: 1
+title: fastboop k8s and fastboop.win infrastructure guide
+purpose: >-
+  Operational context and invariants for changes under infra/k8s and tasks
+  involving any *.fastboop.win infrastructure.
+
+read_contract:
+  required_when:
+    - touching_path_glob: infra/k8s/**
+    - task_mentions_domain_glob: '*.fastboop.win'
+    - task_mentions:
+        - bleeding.fastboop.win
+        - flux.fastboop.win
+        - matrix.fastboop.win
+
+topology:
+  parent_cluster:
+    repo: ~/src/infra
+    reconciler: Flux kustomize-controller
+    source:
+      kind: Kustomization
+      namespace: flux-system
+      name: fastboop
+      path: hub/cluster/fastboop
+    role: >-
+      Manages the fastboop child control-plane stack and bootstrap resources.
+  child_cluster:
+    repo: this repository (samcday/fastboop)
+    reconciler: Flux kustomize-controller
+    source:
+      kind: GitRepository
+      namespace: flux-system
+      name: fastboop
+      url: https://github.com/samcday/fastboop
+    kustomization:
+      kind: Kustomization
+      namespace: flux-system
+      name: fastboop
+      path: ./infra/k8s
+      interval: 5m
+    role: >-
+      Owns app, networking, and routing manifests for fastboop public endpoints.
+
+ingress_dns_tls:
+  gateway:
+    api: gateway.networking.k8s.io/v1
+    resource: ingress-nginx/public
+    controller: cilium
+    listeners:
+      - HTTP :80
+      - HTTPS :443 (TLS terminate)
+  dns:
+    managed_by: external-dns
+    anchor_service: kube-system/public-gateway-dns
+    current_hostnames:
+      - fastboop.win
+      - flux.fastboop.win
+      - matrix.fastboop.win
+  tls:
+    certificate: ingress-nginx/public-gateway-tls
+    issuer: ClusterIssuer/letsencrypt
+
+layout_and_conventions:
+  - Put each deployable in infra/k8s/<component>/ with its own kustomization.yaml.
+  - Add new component directories to infra/k8s/kustomization.yaml resources.
+  - Add required namespaces to infra/k8s/namespaces.yaml.
+  - Store secrets in infra/k8s as SOPS-encrypted manifests.
+  - Keep external DNS behavior explicit via annotations on route/service resources.
+  - Prefer Gateway API resources over Ingress for new public routes.
+
+secrets_and_encryption:
+  sops_config: infra/k8s/.sops.yaml
+  encrypted_regex: ^(data|stringData)$
+
+scope_boundaries:
+  - Kubernetes-hosted *.fastboop.win routing belongs in infra/k8s.
+  - bleeding.fastboop.win Cloudflare bootstrap infra currently lives in infra/tofu.
+  - Changes spanning infra/k8s and infra/tofu are cross-domain changes.
+
+validation:
+  local_render: kustomize build infra/k8s
+  child_cluster_reconcile: kubectl get kustomization -n flux-system fastboop
