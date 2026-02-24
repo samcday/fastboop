@@ -15,4 +15,4 @@ gibblox-core = { path = "../gibblox-core" }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 
 [dev-dependencies]
-futures = { version = "0.3.31", default-features = false, features = ["executor"] }
+futures = { workspace = true, features = ["executor"] }
