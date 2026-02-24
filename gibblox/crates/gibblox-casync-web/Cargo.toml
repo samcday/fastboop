@@ -18,7 +18,7 @@ js-sys = { workspace = true }
 lzma-rs = { workspace = true }
 ruzstd = { workspace = true }
 wasm-bindgen = { workspace = true }
-wasm-bindgen-futures = "0.4.55"
+wasm-bindgen-futures = { workspace = true }
 web-sys = { version = "0.3.82", features = [
     "Cache",
     "CacheStorage",

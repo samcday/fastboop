@@ -16,5 +16,5 @@ gloo-timers = { version = "0.3.0", features = ["futures"] }
 js-sys = { workspace = true }
 tracing = "0.1.41"
 wasm-bindgen = { workspace = true }
-wasm-bindgen-futures = "0.4.45"
+wasm-bindgen-futures = { workspace = true }
 web-sys = { version = "0.3.82", features = ["DedicatedWorkerGlobalScope", "Event", "MessageChannel", "MessageEvent", "MessagePort", "Worker"] }
