@@ -618,6 +618,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-web-file"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gibblox-core",
+ "js-sys",
+ "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "gibblox-web-worker"
 version = "0.0.1"
 dependencies = [
