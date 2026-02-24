@@ -92,8 +92,8 @@ fn rejects_gpt_step_without_selector() {
     let profile = BootProfile {
         id: "bad-gpt".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Fat(BootProfileRootfsFatSource {
-            fat: BootProfileArtifactSource::Gpt(BootProfileArtifactSourceGptSource {
+        rootfs: BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
+            erofs: BootProfileArtifactSource::Gpt(BootProfileArtifactSourceGptSource {
                 gpt: BootProfileArtifactSourceGpt {
                     partlabel: None,
                     partuuid: None,
@@ -125,8 +125,8 @@ fn rejects_mbr_step_without_selector() {
     let profile = BootProfile {
         id: "bad-mbr".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Fat(BootProfileRootfsFatSource {
-            fat: BootProfileArtifactSource::Mbr(BootProfileArtifactSourceMbrSource {
+        rootfs: BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
+            erofs: BootProfileArtifactSource::Mbr(BootProfileArtifactSourceMbrSource {
                 mbr: BootProfileArtifactSourceMbr {
                     partuuid: None,
                     index: None,
@@ -190,6 +190,30 @@ fn accepts_ext4_rootfs_source() {
     };
 
     validate_boot_profile(&profile).expect("ext4 source should validate");
+}
+
+#[test]
+fn rejects_fat_rootfs_for_stage0_switchroot() {
+    let profile = BootProfile {
+        id: "fat-rootfs".to_string(),
+        display_name: None,
+        rootfs: BootProfileRootfs::Fat(BootProfileRootfsFatSource {
+            fat: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
+                file: "./rootfs.fat".to_string(),
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    let err = validate_boot_profile(&profile).expect_err("fat rootfs should be rejected");
+    assert_eq!(
+        err,
+        BootProfileValidationError::UnsupportedRootfsFilesystem { filesystem: "fat" }
+    );
 }
 
 #[test]

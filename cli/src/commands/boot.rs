@@ -8,11 +8,11 @@ use std::{io::IsTerminal, thread};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
-use fastboop_core::DeviceProfile;
 use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, profile_filters};
 use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
+use fastboop_core::{DeviceProfile, resolve_effective_boot_profile_stage0};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_core::{BlockReader, block_identity_string};
@@ -239,14 +239,14 @@ async fn run_boot_inner(
         None => None,
     };
 
-    let dtbo_overlays = read_dtbo_overlays(&args.stage0.dtbo)?;
+    let cli_dtbo_overlays = read_dtbo_overlays(&args.stage0.dtbo)?;
     let ostree_arg = parse_ostree_arg(args.stage0.ostree.as_ref())?;
-    let extra_modules = args.stage0.require_modules;
+    let cli_extra_modules = args.stage0.require_modules;
     let serial_enabled = args.stage0.serial;
     let personalization = args.systemd_firstboot.then(personalization_from_host);
 
     let existing = read_existing_initrd(&args.stage0.augment)?;
-    let cmdline_append = args
+    let cli_cmdline_append = args
         .stage0
         .cmdline_append
         .as_deref()
@@ -279,6 +279,11 @@ async fn run_boot_inner(
             &mut artifact_resolver,
         )
         .await?;
+        let profile_stage0 = input
+            .boot_profile
+            .as_ref()
+            .map(|boot_profile| resolve_effective_boot_profile_stage0(boot_profile, &profile.id))
+            .unwrap_or_default();
         let reader = input.reader;
 
         let reader: Arc<dyn BlockReader> = match input.allow_zip_entry_probe {
@@ -300,6 +305,18 @@ async fn run_boot_inner(
         let rootfs_kind = resolve_rootfs_kind(input.boot_profile.as_ref(), reader.as_ref()).await?;
         let provider =
             Stage0RootfsProvider::open(rootfs_kind, reader.clone(), image_size_bytes).await?;
+
+        let mut extra_modules = profile_stage0.extra_modules;
+        extra_modules.extend(cli_extra_modules.iter().cloned());
+
+        let mut dtbo_overlays = profile_stage0.dt_overlays;
+        dtbo_overlays.extend(cli_dtbo_overlays.iter().cloned());
+
+        let merged_profile_cmdline = join_cmdline(
+            profile_stage0.extra_cmdline.as_deref(),
+            cli_cmdline_append.as_deref(),
+        );
+
         let opts = Stage0Options {
             switchroot_fs: provider.switchroot_fs(),
             extra_modules,
@@ -330,8 +347,8 @@ async fn run_boot_inner(
         if let Some(ostree) = selected_ostree.as_deref() {
             extra_parts.push(format!("ostree=/{ostree}"));
         }
-        if let Some(cmdline) = cmdline_append.as_deref() {
-            extra_parts.push(cmdline.to_string());
+        if !merged_profile_cmdline.is_empty() {
+            extra_parts.push(merged_profile_cmdline);
         }
         if let Some(system_time) = system_time_part.as_deref() {
             extra_parts.push(system_time.to_string());

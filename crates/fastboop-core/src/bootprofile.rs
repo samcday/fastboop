@@ -5,7 +5,9 @@ use fastboop_schema::bin::{
     BOOT_PROFILE_BIN_FORMAT_VERSION, BOOT_PROFILE_BIN_HEADER_LEN, BOOT_PROFILE_BIN_MAGIC,
     BootProfileBin,
 };
-use fastboop_schema::{BootProfile, BootProfileArtifactPathSource, BootProfileArtifactSource};
+use fastboop_schema::{
+    BootProfile, BootProfileArtifactPathSource, BootProfileArtifactSource, BootProfileRootfs,
+};
 
 #[derive(Debug)]
 pub enum BootProfileCodecError {
@@ -108,6 +110,7 @@ pub fn resolve_effective_boot_profile_stage0(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootProfileValidationError {
+    UnsupportedRootfsFilesystem { filesystem: &'static str },
     UnsupportedCasyncArchiveIndex { index: String },
     PipelineDepthExceeded { max_depth: usize },
     InvalidMbrSelectorCount { selectors: usize },
@@ -122,6 +125,10 @@ pub enum BootProfileValidationError {
 impl core::fmt::Display for BootProfileValidationError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::UnsupportedRootfsFilesystem { filesystem } => write!(
+                f,
+                "boot profile rootfs filesystem '{filesystem}' is not supported for stage0 switchroot (supported: erofs, ext4)"
+            ),
             Self::UnsupportedCasyncArchiveIndex { index } => write!(
                 f,
                 "unsupported casync archive index (.caidx) in boot profile: {index}; expected casync blob index (.caibx)"
@@ -160,6 +167,14 @@ impl core::fmt::Display for BootProfileValidationError {
 }
 
 pub fn validate_boot_profile(profile: &BootProfile) -> Result<(), BootProfileValidationError> {
+    match &profile.rootfs {
+        BootProfileRootfs::Erofs(_) | BootProfileRootfs::Ext4(_) => {}
+        BootProfileRootfs::Fat(_) => {
+            return Err(BootProfileValidationError::UnsupportedRootfsFilesystem {
+                filesystem: "fat",
+            });
+        }
+    }
     validate_artifact_source(profile.rootfs.source(), 0)?;
     if let Some(kernel) = profile.kernel.as_ref() {
         validate_profile_artifact_path_source(kernel, BootProfileValidationError::EmptyKernelPath)?;

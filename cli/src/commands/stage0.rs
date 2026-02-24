@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
+use fastboop_core::resolve_effective_boot_profile_stage0;
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_core::BlockReader;
 use gibblox_zip::ZipEntryBlockReader;
@@ -70,13 +71,13 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         None => None,
     };
 
-    let dtbo_overlays = read_dtbo_overlays(&args.dtbo)?;
+    let cli_dtbo_overlays = read_dtbo_overlays(&args.dtbo)?;
     let ostree_arg = parse_ostree_arg(args.ostree.as_ref())?;
-    let extra_modules = args.require_modules;
+    let cli_extra_modules = args.require_modules;
     let serial_enabled = args.serial;
 
     let existing = read_existing_initrd(&args.augment)?;
-    let cmdline_append = args
+    let cli_cmdline_append = args
         .cmdline_append
         .as_deref()
         .map(str::trim)
@@ -93,6 +94,11 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
             &mut artifact_resolver,
         )
         .await?;
+        let profile_stage0 = input
+            .boot_profile
+            .as_ref()
+            .map(|boot_profile| resolve_effective_boot_profile_stage0(boot_profile, &profile.id))
+            .unwrap_or_default();
         let reader = input.reader;
 
         let reader: Arc<dyn BlockReader> = match input.allow_zip_entry_probe {
@@ -112,6 +118,18 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         let image_size_bytes = total_blocks * reader.block_size() as u64;
         let rootfs_kind = resolve_rootfs_kind(input.boot_profile.as_ref(), reader.as_ref()).await?;
         let provider = Stage0RootfsProvider::open(rootfs_kind, reader, image_size_bytes).await?;
+
+        let mut extra_modules = profile_stage0.extra_modules;
+        extra_modules.extend(cli_extra_modules.iter().cloned());
+
+        let mut dtbo_overlays = profile_stage0.dt_overlays;
+        dtbo_overlays.extend(cli_dtbo_overlays.iter().cloned());
+
+        let merged_profile_cmdline = join_cmdline(
+            profile_stage0.extra_cmdline.as_deref(),
+            cli_cmdline_append.as_deref(),
+        );
+
         let opts = Stage0Options {
             switchroot_fs: provider.switchroot_fs(),
             extra_modules,
@@ -140,7 +158,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         if let Some(ostree) = selected_ostree.as_deref() {
             extra_parts.push(format!("ostree=/{ostree}"));
         }
-        if let Some(cmdline) = cmdline_append.as_deref() {
+        if let Some(cmdline) = merged_profile_cmdline.as_deref() {
             extra_parts.push(cmdline.to_string());
         }
         let extra_cmdline = if extra_parts.is_empty() {
@@ -190,6 +208,17 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         build.init_path
     );
     Ok(())
+}
+
+fn join_cmdline(left: Option<&str>, right: Option<&str>) -> Option<String> {
+    let left = left.map(str::trim).filter(|value| !value.is_empty());
+    let right = right.map(str::trim).filter(|value| !value.is_empty());
+    match (left, right) {
+        (Some(a), Some(b)) => Some([a, b].join(" ")),
+        (Some(a), None) => Some(a.to_string()),
+        (None, Some(b)) => Some(b.to_string()),
+        (None, None) => None,
+    }
 }
 
 fn zip_entry_name_from_rootfs(rootfs: &str) -> Result<Option<String>> {
