@@ -443,12 +443,50 @@ impl BootProfileDeviceStage0 {
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(untagged)]
 pub enum BootProfileRootfs {
+    Ostree(BootProfileRootfsOstreeSource),
     Erofs(BootProfileRootfsErofsSource),
     Ext4(BootProfileRootfsExt4Source),
     Fat(BootProfileRootfsFatSource),
 }
 
 impl BootProfileRootfs {
+    pub fn source(&self) -> &BootProfileArtifactSource {
+        match self {
+            Self::Ostree(source) => source.source(),
+            Self::Erofs(source) => &source.erofs,
+            Self::Ext4(source) => &source.ext4,
+            Self::Fat(source) => &source.fat,
+        }
+    }
+
+    pub fn is_ostree(&self) -> bool {
+        matches!(self, Self::Ostree(_))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileRootfsOstreeSource {
+    pub ostree: BootProfileRootfsFilesystemSource,
+}
+
+impl BootProfileRootfsOstreeSource {
+    pub fn source(&self) -> &BootProfileArtifactSource {
+        self.ostree.source()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(untagged)]
+pub enum BootProfileRootfsFilesystemSource {
+    Erofs(BootProfileRootfsErofsSource),
+    Ext4(BootProfileRootfsExt4Source),
+    Fat(BootProfileRootfsFatSource),
+}
+
+impl BootProfileRootfsFilesystemSource {
     pub fn source(&self) -> &BootProfileArtifactSource {
         match self {
             Self::Erofs(source) => &source.erofs,
@@ -510,7 +548,31 @@ pub enum BootProfileArtifactSource {
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BootProfileArtifactSourceCasyncSource {
+    #[serde(deserialize_with = "deserialize_casync_source")]
     pub casync: BootProfileArtifactSourceCasync,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum BootProfileArtifactSourceCasyncValue {
+    Index(String),
+    Source(BootProfileArtifactSourceCasync),
+}
+
+fn deserialize_casync_source<'de, D>(
+    deserializer: D,
+) -> Result<BootProfileArtifactSourceCasync, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = BootProfileArtifactSourceCasyncValue::deserialize(deserializer)?;
+    Ok(match value {
+        BootProfileArtifactSourceCasyncValue::Index(index) => BootProfileArtifactSourceCasync {
+            index,
+            chunk_store: None,
+        },
+        BootProfileArtifactSourceCasyncValue::Source(source) => source,
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

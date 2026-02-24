@@ -28,7 +28,7 @@ use crate::tui::{TuiOutcome, run_boot_tui};
 use super::{
     ArtifactReaderResolver, OstreeArg, Stage0CoalescingFilesystem,
     auto_detect_ostree_deployment_path, format_probe_error, parse_ostree_arg, read_dtbo_overlays,
-    read_existing_initrd, resolve_boot_profile_source_overrides,
+    read_existing_initrd, resolve_boot_profile_source_overrides, resolve_effective_ostree_arg,
 };
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -322,7 +322,9 @@ async fn run_boot_inner(
             personalization,
         };
 
-        let selected_ostree = match &ostree_arg {
+        let effective_ostree_arg =
+            resolve_effective_ostree_arg(&ostree_arg, input.boot_profile.as_ref());
+        let selected_ostree = match &effective_ostree_arg {
             OstreeArg::Disabled => None,
             OstreeArg::AutoDetect => {
                 let detected = auto_detect_ostree_deployment_path(&provider).await?;

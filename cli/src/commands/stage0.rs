@@ -13,7 +13,7 @@ use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
 use super::{
     ArtifactReaderResolver, OstreeArg, Stage0CoalescingFilesystem,
     auto_detect_ostree_deployment_path, parse_ostree_arg, read_dtbo_overlays, read_existing_initrd,
-    resolve_boot_profile_source_overrides,
+    resolve_boot_profile_source_overrides, resolve_effective_ostree_arg,
 };
 
 #[derive(Args)]
@@ -132,7 +132,9 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
             personalization: None,
         };
 
-        let selected_ostree = match &ostree_arg {
+        let effective_ostree_arg =
+            resolve_effective_ostree_arg(&ostree_arg, input.boot_profile.as_ref());
+        let selected_ostree = match &effective_ostree_arg {
             OstreeArg::Disabled => None,
             OstreeArg::AutoDetect => {
                 let detected = auto_detect_ostree_deployment_path(&provider).await?;

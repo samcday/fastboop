@@ -7,9 +7,10 @@ use fastboop_core::{
     BootProfileArtifactSourceHttpSource, BootProfileArtifactSourceMbr,
     BootProfileArtifactSourceMbrSource, BootProfileCodecError, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
-    BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileStage0,
-    BootProfileValidationError, decode_boot_profile, decode_boot_profile_prefix,
-    encode_boot_profile, resolve_effective_boot_profile_stage0, validate_boot_profile,
+    BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileRootfsFilesystemSource,
+    BootProfileRootfsOstreeSource, BootProfileStage0, BootProfileValidationError,
+    decode_boot_profile, decode_boot_profile_prefix, encode_boot_profile,
+    resolve_effective_boot_profile_stage0, validate_boot_profile,
 };
 
 #[test]
@@ -157,6 +158,61 @@ fn accepts_gpt_over_casync_pipeline() {
     };
 
     validate_boot_profile(&profile).expect("gpt over casync pipeline should validate");
+}
+
+#[test]
+fn accepts_ostree_over_erofs_rootfs() {
+    let profile = BootProfile {
+        id: "ostree-erofs".to_string(),
+        display_name: None,
+        rootfs: BootProfileRootfs::Ostree(BootProfileRootfsOstreeSource {
+            ostree: BootProfileRootfsFilesystemSource::Erofs(BootProfileRootfsErofsSource {
+                erofs: BootProfileArtifactSource::Casync(BootProfileArtifactSourceCasyncSource {
+                    casync: BootProfileArtifactSourceCasync {
+                        index: "https://example.invalid/rootfs.caibx".to_string(),
+                        chunk_store: None,
+                    },
+                }),
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    validate_boot_profile(&profile).expect("ostree erofs rootfs should validate");
+
+    let encoded = encode_boot_profile(&profile).expect("encode boot profile");
+    let decoded = decode_boot_profile(&encoded).expect("decode boot profile");
+    assert_eq!(decoded.rootfs, profile.rootfs);
+}
+
+#[test]
+fn rejects_ostree_over_fat_rootfs_for_stage0_switchroot() {
+    let profile = BootProfile {
+        id: "ostree-fat-rootfs".to_string(),
+        display_name: None,
+        rootfs: BootProfileRootfs::Ostree(BootProfileRootfsOstreeSource {
+            ostree: BootProfileRootfsFilesystemSource::Fat(BootProfileRootfsFatSource {
+                fat: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
+                    file: "./rootfs.fat".to_string(),
+                }),
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    let err = validate_boot_profile(&profile).expect_err("ostree over fat should be rejected");
+    assert_eq!(
+        err,
+        BootProfileValidationError::UnsupportedRootfsFilesystem { filesystem: "fat" }
+    );
 }
 
 #[test]

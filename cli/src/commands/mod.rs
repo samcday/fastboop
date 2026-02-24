@@ -10,9 +10,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use fastboop_core::fastboot::{FastbootProtocolError, ProbeError};
 use fastboop_core::{
-    BootProfile, BootProfileArtifactSource, BootProfileRootfs, CHANNEL_SNIFF_PREFIX_LEN,
-    ChannelStreamKind, DeviceProfile, boot_profile_bin_header_version, classify_channel_prefix,
-    decode_boot_profile_prefix, validate_boot_profile,
+    BootProfile, BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
+    CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamKind, DeviceProfile, boot_profile_bin_header_version,
+    classify_channel_prefix, decode_boot_profile_prefix, validate_boot_profile,
 };
 use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
 use gibblox_android_sparse::AndroidSparseBlockReader;
@@ -1358,6 +1358,30 @@ enum ProfileSourceRootfs {
 impl ProfileSourceRootfs {
     async fn open(source: &BootProfileRootfs, reader: Arc<dyn BlockReader>) -> Result<Self> {
         match source {
+            BootProfileRootfs::Ostree(source) => match &source.ostree {
+                BootProfileRootfsFilesystemSource::Erofs(_) => {
+                    let total_blocks = reader.total_blocks().await?;
+                    let image_size_bytes = total_blocks
+                        .checked_mul(reader.block_size() as u64)
+                        .ok_or_else(|| anyhow!("boot profile source image size overflow"))?;
+                    let rootfs = ErofsRootfs::new(reader, image_size_bytes)
+                        .await
+                        .map_err(|err| anyhow!("open boot profile erofs source: {err}"))?;
+                    Ok(Self::Erofs(rootfs))
+                }
+                BootProfileRootfsFilesystemSource::Ext4(_) => {
+                    let rootfs = Ext4Rootfs::open(reader)
+                        .await
+                        .map_err(|err| anyhow!("open boot profile ext4 source: {err}"))?;
+                    Ok(Self::Ext4(rootfs))
+                }
+                BootProfileRootfsFilesystemSource::Fat(_) => {
+                    let rootfs = FatFs::open(reader)
+                        .await
+                        .map_err(|err| anyhow!("open boot profile fat source: {err}"))?;
+                    Ok(Self::Fat(rootfs))
+                }
+            },
             BootProfileRootfs::Erofs(_) => {
                 let total_blocks = reader.total_blocks().await?;
                 let image_size_bytes = total_blocks
@@ -1465,7 +1489,7 @@ fn join_profile_path(base: &str, suffix: &str) -> String {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum OstreeArg {
     Disabled,
     AutoDetect,
@@ -1480,6 +1504,19 @@ pub(crate) fn parse_ostree_arg(raw: Option<&Option<String>>) -> Result<OstreeArg
             normalize_ostree_deployment_path(path)
                 .map_err(|err| anyhow!("normalize ostree deployment path: {err}"))?,
         )),
+    }
+}
+
+pub(crate) fn resolve_effective_ostree_arg(
+    cli_arg: &OstreeArg,
+    boot_profile: Option<&BootProfile>,
+) -> OstreeArg {
+    if matches!(cli_arg, OstreeArg::Disabled)
+        && boot_profile.is_some_and(|profile| profile.rootfs.is_ostree())
+    {
+        OstreeArg::AutoDetect
+    } else {
+        cli_arg.clone()
     }
 }
 
@@ -1801,6 +1838,44 @@ stage0:
         )
         .unwrap();
         assert_eq!(selected.id, "specific");
+    }
+
+    #[test]
+    fn ostree_rootfs_boot_profile_enables_auto_detect_ostree_when_cli_flag_is_absent() {
+        let profile = compile_boot_profile(
+            r#"
+id: live-pocket-fedora
+rootfs:
+  ostree:
+    erofs:
+      file: ./rootfs.ero
+"#,
+        );
+
+        let resolved = resolve_effective_ostree_arg(&OstreeArg::Disabled, Some(&profile));
+        assert_eq!(resolved, OstreeArg::AutoDetect);
+    }
+
+    #[test]
+    fn explicit_cli_ostree_arg_overrides_boot_profile_ostree_hint() {
+        let profile = compile_boot_profile(
+            r#"
+id: live-pocket-fedora
+rootfs:
+  ostree:
+    erofs:
+      file: ./rootfs.ero
+"#,
+        );
+
+        let resolved = resolve_effective_ostree_arg(
+            &OstreeArg::Explicit("ostree/boot.1/fedora/abc/0".to_string()),
+            Some(&profile),
+        );
+        assert_eq!(
+            resolved,
+            OstreeArg::Explicit("ostree/boot.1/fedora/abc/0".to_string())
+        );
     }
 
     #[tokio::test]

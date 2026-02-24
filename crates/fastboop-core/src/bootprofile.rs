@@ -7,6 +7,7 @@ use fastboop_schema::bin::{
 };
 use fastboop_schema::{
     BootProfile, BootProfileArtifactPathSource, BootProfileArtifactSource, BootProfileRootfs,
+    BootProfileRootfsFilesystemSource,
 };
 
 #[derive(Debug)]
@@ -187,13 +188,8 @@ impl core::fmt::Display for BootProfileValidationError {
 }
 
 pub fn validate_boot_profile(profile: &BootProfile) -> Result<(), BootProfileValidationError> {
-    match &profile.rootfs {
-        BootProfileRootfs::Erofs(_) | BootProfileRootfs::Ext4(_) => {}
-        BootProfileRootfs::Fat(_) => {
-            return Err(BootProfileValidationError::UnsupportedRootfsFilesystem {
-                filesystem: "fat",
-            });
-        }
+    if !rootfs_supports_stage0_switchroot(&profile.rootfs) {
+        return Err(BootProfileValidationError::UnsupportedRootfsFilesystem { filesystem: "fat" });
     }
     validate_artifact_source(profile.rootfs.source(), 0)?;
     if let Some(kernel) = profile.kernel.as_ref() {
@@ -203,6 +199,18 @@ pub fn validate_boot_profile(profile: &BootProfile) -> Result<(), BootProfileVal
         validate_profile_artifact_path_source(dtbs, BootProfileValidationError::EmptyDtbsPath)?;
     }
     Ok(())
+}
+
+fn rootfs_supports_stage0_switchroot(rootfs: &BootProfileRootfs) -> bool {
+    match rootfs {
+        BootProfileRootfs::Erofs(_) | BootProfileRootfs::Ext4(_) => true,
+        BootProfileRootfs::Fat(_) => false,
+        BootProfileRootfs::Ostree(source) => matches!(
+            &source.ostree,
+            BootProfileRootfsFilesystemSource::Erofs(_)
+                | BootProfileRootfsFilesystemSource::Ext4(_)
+        ),
+    }
 }
 
 fn join_cmdline_parts(primary: Option<&str>, secondary: Option<&str>) -> Option<String> {
