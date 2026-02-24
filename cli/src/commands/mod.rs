@@ -12,7 +12,7 @@ use fastboop_core::{
     BootProfileArtifactSource, BootProfileRootfs, DeviceProfile, boot_profile_bin_header_version,
     decode_boot_profile, validate_boot_profile,
 };
-use fastboop_stage0_generator::Stage0KernelOverride;
+use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
 use gibblox_android_sparse::AndroidSparseBlockReader;
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
@@ -22,13 +22,14 @@ use gibblox_casync_std::{
     StdCasyncIndexLocator, StdCasyncIndexSource,
 };
 use gibblox_core::{BlockReader, GptBlockReader, GptPartitionSelector, ReadContext};
+use gibblox_ext4::{Ext4EntryType, Ext4Fs};
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
+use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
+use gibblox_xz::XzBlockReader;
 use gobblytes_core::{Filesystem, FilesystemEntryType, normalize_ostree_deployment_path};
 use gobblytes_erofs::{DEFAULT_IMAGE_BLOCK_SIZE, ErofsRootfs};
 use gobblytes_fat::FatFs;
-use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
-use gibblox_xz::XzBlockReader;
 use tracing::info;
 use url::Url;
 
@@ -46,6 +47,158 @@ pub(crate) struct RootfsInput {
     pub(crate) reader: Arc<dyn BlockReader>,
     pub(crate) allow_zip_entry_probe: bool,
     pub(crate) boot_profile: Option<fastboop_core::BootProfile>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RootfsKind {
+    Erofs,
+    Ext4,
+}
+
+#[derive(Clone)]
+pub(crate) struct Ext4Rootfs {
+    fs: Ext4Fs,
+}
+
+impl Ext4Rootfs {
+    async fn open(reader: Arc<dyn BlockReader>) -> Result<Self> {
+        let fs = Ext4Fs::open(reader)
+            .await
+            .map_err(|err| anyhow!("open ext4 rootfs: {err}"))?;
+        Ok(Self { fs })
+    }
+}
+
+impl Filesystem for Ext4Rootfs {
+    type Error = anyhow::Error;
+
+    async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
+        self.fs
+            .read_all(path)
+            .await
+            .map_err(|err| anyhow!("read ext4 path {path}: {err}"))
+    }
+
+    async fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        self.fs
+            .read_range(path, offset, len)
+            .await
+            .map_err(|err| anyhow!("read ext4 path range {path}@{offset}+{len}: {err}"))
+    }
+
+    async fn read_dir(&self, path: &str) -> Result<Vec<String>> {
+        self.fs
+            .read_dir(path)
+            .await
+            .map_err(|err| anyhow!("read ext4 directory {path}: {err}"))
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>> {
+        let ty = self
+            .fs
+            .entry_type(path)
+            .await
+            .map_err(|err| anyhow!("read ext4 entry type {path}: {err}"))?;
+        Ok(ty.map(|entry| match entry {
+            Ext4EntryType::File => FilesystemEntryType::File,
+            Ext4EntryType::Directory => FilesystemEntryType::Directory,
+            Ext4EntryType::Symlink => FilesystemEntryType::Symlink,
+            Ext4EntryType::Other => FilesystemEntryType::Other,
+        }))
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String> {
+        self.fs
+            .read_link(path)
+            .await
+            .map_err(|err| anyhow!("read ext4 symlink target {path}: {err}"))
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool> {
+        self.fs
+            .exists(path)
+            .await
+            .map_err(|err| anyhow!("check ext4 path {path}: {err}"))
+    }
+}
+
+pub(crate) enum Stage0RootfsProvider {
+    Erofs(ErofsRootfs),
+    Ext4(Ext4Rootfs),
+}
+
+impl Stage0RootfsProvider {
+    pub(crate) async fn open(
+        kind: RootfsKind,
+        reader: Arc<dyn BlockReader>,
+        image_size_bytes: u64,
+    ) -> Result<Self> {
+        match kind {
+            RootfsKind::Erofs => {
+                let rootfs = ErofsRootfs::new(reader, image_size_bytes)
+                    .await
+                    .map_err(|err| anyhow!("open erofs rootfs: {err}"))?;
+                Ok(Self::Erofs(rootfs))
+            }
+            RootfsKind::Ext4 => {
+                let rootfs = Ext4Rootfs::open(reader).await?;
+                Ok(Self::Ext4(rootfs))
+            }
+        }
+    }
+
+    pub(crate) fn switchroot_fs(&self) -> Stage0SwitchrootFs {
+        match self {
+            Self::Erofs(_) => Stage0SwitchrootFs::Erofs,
+            Self::Ext4(_) => Stage0SwitchrootFs::Ext4,
+        }
+    }
+}
+
+impl Filesystem for Stage0RootfsProvider {
+    type Error = anyhow::Error;
+
+    async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_all(path).await,
+            Self::Ext4(rootfs) => rootfs.read_all(path).await,
+        }
+    }
+
+    async fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_range(path, offset, len).await,
+            Self::Ext4(rootfs) => rootfs.read_range(path, offset, len).await,
+        }
+    }
+
+    async fn read_dir(&self, path: &str) -> Result<Vec<String>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_dir(path).await,
+            Self::Ext4(rootfs) => rootfs.read_dir(path).await,
+        }
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.entry_type(path).await,
+            Self::Ext4(rootfs) => rootfs.entry_type(path).await,
+        }
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_link(path).await,
+            Self::Ext4(rootfs) => rootfs.read_link(path).await,
+        }
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.exists(path).await,
+            Self::Ext4(rootfs) => rootfs.exists(path).await,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -266,6 +419,38 @@ pub(crate) async fn open_rootfs_block_reader(rootfs: &Path) -> Result<Arc<dyn Bl
     Ok(Arc::new(file_reader))
 }
 
+pub(crate) async fn resolve_rootfs_kind(
+    boot_profile: Option<&fastboop_core::BootProfile>,
+    reader: &dyn BlockReader,
+) -> Result<RootfsKind> {
+    if let Some(profile) = boot_profile {
+        return match &profile.rootfs {
+            BootProfileRootfs::Erofs(_) => Ok(RootfsKind::Erofs),
+            BootProfileRootfs::Ext4(_) => Ok(RootfsKind::Ext4),
+            BootProfileRootfs::Fat(_) => {
+                bail!(
+                    "boot profile rootfs 'fat' is not bootable as stage0 lower root; use 'erofs' or 'ext4'"
+                )
+            }
+        };
+    }
+
+    match detect_rootfs_kind(reader).await? {
+        Some(kind) => Ok(kind),
+        None => Ok(RootfsKind::Erofs),
+    }
+}
+
+async fn detect_rootfs_kind<R: BlockReader + ?Sized>(reader: &R) -> Result<Option<RootfsKind>> {
+    if reader_has_erofs_magic(reader).await? {
+        return Ok(Some(RootfsKind::Erofs));
+    }
+    if reader_has_ext4_magic(reader).await? {
+        return Ok(Some(RootfsKind::Ext4));
+    }
+    Ok(None)
+}
+
 async fn try_decode_boot_profile_from_rootfs_arg(
     rootfs: &Path,
 ) -> Result<Option<fastboop_core::BootProfile>> {
@@ -306,7 +491,7 @@ async fn open_cached_http_reader(url: Url) -> Result<Arc<dyn BlockReader>> {
 async fn open_casync_reader(
     index_url: Url,
     chunk_store_url: Option<Url>,
-    require_erofs_magic: bool,
+    require_supported_rootfs_magic: bool,
 ) -> Result<Arc<dyn BlockReader>> {
     let index_source = StdCasyncIndexSource::new(StdCasyncIndexLocator::url(index_url.clone()))
         .map_err(|err| anyhow!("open casync index source {index_url}: {err}"))?;
@@ -339,47 +524,80 @@ async fn open_casync_reader(
     .await
     .map_err(|err| anyhow!("open casync reader {index_url}: {err}"))?;
 
-    if require_erofs_magic && !casync_blob_looks_like_erofs(&reader).await? {
+    if require_supported_rootfs_magic && !casync_blob_looks_like_supported_rootfs(&reader).await? {
         bail!(
-            "casync blob index does not reference a raw EROFS image: {index_url}; expected EROFS superblock magic"
+            "casync blob index does not reference a supported raw rootfs image: {index_url}; expected EROFS or ext4 superblock magic"
         );
     }
     Ok(Arc::new(reader))
 }
 
-async fn casync_blob_looks_like_erofs<R: BlockReader + ?Sized>(reader: &R) -> Result<bool> {
+async fn casync_blob_looks_like_supported_rootfs<R: BlockReader + ?Sized>(
+    reader: &R,
+) -> Result<bool> {
+    Ok(reader_has_erofs_magic(reader).await? || reader_has_ext4_magic(reader).await?)
+}
+
+async fn reader_has_erofs_magic<R: BlockReader + ?Sized>(reader: &R) -> Result<bool> {
     const EROFS_SUPER_OFFSET: u64 = 1024;
     const EROFS_SUPER_MAGIC: u32 = 0xe0f5_e1e2;
 
+    let Some(bytes) = read_magic_bytes(reader, EROFS_SUPER_OFFSET, 4).await? else {
+        return Ok(false);
+    };
+    let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    Ok(magic == EROFS_SUPER_MAGIC)
+}
+
+async fn reader_has_ext4_magic<R: BlockReader + ?Sized>(reader: &R) -> Result<bool> {
+    const EXT4_MAGIC_OFFSET: u64 = 1024 + 0x38;
+    const EXT4_MAGIC: u16 = 0xef53;
+
+    let Some(bytes) = read_magic_bytes(reader, EXT4_MAGIC_OFFSET, 2).await? else {
+        return Ok(false);
+    };
+    let magic = u16::from_le_bytes([bytes[0], bytes[1]]);
+    Ok(magic == EXT4_MAGIC)
+}
+
+async fn read_magic_bytes<R: BlockReader + ?Sized>(
+    reader: &R,
+    offset: u64,
+    len: usize,
+) -> Result<Option<Vec<u8>>> {
+    if len == 0 {
+        return Ok(Some(Vec::new()));
+    }
+
     let block_size = reader.block_size() as u64;
+    if block_size == 0 {
+        bail!("rootfs reader block size is zero");
+    }
     let total_blocks = reader.total_blocks().await?;
     let total_bytes = total_blocks
         .checked_mul(block_size)
-        .ok_or_else(|| anyhow!("casync blob size overflow"))?;
-    if total_bytes < EROFS_SUPER_OFFSET + 4 {
-        return Ok(false);
+        .ok_or_else(|| anyhow!("rootfs blob size overflow"))?;
+    let required_end = offset
+        .checked_add(len as u64)
+        .ok_or_else(|| anyhow!("rootfs magic offset overflow"))?;
+    if total_bytes < required_end {
+        return Ok(None);
     }
 
-    let super_lba = EROFS_SUPER_OFFSET / block_size;
-    let within_block = (EROFS_SUPER_OFFSET % block_size) as usize;
+    let super_lba = offset / block_size;
+    let within_block = (offset % block_size) as usize;
     let block_size_usize = block_size as usize;
-    let required = within_block + 4;
+    let required = within_block + len;
     let blocks_to_read = required.div_ceil(block_size_usize);
     let mut scratch = vec![0u8; blocks_to_read * block_size_usize];
     let read = reader
         .read_blocks(super_lba, &mut scratch, ReadContext::FOREGROUND)
         .await?;
     if read < required {
-        return Ok(false);
+        return Ok(None);
     }
 
-    let magic = u32::from_le_bytes([
-        scratch[within_block],
-        scratch[within_block + 1],
-        scratch[within_block + 2],
-        scratch[within_block + 3],
-    ]);
-    Ok(magic == EROFS_SUPER_MAGIC)
+    Ok(Some(scratch[within_block..within_block + len].to_vec()))
 }
 
 fn derive_casync_chunk_store_url(index_url: &Url) -> Result<Url> {
@@ -489,6 +707,7 @@ pub(crate) async fn resolve_boot_profile_source_overrides(
 
 enum ProfileSourceRootfs {
     Erofs(ErofsRootfs),
+    Ext4(Ext4Rootfs),
     Fat(FatFs),
 }
 
@@ -505,6 +724,12 @@ impl ProfileSourceRootfs {
                     .map_err(|err| anyhow!("open boot profile erofs source: {err}"))?;
                 Ok(Self::Erofs(rootfs))
             }
+            BootProfileRootfs::Ext4(_) => {
+                let rootfs = Ext4Rootfs::open(reader)
+                    .await
+                    .map_err(|err| anyhow!("open boot profile ext4 source: {err}"))?;
+                Ok(Self::Ext4(rootfs))
+            }
             BootProfileRootfs::Fat(_) => {
                 let rootfs = FatFs::open(reader)
                     .await
@@ -520,6 +745,10 @@ impl ProfileSourceRootfs {
                 .read_all(path)
                 .await
                 .map_err(|err| anyhow!("read boot profile erofs path {path}: {err}")),
+            Self::Ext4(rootfs) => rootfs
+                .read_all(path)
+                .await
+                .map_err(|err| anyhow!("read boot profile ext4 path {path}: {err}")),
             Self::Fat(rootfs) => rootfs
                 .read_all(path)
                 .await
@@ -533,6 +762,10 @@ impl ProfileSourceRootfs {
                 .exists(path)
                 .await
                 .map_err(|err| anyhow!("check boot profile erofs path {path}: {err}")),
+            Self::Ext4(rootfs) => rootfs
+                .exists(path)
+                .await
+                .map_err(|err| anyhow!("check boot profile ext4 path {path}: {err}")),
             Self::Fat(rootfs) => rootfs
                 .exists(path)
                 .await

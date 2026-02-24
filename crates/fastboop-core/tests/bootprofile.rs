@@ -1,19 +1,42 @@
 use std::collections::BTreeMap;
 
 use fastboop_core::{
-    decode_boot_profile, encode_boot_profile, resolve_effective_boot_profile_stage0,
-    validate_boot_profile, BootProfile, BootProfileArtifactSource, BootProfileArtifactSourceCasync,
+    BootProfile, BootProfileArtifactSource, BootProfileArtifactSourceCasync,
     BootProfileArtifactSourceCasyncSource, BootProfileArtifactSourceFileSource,
     BootProfileArtifactSourceGpt, BootProfileArtifactSourceGptSource,
     BootProfileArtifactSourceHttpSource, BootProfileArtifactSourceMbr,
     BootProfileArtifactSourceMbrSource, BootProfileCodecError, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
-    BootProfileRootfsFatSource, BootProfileStage0, BootProfileValidationError,
+    BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileStage0,
+    BootProfileValidationError, decode_boot_profile, encode_boot_profile,
+    resolve_effective_boot_profile_stage0, validate_boot_profile,
 };
 
 #[test]
 fn boot_profile_roundtrip_binary_codec() {
     let profile = sample_profile();
+    let encoded = encode_boot_profile(&profile).expect("encode boot profile");
+    let decoded = decode_boot_profile(&encoded).expect("decode boot profile");
+    assert_eq!(decoded, profile);
+}
+
+#[test]
+fn boot_profile_ext4_roundtrip_binary_codec() {
+    let profile = BootProfile {
+        id: "ext4-roundtrip".to_string(),
+        display_name: Some("Ext4 Roundtrip".to_string()),
+        rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+            ext4: BootProfileArtifactSource::Http(BootProfileArtifactSourceHttpSource {
+                http: "https://example.invalid/rootfs.ext4".to_string(),
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
     let encoded = encode_boot_profile(&profile).expect("encode boot profile");
     let decoded = decode_boot_profile(&encoded).expect("decode boot profile");
     assert_eq!(decoded, profile);
@@ -147,6 +170,26 @@ fn accepts_file_artifact_source() {
     };
 
     validate_boot_profile(&profile).expect("file source should validate");
+}
+
+#[test]
+fn accepts_ext4_rootfs_source() {
+    let profile = BootProfile {
+        id: "ext4-source".to_string(),
+        display_name: None,
+        rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+            ext4: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
+                file: "./rootfs.img".to_string(),
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    validate_boot_profile(&profile).expect("ext4 source should validate");
 }
 
 #[test]

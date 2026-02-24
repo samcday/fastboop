@@ -2,10 +2,10 @@ use std::fs;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Subcommand};
 use fastboop_core::{
-    decode_boot_profile, encode_boot_profile, validate_boot_profile, BootProfileManifest,
+    BootProfileManifest, decode_boot_profile, encode_boot_profile, validate_boot_profile,
 };
 
 #[derive(Args)]
@@ -215,6 +215,32 @@ rootfs:
         match source {
             BootProfileArtifactSource::File(source) => {
                 assert_eq!(source.file, "./images/rootfs.ero")
+            }
+            other => panic!("expected file source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_ext4_rootfs_source_yaml() {
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: local-ext4
+rootfs:
+  ext4:
+    file: ./images/rootfs.img
+"#,
+        )
+        .expect("parse manifest");
+
+        match manifest.rootfs {
+            BootProfileRootfs::Ext4(_) => {}
+            other => panic!("expected ext4 rootfs, got {other:?}"),
+        }
+
+        let source = manifest.rootfs.source();
+        match source {
+            BootProfileArtifactSource::File(source) => {
+                assert_eq!(source.file, "./images/rootfs.img")
             }
             other => panic!("expected file source, got {other:?}"),
         }

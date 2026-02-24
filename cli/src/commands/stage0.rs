@@ -4,20 +4,19 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
-use fastboop_stage0_generator::{Stage0Options, Stage0SwitchrootFs, build_stage0};
+use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_core::BlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_core::OstreeFs as OstreeRootfs;
-use gobblytes_erofs::ErofsRootfs;
 use tracing::debug;
 use url::Url;
 
 use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
 
 use super::{
-    ArtifactReaderResolver, OstreeArg, auto_detect_ostree_deployment_path, parse_ostree_arg,
-    read_dtbo_overlays, read_existing_initrd,
-    resolve_boot_profile_source_overrides,
+    ArtifactReaderResolver, OstreeArg, Stage0RootfsProvider, auto_detect_ostree_deployment_path,
+    parse_ostree_arg, read_dtbo_overlays, read_existing_initrd,
+    resolve_boot_profile_source_overrides, resolve_rootfs_kind,
 };
 
 #[derive(Args)]
@@ -111,8 +110,10 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
 
         let total_blocks = reader.total_blocks().await?;
         let image_size_bytes = total_blocks * reader.block_size() as u64;
+        let rootfs_kind = resolve_rootfs_kind(input.boot_profile.as_ref(), reader.as_ref()).await?;
+        let provider = Stage0RootfsProvider::open(rootfs_kind, reader, image_size_bytes).await?;
         let opts = Stage0Options {
-            switchroot_fs: Stage0SwitchrootFs::Erofs,
+            switchroot_fs: provider.switchroot_fs(),
             extra_modules,
             kernel_override: profile_source_overrides.kernel_override,
             dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
@@ -124,8 +125,6 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
             smoo_serial: None,
             personalization: None,
         };
-
-        let provider = ErofsRootfs::new(reader, image_size_bytes).await?;
 
         let selected_ostree = match &ostree_arg {
             OstreeArg::Disabled => None,
