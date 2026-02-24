@@ -37,12 +37,24 @@ To gibblox you will always be just another block.
 - `gibblox-casync-std`: native index/chunk source + integrated chunk cache/store.
 - `gibblox-casync-web`: wasm-only index/chunk source + CacheStorage-backed chunk store.
 - `gibblox-iso9660`: ISO9660 file-backed block reader.
-- `gibblox-ext4`: ext4 file-backed block reader and async ext4 adapter.
+- `gibblox-ext4`: ext4 filesystem adapter and ext4 file-backed block reader.
 - `gibblox-http`: HTTP Range-backed block reader (native + wasm).
 - `gibblox-web-file`: browser `File`-backed block reader for wasm targets.
 - `gibblox-cache`: cache layer and cache file format logic.
 - `gibblox-cache-store-std`: XDG-friendly filesystem cache backend for native CLI/desktop apps.
 - `gibblox-cache-store-opfs`: OPFS cache backend for wasm web apps.
+
+## ext4: today vs tomorrow
+
+Today:
+- `gibblox-ext4` works on native and wasm targets.
+- The parser path is still sync under the hood; async APIs bridge through blocking reads.
+- This is acceptable for now when gibblox runs in a worker thread, but long ext4 operations can still monopolize that worker.
+
+Tomorrow:
+- Move ext4 loading and file reads to a true async path end-to-end (no blocking bridge).
+- Keep worker responsiveness by chunking/coop-yielding large ext4 operations.
+- Push ext4 support toward a clean `no_std + alloc` profile.
 
 ## Usage (native)
 ```rust

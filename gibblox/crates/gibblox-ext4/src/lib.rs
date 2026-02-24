@@ -10,15 +10,9 @@ use alloc::{
 };
 use async_trait::async_trait;
 use core::{error::Error, fmt};
-use ext4_view::Ext4Read;
-use futures_channel::oneshot;
+use ext4_view::Ext4ReadAsync;
 use gibblox_core::{
-    BlockReader, ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
-    block_identity_string,
-};
-use std::{
-    sync::mpsc::{self, Sender},
-    thread,
+    BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext, block_identity_string,
 };
 use tracing::{info, trace};
 
@@ -58,30 +52,19 @@ impl Ext4Fs {
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "source size overflow")
             })?;
 
-        let source: Arc<dyn BlockReader> = Arc::new(source);
-        let byte_reader = ByteRangeReader::new(
-            Arc::clone(&source),
-            source_block_size as usize,
-            source_size_bytes,
-        );
-        let (request_tx, request_rx) = mpsc::channel();
-        thread::Builder::new()
-            .name("gibblox-ext4-sync-reader".to_string())
-            .spawn(move || sync_block_worker(byte_reader, request_rx))
-            .map_err(|err| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    format!("spawn ext4 sync reader worker: {err}"),
-                )
-            })?;
-        let adapter = SyncBlockAdapter { request_tx };
+        let adapter = AsyncBlockAdapter {
+            inner: Arc::new(source),
+            block_size: source_block_size as usize,
+            size_bytes: source_size_bytes,
+        };
 
         info!(
             source_block_size,
             total_blocks, source_size_bytes, "opening ext4 filesystem"
         );
-        let fs =
-            ext4_view_rs::Ext4::load(Box::new(adapter)).map_err(map_ext4_err("open ext4 image"))?;
+        let fs = ext4_view_rs::Ext4::load_async(Box::new(adapter))
+            .await
+            .map_err(map_ext4_err("open ext4 image"))?;
 
         Ok(Self {
             fs,
@@ -102,6 +85,10 @@ impl Ext4Fs {
     }
 
     pub async fn read_range(&self, path: &str, offset: u64, len: usize) -> GibbloxResult<Vec<u8>> {
+        self.read_range_sync(path, offset, len)
+    }
+
+    fn read_range_sync(&self, path: &str, offset: u64, len: usize) -> GibbloxResult<Vec<u8>> {
         if len == 0 {
             return Ok(Vec::new());
         }
@@ -203,21 +190,7 @@ pub struct Ext4FileBlockReader {
     file_size_bytes: u64,
     file_path: String,
     source_identity: String,
-    request_tx: Sender<ReadRequest>,
-}
-
-const FILE_READAHEAD_BLOCKS: usize = 128;
-
-#[derive(Default)]
-struct CachedFileRange {
-    offset: u64,
-    data: Vec<u8>,
-}
-
-struct ReadRequest {
-    offset: u64,
-    len: usize,
-    respond_to: oneshot::Sender<GibbloxResult<Vec<u8>>>,
+    source: Arc<dyn BlockReader>,
 }
 
 impl Ext4FileBlockReader {
@@ -245,34 +218,13 @@ impl Ext4FileBlockReader {
             .metadata()
             .len();
 
-        let (request_tx, request_rx) = mpsc::channel();
-        let worker_source = Arc::clone(&source);
-        let worker_path = file_path.clone();
-        thread::Builder::new()
-            .name("gibblox-ext4-file-reader".to_string())
-            .spawn(move || {
-                ext4_file_worker(
-                    worker_source,
-                    worker_path,
-                    file_size_bytes,
-                    block_size as usize,
-                    request_rx,
-                )
-            })
-            .map_err(|err| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    format!("spawn ext4 file reader worker: {err}"),
-                )
-            })?;
-
         info!(path = file_path, file_size_bytes, "resolved file from ext4");
         Ok(Self {
             block_size,
             file_size_bytes,
             file_path,
             source_identity: fs.source_identity().to_string(),
-            request_tx,
+            source,
         })
     }
 
@@ -326,26 +278,8 @@ impl BlockReader for Ext4FileBlockReader {
         }
 
         let read_len = ((buf.len() as u64).min(self.file_size_bytes - offset)) as usize;
-        let (respond_to, recv) = oneshot::channel();
-        self.request_tx
-            .send(ReadRequest {
-                offset,
-                len: read_len,
-                respond_to,
-            })
-            .map_err(|_| {
-                GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "ext4 file reader worker unavailable",
-                )
-            })?;
-
-        let data = recv.await.map_err(|_| {
-            GibbloxError::with_message(
-                GibbloxErrorKind::Io,
-                "ext4 file reader worker dropped response",
-            )
-        })??;
+        let fs = pollster::block_on(Ext4Fs::open(Arc::clone(&self.source)))?;
+        let data = fs.read_range_sync(self.file_path.as_str(), offset, read_len)?;
         if data.len() < read_len {
             return Err(GibbloxError::with_message(
                 GibbloxErrorKind::Io,
@@ -360,19 +294,17 @@ impl BlockReader for Ext4FileBlockReader {
     }
 }
 
-struct SyncBlockAdapter {
-    request_tx: Sender<SyncReadRequest>,
+#[derive(Clone)]
+struct AsyncBlockAdapter {
+    inner: Arc<dyn BlockReader>,
+    block_size: usize,
+    size_bytes: u64,
 }
 
-struct SyncReadRequest {
-    start_byte: u64,
-    len: usize,
-    respond_to: mpsc::SyncSender<GibbloxResult<Vec<u8>>>,
-}
-
-impl Ext4Read for SyncBlockAdapter {
-    fn read(
-        &mut self,
+#[async_trait(?Send)]
+impl Ext4ReadAsync for AsyncBlockAdapter {
+    async fn read(
+        &self,
         start_byte: u64,
         dst: &mut [u8],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -380,189 +312,47 @@ impl Ext4Read for SyncBlockAdapter {
             return Ok(());
         }
 
-        let (respond_to, recv) = mpsc::sync_channel(1);
-        self.request_tx
-            .send(SyncReadRequest {
-                start_byte,
-                len: dst.len(),
-                respond_to,
-            })
-            .map_err(|_| adapter_box_error("ext4 sync reader worker unavailable"))?;
-
-        let data = recv
-            .recv()
-            .map_err(|_| adapter_box_error("ext4 sync reader worker dropped response"))?
-            .map_err(|err| adapter_box_error(format!("ext4 image read failed: {err}")))?;
-        if data.len() != dst.len() {
-            return Err(adapter_box_error("ext4 sync reader returned short read"));
+        let end = start_byte
+            .checked_add(dst.len() as u64)
+            .ok_or_else(|| adapter_box_error("ext4 adapter read range overflow"))?;
+        if end > self.size_bytes {
+            return Err(adapter_box_error("ext4 adapter read past end of source"));
         }
-        dst.copy_from_slice(&data);
+
+        let bs = self.block_size as u64;
+        let aligned_start = (start_byte / bs) * bs;
+        let aligned_end = end.div_ceil(bs) * bs;
+        let aligned_len = (aligned_end - aligned_start) as usize;
+
+        let mut scratch = vec![0u8; aligned_len];
+        let mut filled = 0usize;
+        while filled < scratch.len() {
+            let filled_u64 = u64::try_from(filled)
+                .map_err(|_| adapter_box_error("ext4 adapter offset conversion overflow"))?;
+            let lba = aligned_start
+                .checked_add(filled_u64)
+                .ok_or_else(|| adapter_box_error("ext4 adapter read offset overflow"))?
+                / bs;
+            let read = self
+                .inner
+                .read_blocks(lba, &mut scratch[filled..], ReadContext::FOREGROUND)
+                .await
+                .map_err(|err| adapter_box_error(format!("block read failed: {err}")))?;
+            if read == 0 {
+                return Err(adapter_box_error(
+                    "unexpected EOF while servicing ext4 read",
+                ));
+            }
+            if read % self.block_size != 0 && filled + read < scratch.len() {
+                return Err(adapter_box_error("unaligned short read from block source"));
+            }
+            filled += read;
+        }
+
+        let head = (start_byte - aligned_start) as usize;
+        dst.copy_from_slice(&scratch[head..head + dst.len()]);
         Ok(())
     }
-}
-
-fn sync_block_worker(reader: ByteRangeReader, request_rx: mpsc::Receiver<SyncReadRequest>) {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            let message = format!("create ext4 sync reader runtime: {err}");
-            while let Ok(request) = request_rx.recv() {
-                let _ = request.respond_to.send(Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    message.clone(),
-                )));
-            }
-            return;
-        }
-    };
-
-    while let Ok(request) = request_rx.recv() {
-        let mut data = vec![0u8; request.len];
-        let result = runtime
-            .block_on(reader.read_exact_at(request.start_byte, &mut data, ReadContext::FOREGROUND))
-            .map(|()| data);
-        let _ = request.respond_to.send(result);
-    }
-}
-
-fn ext4_file_worker(
-    source: Arc<dyn BlockReader>,
-    file_path: String,
-    file_size_bytes: u64,
-    block_size: usize,
-    request_rx: mpsc::Receiver<ReadRequest>,
-) {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            let message = format!("create ext4 file reader runtime: {err}");
-            while let Ok(request) = request_rx.recv() {
-                let _ = request.respond_to.send(Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    message.clone(),
-                )));
-            }
-            return;
-        }
-    };
-
-    let fs = match runtime.block_on(Ext4Fs::open(source)) {
-        Ok(fs) => fs,
-        Err(err) => {
-            let message = format!("open ext4 file reader worker: {err}");
-            while let Ok(request) = request_rx.recv() {
-                let _ = request.respond_to.send(Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    message.clone(),
-                )));
-            }
-            return;
-        }
-    };
-
-    let mut file = match fs
-        .fs
-        .open(file_path.as_str())
-        .map_err(map_ext4_err("open ext4 file"))
-    {
-        Ok(file) => file,
-        Err(err) => {
-            let message = format!("open ext4 worker file handle: {err}");
-            while let Ok(request) = request_rx.recv() {
-                let _ = request.respond_to.send(Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    message.clone(),
-                )));
-            }
-            return;
-        }
-    };
-
-    let mut cache = CachedFileRange::default();
-    while let Ok(request) = request_rx.recv() {
-        let requested_end = match request.offset.checked_add(request.len as u64) {
-            Some(end) => end,
-            None => {
-                let _ = request.respond_to.send(Err(GibbloxError::with_message(
-                    GibbloxErrorKind::OutOfRange,
-                    "read range overflow",
-                )));
-                continue;
-            }
-        };
-
-        if requested_end > file_size_bytes {
-            let _ = request.respond_to.send(Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "requested block out of range",
-            )));
-            continue;
-        }
-
-        let cache_end = cache.offset.saturating_add(cache.data.len() as u64);
-        let response = if request.offset >= cache.offset && requested_end <= cache_end {
-            let cache_start = (request.offset - cache.offset) as usize;
-            let cache_end = cache_start + request.len;
-            Ok(cache.data[cache_start..cache_end].to_vec())
-        } else {
-            let readahead = FILE_READAHEAD_BLOCKS
-                .saturating_mul(block_size)
-                .max(request.len);
-            let fetch_len = ((file_size_bytes - request.offset).min(readahead as u64)) as usize;
-            let range = read_open_file_range(&mut file, request.offset, fetch_len);
-            match range {
-                Ok(data) => {
-                    if data.len() < request.len {
-                        Err(GibbloxError::with_message(
-                            GibbloxErrorKind::Io,
-                            "short read from ext4 file",
-                        ))
-                    } else {
-                        let response = data[..request.len].to_vec();
-                        cache.offset = request.offset;
-                        cache.data = data;
-                        Ok(response)
-                    }
-                }
-                Err(err) => Err(err),
-            }
-        };
-
-        let _ = request.respond_to.send(response);
-    }
-}
-
-fn read_open_file_range(
-    file: &mut ext4_view_rs::File,
-    offset: u64,
-    len: usize,
-) -> GibbloxResult<Vec<u8>> {
-    if file.position() != offset {
-        file.seek_to(offset)
-            .map_err(map_ext4_err("seek ext4 file"))?;
-    }
-
-    let mut out = vec![0u8; len];
-    let mut total = 0usize;
-    while total < out.len() {
-        let read = file
-            .read_bytes(&mut out[total..])
-            .map_err(map_ext4_err("read ext4 file range"))?;
-        if read == 0 {
-            break;
-        }
-        total += read;
-    }
-    out.truncate(total);
-    Ok(out)
 }
 
 fn normalize_path(path: &str) -> GibbloxResult<String> {

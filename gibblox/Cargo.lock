@@ -598,9 +598,8 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "ext4-view",
- "futures-channel",
  "gibblox-core",
- "tokio",
+ "pollster",
  "tracing",
 ]
 
