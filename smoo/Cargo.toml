@@ -17,3 +17,4 @@ url = "2.5.4"
 libc = "0.2.177"
 hyper = "0.14"
 metrics-exporter-prometheus = { version = "0.13", default-features = false }
+serde = "1.0.228"
