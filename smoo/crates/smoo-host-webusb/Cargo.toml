@@ -15,7 +15,7 @@ tracing = "0.1.41"
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-web-sys = { version = "0.3.72", features = [
+web-sys = { workspace = true, features = [
     "Usb",
     "UsbConfiguration",
     "UsbDevice",

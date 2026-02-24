@@ -13,7 +13,7 @@ smoo-host-core = { path = "../../crates/smoo-host-core" }
 smoo-host-blocksource-http = { path = "../../crates/smoo-host-blocksource-http", default-features = false, features = ["wasm-client"] }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-web-sys = { version = "0.3.72", features = [
+web-sys = { workspace = true, features = [
     "Window",
     "Navigator",
     "Performance",
