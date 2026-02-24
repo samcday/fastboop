@@ -25,7 +25,7 @@ smoo-gadget-ublk = { path = "../smoo-gadget-ublk" }
 tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync"] }
 tracing = "0.1.41"
 async-trait = { workspace = true }
-usb-gadget = { version = "0.7.6", features = ["tokio"] }
+usb-gadget = { workspace = true, features = ["tokio"] }
 metrics = { version = "0.22", optional = true }
 
 [dev-dependencies]

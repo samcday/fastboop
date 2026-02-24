@@ -16,7 +16,7 @@ smoo-gadget-core = { path = "../smoo-gadget-core", features = ["metrics"] }
 smoo-proto = { path = "../smoo-proto" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tracing = "0.1.41"
-usb-gadget = { version = "0.7.6", features = ["tokio"] }
+usb-gadget = { workspace = true, features = ["tokio"] }
 libc = { workspace = true }
 async-trait = { workspace = true }
 futures = "0.3.31"
