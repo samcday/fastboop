@@ -1,6 +1,6 @@
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{anyhow, ensure, Context, Result};
 use clap::{Parser, ValueEnum};
-use drm::{ClientCapability, Device as _, buffer::Buffer as _, control::Device as _};
+use drm::{buffer::Buffer as _, control::Device as _, ClientCapability, Device as _};
 mod ostree;
 use ostree::{detect_ostree_layout, setup_ostree_runtime_mounts};
 use std::io::{Read, Write};
@@ -10,7 +10,7 @@ use std::{
     fs::File,
     io,
     os::fd::{AsFd, AsRawFd, BorrowedFd},
-    os::unix::fs::{FileTypeExt, symlink},
+    os::unix::fs::{symlink, FileTypeExt},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     sync::OnceLock,
@@ -20,11 +20,11 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::prelude::*;
 use usb_gadget::{
-    Class, Config, Gadget, Id, RegGadget, Strings,
     function::{
         custom::{Custom, CustomBuilder, Endpoint, EndpointDirection, Interface, TransferType},
         serial::{Serial, SerialClass},
     },
+    Class, Config, Gadget, Id, RegGadget, Strings,
 };
 
 struct KmsgWriter {
@@ -73,6 +73,32 @@ enum Stage0Role {
     GadgetChild,
     KmsgChild,
     FramebufferChild,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Stage0Rootfs {
+    Erofs,
+}
+
+impl Stage0Rootfs {
+    fn from_stage0_value(value: &str) -> Option<Self> {
+        match value {
+            "erofs" => Some(Self::Erofs),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Erofs => "erofs",
+        }
+    }
+
+    fn mount_data(self) -> Option<&'static str> {
+        match self {
+            Self::Erofs => None,
+        }
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -260,18 +286,15 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
         }
     }
 
-    let default_modules = [
-        "configfs",
-        "ublk",
-        "ublk_drv",
-        "overlay",
-        "erofs",
-        "libcomposite",
-        "usb_f_fs",
-    ];
+    let switchroot_fs = stage0_rootfs().context("resolve switchroot rootfs")?;
+    info!(
+        switchroot_fs = switchroot_fs.as_str(),
+        "pid1: switchroot filesystem configured"
+    );
+
     let modules = load_modules_from_dir("/etc/modules-load.d")
-        .filter(|list| !list.is_empty())
-        .unwrap_or_else(|| default_modules.iter().map(|s| s.to_string()).collect());
+        .ok_or_else(|| anyhow!("read module load list from /etc/modules-load.d"))?;
+    debug!(module_count = modules.len(), "pid1: loaded module list");
     match ModuleIndex::load() {
         Ok(module_index) => {
             for module in modules {
@@ -347,16 +370,22 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
     std::fs::create_dir_all("/upper").ok();
     std::fs::create_dir_all("/newroot").ok();
 
-    debug!("pid1: mounting lower erofs from {ublk_dev}");
+    debug!(
+        switchroot_fs = switchroot_fs.as_str(),
+        "pid1: mounting lower rootfs from {ublk_dev}"
+    );
     mount_fs(
         Some(ublk_dev),
         "/lower",
-        Some("erofs"),
+        Some(switchroot_fs.as_str()),
         libc::MS_RDONLY as libc::c_ulong,
-        None,
+        switchroot_fs.mount_data(),
     )
-    .context("mount erofs lower")?;
-    debug!("pid1: mounted lower EROFS");
+    .with_context(|| format!("mount {} lower", switchroot_fs.as_str()))?;
+    debug!(
+        switchroot_fs = switchroot_fs.as_str(),
+        "pid1: mounted lower rootfs"
+    );
     debug!("pid1: mounting upper tmpfs");
     mount_fs(Some("tmpfs"), "/upper", Some("tmpfs"), 0, None).context("mount tmpfs upper")?;
     std::fs::create_dir_all("/upper/upper").ok();
@@ -471,11 +500,9 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
     }
     info!("pid1: switched root");
 
-    ensure_kernel_mounts()?;
     log_mountinfo("before exec /sbin/init");
     for path in [
         "/proc/self/mountinfo",
-        "/sys/fs/cgroup",
         "/dev/console",
         "/proc",
         "/sys",
@@ -560,6 +587,14 @@ fn cmdline_bool(key: &str) -> bool {
         };
     }
     cmdline_flag(key)
+}
+
+fn stage0_rootfs() -> Result<Stage0Rootfs> {
+    let Some(raw) = cmdline_value("stage0.rootfs") else {
+        return Err(anyhow!("missing required stage0.rootfs setting"));
+    };
+    Stage0Rootfs::from_stage0_value(raw.as_str())
+        .ok_or_else(|| anyhow!("invalid stage0.rootfs value '{raw}' (expected 'erofs')"))
 }
 
 fn stage0_config() -> &'static HashMap<String, String> {
@@ -659,94 +694,6 @@ fn log_mountinfo(context: &str) {
             warn!("pid1: failed to read mountinfo ({context}): {err}");
         }
     }
-}
-
-fn ensure_kernel_mounts() -> Result<()> {
-    ensure_cgroup2_mount()?;
-    ensure_bpffs_mount()?;
-    ensure_securityfs_mount()?;
-    ensure_devpts_mount()?;
-    ensure_dev_shm_mount()?;
-    Ok(())
-}
-
-fn ensure_cgroup2_mount() -> Result<()> {
-    let cgroup_path = "/sys/fs/cgroup";
-    std::fs::create_dir_all(cgroup_path).ok();
-    if is_mount_point(cgroup_path)? {
-        info!("pid1: cgroup already mounted at {cgroup_path}");
-    } else {
-        mount_fs(Some("cgroup2"), cgroup_path, Some("cgroup2"), 0, None)
-            .context("mount cgroup2")?;
-        info!("pid1: mounted cgroup2 at {cgroup_path}");
-    }
-    if let Ok(controllers) = std::fs::read_to_string("/sys/fs/cgroup/cgroup.controllers") {
-        let controllers = controllers.trim();
-        info!(
-            "pid1: cgroup controllers: {}",
-            if controllers.is_empty() {
-                "<empty>"
-            } else {
-                controllers
-            }
-        );
-    }
-    Ok(())
-}
-
-fn ensure_bpffs_mount() -> Result<()> {
-    let path = "/sys/fs/bpf";
-    std::fs::create_dir_all(path).ok();
-    if is_mount_point(path)? {
-        info!("pid1: bpffs already mounted at {path}");
-        return Ok(());
-    }
-    mount_fs(Some("bpffs"), path, Some("bpf"), 0, None).context("mount bpffs")?;
-    info!("pid1: mounted bpffs at {path}");
-    Ok(())
-}
-
-fn ensure_securityfs_mount() -> Result<()> {
-    let path = "/sys/kernel/security";
-    std::fs::create_dir_all(path).ok();
-    if is_mount_point(path)? {
-        info!("pid1: securityfs already mounted at {path}");
-        return Ok(());
-    }
-    mount_fs(Some("securityfs"), path, Some("securityfs"), 0, None).context("mount securityfs")?;
-    info!("pid1: mounted securityfs at {path}");
-    Ok(())
-}
-
-fn ensure_devpts_mount() -> Result<()> {
-    let path = "/dev/pts";
-    std::fs::create_dir_all(path).ok();
-    if is_mount_point(path)? {
-        info!("pid1: devpts already mounted at {path}");
-        return Ok(());
-    }
-    mount_fs(
-        Some("devpts"),
-        path,
-        Some("devpts"),
-        0,
-        Some("mode=620,ptmxmode=666"),
-    )
-    .context("mount devpts")?;
-    info!("pid1: mounted devpts at {path}");
-    Ok(())
-}
-
-fn ensure_dev_shm_mount() -> Result<()> {
-    let path = "/dev/shm";
-    std::fs::create_dir_all(path).ok();
-    if is_mount_point(path)? {
-        info!("pid1: tmpfs already mounted at {path}");
-        return Ok(());
-    }
-    mount_fs(Some("tmpfs"), path, Some("tmpfs"), 0, Some("mode=1777")).context("mount /dev/shm")?;
-    info!("pid1: mounted tmpfs at {path}");
-    Ok(())
 }
 
 fn cmdline_u16(key: &str) -> Option<u16> {
@@ -1781,5 +1728,14 @@ mod tests {
             parse_stage0_role(Some(OsStr::new("weird-value"))),
             Stage0Role::Pid1
         );
+    }
+
+    #[test]
+    fn stage0_rootfs_parser_accepts_supported_filesystems() {
+        assert_eq!(
+            Stage0Rootfs::from_stage0_value("erofs"),
+            Some(Stage0Rootfs::Erofs)
+        );
+        assert_eq!(Stage0Rootfs::from_stage0_value("xfs"), None);
     }
 }

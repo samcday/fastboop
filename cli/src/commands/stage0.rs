@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
-use fastboop_stage0_generator::{Stage0Options, build_stage0};
+use fastboop_stage0_generator::{Stage0Options, Stage0SwitchrootFs, build_stage0};
 use gibblox_core::BlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_core::OstreeFs as OstreeRootfs;
@@ -73,6 +73,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
     let dtbo_overlays = read_dtbo_overlays(&args.dtbo)?;
     let ostree_arg = parse_ostree_arg(args.ostree.as_ref())?;
     let opts = Stage0Options {
+        switchroot_fs: Stage0SwitchrootFs::Erofs,
         extra_modules: args.require_modules,
         dtb_override,
         dtbo_overlays,
