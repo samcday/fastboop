@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 fastboop-core = { path = "../fastboop-core" }
 futures-channel = "0.3.31"
-futures-core = "0.3.31"
+futures-core = { workspace = true }
 tracing = "0.1.41"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

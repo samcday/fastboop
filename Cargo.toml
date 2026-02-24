@@ -33,6 +33,7 @@ tokio-util = "0.7.17"
 url = "2.5.4"
 serde_yaml = "0.9.34"
 bitflags = "2"
+futures-core = "0.3.31"
 memmap2 = { version = "0.9", default-features = false }
 rustix = { version = "1", default-features = false }
 
