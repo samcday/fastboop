@@ -11,7 +11,7 @@ use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
-use fastboop_stage0_generator::{build_stage0, Stage0Options};
+use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
 use gibblox_core::{block_identity_string, BlockReader};
@@ -86,6 +86,7 @@ pub async fn boot_selected_device(
         Vec::new()
     };
     let stage0_opts = Stage0Options {
+        switchroot_fs: Stage0SwitchrootFs::Erofs,
         extra_modules: vec!["erofs".to_string()],
         dtb_override: None,
         dtbo_overlays,

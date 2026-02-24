@@ -1,6 +1,6 @@
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use clap::{Parser, ValueEnum};
-use drm::{buffer::Buffer as _, control::Device as _, ClientCapability, Device as _};
+use drm::{ClientCapability, Device as _, buffer::Buffer as _, control::Device as _};
 mod ostree;
 use ostree::{detect_ostree_layout, setup_ostree_runtime_mounts};
 use std::io::{Read, Write};
@@ -10,7 +10,7 @@ use std::{
     fs::File,
     io,
     os::fd::{AsFd, AsRawFd, BorrowedFd},
-    os::unix::fs::{symlink, FileTypeExt},
+    os::unix::fs::{FileTypeExt, symlink},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     sync::OnceLock,
@@ -20,11 +20,11 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::prelude::*;
 use usb_gadget::{
+    Class, Config, Gadget, Id, RegGadget, Strings,
     function::{
         custom::{Custom, CustomBuilder, Endpoint, EndpointDirection, Interface, TransferType},
         serial::{Serial, SerialClass},
     },
-    Class, Config, Gadget, Id, RegGadget, Strings,
 };
 
 struct KmsgWriter {
