@@ -15,4 +15,4 @@ gibblox-core = { path = "../gibblox-core", default-features = false }
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-web-sys = { version = "0.3.82", features = ["FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions", "FileSystemReadWriteOptions", "FileSystemSyncAccessHandle", "StorageManager", "WorkerGlobalScope", "WorkerNavigator"] }
+web-sys = { workspace = true, features = ["FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions", "FileSystemReadWriteOptions", "FileSystemSyncAccessHandle", "StorageManager", "WorkerGlobalScope", "WorkerNavigator"] }

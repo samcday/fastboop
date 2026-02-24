@@ -19,7 +19,7 @@ lzma-rs = { workspace = true }
 ruzstd = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-web-sys = { version = "0.3.82", features = [
+web-sys = { workspace = true, features = [
     "Cache",
     "CacheStorage",
     "Headers",

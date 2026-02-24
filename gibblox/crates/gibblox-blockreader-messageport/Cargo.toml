@@ -15,4 +15,4 @@ tracing = "0.1.41"
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-web-sys = { version = "0.3.82", features = ["Event", "MessageEvent", "MessagePort"] }
+web-sys = { workspace = true, features = ["Event", "MessageEvent", "MessagePort"] }
