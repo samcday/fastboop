@@ -33,3 +33,4 @@ bitflags = "2"
 bytes = { version = "1", default-features = false }
 memmap2 = { version = "0.9", default-features = false }
 rustix = { version = "1", default-features = false }
+tokio = "1.49.0"
