@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gha-proxy
+resources:
+  - deployment.yaml
+  - github-token.yaml
+  - route.yaml
+  - service.yaml
+configMapGenerator:
+  - name: gha-proxy-config
+    literals:
+      - ALLOWLIST=pocketblue/pocketblue,samcday/live-pocket-fedora
+      - CACHE_DIR=/cache
+      - CACHE_MAX_BYTES=32212254720
+      - PORT=8080
+      - REQUEST_TIMEOUT_SECONDS=300
+  - name: gha-proxy-script
+    files:
+      - gha_proxy.py=gha_proxy.py

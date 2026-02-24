@@ -13,6 +13,10 @@ const GHA_ARTIFACT_ROUTES = [
     repo: "live-pocket-fedora",
   },
 ];
+const GHA_PROXY_BASE_URL =
+  typeof FASTBOOP_GHA_PROXY_BASE_URL === "string" && FASTBOOP_GHA_PROXY_BASE_URL.trim()
+    ? FASTBOOP_GHA_PROXY_BASE_URL.trim().replace(/\/+$/, "")
+    : "https://fastboop.win";
 const ARTIFACT_METADATA_TTL_MS = 5 * 60 * 1000;
 const SIGNED_URL_REFRESH_LEEWAY_MS = 30 * 1000;
 const FALLBACK_SIGNED_URL_TTL_MS = 5 * 60 * 1000;
@@ -151,6 +155,11 @@ async function handleGithubArtifact(request, artifactRef) {
   }
 
   try {
+    const fastboopProxyResponse = await tryFastboopGhaProxy(request, artifactRef);
+    if (fastboopProxyResponse) {
+      return fastboopProxyResponse;
+    }
+
     let signedUrl = await resolveSignedArtifactUrl(artifactRef);
     let upstream = await fetchSignedArtifact(request, signedUrl);
 
@@ -170,6 +179,40 @@ async function handleGithubArtifact(request, artifactRef) {
       status,
       headers,
     });
+  }
+}
+
+async function tryFastboopGhaProxy(request, artifactRef) {
+  const targetUrl =
+    `${GHA_PROXY_BASE_URL}/gha/` +
+    `${encodeURIComponent(artifactRef.owner)}/` +
+    `${encodeURIComponent(artifactRef.repo)}/` +
+    `${artifactRef.runId}`;
+
+  const headers = new Headers();
+  const rangeHeader = request.headers.get("Range");
+  const priorityHeader = request.headers.get("Priority");
+
+  if (rangeHeader) {
+    headers.set("Range", rangeHeader);
+  }
+  if (priorityHeader) {
+    headers.set("Priority", priorityHeader);
+  }
+
+  try {
+    const upstream = await fetch(targetUrl, {
+      method: request.method,
+      headers,
+    });
+
+    if (upstream.status === 409 || upstream.status >= 500) {
+      return null;
+    }
+
+    return buildGithubArtifactProxyResponse(upstream);
+  } catch {
+    return null;
   }
 }
 

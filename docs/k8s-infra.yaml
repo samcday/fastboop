@@ -60,6 +60,20 @@ ingress_dns_tls:
     certificate: ingress-nginx/public-gateway-tls
     issuer: ClusterIssuer/letsencrypt
 
+gha_proxy:
+  namespace: gha-proxy
+  route:
+    hostname: fastboop.win
+    path: /gha/<org>/<repo>/<runid>
+  contract:
+    - repo must be allow-listed
+    - run must resolve to exactly one active GitHub Actions artifact
+    - artifact zip must contain exactly one non-directory file entry
+    - serve that inner file with CORS and single-range support
+  compatibility_paths:
+    - bleeding.fastboop.win/pocketblue/gha/<runid>/<artifact-name>[.zip]
+    - bleeding.fastboop.win/live-pocket-fedora/gha/<runid>/<artifact-name>[.zip]
+
 layout_and_conventions:
   - Put each deployable in infra/k8s/<component>/ with its own kustomization.yaml.
   - Add new component directories to infra/k8s/kustomization.yaml resources.

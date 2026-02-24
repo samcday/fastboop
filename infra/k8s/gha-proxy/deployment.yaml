@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gha-proxy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gha-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gha-proxy
+    spec:
+      containers:
+        - name: gha-proxy
+          image: python:3.12.12-slim
+          command:
+            - python
+            - /app/gha_proxy.py
+          envFrom:
+            - configMapRef:
+                name: gha-proxy-config
+          env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gha-proxy
+                  key: token
+                  optional: true
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 2
+              memory: 2Gi
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+            - name: cache
+              mountPath: /cache
+      volumes:
+        - name: app
+          configMap:
+            name: gha-proxy-script
+            defaultMode: 0555
+        - name: cache
+          emptyDir: {}

@@ -7,4 +7,5 @@ resources:
   - gateway-api
   - external-dns
   - conduit
+  - gha-proxy
   - flux-system

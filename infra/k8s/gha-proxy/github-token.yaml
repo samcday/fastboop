@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: gha-proxy
+type: Opaque
+stringData:
+    token: ENC[AES256_GCM,data:hzQpdeBczRkzkmkTW7HuLIE3dcQgf/N/uis58GdR3oemD9xGTweb8A==,iv:isX2CUOCRQeWv0fY/8tB9F6NhH7uR5oskTXaeTuVvf8=,tag:Kl9bYw0BmT/OH3/lPBYl3w==,type:str]
+sops:
+    age:
+        - recipient: age1ajk4j6ph4tk4e0ncux4cgha0gvzjhd56slv7pg7gvdkpdg8ztansyw2d97
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBSOGhRVDZuSTRtSE92TzNW
+            cGdoMC9kVHZTUk54Q2s4TW9qWHVWK1h1ckg4ClUvTFQ5K0Z3S3dvRCs2cU9mcFhw
+            R1hWV3hOalM5MmxlWXJBbFJHZTRma3MKLS0tIC9ZSy9yZEc2dUwxV21IbGhMQ1Bk
+            NjFKaEhFTHBjLzdPYUw1by9lWjB5dGcKkcuTbi5rrr1SqeuSX7FRrg618M2wdwAZ
+            Nj4VpqGKQyY4Y3HOmXOykZZTTQlGLVM5/shQAVGJRFXbUdVXUlEsQw==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-02-24T04:27:52Z"
+    mac: ENC[AES256_GCM,data:/mOSFl7DJnpIWZUr7FKRW/D0Wt+IYdyO6R6oGRt32+cgk5bBai1f7910upT14HH/k1AU1/MmR5YrrIQDeyZTzDgcQD266RxaoDAI2r2tSVlzCqHFcUJsRtB2A1Ks6EHWywBYuuzHmPlvaWnumZCDtuonFTiDN9n6Xh6M7heTWP0=,iv:PywYZLDOCjy5sDgizFP6MHs/bUX2orqzUGzxMF2qXQQ=,tag:BDfVICrQp5BsSWq9qSHWQg==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0
