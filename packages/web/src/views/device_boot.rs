@@ -4,15 +4,16 @@ use dioxus::prelude::*;
 use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
-use fastboop_core::Personalization;
+use fastboop_core::{
+    read_channel_stream_head, ChannelStreamHead, Personalization,
+    CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES,
+};
 use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
-#[cfg(target_arch = "wasm32")]
-use gibblox_core::block_identity_string;
 #[cfg(not(target_arch = "wasm32"))]
-use gibblox_core::{block_identity_string, BlockReader};
-#[cfg(not(target_arch = "wasm32"))]
+use gibblox_core::BlockReader;
+use gibblox_core::{block_identity_string, ReadContext};
 use gibblox_http::HttpBlockReader;
 #[cfg(not(target_arch = "wasm32"))]
 use gibblox_zip::ZipEntryBlockReader;
@@ -31,7 +32,6 @@ use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use ui::{apply_transport_counters, SmooTransportCounters};
 use ui::{oneplus_fajita_dtbo_overlays, SmooStatsHandle};
-#[cfg(not(target_arch = "wasm32"))]
 use url::Url;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
@@ -195,6 +195,8 @@ pub async fn boot_selected_device(
     Ok(Rc::new(BootRuntime {
         size_bytes: runtime.size_bytes,
         identity: runtime.identity,
+        channel: runtime.channel,
+        channel_offset_bytes: runtime.channel_offset_bytes,
         #[cfg(target_arch = "wasm32")]
         gibblox_worker: runtime.gibblox_worker,
         smoo_stats: runtime.smoo_stats,
@@ -219,18 +221,47 @@ async fn build_stage0_artifacts(
         let result: anyhow::Result<_> = async {
             tracing::info!(profile = %profile.id, channel = %channel, "opening channel for web boot");
             #[cfg(target_arch = "wasm32")]
-            let (provider, size_bytes, gibblox_worker, channel_identity) = {
-                let gibblox_worker = spawn_gibblox_worker(channel.clone()).await?;
+            let (provider, size_bytes, gibblox_worker, channel_identity, channel_offset_bytes) = {
+                let (stream_head, total_size_bytes) =
+                    read_channel_stream_head_for_url(&channel).await?;
+
+                if stream_head.warning_count > 0 {
+                    tracing::info!(
+                        warning_count = stream_head.warning_count,
+                        consumed_bytes = stream_head.consumed_bytes,
+                        channel,
+                        "channel stream head stopped early while scanning records"
+                    );
+                }
+
+                validate_session_dev_profiles(&profile.id, &stream_head.dev_profiles)?;
+
+                if stream_head.consumed_bytes >= total_size_bytes {
+                    anyhow::bail!(
+                        "channel stream has only profile records and no trailing artifact payload"
+                    );
+                }
+
+                let channel_offset_bytes = stream_head.consumed_bytes;
+                let gibblox_worker = spawn_gibblox_worker(channel.clone(), channel_offset_bytes)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("spawn gibblox worker failed: {err}"))?;
                 let reader_for_erofs = gibblox_worker.create_reader().await.map_err(|err| {
                     anyhow::anyhow!("attach gibblox block reader for stage0: {err}")
                 })?;
                 let size_bytes = reader_size_bytes(&reader_for_erofs).await?;
                 let channel_identity = block_identity_string(&reader_for_erofs);
                 let provider = ErofsRootfs::new(Arc::new(reader_for_erofs), size_bytes).await?;
-                (provider, size_bytes, Some(gibblox_worker), channel_identity)
+                (
+                    provider,
+                    size_bytes,
+                    Some(gibblox_worker),
+                    channel_identity,
+                    channel_offset_bytes,
+                )
             };
             #[cfg(not(target_arch = "wasm32"))]
-            let (provider, size_bytes, channel_identity) = {
+            let (provider, size_bytes, channel_identity, channel_offset_bytes) = {
                 let url = Url::parse(&channel)
                     .map_err(|err| anyhow::anyhow!("parse channel URL {channel}: {err}"))?;
                 let http_reader = HttpBlockReader::new(
@@ -252,7 +283,7 @@ async fn build_stage0_artifacts(
                 let size_bytes = reader_size_bytes(reader.as_ref()).await?;
                 let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
                 let identity = block_identity_string(reader.as_ref());
-                (provider, size_bytes, identity)
+                (provider, size_bytes, identity, 0)
             };
 
             tracing::info!(profile = %profile.id, "building stage0 payload");
@@ -274,6 +305,8 @@ async fn build_stage0_artifacts(
                 BootRuntime {
                     size_bytes,
                     identity: channel_identity,
+                    channel: channel.clone(),
+                    channel_offset_bytes,
                     #[cfg(target_arch = "wasm32")]
                     gibblox_worker,
                     smoo_stats: SmooStatsHandle::new(),
@@ -286,6 +319,91 @@ async fn build_stage0_artifacts(
 
     rx.await
         .map_err(|_| anyhow::anyhow!("stage0 build task was cancelled"))?
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_channel_stream_head_for_url(
+    channel: &str,
+) -> anyhow::Result<(ChannelStreamHead, u64)> {
+    let url =
+        Url::parse(channel).map_err(|err| anyhow::anyhow!("parse channel URL {channel}: {err}"))?;
+    let channel_reader =
+        HttpBlockReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+            .await
+            .map_err(|err| anyhow::anyhow!("open HTTP channel reader {url}: {err}"))?;
+
+    let total_size_bytes = reader_size_bytes(&channel_reader).await?;
+    let scan_cap = core::cmp::min(
+        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
+        total_size_bytes,
+    ) as usize;
+    let prefix = read_channel_prefix(&channel_reader, scan_cap).await?;
+    let stream_head = read_channel_stream_head(prefix.as_slice(), total_size_bytes)
+        .map_err(|err| anyhow::anyhow!("decode channel stream head: {err}"))?;
+
+    Ok((stream_head, total_size_bytes))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_channel_prefix<R>(reader: &R, scan_cap: usize) -> anyhow::Result<Vec<u8>>
+where
+    R: gibblox_core::BlockReader + ?Sized,
+{
+    let block_size = usize::try_from(reader.block_size()).map_err(|_| {
+        anyhow::anyhow!(
+            "channel block size {} does not fit in usize",
+            reader.block_size()
+        )
+    })?;
+    if block_size == 0 {
+        anyhow::bail!("channel block size is zero");
+    }
+
+    let total_blocks = reader
+        .total_blocks()
+        .await
+        .map_err(|err| anyhow::anyhow!("read channel total blocks: {err}"))?;
+    let total_size_bytes = total_blocks
+        .checked_mul(reader.block_size() as u64)
+        .ok_or_else(|| anyhow::anyhow!("channel total size overflows u64"))?;
+    let prefix_len = core::cmp::min(scan_cap as u64, total_size_bytes) as usize;
+    if prefix_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    let blocks_to_read = prefix_len.div_ceil(block_size);
+    let mut scratch = vec![0u8; blocks_to_read * block_size];
+    let mut read = reader
+        .read_blocks(0, &mut scratch, ReadContext::FOREGROUND)
+        .await
+        .map_err(|err| anyhow::anyhow!("read channel prefix: {err}"))?;
+    read = core::cmp::min(read, prefix_len);
+    scratch.truncate(read);
+    Ok(scratch)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn validate_session_dev_profiles(
+    session_device_profile_id: &str,
+    accepted: &[fastboop_core::DeviceProfile],
+) -> anyhow::Result<()> {
+    if accepted.is_empty() {
+        return Ok(());
+    }
+
+    if accepted
+        .iter()
+        .any(|profile| profile.id == session_device_profile_id)
+    {
+        return Ok(());
+    }
+
+    let allowed: Vec<_> = accepted.iter().map(|profile| profile.id.as_str()).collect();
+    anyhow::bail!(
+        "device '{}' is not accepted by this channel stream; channel-dev-profiles: {}",
+        session_device_profile_id,
+        allowed.join(", ")
+    )
 }
 
 #[cfg(target_arch = "wasm32")]

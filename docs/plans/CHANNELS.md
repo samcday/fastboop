@@ -27,6 +27,7 @@ This plan tracks the ongoing channel direction from issue `#20` and related boot
 - Keep fastboop non-mutating (no flash/erase/format/slot toggles/unlock paths).
 - Keep existing DevPro and Stage0 invariants.
 - Keep behavior deterministic and fail loudly on invalid inputs.
+- Preserve conventional-commit history hygiene across this track (each logical checkpoint should land as a focused `feat`/`fix`/`refactor` commit with intent-first message).
 
 ## Target Behavior
 
@@ -94,6 +95,7 @@ Notes:
 - Add session-scoped loading of accepted profile records (no local persistence).
 - Keep artifact unwrap path working for existing known formats.
 - Keep simple multi-filesystem coalescing as the final phase.
+- `fastboop-core` now owns byte-level boot-profile stream-head scan and boot-profile selection logic; CLI consumes this shared module today, with desktop/web queued for phase 2 extension.
 
 ## Out of Scope (for this iteration)
 
@@ -140,7 +142,10 @@ Deliverable: all frontends treat channel as the single source input.
 
 Phase gate:
 
-- Shared path passes fixture parity tests and replaces duplicated frontend-specific intake code.
+- Shared path passes fixture parity tests and replaces duplicated CLI intake code.
+- [x] Core stream-head scan and selection module exists in `fastboop-core`.
+- [x] CLI resolves profile stream head and selection through core module (`read_boot_profile_stream_head`, `select_boot_profile_for_device`).
+- [ ] Desktop and web adopt the same core helpers.
 
 Deliverable: one reusable channel intake stack for all runtimes.
 
