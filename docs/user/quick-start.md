@@ -20,6 +20,12 @@ cargo run -p fastboop-cli -- detect
 cargo run -p fastboop-cli -- stage0 --help
 ```
 
+## 3b) Inspect and compile device profiles
+
+```sh
+cargo run -p fastboop-cli -- devprofile --help
+```
+
 ## 4) Boot ephemerally
 
 ```sh
