@@ -9,4 +9,4 @@ license = "GPL-3.0-only"
 async-trait = "0.1.89"
 nusb = { version = "0.2.1", features = ["tokio"] }
 smoo-host-core = { path = "../smoo-host-core" }
-tokio = { version = "1.48.0", features = ["sync"] }
+tokio = { workspace = true, features = ["sync"] }

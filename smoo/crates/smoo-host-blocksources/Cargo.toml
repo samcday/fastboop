@@ -10,5 +10,5 @@ anyhow = { workspace = true }
 async-trait = "0.1.89"
 libc = "0.2.176"
 smoo-host-core = { path = "../smoo-host-core" }
-tokio = { version = "1.48.0", features = ["fs", "io-util", "sync", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["fs", "io-util", "sync", "rt-multi-thread"] }
 tracing = "0.1.41"

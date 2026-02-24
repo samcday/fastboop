@@ -10,5 +10,5 @@ async-trait = "0.1.89"
 crossbeam-channel = "0.5.13"
 rusb = "0.9.4"
 smoo-host-core = { path = "../smoo-host-core" }
-tokio = { version = "1.48.0", features = ["rt", "sync"] }
+tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = "0.1.41"

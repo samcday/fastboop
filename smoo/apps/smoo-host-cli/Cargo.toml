@@ -17,7 +17,7 @@ smoo-host-core = { path = "../../crates/smoo-host-core", features = ["metrics"] 
 smoo-host-session = { path = "../../crates/smoo-host-session" }
 smoo-host-transport-rusb = { path = "../../crates/smoo-host-transport-rusb" }
 smoo-proto = { path = "../../crates/smoo-proto" }
-tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }

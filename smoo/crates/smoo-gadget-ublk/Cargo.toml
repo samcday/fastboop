@@ -24,4 +24,4 @@ bindgen = "0.72.1"
 anyhow = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1.48.0", features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
