@@ -10,7 +10,7 @@ default = []
 std = []
 
 [dependencies]
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 erofs-rs = { path = "../../erofs-rs/erofs", default-features = false }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 

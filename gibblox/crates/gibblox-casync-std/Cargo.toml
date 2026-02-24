@@ -6,7 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 
 [dependencies]
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 flate2 = { version = "1.1.5", default-features = false, features = ["rust_backend"] }
 gibblox-casync = { path = "../gibblox-casync" }
 gibblox-core = { path = "../gibblox-core", features = ["std"] }

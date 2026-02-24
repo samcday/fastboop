@@ -6,6 +6,6 @@ rust-version = { workspace = true }
 license = { workspace = true }
 
 [dependencies]
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 gibblox-core = { path = "../gibblox-core", features = ["std"], default-features = false }
 tracing = "0.1.41"

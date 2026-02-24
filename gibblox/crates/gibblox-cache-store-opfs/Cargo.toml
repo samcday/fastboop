@@ -6,7 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 
 [dependencies]
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 futures-channel = "0.3.31"
 gibblox-cache = { path = "../gibblox-cache", default-features = false }
 gibblox-core = { path = "../gibblox-core", default-features = false }

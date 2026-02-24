@@ -10,7 +10,7 @@ default = []
 std = []
 
 [dependencies]
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 gibblox-core = { path = "../gibblox-core" }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 
