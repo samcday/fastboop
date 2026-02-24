@@ -58,9 +58,9 @@ pub async fn boot_selected_device(
         .ok_or_else(|| anyhow!("session not found"))?;
     let boot_config = session.boot_config.clone();
 
-    let rootfs_artifact = boot_config.rootfs_artifact.trim();
-    if rootfs_artifact.is_empty() {
-        return Err(anyhow!("rootfs artifact is empty"));
+    let channel = boot_config.channel.trim();
+    if channel.is_empty() {
+        return Err(anyhow!("channel is empty"));
     }
 
     update_session_phase(
@@ -68,8 +68,8 @@ pub async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: format!(
-                "Opening rootfs {} for {} ({:04x}:{:04x})",
-                rootfs_artifact, session.device.name, session.device.vid, session.device.pid
+                "Opening channel {} for {} ({:04x}:{:04x})",
+                channel, session.device.name, session.device.vid, session.device.pid
             ),
         },
     );
@@ -101,7 +101,7 @@ pub async fn boot_selected_device(
     let (build, runtime) =
         build_stage0_artifacts(session.device.profile.clone(), stage0_opts, boot_config)
             .await
-            .context("open rootfs and build stage0")?;
+            .context("open channel and build stage0")?;
 
     update_session_phase(
         sessions,
@@ -195,9 +195,9 @@ async fn build_stage0_artifacts(
     stage0_opts: Stage0Options,
     boot_config: BootConfig,
 ) -> Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
-    let rootfs_artifact = boot_config.rootfs_artifact.trim().to_string();
-    if rootfs_artifact.is_empty() {
-        return Err(anyhow!("rootfs artifact is empty"));
+    let channel = boot_config.channel.trim().to_string();
+    if channel.is_empty() {
+        return Err(anyhow!("channel is empty"));
     }
     let extra_kargs = boot_config.extra_kargs.trim().to_string();
 
@@ -211,9 +211,9 @@ async fn build_stage0_artifacts(
                     .build()
                     .context("create tokio runtime for stage0 build")?;
                 runtime.block_on(async move {
-                    info!(profile = %profile.id, rootfs = %rootfs_artifact, "opening rootfs for desktop boot");
-                    let url = Url::parse(&rootfs_artifact)
-                        .map_err(|err| anyhow!("parse rootfs URL {rootfs_artifact}: {err}"))?;
+                    info!(profile = %profile.id, channel = %channel, "opening channel for desktop boot");
+                    let url = Url::parse(&channel)
+                        .map_err(|err| anyhow!("parse channel URL {channel}: {err}"))?;
                     let http_reader = HttpBlockReader::new(
                         url.clone(),
                         gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
@@ -222,11 +222,11 @@ async fn build_stage0_artifacts(
                     .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
                     let cache = StdCacheOps::open_default_for_reader(&http_reader)
                         .await
-                        .map_err(|err| anyhow!("open std cache for HTTP rootfs: {err}"))?;
+                        .map_err(|err| anyhow!("open std cache for HTTP channel: {err}"))?;
                     let cached = Arc::new(
                         CachedBlockReader::new(http_reader, cache)
                             .await
-                            .map_err(|err| anyhow!("initialize std cache for HTTP rootfs: {err}"))?,
+                            .map_err(|err| anyhow!("initialize std cache for HTTP channel: {err}"))?,
                     );
                     let reader: Arc<dyn BlockReader> = if let Some(entry_name) = zip_entry_name_from_url(&url)? {
                         let zip_reader = ZipEntryBlockReader::new(&entry_name, cached)
@@ -243,13 +243,13 @@ async fn build_stage0_artifacts(
                         build_stage0(&profile, &provider, &stage0_opts, nonempty(&extra_kargs), None)
                             .await
                             .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
-                    let rootfs_identity = block_identity_string(reader.as_ref());
+                    let channel_identity = block_identity_string(reader.as_ref());
                     Ok((
                         build,
                         BootRuntime {
                             reader,
                             size_bytes,
-                            identity: rootfs_identity,
+                            identity: channel_identity,
                             smoo_stats: SmooStatsHandle::new(),
                         },
                     ))
@@ -289,10 +289,10 @@ async fn reader_size_bytes(reader: &dyn BlockReader) -> Result<u64> {
     let total_blocks = reader
         .total_blocks()
         .await
-        .map_err(|err| anyhow!("read total blocks for rootfs: {err}"))?;
+        .map_err(|err| anyhow!("read total blocks for channel: {err}"))?;
     total_blocks
         .checked_mul(reader.block_size() as u64)
-        .ok_or_else(|| anyhow!("rootfs size overflow"))
+        .ok_or_else(|| anyhow!("channel size overflow"))
 }
 
 pub fn run_rusb_host_daemon(

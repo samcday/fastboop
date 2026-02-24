@@ -8,8 +8,8 @@ use wasm_bindgen::JsValue;
 
 use views::{DevicePage, Home, SessionStore};
 
+mod channel_source;
 mod gibblox_worker;
-mod rootfs_source;
 mod views;
 
 const LOG_LEVEL_HINT_KEY: &str = "__FASTBOOP_LOG_LEVEL";

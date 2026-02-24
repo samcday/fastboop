@@ -44,7 +44,7 @@ pub fn CacheStatsPanel(stats: CacheStatsViewModel) -> Element {
 
         div { class: "cache-stats",
             div { class: "cache-stats__header",
-                p { class: "cache-stats__eyebrow", "Rootfs cache" }
+                p { class: "cache-stats__eyebrow", "Channel cache" }
                 p { class: "cache-stats__title", "Cache stats" }
             }
 

@@ -100,6 +100,66 @@ fn rejects_casync_archive_indexes() {
 }
 
 #[test]
+fn accepts_casync_blob_indexes() {
+    let profile = BootProfile {
+        id: "good".to_string(),
+        display_name: None,
+        rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+            ext4: BootProfileArtifactSource::Casync(BootProfileArtifactSourceCasyncSource {
+                casync: BootProfileArtifactSourceCasync {
+                    index: "https://bleeding.fastboop.win/live-pocket-fedora/casync/indexes/compose-22240659617-1-bf887e869003.caibx"
+                        .to_string(),
+                    chunk_store: None,
+                },
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    validate_boot_profile(&profile).expect("casync blob index should validate");
+}
+
+#[test]
+fn accepts_gpt_over_casync_pipeline() {
+    let profile = BootProfile {
+        id: "good-gpt-casync".to_string(),
+        display_name: None,
+        rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+            ext4: BootProfileArtifactSource::Gpt(BootProfileArtifactSourceGptSource {
+                gpt: BootProfileArtifactSourceGpt {
+                    partlabel: Some("rootfs".to_string()),
+                    partuuid: None,
+                    index: None,
+                    source: Box::new(BootProfileArtifactSource::Casync(
+                        BootProfileArtifactSourceCasyncSource {
+                            casync: BootProfileArtifactSourceCasync {
+                                index: "https://bleeding.fastboop.win/live-pocket-fedora/casync/indexes/compose-22240659617-1-bf887e869003.caibx"
+                                    .to_string(),
+                                chunk_store: Some(
+                                    "https://bleeding.fastboop.win/live-pocket-fedora/casync/chunks/"
+                                        .to_string(),
+                                ),
+                            },
+                        },
+                    )),
+                },
+            }),
+        }),
+        kernel: None,
+        dtbs: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    validate_boot_profile(&profile).expect("gpt over casync pipeline should validate");
+}
+
+#[test]
 fn rejects_gpt_step_without_selector() {
     let profile = BootProfile {
         id: "bad-gpt".to_string(),

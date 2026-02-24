@@ -11,7 +11,7 @@ mod hero;
 pub use hero::Hero;
 mod boot_config;
 pub use boot_config::{
-    BootConfigCard, DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS, DEFAULT_ROOTFS_ARTIFACT,
+    BootConfigCard, DEFAULT_CHANNEL, DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS,
 };
 mod dtbo;
 pub use dtbo::oneplus_fajita_dtbo_overlays;

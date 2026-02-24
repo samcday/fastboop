@@ -114,6 +114,7 @@ Status (current branch):
 - [x] CLI boot profile compatibility uses `stage0.devices` rule (`{}` => all devices).
 - [x] CLI supports explicit `--boot-profile` selection for stream-provided profiles.
 - [x] CLI stream EOF/tail detection uses exact channel byte size (ignores block padding).
+- [x] BootProfile schema/validation covers casync `.caibx` sources (including nested GPT selection).
 - [ ] Channel-stream DevProfiles (still intentionally descoped in first pass).
 - [ ] Desktop/web session integration.
 

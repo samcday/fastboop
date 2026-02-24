@@ -19,19 +19,19 @@ pub struct ProbedDevice {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BootConfig {
-    pub rootfs_artifact: String,
+    pub channel: String,
     pub extra_kargs: String,
     pub enable_serial: bool,
 }
 
 impl BootConfig {
     pub fn new(
-        rootfs_artifact: impl Into<String>,
+        channel: impl Into<String>,
         extra_kargs: impl Into<String>,
         enable_serial: bool,
     ) -> Self {
         Self {
-            rootfs_artifact: rootfs_artifact.into(),
+            channel: channel.into(),
             extra_kargs: extra_kargs.into(),
             enable_serial,
         }

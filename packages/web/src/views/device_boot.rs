@@ -61,9 +61,9 @@ pub async fn boot_selected_device(
         .ok_or_else(|| anyhow::anyhow!("session not found"))?;
     let boot_config = session.boot_config.clone();
 
-    let rootfs_artifact = boot_config.rootfs_artifact.trim();
-    if rootfs_artifact.is_empty() {
-        return Err(anyhow::anyhow!("rootfs artifact is empty"));
+    let channel = boot_config.channel.trim();
+    if channel.is_empty() {
+        return Err(anyhow::anyhow!("channel is empty"));
     }
 
     update_session_phase(
@@ -71,8 +71,8 @@ pub async fn boot_selected_device(
         session_id,
         SessionPhase::Booting {
             step: format!(
-                "Opening rootfs {} for {} ({:04x}:{:04x})",
-                rootfs_artifact, session.device.name, session.device.vid, session.device.pid
+                "Opening channel {} for {} ({:04x}:{:04x})",
+                channel, session.device.name, session.device.vid, session.device.pid
             ),
         },
     );
@@ -109,7 +109,7 @@ pub async fn boot_selected_device(
     )
     .await
     .with_context(|| {
-        format!("open rootfs and build stage0 (profile={profile_id}, rootfs={rootfs_artifact})")
+        format!("open channel and build stage0 (profile={profile_id}, channel={channel})")
     })?;
 
     update_session_phase(
@@ -208,31 +208,31 @@ async fn build_stage0_artifacts(
 ) -> anyhow::Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
     use futures_channel::oneshot;
 
-    let rootfs_artifact = boot_config.rootfs_artifact.trim().to_string();
-    if rootfs_artifact.is_empty() {
-        return Err(anyhow::anyhow!("rootfs artifact is empty"));
+    let channel = boot_config.channel.trim().to_string();
+    if channel.is_empty() {
+        return Err(anyhow::anyhow!("channel is empty"));
     }
     let extra_kargs = boot_config.extra_kargs.trim().to_string();
 
     let (tx, rx) = oneshot::channel();
     wasm_bindgen_futures::spawn_local(async move {
         let result: anyhow::Result<_> = async {
-            tracing::info!(profile = %profile.id, rootfs = %rootfs_artifact, "opening rootfs for web boot");
+            tracing::info!(profile = %profile.id, channel = %channel, "opening channel for web boot");
             #[cfg(target_arch = "wasm32")]
-            let (provider, size_bytes, gibblox_worker, rootfs_identity) = {
-                let gibblox_worker = spawn_gibblox_worker(rootfs_artifact.clone()).await?;
+            let (provider, size_bytes, gibblox_worker, channel_identity) = {
+                let gibblox_worker = spawn_gibblox_worker(channel.clone()).await?;
                 let reader_for_erofs = gibblox_worker.create_reader().await.map_err(|err| {
                     anyhow::anyhow!("attach gibblox block reader for stage0: {err}")
                 })?;
                 let size_bytes = reader_size_bytes(&reader_for_erofs).await?;
-                let rootfs_identity = block_identity_string(&reader_for_erofs);
+                let channel_identity = block_identity_string(&reader_for_erofs);
                 let provider = ErofsRootfs::new(Arc::new(reader_for_erofs), size_bytes).await?;
-                (provider, size_bytes, Some(gibblox_worker), rootfs_identity)
+                (provider, size_bytes, Some(gibblox_worker), channel_identity)
             };
             #[cfg(not(target_arch = "wasm32"))]
-            let (provider, size_bytes, rootfs_identity) = {
-                let url = Url::parse(&rootfs_artifact)
-                    .map_err(|err| anyhow::anyhow!("parse rootfs URL {rootfs_artifact}: {err}"))?;
+            let (provider, size_bytes, channel_identity) = {
+                let url = Url::parse(&channel)
+                    .map_err(|err| anyhow::anyhow!("parse channel URL {channel}: {err}"))?;
                 let http_reader = HttpBlockReader::new(
                     url.clone(),
                     gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
@@ -273,7 +273,7 @@ async fn build_stage0_artifacts(
                 build,
                 BootRuntime {
                     size_bytes,
-                    identity: rootfs_identity,
+                    identity: channel_identity,
                     #[cfg(target_arch = "wasm32")]
                     gibblox_worker,
                     smoo_stats: SmooStatsHandle::new(),
@@ -293,10 +293,10 @@ async fn reader_size_bytes(reader: &dyn gibblox_core::BlockReader) -> anyhow::Re
     let total_blocks = reader
         .total_blocks()
         .await
-        .map_err(|err| anyhow::anyhow!("read rootfs total blocks: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("read channel total blocks: {err}"))?;
     total_blocks
         .checked_mul(reader.block_size() as u64)
-        .ok_or_else(|| anyhow::anyhow!("rootfs size overflow"))
+        .ok_or_else(|| anyhow::anyhow!("channel size overflow"))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -304,10 +304,10 @@ async fn reader_size_bytes(reader: &dyn gibblox_core::BlockReader) -> anyhow::Re
     let total_blocks = reader
         .total_blocks()
         .await
-        .map_err(|err| anyhow::anyhow!("read rootfs total blocks: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("read channel total blocks: {err}"))?;
     total_blocks
         .checked_mul(reader.block_size() as u64)
-        .ok_or_else(|| anyhow::anyhow!("rootfs size overflow"))
+        .ok_or_else(|| anyhow::anyhow!("channel size overflow"))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

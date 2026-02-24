@@ -3,7 +3,7 @@ mod wasm {
     use anyhow::{anyhow, Result};
     use gibblox_web_worker::GibbloxWebWorker;
     use js_sys::{Object, Reflect};
-    use ui::DEFAULT_ROOTFS_ARTIFACT;
+    use ui::DEFAULT_CHANNEL;
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::spawn_local;
     use web_sys::{
@@ -19,13 +19,13 @@ mod wasm {
         if scope.name() != WORKER_NAME {
             return false;
         }
-        let rootfs_artifact = worker_rootfs_artifact(&scope);
+        let channel = worker_channel(&scope);
 
         spawn_local(async move {
-            match crate::rootfs_source::build_rootfs_reader_pipeline(&rootfs_artifact).await {
+            match crate::channel_source::build_channel_reader_pipeline(&channel).await {
                 Ok(reader) => GibbloxWebWorker::start_worker(scope, reader),
                 Err(err) => {
-                    tracing::error!(error = %err, "failed to initialize gibblox worker rootfs pipeline");
+                    tracing::error!(error = %err, "failed to initialize gibblox worker channel pipeline");
                     let _ = post_worker_error(&scope, &format!("{err:#}"));
                 }
             }
@@ -34,11 +34,11 @@ mod wasm {
         true
     }
 
-    pub async fn spawn_gibblox_worker(rootfs_artifact: String) -> Result<GibbloxWebWorker> {
+    pub async fn spawn_gibblox_worker(channel: String) -> Result<GibbloxWebWorker> {
         let script_url = append_query_to_script_url(
             append_current_query_to_script_url(current_module_script_url()?),
-            "rootfs",
-            rootfs_artifact.trim(),
+            "channel",
+            channel.trim(),
         );
         tracing::info!(%script_url, "starting gibblox web worker");
 
@@ -53,13 +53,13 @@ mod wasm {
             .map_err(|err| anyhow!("initialize gibblox worker: {err}"))
     }
 
-    fn worker_rootfs_artifact(scope: &DedicatedWorkerGlobalScope) -> String {
+    fn worker_channel(scope: &DedicatedWorkerGlobalScope) -> String {
         let search = Reflect::get(scope.as_ref(), &JsValue::from_str("location"))
             .ok()
             .and_then(|location| Reflect::get(&location, &JsValue::from_str("search")).ok())
             .and_then(|search| search.as_string())
             .unwrap_or_default();
-        parse_query_param(&search, "rootfs").unwrap_or_else(|| DEFAULT_ROOTFS_ARTIFACT.to_string())
+        parse_query_param(&search, "channel").unwrap_or_else(|| DEFAULT_CHANNEL.to_string())
     }
 
     fn post_worker_error(scope: &DedicatedWorkerGlobalScope, message: &str) -> Result<()> {
@@ -197,7 +197,7 @@ mod non_wasm {
         false
     }
 
-    pub async fn spawn_gibblox_worker(_rootfs_artifact: String) -> Result<()> {
+    pub async fn spawn_gibblox_worker(_channel: String) -> Result<()> {
         bail!("gibblox web worker is only available on wasm32 targets")
     }
 }
