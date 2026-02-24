@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-anyhow = "1.0.91"
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
 fastboop-core = { path = "../crates/fastboop-core" }

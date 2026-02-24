@@ -5,7 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
-anyhow = "1.0.91"
+anyhow = { workspace = true }
 dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
