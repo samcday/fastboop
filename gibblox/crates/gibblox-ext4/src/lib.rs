@@ -408,7 +408,24 @@ fn ext4_file_worker(
     block_size: usize,
     request_rx: mpsc::Receiver<ReadRequest>,
 ) {
-    let fs = match pollster::block_on(Ext4Fs::open(source)) {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            let message = format!("create ext4 file reader runtime: {err}");
+            while let Ok(request) = request_rx.recv() {
+                let _ = request.respond_to.send(Err(GibbloxError::with_message(
+                    GibbloxErrorKind::Io,
+                    message.clone(),
+                )));
+            }
+            return;
+        }
+    };
+
+    let fs = match runtime.block_on(Ext4Fs::open(source)) {
         Ok(fs) => fs,
         Err(err) => {
             let message = format!("open ext4 file reader worker: {err}");
@@ -453,7 +470,7 @@ fn ext4_file_worker(
                 .saturating_mul(block_size)
                 .max(request.len);
             let fetch_len = ((file_size_bytes - request.offset).min(readahead as u64)) as usize;
-            match pollster::block_on(fs.read_range(file_path.as_str(), request.offset, fetch_len)) {
+            match runtime.block_on(fs.read_range(file_path.as_str(), request.offset, fetch_len)) {
                 Ok(data) => {
                     if data.len() < request.len {
                         Err(GibbloxError::with_message(

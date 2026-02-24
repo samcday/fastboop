@@ -600,7 +600,7 @@ dependencies = [
  "ext4-view",
  "futures-channel",
  "gibblox-core",
- "pollster",
+ "tokio",
  "tracing",
 ]
 

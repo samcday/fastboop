@@ -10,5 +10,5 @@ async-trait = "0.1.89"
 ext4-view = { path = "../../ext4-view-rs", default-features = false, features = ["async"] }
 futures-channel = "0.3.31"
 gibblox-core = { path = "../gibblox-core" }
-pollster = "0.4.0"
+tokio = { workspace = true, features = ["rt", "time", "net", "io-util"] }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
