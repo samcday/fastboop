@@ -111,6 +111,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "addr2line"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
+dependencies = [
+ "gimli",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -235,6 +244,9 @@ name = "anyhow"
 version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
+dependencies = [
+ "backtrace",
+]
 
 [[package]]
 name = "anyrender"
@@ -682,6 +694,21 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+]
+
+[[package]]
+name = "backtrace"
+version = "0.3.76"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
+dependencies = [
+ "addr2line",
+ "cfg-if",
+ "libc 0.2.180",
+ "miniz_oxide 0.8.9",
+ "object",
+ "rustc-demangle",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -1143,6 +1170,15 @@ checksum = "f1f927b07c74ba84c7e5fe4db2baeb3e996ab2688992e39ac68ce3220a677c7e"
 dependencies = [
  "base64 0.22.1",
  "encoding_rs",
+]
+
+[[package]]
+name = "chrono"
+version = "0.4.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -2851,6 +2887,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ext4-view"
+version = "0.9.3"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitflags 2.10.0",
+ "crc",
+ "pollster 0.4.0",
+]
+
+[[package]]
 name = "fastboop-cli"
 version = "0.0.1"
 dependencies = [
@@ -2861,16 +2908,21 @@ dependencies = [
  "fastboop-core",
  "fastboop-fastboot-rusb",
  "fastboop-stage0-generator",
+ "gibblox-android-sparse",
  "gibblox-cache",
  "gibblox-cache-store-std",
  "gibblox-casync",
  "gibblox-casync-std",
  "gibblox-core",
+ "gibblox-ext4",
  "gibblox-file",
  "gibblox-http",
+ "gibblox-mbr",
+ "gibblox-xz",
  "gibblox-zip",
  "gobblytes-core",
  "gobblytes-erofs",
+ "gobblytes-fat",
  "ratatui",
  "serde",
  "serde_json",
@@ -3498,6 +3550,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-android-sparse"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "tracing",
+]
+
+[[package]]
 name = "gibblox-blockreader-messageport"
 version = "0.0.1"
 dependencies = [
@@ -3596,6 +3658,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-ext4"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "ext4-view",
+ "gibblox-core",
+ "pollster 0.4.0",
+ "tracing",
+]
+
+[[package]]
 name = "gibblox-file"
 version = "0.0.1"
 dependencies = [
@@ -3628,6 +3701,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-mbr"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "bytemuck",
+ "futures",
+ "gibblox-core",
+ "hadris-part",
+ "tracing",
+]
+
+[[package]]
 name = "gibblox-web-worker"
 version = "0.0.1"
 dependencies = [
@@ -3641,6 +3726,19 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "gibblox-xz"
+version = "0.0.1"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "crc32fast",
+ "futures",
+ "gibblox-core",
+ "tracing",
+ "xz4rust",
 ]
 
 [[package]]
@@ -3662,6 +3760,12 @@ dependencies = [
  "color_quant",
  "weezl",
 ]
+
+[[package]]
+name = "gimli"
+version = "0.32.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "gio"
@@ -3882,6 +3986,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gobblytes-fat"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "gibblox-core",
+ "gobblytes-core",
+ "hadris-fat",
+ "tracing",
+]
+
+[[package]]
 name = "gobject-sys"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4061,6 +4177,61 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "hadris-common"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16faa9f708c5ad3aafafc0761cf98c461582949991b5c901e39c7b65a7b4560b"
+dependencies = [
+ "hadris-io",
+ "noalloc",
+]
+
+[[package]]
+name = "hadris-fat"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52777e9a7523f78480927c0fb9188030fc9e526e9b885c6eb643ee842a90d8a9"
+dependencies = [
+ "bitflags 2.10.0",
+ "bytemuck",
+ "chrono",
+ "hadris-common",
+ "hadris-io",
+ "hadris-macros",
+ "spin 0.10.0",
+]
+
+[[package]]
+name = "hadris-io"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1168755badc3b0c63b3c02f5db27f4b34c06828a208e1a30866cdd8217019af"
+dependencies = [
+ "bytemuck",
+ "cfg-if",
+]
+
+[[package]]
+name = "hadris-macros"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af87dad5059eb288d6c8a3e539146136f55464ad16ecc5b72b8334e9f33019a6"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
+name = "hadris-part"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1955de1ac95fb0b4db1a1758e08d1f6347a7c4404cd3dcf96990ab628d483148"
+dependencies = [
+ "bytemuck",
+ "hadris-io",
+ "hadris-macros",
 ]
 
 [[package]]
@@ -5597,6 +5768,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "noalloc"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a2537501480803dd22fbd79a39ea83318caba3ba936f7554f7139f4180faa94"
+
+[[package]]
 name = "nodrop"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6034,6 +6211,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c92d4ddb4bd7b50d730c215ff871754d0da6b2178849f8a2a2ab69712d0c073b"
 dependencies = [
  "objc",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -7201,6 +7387,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-demangle"
+version = "0.1.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d"
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8035,6 +8227,9 @@ name = "spin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "spirv"
@@ -10762,6 +10957,15 @@ name = "xxhash-rust"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
+
+[[package]]
+name = "xz4rust"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1053c1562c16e3760559c390d3b690ae6b524c200eb9a7ddb5d43c77d000832d"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "yazi"

@@ -88,6 +88,7 @@ pub async fn boot_selected_device(
     let stage0_opts = Stage0Options {
         switchroot_fs: Stage0SwitchrootFs::Erofs,
         extra_modules: vec!["erofs".to_string()],
+        kernel_override: None,
         dtb_override: None,
         dtbo_overlays,
         enable_serial: boot_config.enable_serial,

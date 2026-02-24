@@ -14,11 +14,16 @@ const GPT_MAX_PARTITION_TABLE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GptPartitionSelector {
+    PartLabel(String),
     PartUuid(String),
     Index(u32),
 }
 
 impl GptPartitionSelector {
+    pub fn part_label(value: impl Into<String>) -> Self {
+        Self::PartLabel(value.into())
+    }
+
     pub fn part_uuid(value: impl Into<String>) -> Self {
         Self::PartUuid(value.into())
     }
@@ -31,6 +36,7 @@ impl GptPartitionSelector {
 impl fmt::Display for GptPartitionSelector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PartLabel(value) => write!(f, "partlabel={value}"),
             Self::PartUuid(value) => write!(f, "partuuid={value}"),
             Self::Index(value) => write!(f, "index={value}"),
         }
@@ -451,6 +457,45 @@ fn select_partition_entry(
     let entry_count = table.len() / partition_entry_size;
 
     match selector {
+        GptPartitionSelector::PartLabel(raw_label) => {
+            let target = raw_label.trim();
+            if target.is_empty() {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    "GPT partition label is empty",
+                ));
+            }
+
+            for index in 0..entry_count {
+                let entry_index = u32::try_from(index).map_err(|_| {
+                    GibbloxError::with_message(
+                        GibbloxErrorKind::OutOfRange,
+                        "partition index exceeds u32 range",
+                    )
+                })?;
+                let offset = index * partition_entry_size;
+                let raw_entry = &table[offset..offset + partition_entry_size];
+                let entry = parse_partition_entry(raw_entry, entry_index)?;
+                if entry.is_unused() {
+                    continue;
+                }
+                let label = parse_partition_label(raw_entry)?;
+                if label == target {
+                    if entry.last_lba < entry.first_lba {
+                        return Err(GibbloxError::with_message(
+                            GibbloxErrorKind::InvalidInput,
+                            "selected GPT partition has invalid LBA range",
+                        ));
+                    }
+                    return Ok(entry);
+                }
+            }
+
+            Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "GPT partition label not found",
+            ))
+        }
         GptPartitionSelector::Index(index) => {
             let index_usize = usize::try_from(*index).map_err(|_| {
                 GibbloxError::with_message(
@@ -539,6 +584,37 @@ fn parse_partition_entry(raw: &[u8], index: u32) -> GibbloxResult<GptPartitionEn
         first_lba,
         last_lba,
     })
+}
+
+fn parse_partition_label(raw: &[u8]) -> GibbloxResult<String> {
+    if raw.len() < GPT_MIN_PARTITION_ENTRY_SIZE {
+        return Err(GibbloxError::with_message(
+            GibbloxErrorKind::InvalidInput,
+            "GPT partition entry is too short",
+        ));
+    }
+
+    let name_raw = &raw[56..128];
+    let mut units = [0u16; 36];
+    for (idx, chunk) in name_raw.chunks_exact(2).enumerate() {
+        units[idx] = u16::from_le_bytes([chunk[0], chunk[1]]);
+    }
+
+    let end = units
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(units.len());
+    let mut out = String::new();
+    for decoded in core::char::decode_utf16(units[..end].iter().copied()) {
+        let ch = decoded.map_err(|_| {
+            GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "GPT partition label is not valid UTF-16",
+            )
+        })?;
+        out.push(ch);
+    }
+    Ok(out)
 }
 
 fn validate_selected_partition(
@@ -913,6 +989,29 @@ mod tests {
     }
 
     #[test]
+    fn gpt_reader_selects_partition_by_partlabel() {
+        let (disk, partition_one_data) = build_test_gpt_disk();
+        let reader = FakeReader {
+            block_size: TEST_BLOCK_SIZE as u32,
+            data: disk,
+        };
+
+        let gpt = block_on(GptBlockReader::new(
+            reader,
+            GptPartitionSelector::part_label("rootfs"),
+            1024,
+        ))
+        .expect("construct GPT partition reader");
+
+        assert_eq!(gpt.partition_index(), 0);
+        assert_eq!(gpt.partition_partuuid(), TEST_PART1_UUID);
+
+        let mut out = vec![0u8; 1024];
+        block_on(gpt.read_blocks(0, &mut out, ReadContext::FOREGROUND)).expect("read block");
+        assert_eq!(&out[..], &partition_one_data[..1024]);
+    }
+
+    #[test]
     fn gpt_reader_reports_missing_partuuid() {
         let (disk, _partition_one_data) = build_test_gpt_disk();
         let reader = FakeReader {
@@ -1040,8 +1139,8 @@ mod tests {
         let table_start = TEST_BLOCK_SIZE * 2;
         let table_end = table_start + TEST_ENTRY_SIZE * TEST_ENTRY_COUNT;
         let table = &mut disk[table_start..table_end];
-        write_partition_entry(table, 0, TEST_PART1_UUID, 40, 42);
-        write_partition_entry(table, 1, TEST_PART2_UUID, 50, 51);
+        write_partition_entry(table, 0, TEST_PART1_UUID, "rootfs", 40, 42);
+        write_partition_entry(table, 1, TEST_PART2_UUID, "userdata", 50, 51);
         let table_crc32 = crc32_ieee(table);
         {
             let header = &mut disk[header_start..header_end];
@@ -1069,6 +1168,7 @@ mod tests {
         table: &mut [u8],
         index: usize,
         partuuid: &str,
+        partlabel: &str,
         first_lba: u64,
         last_lba: u64,
     ) {
@@ -1080,5 +1180,15 @@ mod tests {
         entry[16..32].copy_from_slice(&parse_guid_text_to_disk_bytes(partuuid).expect("partuuid"));
         entry[32..40].copy_from_slice(&first_lba.to_le_bytes());
         entry[40..48].copy_from_slice(&last_lba.to_le_bytes());
+
+        let encoded: alloc::vec::Vec<u16> = partlabel.encode_utf16().collect();
+        assert!(
+            encoded.len() <= 36,
+            "partition label too long for GPT test entry"
+        );
+        for (idx, unit) in encoded.iter().enumerate() {
+            let dst = 56 + idx * 2;
+            entry[dst..dst + 2].copy_from_slice(&unit.to_le_bytes());
+        }
     }
 }
