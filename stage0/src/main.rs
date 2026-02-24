@@ -1,6 +1,6 @@
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{anyhow, ensure, Context, Result};
 use clap::{Parser, ValueEnum};
-use drm::{ClientCapability, Device as _, buffer::Buffer as _, control::Device as _};
+use drm::{buffer::Buffer as _, control::Device as _, ClientCapability, Device as _};
 mod ostree;
 use ostree::{detect_ostree_layout, setup_ostree_runtime_mounts};
 use std::io::{Read, Write};
@@ -10,7 +10,7 @@ use std::{
     fs::File,
     io,
     os::fd::{AsFd, AsRawFd, BorrowedFd},
-    os::unix::fs::{FileTypeExt, symlink},
+    os::unix::fs::{symlink, FileTypeExt},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     sync::OnceLock,
@@ -20,11 +20,11 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::prelude::*;
 use usb_gadget::{
-    Class, Config, Gadget, Id, RegGadget, Strings,
     function::{
         custom::{Custom, CustomBuilder, Endpoint, EndpointDirection, Interface, TransferType},
         serial::{Serial, SerialClass},
     },
+    Class, Config, Gadget, Id, RegGadget, Strings,
 };
 
 struct KmsgWriter {
@@ -78,14 +78,12 @@ enum Stage0Role {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Stage0Rootfs {
     Erofs,
-    Ext4,
 }
 
 impl Stage0Rootfs {
     fn from_stage0_value(value: &str) -> Option<Self> {
         match value {
             "erofs" => Some(Self::Erofs),
-            "ext4" => Some(Self::Ext4),
             _ => None,
         }
     }
@@ -93,14 +91,12 @@ impl Stage0Rootfs {
     fn as_str(self) -> &'static str {
         match self {
             Self::Erofs => "erofs",
-            Self::Ext4 => "ext4",
         }
     }
 
     fn mount_data(self) -> Option<&'static str> {
         match self {
             Self::Erofs => None,
-            Self::Ext4 => Some("noload"),
         }
     }
 }
@@ -598,7 +594,7 @@ fn stage0_rootfs() -> Result<Stage0Rootfs> {
         return Err(anyhow!("missing required stage0.rootfs setting"));
     };
     Stage0Rootfs::from_stage0_value(raw.as_str())
-        .ok_or_else(|| anyhow!("invalid stage0.rootfs value '{raw}' (expected 'erofs' or 'ext4')"))
+        .ok_or_else(|| anyhow!("invalid stage0.rootfs value '{raw}' (expected 'erofs')"))
 }
 
 fn stage0_config() -> &'static HashMap<String, String> {
@@ -1739,10 +1735,6 @@ mod tests {
         assert_eq!(
             Stage0Rootfs::from_stage0_value("erofs"),
             Some(Stage0Rootfs::Erofs)
-        );
-        assert_eq!(
-            Stage0Rootfs::from_stage0_value("ext4"),
-            Some(Stage0Rootfs::Ext4)
         );
         assert_eq!(Stage0Rootfs::from_stage0_value("xfs"), None);
     }

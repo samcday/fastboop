@@ -57,14 +57,12 @@ pub struct Stage0Options {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Stage0SwitchrootFs {
     Erofs,
-    Ext4,
 }
 
 impl Stage0SwitchrootFs {
     fn as_stage0_value(self) -> &'static str {
         match self {
             Self::Erofs => "erofs",
-            Self::Ext4 => "ext4",
         }
     }
 
