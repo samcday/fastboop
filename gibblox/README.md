@@ -37,6 +37,7 @@ To gibblox you will always be just another block.
 - `gibblox-casync-std`: native index/chunk source + integrated chunk cache/store.
 - `gibblox-casync-web`: wasm-only index/chunk source + CacheStorage-backed chunk store.
 - `gibblox-iso9660`: ISO9660 file-backed block reader.
+- `gibblox-ext4`: ext4 file-backed block reader and async ext4 adapter.
 - `gibblox-http`: HTTP Range-backed block reader (native + wasm).
 - `gibblox-web-file`: browser `File`-backed block reader for wasm targets.
 - `gibblox-cache`: cache layer and cache file format logic.
