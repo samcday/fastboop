@@ -22,9 +22,9 @@ pub struct DetectArgs {
     #[arg(long)]
     pub device_profile: Option<String>,
 
-    /// Wait up to N seconds for a matching device (0 = infinite).
-    #[arg(long, default_value_t = 0)]
-    pub wait: u64,
+    /// Wait up to N seconds for a matching device (0 = infinite). Disabled by default.
+    #[arg(long)]
+    pub wait: Option<u64>,
 }
 
 pub async fn run_detect(args: DetectArgs) -> Result<()> {
@@ -55,12 +55,14 @@ pub async fn run_detect(args: DetectArgs) -> Result<()> {
     let filters = profile_filters(&profiles);
     let mut watcher = DeviceWatcher::new(&filters).context("starting USB hotplug watcher")?;
 
-    let wait = Duration::from_secs(args.wait);
-    let deadline = if wait.is_zero() {
-        None
-    } else {
-        Some(Instant::now() + wait)
-    };
+    let wait = args.wait.map(Duration::from_secs);
+    let deadline = wait.and_then(|wait| {
+        if wait.is_zero() {
+            None
+        } else {
+            Some(Instant::now() + wait)
+        }
+    });
 
     let mut waiting = false;
     loop {
@@ -76,6 +78,11 @@ pub async fn run_detect(args: DetectArgs) -> Result<()> {
                 return Ok(());
             }
             Poll::Pending => {
+                let Some(wait) = wait else {
+                    eprintln!("No matching fastboot devices detected.");
+                    return Ok(());
+                };
+
                 if !waiting {
                     waiting = true;
                     if wait.is_zero() {
