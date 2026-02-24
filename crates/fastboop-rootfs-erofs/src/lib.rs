@@ -4,8 +4,10 @@ use std::{path::Component, path::Path};
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use fastboop_core::{LruBlockReader, PagedBlockReader, RootfsEntryType, RootfsProvider};
-use gibblox_core::{BlockReader, GibbloxErrorKind, ReadContext};
+use fastboop_core::{RootfsEntryType, RootfsProvider};
+use gibblox_core::{
+    BlockReader, ByteRangeReader, GibbloxErrorKind, LruBlockReader, PagedBlockReader, ReadContext,
+};
 
 const DIRENT_SIZE: usize = 12;
 pub const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
@@ -68,8 +70,11 @@ impl ErofsRootfs {
             bail!("source block size must be non-zero power of two");
         }
         let adapter = GibbloxReadAtAdapter {
-            inner: Arc::new(paged),
-            block_size: source_block_size as usize,
+            byte_reader: ByteRangeReader::new(
+                Arc::new(paged),
+                source_block_size as usize,
+                image_size_bytes,
+            ),
         };
         let fs = gibblox_core::erofs_rs::EroFS::from_image(adapter, image_size_bytes)
             .await
@@ -420,8 +425,7 @@ where
 
 #[derive(Clone)]
 struct GibbloxReadAtAdapter {
-    inner: Arc<dyn BlockReader>,
-    block_size: usize,
+    byte_reader: ByteRangeReader,
 }
 
 #[async_trait]
@@ -431,38 +435,10 @@ impl gibblox_core::erofs_rs::ReadAt for GibbloxReadAtAdapter {
             return Ok(0);
         }
 
-        let bs = self.block_size as u64;
-        let start = (offset / bs) * bs;
-        let end = offset.checked_add(buf.len() as u64).ok_or_else(|| {
-            gibblox_core::erofs_rs::Error::OutOfBounds("range overflow".to_string())
-        })?;
-        let aligned_end = end.div_ceil(bs) * bs;
-        let aligned_len = (aligned_end - start) as usize;
-
-        let mut scratch = vec![0u8; aligned_len];
-        let mut filled = 0usize;
-        while filled < scratch.len() {
-            let lba = (start as usize + filled) / self.block_size;
-            let read = self
-                .inner
-                .read_blocks(lba as u64, &mut scratch[filled..], ReadContext::FOREGROUND)
-                .await
-                .map_err(map_gibblox_err)?;
-            if read == 0 {
-                return Err(gibblox_core::erofs_rs::Error::OutOfBounds(
-                    "unexpected EOF while servicing aligned read".to_string(),
-                ));
-            }
-            if read % self.block_size != 0 && filled + read < scratch.len() {
-                return Err(gibblox_core::erofs_rs::Error::OutOfBounds(
-                    "unaligned short read from block source".to_string(),
-                ));
-            }
-            filled += read;
-        }
-
-        let head = (offset - start) as usize;
-        buf.copy_from_slice(&scratch[head..head + buf.len()]);
+        self.byte_reader
+            .read_exact_at(offset, buf, ReadContext::FOREGROUND)
+            .await
+            .map_err(map_gibblox_err)?;
         Ok(buf.len())
     }
 }

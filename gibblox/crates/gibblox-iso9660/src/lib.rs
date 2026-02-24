@@ -4,7 +4,9 @@ extern crate alloc;
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use async_trait::async_trait;
-use gibblox_core::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+use gibblox_core::{
+    BlockReader, ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
+};
 use tracing::{info, trace};
 
 const ISO_SECTOR_SIZE: usize = 2048;
@@ -18,9 +20,8 @@ pub struct IsoFileBlockReader {
     file_size_bytes: u64,
     file_path: String,
     file_offset_bytes: u64,
-    source_size_bytes: u64,
     source: Arc<dyn BlockReader>,
-    source_block_size: usize,
+    byte_reader: ByteRangeReader,
 }
 
 impl IsoFileBlockReader {
@@ -54,15 +55,19 @@ impl IsoFileBlockReader {
             })?;
 
         let source: Arc<dyn BlockReader> = Arc::new(source);
-        let byte_reader = SourceByteReader {
-            inner: Arc::clone(&source),
-            block_size: source_block_size as usize,
-            size_bytes: source_size_bytes,
-        };
+        let byte_reader = ByteRangeReader::new(
+            Arc::clone(&source),
+            source_block_size as usize,
+            source_size_bytes,
+        );
 
         let mut pvd = [0u8; ISO_SECTOR_SIZE];
         byte_reader
-            .read_exact_at(PVD_SECTOR * ISO_SECTOR_SIZE as u64, &mut pvd)
+            .read_exact_at(
+                PVD_SECTOR * ISO_SECTOR_SIZE as u64,
+                &mut pvd,
+                ReadContext::FOREGROUND,
+            )
             .await?;
         if pvd[0] != 1 || &pvd[1..6] != VD_MAGIC || pvd[6] != VD_VERSION {
             return Err(GibbloxError::with_message(
@@ -133,9 +138,8 @@ impl IsoFileBlockReader {
             file_size_bytes,
             file_path: identity_path,
             file_offset_bytes,
-            source_size_bytes,
             source,
-            source_block_size: source_block_size as usize,
+            byte_reader,
         })
     }
 
@@ -190,11 +194,6 @@ impl BlockReader for IsoFileBlockReader {
         let source_offset = self.file_offset_bytes.checked_add(offset).ok_or_else(|| {
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset overflow")
         })?;
-        let byte_reader = SourceByteReader {
-            inner: Arc::clone(&self.source),
-            block_size: self.source_block_size,
-            size_bytes: self.source_size_bytes,
-        };
 
         trace!(
             lba,
@@ -202,69 +201,13 @@ impl BlockReader for IsoFileBlockReader {
             requested = buf.len(),
             "reading file blocks from ISO9660"
         );
-        byte_reader
-            .read_exact_at(source_offset, &mut buf[..read_len])
+        self.byte_reader
+            .read_exact_at(source_offset, &mut buf[..read_len], ReadContext::FOREGROUND)
             .await?;
         if read_len < buf.len() {
             buf[read_len..].fill(0);
         }
         Ok(buf.len())
-    }
-}
-
-#[derive(Clone)]
-struct SourceByteReader {
-    inner: Arc<dyn BlockReader>,
-    block_size: usize,
-    size_bytes: u64,
-}
-
-impl SourceByteReader {
-    async fn read_exact_at(&self, offset: u64, out: &mut [u8]) -> GibbloxResult<()> {
-        if out.is_empty() {
-            return Ok(());
-        }
-        let end = offset.checked_add(out.len() as u64).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "range overflow")
-        })?;
-        if end > self.size_bytes {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "read range exceeds source size",
-            ));
-        }
-
-        let bs = self.block_size as u64;
-        let aligned_start = (offset / bs) * bs;
-        let aligned_end = end.div_ceil(bs) * bs;
-        let aligned_len = (aligned_end - aligned_start) as usize;
-
-        let mut scratch = vec![0u8; aligned_len];
-        let mut filled = 0usize;
-        while filled < scratch.len() {
-            let lba = (aligned_start as usize + filled) / self.block_size;
-            let read = self
-                .inner
-                .read_blocks(lba as u64, &mut scratch[filled..], ReadContext::FOREGROUND)
-                .await?;
-            if read == 0 {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "unexpected EOF while servicing aligned read",
-                ));
-            }
-            if read % self.block_size != 0 && filled + read < scratch.len() {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::Io,
-                    "unaligned short read from block source",
-                ));
-            }
-            filled += read;
-        }
-
-        let head = (offset - aligned_start) as usize;
-        out.copy_from_slice(&scratch[head..head + out.len()]);
-        Ok(())
     }
 }
 
@@ -287,7 +230,7 @@ impl DirRecord {
 }
 
 async fn resolve_path(
-    source: &SourceByteReader,
+    source: &ByteRangeReader,
     logical_block_size: u64,
     root: &DirRecord,
     path: &str,
@@ -342,7 +285,7 @@ async fn resolve_path(
 }
 
 async fn read_dir_entries(
-    source: &SourceByteReader,
+    source: &ByteRangeReader,
     logical_block_size: u64,
     dir: &DirRecord,
 ) -> GibbloxResult<Vec<DirRecord>> {
@@ -353,7 +296,9 @@ async fn read_dir_entries(
         .ok_or_else(|| {
             GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "directory offset overflow")
         })?;
-    source.read_exact_at(offset, &mut data).await?;
+    source
+        .read_exact_at(offset, &mut data, ReadContext::FOREGROUND)
+        .await?;
 
     let mut entries = Vec::new();
     let sector_size = logical_block_size as usize;

@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::{format, string::String};
 use gibblox_core::{GibbloxError, GibbloxErrorKind};
 
 pub(crate) mod archive;
@@ -31,10 +31,6 @@ impl ZipError {
         Self::new(GibbloxErrorKind::OutOfRange, message)
     }
 
-    pub(crate) fn io(message: impl Into<String>) -> Self {
-        Self::new(GibbloxErrorKind::Io, message)
-    }
-
     pub(crate) fn unsupported(message: impl Into<String>) -> Self {
         Self::new(GibbloxErrorKind::Unsupported, message)
     }
@@ -51,5 +47,15 @@ impl ZipError {
 impl From<ZipError> for GibbloxError {
     fn from(value: ZipError) -> Self {
         GibbloxError::with_message(value.kind(), value.message())
+    }
+}
+
+impl From<GibbloxError> for ZipError {
+    fn from(value: GibbloxError) -> Self {
+        let message = value
+            .message()
+            .map(String::from)
+            .unwrap_or_else(|| format!("{value}"));
+        Self::new(value.kind(), message)
     }
 }
