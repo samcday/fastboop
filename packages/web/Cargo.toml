@@ -25,7 +25,7 @@ smoo-host-blocksource-gibblox = { path = "../../crates/smoo-host-blocksource-gib
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "registry", "std"] }
 tracing-wasm = "0.2.1"
-futures-channel = "0.3"
+futures-channel = { workspace = true }
 futures-util = { workspace = true, features = ["alloc", "async-await"] }
 gloo-timers = { version = "0.3.0", features = ["futures"] }
 js-sys = "0.3.82"
