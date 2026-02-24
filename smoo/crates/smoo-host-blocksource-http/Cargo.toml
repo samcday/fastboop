@@ -23,7 +23,7 @@ reqwest = { version = "0.12.8", default-features = false, features = ["http2", "
 tokio = { workspace = true, features = ["rt", "net", "time"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = { version = "0.2.95", optional = true }
+wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { version = "0.4.45", optional = true }
 js-sys = { workspace = true, optional = true }
 futures-util = { workspace = true, features = ["std"], optional = true }
