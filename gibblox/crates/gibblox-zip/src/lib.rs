@@ -153,8 +153,7 @@ impl BlockReader for ZipEntryBlockReader {
         })?;
         self.byte_reader
             .read_exact_at(source_offset, &mut buf[..read_len], ctx)
-            .await
-            .map_err(GibbloxError::from)?;
+            .await?;
 
         if read_len < buf.len() {
             buf[read_len..].fill(0);

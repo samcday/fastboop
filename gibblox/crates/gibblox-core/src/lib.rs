@@ -2,14 +2,23 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate std;
+
 use alloc::{boxed::Box, string::String, sync::Arc};
 use async_trait::async_trait;
 use core::{fmt, hash::Hasher};
 
+mod byte_range;
 mod erofs;
+mod lru;
+mod paged;
 
+pub use byte_range::ByteRangeReader;
 pub use erofs::EroBlockReader;
 pub use erofs_rs;
+pub use lru::{LruBlockReader, LruConfig};
+pub use paged::{PagedBlockConfig, PagedBlockReader};
 
 pub type GibbloxResult<T> = core::result::Result<T, GibbloxError>;
 

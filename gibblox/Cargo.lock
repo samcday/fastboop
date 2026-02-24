@@ -509,12 +509,15 @@ dependencies = [
 name = "gibblox-core"
 version = "0.0.1"
 dependencies = [
+ "async-lock",
  "async-trait",
  "erofs-rs",
  "futures",
+ "futures-channel",
  "gibblox-cache",
  "gibblox-cache-store-std",
  "gibblox-file",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
@@ -581,7 +584,6 @@ dependencies = [
 name = "gibblox-zip"
 version = "0.0.1"
 dependencies = [
- "async-lock",
  "async-trait",
  "futures",
  "gibblox-core",

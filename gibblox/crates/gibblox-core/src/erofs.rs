@@ -5,12 +5,13 @@ use alloc::{
     boxed::Box,
     string::{String, ToString},
     sync::Arc,
-    vec,
 };
 use async_trait::async_trait;
 use tracing::{info, trace};
 
-use crate::{BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+use crate::{
+    BlockReader, ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
+};
 
 /// File-backed block reader sourced from a file inside an EROFS image.
 pub struct EroBlockReader {
@@ -53,9 +54,13 @@ impl EroBlockReader {
                 GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "image size overflow")
             })?;
 
+        let source: Arc<dyn BlockReader> = Arc::new(source);
         let adapter = CoreBlockAdapter {
-            inner: Arc::new(source),
-            block_size: source_block_size as usize,
+            byte_reader: ByteRangeReader::new(
+                Arc::clone(&source),
+                source_block_size as usize,
+                image_size_bytes,
+            ),
         };
 
         let fs = erofs_rs::EroFS::from_image(adapter, image_size_bytes)
@@ -156,8 +161,7 @@ impl BlockReader for EroBlockReader {
 
 #[derive(Clone)]
 struct CoreBlockAdapter {
-    inner: Arc<dyn BlockReader>,
-    block_size: usize,
+    byte_reader: ByteRangeReader,
 }
 
 #[async_trait]
@@ -167,38 +171,10 @@ impl erofs_rs::ReadAt for CoreBlockAdapter {
             return Ok(0);
         }
 
-        let bs = self.block_size as u64;
-        let start = (offset / bs) * bs;
-        let end = offset
-            .checked_add(buf.len() as u64)
-            .ok_or_else(|| erofs_rs::Error::OutOfBounds("range overflow".to_string()))?;
-        let aligned_end = end.div_ceil(bs) * bs;
-        let aligned_len = (aligned_end - start) as usize;
-
-        let mut scratch = vec![0u8; aligned_len];
-        let mut filled = 0usize;
-        while filled < scratch.len() {
-            let lba = (start as usize + filled) / self.block_size;
-            let read = self
-                .inner
-                .read_blocks(lba as u64, &mut scratch[filled..], ReadContext::FOREGROUND)
-                .await
-                .map_err(|err| erofs_rs::Error::OutOfBounds(err.to_string()))?;
-            if read == 0 {
-                return Err(erofs_rs::Error::OutOfBounds(
-                    "unexpected EOF while servicing aligned read".to_string(),
-                ));
-            }
-            if read % self.block_size != 0 && filled + read < scratch.len() {
-                return Err(erofs_rs::Error::OutOfBounds(
-                    "unaligned short read from block source".to_string(),
-                ));
-            }
-            filled += read;
-        }
-
-        let head = (offset - start) as usize;
-        buf.copy_from_slice(&scratch[head..head + buf.len()]);
+        self.byte_reader
+            .read_exact_at(offset, buf, ReadContext::FOREGROUND)
+            .await
+            .map_err(|err| erofs_rs::Error::OutOfBounds(err.to_string()))?;
         Ok(buf.len())
     }
 }
