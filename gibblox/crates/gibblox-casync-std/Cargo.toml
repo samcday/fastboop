@@ -18,6 +18,6 @@ tracing = "0.1.41"
 url = { workspace = true }
 
 [dev-dependencies]
-sha2 = { version = "0.10.9", default-features = false }
+sha2 = { workspace = true }
 tempfile = "3.23.0"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
