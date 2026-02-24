@@ -1,15 +1,15 @@
 # Boot Profiles
 
-Boot Profiles describe where boot artifacts come from and how stage0 should be adjusted per image/device.
+Think of [Stage0](STAGE0.md) as the cursed initrd and Boot Profiles as the cursed config blob for it.
 
-Use them when a plain rootfs path/URL is not enough and you need explicit artifact pipelines,
-overlay injection, or per-device stage0 tuning.
+Boot Profiles describe where boot artifacts come from and how stage0 should be adjusted per image/device.
+Use them when a plain rootfs path/URL is not enough.
 
 ## Source of Truth
 
-- Schema types: `crates/fastboop-schema/src/lib.rs`
-- Codec + validation: `crates/fastboop-core/src/bootprofile.rs`
-- CLI tooling: `cli/src/commands/bootprofile.rs`
+- Schema types: [`crates/fastboop-schema/src/lib.rs`](https://github.com/samcday/fastboop/blob/main/crates/fastboop-schema/src/lib.rs)
+- Codec + validation: [`crates/fastboop-core/src/bootprofile.rs`](https://github.com/samcday/fastboop/blob/main/crates/fastboop-core/src/bootprofile.rs)
+- CLI tooling: [`cli/src/commands/bootprofile.rs`](https://github.com/samcday/fastboop/blob/main/cli/src/commands/bootprofile.rs)
 
 ## Two Representations
 
@@ -30,13 +30,49 @@ rootfs:
 
 stage0:
   extra_modules:
-    - usb_f_fs
+    - ff-memless
+```
+
+## Maximal Manifest (Pipeline-Heavy)
+
+```yaml
+id: generic-edge-phone
+display_name: Generic edge image
+
+rootfs:
+  ext4:
+    mbr:
+      index: 1
+      android_sparseimg:
+        xz:
+          http: https://downloads.example.com/images/generic-edge.img.xz
+
+kernel:
+  path: /vmlinuz
+  fat:
+    mbr:
+      index: 0
+      android_sparseimg:
+        xz:
+          http: https://downloads.example.com/images/generic-edge.img.xz
+
+dtbs:
+  path: /dtbs
+  fat:
+    mbr:
+      index: 0
+      android_sparseimg:
+        xz:
+          http: https://downloads.example.com/images/generic-edge.img.xz
+
+extra_cmdline: console=ttyMSM0,115200n8
 ```
 
 ## Validation Highlights
 
-- Stage0 switchroot currently supports `erofs` and `ext4` rootfs types.
-- Artifact pipeline depth is capped.
+- `rootfs` schema supports `erofs`, `ext4`, and `fat`.
+- Stage0 lower-root currently accepts `erofs` and `ext4`; use `fat` for kernel/dtbs source pipelines.
+- Artifact pipeline depth is capped at 16 steps.
 - GPT/MBR selector steps must choose exactly one selector field.
 - `kernel.path` and `dtbs.path` (if present) must be non-empty.
 - `dt_overlays` compile/decompile requires `dtc`.

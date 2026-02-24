@@ -2,6 +2,12 @@
 
 fastboop is a non-mutating live-boot pipeline for fastboot-class devices.
 
+If this stack feels alien at first, keep this map in your head:
+
+- Device Profile (DevPro): "what is this device and how can it boot safely?"
+- Boot Profile: "where do artifacts come from and what stage0 tweaks are needed?"
+- Stage0: tiny PID1 initrd that launches smoo and gets out of the way.
+
 At a high level, a boot session is:
 
 1. detect USB device
@@ -11,6 +17,17 @@ At a high level, a boot session is:
 5. hand off runtime block export to smoo
 
 No flashing, no slot switching, no persistent install actions.
+
+## First 60 Seconds
+
+```sh
+cargo run -p fastboop-cli -- --help
+cargo run -p fastboop-cli -- detect --help
+cargo run -p fastboop-cli -- stage0 --help
+cargo run -p fastboop-cli -- bootprofile --help
+```
+
+All four commands are safe read/help entrypoints and do not mutate devices.
 
 ## Hard Rules
 

@@ -7,8 +7,9 @@ They are not distro policy, installer policy, or user preference storage.
 
 ## Source of Truth
 
-- Schema types: `crates/fastboop-schema/src/lib.rs`
-- Built-in profiles: `devprofiles.d/*.yaml`
+- Schema types: [`crates/fastboop-schema/src/lib.rs`](https://github.com/samcday/fastboop/blob/main/crates/fastboop-schema/src/lib.rs)
+- Built-in profiles (latest on main): [`devprofiles.d/`](https://github.com/samcday/fastboop/tree/main/devprofiles.d)
+- Profile loading logic: [`cli/src/devpros.rs`](https://github.com/samcday/fastboop/blob/main/cli/src/devpros.rs)
 - Runtime profile load path order:
   - `FASTBOOP_SCHEMA_PATH` (colon-separated)
   - `$XDG_CONFIG_HOME/fastboop/devpro` (or `~/.config/fastboop/devpro`)
