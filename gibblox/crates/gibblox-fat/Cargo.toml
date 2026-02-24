@@ -10,9 +10,10 @@ default = []
 std = []
 
 [dependencies]
-async-trait = "0.1.89"
 gibblox-core = { path = "../gibblox-core" }
+hadris-fat = { version = "1.0.1", default-features = false, features = ["alloc", "async", "read", "lfn"] }
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 
 [dev-dependencies]
+async-trait = "0.1.89"
 futures = { version = "0.3.31", default-features = false, features = ["executor"] }
