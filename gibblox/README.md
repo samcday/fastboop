@@ -1,4 +1,4 @@
-# gibblox
+# gibblox + gobblytes
 
 `༼;´༎ຶ ۝ ༎ຶ༽つ ┳━┳`  pl0x gib bl0x.
 
@@ -26,6 +26,7 @@ To gibblox you will always be just another block.
 - Keep core crates `no_std + alloc` where practical.
 
 ## Crates
+- `gobblytes-core`: core filesystem abstraction traits, OSTree wrapper, and test helpers.
 - `gibblox-core`: core traits and error types.
 - `gibblox-android-sparse`: Android sparse image block reader.
 - `gibblox-mbr`: MBR partition-backed block reader.

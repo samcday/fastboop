@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/gobblytes-core",
     "crates/gibblox-core",
     "crates/gibblox-android-sparse",
     "crates/gibblox-zip",
