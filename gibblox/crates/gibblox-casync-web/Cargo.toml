@@ -14,7 +14,7 @@ url = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 async-trait = { workspace = true }
 flate2 = { workspace = true, features = ["rust_backend"] }
-js-sys = "0.3.82"
+js-sys = { workspace = true }
 lzma-rs = { workspace = true }
 ruzstd = { workspace = true }
 wasm-bindgen = "0.2.105"

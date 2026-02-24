@@ -12,7 +12,7 @@ gibblox-cache = { path = "../gibblox-cache", default-features = false }
 gibblox-core = { path = "../gibblox-core", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3.82"
+js-sys = { workspace = true }
 wasm-bindgen = "0.2.95"
 wasm-bindgen-futures = "0.4.45"
 web-sys = { version = "0.3.82", features = ["FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions", "FileSystemReadWriteOptions", "FileSystemSyncAccessHandle", "StorageManager", "WorkerGlobalScope", "WorkerNavigator"] }
