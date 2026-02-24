@@ -611,6 +611,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-mbr"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "bytemuck",
+ "futures",
+ "gibblox-core",
+ "hadris-part",
+ "tracing",
+]
+
+[[package]]
 name = "gibblox-web-worker"
 version = "0.0.1"
 dependencies = [
@@ -709,6 +721,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af87dad5059eb288d6c8a3e539146136f55464ad16ecc5b72b8334e9f33019a6"
 dependencies = [
  "proc-macro2",
+]
+
+[[package]]
+name = "hadris-part"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1955de1ac95fb0b4db1a1758e08d1f6347a7c4404cd3dcf96990ab628d483148"
+dependencies = [
+ "bytemuck",
+ "hadris-io",
+ "hadris-macros",
 ]
 
 [[package]]
