@@ -5,8 +5,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use fastboop_core::fastboot::{FastbootProtocolError, ProbeError};
-use fastboop_core::{RootfsEntryType, RootfsProvider};
-use fastboop_rootfs_erofs::{DEFAULT_IMAGE_BLOCK_SIZE, normalize_ostree_deployment_path};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
 use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
@@ -17,6 +15,8 @@ use gibblox_casync_std::{
 use gibblox_core::{BlockReader, ReadContext};
 use gibblox_file::StdFileBlockReader;
 use gibblox_http::HttpBlockReader;
+use gobblytes_core::{Filesystem, FilesystemEntryType, normalize_ostree_deployment_path};
+use gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE;
 use tracing::info;
 use url::Url;
 
@@ -199,13 +199,16 @@ pub(crate) fn parse_ostree_arg(raw: Option<&Option<String>>) -> Result<OstreeArg
     match raw {
         None => Ok(OstreeArg::Disabled),
         Some(None) => Ok(OstreeArg::AutoDetect),
-        Some(Some(path)) => Ok(OstreeArg::Explicit(normalize_ostree_deployment_path(path)?)),
+        Some(Some(path)) => Ok(OstreeArg::Explicit(
+            normalize_ostree_deployment_path(path)
+                .map_err(|err| anyhow!("normalize ostree deployment path: {err}"))?,
+        )),
     }
 }
 
 pub(crate) async fn auto_detect_ostree_deployment_path<P>(rootfs: &P) -> Result<String>
 where
-    P: RootfsProvider,
+    P: Filesystem,
     P::Error: core::fmt::Display,
 {
     const OSTREE_ROOT: &str = "/ostree";
@@ -250,7 +253,7 @@ where
 
 async fn sorted_dir_entries<P>(rootfs: &P, path: &str) -> Result<Vec<String>>
 where
-    P: RootfsProvider,
+    P: Filesystem,
     P::Error: core::fmt::Display,
 {
     let mut entries = rootfs
@@ -263,26 +266,26 @@ where
 
 async fn is_directory<P>(rootfs: &P, path: &str) -> Result<bool>
 where
-    P: RootfsProvider,
+    P: Filesystem,
     P::Error: core::fmt::Display,
 {
     let ty = rootfs
         .entry_type(path)
         .await
         .map_err(|err| anyhow!("read entry type {path}: {err}"))?;
-    Ok(matches!(ty, Some(RootfsEntryType::Directory)))
+    Ok(matches!(ty, Some(FilesystemEntryType::Directory)))
 }
 
 async fn is_symlink<P>(rootfs: &P, path: &str) -> Result<bool>
 where
-    P: RootfsProvider,
+    P: Filesystem,
     P::Error: core::fmt::Display,
 {
     let ty = rootfs
         .entry_type(path)
         .await
         .map_err(|err| anyhow!("read entry type {path}: {err}"))?;
-    Ok(matches!(ty, Some(RootfsEntryType::Symlink)))
+    Ok(matches!(ty, Some(FilesystemEntryType::Symlink)))
 }
 
 pub(crate) fn format_probe_error(
@@ -306,7 +309,7 @@ pub(crate) struct DirectoryRootfs {
 }
 
 #[allow(dead_code)]
-impl RootfsProvider for DirectoryRootfs {
+impl Filesystem for DirectoryRootfs {
     type Error = anyhow::Error;
 
     async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
@@ -342,7 +345,7 @@ impl RootfsProvider for DirectoryRootfs {
         Ok(names)
     }
 
-    async fn entry_type(&self, path: &str) -> Result<Option<RootfsEntryType>> {
+    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>> {
         let path = resolve_rooted(&self.root, path)?;
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
@@ -354,13 +357,13 @@ impl RootfsProvider for DirectoryRootfs {
         };
         let ty = metadata.file_type();
         let entry_type = if ty.is_file() {
-            RootfsEntryType::File
+            FilesystemEntryType::File
         } else if ty.is_dir() {
-            RootfsEntryType::Directory
+            FilesystemEntryType::Directory
         } else if ty.is_symlink() {
-            RootfsEntryType::Symlink
+            FilesystemEntryType::Symlink
         } else {
-            RootfsEntryType::Other
+            FilesystemEntryType::Other
         };
         Ok(Some(entry_type))
     }
@@ -408,69 +411,11 @@ fn resolve_rooted(root: &Path, path: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-
-    #[derive(Default)]
-    struct MockRootfs {
-        entry_types: BTreeMap<String, RootfsEntryType>,
-        directories: BTreeMap<String, Vec<String>>,
-    }
-
-    impl MockRootfs {
-        fn add_dir(&mut self, path: &str, entries: &[&str]) {
-            self.entry_types
-                .insert(path.to_string(), RootfsEntryType::Directory);
-            self.directories.insert(
-                path.to_string(),
-                entries.iter().map(|entry| (*entry).to_string()).collect(),
-            );
-        }
-
-        fn add_symlink(&mut self, path: &str) {
-            self.entry_types
-                .insert(path.to_string(), RootfsEntryType::Symlink);
-        }
-    }
-
-    impl RootfsProvider for MockRootfs {
-        type Error = anyhow::Error;
-
-        async fn read_all(&self, path: &str) -> Result<Vec<u8>, Self::Error> {
-            Err(anyhow!("unexpected read_all call for {path}"))
-        }
-
-        async fn read_range(
-            &self,
-            path: &str,
-            _offset: u64,
-            _len: usize,
-        ) -> Result<Vec<u8>, Self::Error> {
-            Err(anyhow!("unexpected read_range call for {path}"))
-        }
-
-        async fn read_dir(&self, path: &str) -> Result<Vec<String>, Self::Error> {
-            self.directories
-                .get(path)
-                .cloned()
-                .ok_or_else(|| anyhow!("missing directory {path}"))
-        }
-
-        async fn entry_type(&self, path: &str) -> Result<Option<RootfsEntryType>, Self::Error> {
-            Ok(self.entry_types.get(path).copied())
-        }
-
-        async fn read_link(&self, path: &str) -> Result<String, Self::Error> {
-            Err(anyhow!("unexpected read_link call for {path}"))
-        }
-
-        async fn exists(&self, path: &str) -> Result<bool, Self::Error> {
-            Ok(self.entry_types.contains_key(path) || self.directories.contains_key(path))
-        }
-    }
+    use gobblytes_core::MockFilesystem;
 
     #[tokio::test]
     async fn auto_detect_ostree_picks_first_sorted_candidate() {
-        let mut rootfs = MockRootfs::default();
+        let mut rootfs = MockFilesystem::default();
         rootfs.add_dir("/ostree", &["boot.1", "boot.0"]);
         rootfs.add_dir("/ostree/boot.0", &["fedora"]);
         rootfs.add_dir("/ostree/boot.0/fedora", &["aaa"]);
@@ -488,7 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_detect_ostree_errors_when_no_symlink_candidates_exist() {
-        let mut rootfs = MockRootfs::default();
+        let mut rootfs = MockFilesystem::default();
         rootfs.add_dir("/ostree", &["boot.1"]);
         rootfs.add_dir("/ostree/boot.1", &["fedora"]);
         rootfs.add_dir("/ostree/boot.1/fedora", &["aaa"]);

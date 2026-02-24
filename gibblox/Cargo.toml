@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/gobblytes-core",
+    "crates/gobblytes-erofs",
     "crates/gibblox-core",
     "crates/gibblox-android-sparse",
     "crates/gibblox-zip",

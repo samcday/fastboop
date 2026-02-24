@@ -14,10 +14,11 @@ use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, 
 use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
-use fastboop_rootfs_erofs::{ErofsRootfs, OstreeRootfs};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_core::{BlockReader, block_identity_string};
 use gibblox_zip::ZipEntryBlockReader;
+use gobblytes_core::OstreeFs as OstreeRootfs;
+use gobblytes_erofs::ErofsRootfs;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use url::Url;
@@ -325,9 +326,12 @@ async fn run_boot_inner(
         };
 
         let build = if let Some(ostree) = selected_ostree.as_deref() {
-            let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree).await?;
+            let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree)
+                .await
+                .map_err(|err| anyhow!("resolve ostree deployment path {ostree}: {err}"))?;
             debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
-            let provider = OstreeRootfs::new(provider, &resolved_ostree)?;
+            let provider = OstreeRootfs::new(provider, &resolved_ostree)
+                .map_err(|err| anyhow!("initialize ostree filesystem view: {err}"))?;
             build_stage0(
                 &profile,
                 &provider,

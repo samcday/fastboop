@@ -11,8 +11,9 @@ use alloc::vec::Vec;
 use dtoolkit::fdt::Fdt;
 use dtoolkit::model::{DeviceTree, DeviceTreeNode, DeviceTreeProperty};
 use dtoolkit::{Node, Property};
-use fastboop_core::{DeviceProfile, InjectMac, Personalization, RootfsProvider};
+use fastboop_core::{DeviceProfile, InjectMac, Personalization};
 use futures_util::future::{join, join_all};
+use gobblytes_core::Filesystem;
 
 const MODULES_LOAD_PATH: &str = "etc/modules-load.d/fastboop-stage0.conf";
 const MODULES_ROOT: &str = "lib/modules";
@@ -75,7 +76,7 @@ struct ModulesDir {
 }
 
 /// Build a minimal stage0 initrd containing fastboop stage0 as PID1 plus modules.
-pub async fn build_stage0<P: RootfsProvider>(
+pub async fn build_stage0<P: Filesystem>(
     profile: &DeviceProfile,
     rootfs: &P,
     opts: &Stage0Options,
@@ -416,7 +417,7 @@ fn is_firstboot_credential_key(key: &str) -> bool {
     )
 }
 
-async fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Error> {
+async fn detect_kernel<P: Filesystem>(rootfs: &P) -> Result<String, Stage0Error> {
     tracing::debug!("detect_kernel: searching /lib/modules and /usr/lib/modules");
     let (lib_modules, usr_modules) = join(
         find_kernel_in_modules(rootfs, "/lib/modules"),
@@ -469,7 +470,7 @@ async fn detect_kernel<P: RootfsProvider>(rootfs: &P) -> Result<String, Stage0Er
     Err(Stage0Error::MissingFile("kernel image".into()))
 }
 
-async fn find_kernel_in_modules<P: RootfsProvider>(
+async fn find_kernel_in_modules<P: Filesystem>(
     rootfs: &P,
     base: &str,
 ) -> Result<Option<String>, Stage0Error> {
@@ -526,7 +527,7 @@ async fn find_kernel_in_modules<P: RootfsProvider>(
     Ok(None)
 }
 
-async fn detect_modules_dir<P: RootfsProvider>(rootfs: &P) -> Result<ModulesDir, Stage0Error> {
+async fn detect_modules_dir<P: Filesystem>(rootfs: &P) -> Result<ModulesDir, Stage0Error> {
     let bases = ["/lib/modules", "/usr/lib/modules"];
     tracing::debug!("detect_modules_dir: locating module metadata root");
     for base in &bases {
@@ -564,7 +565,7 @@ async fn detect_modules_dir<P: RootfsProvider>(rootfs: &P) -> Result<ModulesDir,
     ))
 }
 
-async fn find_kernel_recursive<P: RootfsProvider>(
+async fn find_kernel_recursive<P: Filesystem>(
     rootfs: &P,
     start: &str,
     max_depth: usize,
@@ -636,7 +637,7 @@ fn is_kernel_name(name: &str) -> bool {
     name.starts_with("vmlinuz") || name.starts_with("Image") || name == "linux"
 }
 
-async fn load_modules_metadata<P: RootfsProvider>(
+async fn load_modules_metadata<P: Filesystem>(
     rootfs: &P,
     modules_dir: &ModulesDir,
 ) -> Result<(ModulesDep, ModulePaths, BTreeSet<String>), Stage0Error> {
@@ -680,7 +681,7 @@ async fn load_modules_metadata<P: RootfsProvider>(
     Ok((modules_dep, module_paths, modules_builtin))
 }
 
-async fn copy_module_indexes<P: RootfsProvider>(
+async fn copy_module_indexes<P: Filesystem>(
     rootfs: &P,
     modules_dir: &ModulesDir,
     image: &mut CpioImage,
@@ -731,7 +732,7 @@ async fn copy_module_indexes<P: RootfsProvider>(
     Ok(())
 }
 
-async fn select_dtb<P: RootfsProvider>(
+async fn select_dtb<P: Filesystem>(
     profile: &DeviceProfile,
     rootfs: &P,
 ) -> Result<String, Stage0Error> {
@@ -1425,7 +1426,7 @@ fn collect_module_read_plans(
     Ok(plans)
 }
 
-async fn read_modules_in_parallel<P: RootfsProvider>(
+async fn read_modules_in_parallel<P: Filesystem>(
     rootfs: &P,
     plans: &[ModuleReadPlan],
 ) -> Result<Vec<(String, Vec<u8>)>, Stage0Error> {

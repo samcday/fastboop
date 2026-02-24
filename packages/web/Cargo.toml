@@ -9,9 +9,9 @@ anyhow = { workspace = true }
 dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
-fastboop-rootfs-erofs = { path = "../../crates/fastboop-rootfs-erofs" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
+gobblytes-erofs = { path = "../../gibblox/crates/gobblytes-erofs" }
 gibblox-core = { path = "../../gibblox/crates/gibblox-core" }
 gibblox-cache = { path = "../../gibblox/crates/gibblox-cache", features = ["std"] }
 gibblox-cache-store-opfs = { path = "../../gibblox/crates/gibblox-cache-store-opfs" }
