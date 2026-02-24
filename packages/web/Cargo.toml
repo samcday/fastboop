@@ -29,7 +29,7 @@ futures-channel = { workspace = true }
 futures-util = { workspace = true, features = ["alloc", "async-await"] }
 gloo-timers = { version = "0.3.0", features = ["futures"] }
 js-sys = { workspace = true }
-wasm-bindgen = "0.2.95"
+wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = "0.4.45"
 web-sys = { version = "0.3.82", features = ["DedicatedWorkerGlobalScope", "Document", "Event", "HtmlCollection", "HtmlScriptElement", "MessageChannel", "MessageEvent", "MessagePort", "Navigator", "ReadableStream", "ReadableStreamDefaultReader", "Serial", "SerialOptions", "SerialPort", "SerialPortFilter", "SerialPortInfo", "SerialPortRequestOptions", "Usb", "UsbDevice", "UsbDeviceFilter", "UsbDeviceRequestOptions", "Window", "Worker", "WorkerGlobalScope", "WorkerNavigator", "WorkerOptions", "WorkerType"] }
 
