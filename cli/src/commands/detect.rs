@@ -15,6 +15,7 @@ use crate::devpros::{dedup_profiles, load_device_profiles, resolve_devpro_dirs};
 use super::format_probe_error;
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const NO_MATCHING_DEVICE_MSG: &str = "No matching fastboot devices detected.";
 
 #[derive(Args)]
 pub struct DetectArgs {
@@ -74,13 +75,11 @@ pub async fn run_detect(args: DetectArgs) -> Result<()> {
             }
             Poll::Ready(Ok(DeviceEvent::Left { .. })) => {}
             Poll::Ready(Err(err)) => {
-                eprintln!("USB watcher disconnected: {err}");
-                return Ok(());
+                bail!("USB watcher disconnected: {err}");
             }
             Poll::Pending => {
                 let Some(wait) = wait else {
-                    eprintln!("No matching fastboot devices detected.");
-                    return Ok(());
+                    bail!(NO_MATCHING_DEVICE_MSG);
                 };
 
                 if !waiting {
@@ -98,8 +97,7 @@ pub async fn run_detect(args: DetectArgs) -> Result<()> {
                 if let Some(deadline) = deadline {
                     let now = Instant::now();
                     if now >= deadline {
-                        eprintln!("No matching fastboot devices detected.");
-                        return Ok(());
+                        bail!(NO_MATCHING_DEVICE_MSG);
                     }
                     let remaining = deadline.saturating_duration_since(now);
                     tokio::time::sleep(remaining.min(IDLE_POLL_INTERVAL)).await;
