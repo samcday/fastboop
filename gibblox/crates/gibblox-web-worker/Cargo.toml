@@ -10,7 +10,7 @@ gibblox-core = { path = "../gibblox-core", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-channel = "0.3.31"
-futures-util = { version = "0.3.31", default-features = false, features = ["alloc", "async-await"] }
+futures-util = { workspace = true, features = ["alloc", "async-await"] }
 gibblox-blockreader-messageport = { path = "../gibblox-blockreader-messageport" }
 gloo-timers = { version = "0.3.0", features = ["futures"] }
 js-sys = "0.3.82"

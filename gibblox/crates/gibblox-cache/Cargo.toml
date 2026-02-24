@@ -13,7 +13,7 @@ std = ["futures-channel/std"]
 async-lock = "3.3"
 async-trait = { workspace = true }
 futures-channel = { version = "0.3.31", default-features = false, features = ["alloc"] }
-futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
+futures-util = { workspace = true, features = ["alloc"] }
 gibblox-core = { path = "../gibblox-core", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
 

@@ -35,3 +35,4 @@ memmap2 = { version = "0.9", default-features = false }
 rustix = { version = "1", default-features = false }
 tokio = "1.49.0"
 url = "2.5.8"
+futures-util = { version = "0.3.31", default-features = false }
