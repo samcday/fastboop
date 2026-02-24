@@ -118,23 +118,7 @@ impl FatFs {
     }
 
     pub async fn read_all(&self, path: &str) -> GibbloxResult<Vec<u8>> {
-        let resolved = self.resolve_required_entry(path).await?;
-        let entry = match resolved {
-            ResolvedEntry::Root => {
-                return Err(GibbloxError::with_message(
-                    GibbloxErrorKind::InvalidInput,
-                    format!("FAT path is not a regular file: {path}"),
-                ));
-            }
-            ResolvedEntry::Entry(entry) => *entry,
-        };
-
-        if classify_entry(&entry) != FatEntryType::File {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                format!("FAT path is not a regular file: {path}"),
-            ));
-        }
+        let entry = self.resolve_required_file_entry(path).await?;
 
         self.read_file_data(&entry).await
     }
@@ -144,15 +128,8 @@ impl FatFs {
             return Ok(Vec::new());
         }
 
-        let full = self.read_all(path).await?;
-        let offset = usize::try_from(offset).map_err(|_| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "range offset overflow")
-        })?;
-        if offset >= full.len() {
-            return Ok(Vec::new());
-        }
-        let end = full.len().min(offset.saturating_add(len));
-        Ok(full[offset..end].to_vec())
+        let entry = self.resolve_required_file_entry(path).await?;
+        self.read_file_range_data(&entry, offset, len).await
     }
 
     pub async fn read_dir(&self, path: &str) -> GibbloxResult<Vec<String>> {
@@ -199,6 +176,78 @@ impl FatFs {
             .read_to_vec()
             .await
             .map_err(|err| map_fat_error("read FAT file", err))
+    }
+
+    async fn read_file_range_data(
+        &self,
+        entry: &HFileEntry,
+        offset: u64,
+        len: usize,
+    ) -> GibbloxResult<Vec<u8>> {
+        let mut reader = HFileReader::new(&self.inner.fs, entry)
+            .map_err(|err| map_fat_error("open FAT file", err))?;
+
+        let offset = usize::try_from(offset).map_err(|_| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "range offset overflow")
+        })?;
+        let file_size = reader.size();
+        if offset >= file_size {
+            return Ok(Vec::new());
+        }
+
+        let mut bytes_to_skip = offset;
+        let mut scratch = [0u8; 4096];
+        while bytes_to_skip > 0 {
+            let chunk = bytes_to_skip.min(scratch.len());
+            let read = reader
+                .read(&mut scratch[..chunk])
+                .await
+                .map_err(|err| map_fat_error("skip FAT file range", err))?;
+            if read == 0 {
+                return Ok(Vec::new());
+            }
+            bytes_to_skip -= read;
+        }
+
+        let wanted = len.min(file_size - offset);
+        let mut out = alloc::vec![0u8; wanted];
+
+        let mut read_total = 0usize;
+        while read_total < wanted {
+            let read = reader
+                .read(&mut out[read_total..])
+                .await
+                .map_err(|err| map_fat_error("read FAT file range", err))?;
+            if read == 0 {
+                break;
+            }
+            read_total += read;
+        }
+
+        out.truncate(read_total);
+        Ok(out)
+    }
+
+    async fn resolve_required_file_entry(&self, path: &str) -> GibbloxResult<HFileEntry> {
+        let resolved = self.resolve_required_entry(path).await?;
+        let entry = match resolved {
+            ResolvedEntry::Root => {
+                return Err(GibbloxError::with_message(
+                    GibbloxErrorKind::InvalidInput,
+                    format!("FAT path is not a regular file: {path}"),
+                ));
+            }
+            ResolvedEntry::Entry(entry) => *entry,
+        };
+
+        if classify_entry(&entry) != FatEntryType::File {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                format!("FAT path is not a regular file: {path}"),
+            ));
+        }
+
+        Ok(entry)
     }
 
     async fn collect_dir_names(&self, dir: &HFatDir<'_>) -> GibbloxResult<Vec<String>> {
@@ -507,9 +556,19 @@ mod tests {
         let kernel = block_on(fs.read_all("/vmlinuz")).expect("read /vmlinuz");
         assert_eq!(&kernel, b"hello kernel");
 
+        let kernel_range = block_on(fs.read_range("/vmlinuz", 6, 6)).expect("read /vmlinuz range");
+        assert_eq!(&kernel_range, b"kernel");
+        let kernel_oob_range =
+            block_on(fs.read_range("/vmlinuz", 64, 8)).expect("read /vmlinuz out-of-range");
+        assert!(kernel_oob_range.is_empty());
+
         let dtb = block_on(fs.read_all("/dtbs/qcom/sdm845-oneplus-fajita.dtb"))
             .expect("read dtb long filename");
         assert_eq!(&dtb, &[1, 2, 3, 4]);
+
+        let dtb_range = block_on(fs.read_range("/dtbs/qcom/sdm845-oneplus-fajita.dtb", 1, 2))
+            .expect("read dtb range");
+        assert_eq!(&dtb_range, &[2, 3]);
 
         let dtb_upper = block_on(fs.exists("/DTBS/QCOM/SDM845-ONEPLUS-FAJITA.DTB"))
             .expect("case-insensitive exists");
