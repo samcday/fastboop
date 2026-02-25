@@ -79,8 +79,11 @@ pub fn Home() -> Element {
         let mut watcher_started = use_signal(|| false);
         let mut refresh = refresh;
         let mut candidates = candidates;
+        let startup_channel_preflight = startup_channel_preflight;
 
         use_effect(move || {
+            let startup_channel_ready =
+                matches!(startup_channel_preflight.read().as_ref(), Some(Ok(())));
             if !startup_channel_ready {
                 return;
             }
@@ -146,6 +149,8 @@ pub fn Home() -> Element {
         let refresh = refresh();
         #[cfg(target_arch = "wasm32")]
         {
+            let startup_channel_ready =
+                matches!(startup_channel_preflight.read().as_ref(), Some(Ok(())));
             let webusb_supported = webusb_supported;
             let candidates = candidates();
             async move {

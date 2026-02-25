@@ -46,8 +46,13 @@ pub fn Home() -> Element {
     let mut watcher_started = use_signal(|| false);
     let candidates = use_signal(Vec::<RusbDeviceHandle>::new);
     let selected_profiles = use_signal(ProfileSelectionMap::new);
+    let startup_channel_preflight_for_watcher = startup_channel_preflight;
 
     use_effect(move || {
+        let startup_channel_ready = matches!(
+            startup_channel_preflight_for_watcher.read().as_ref(),
+            Some(Ok(()))
+        );
         if !startup_channel_ready {
             return;
         }
@@ -99,6 +104,8 @@ pub fn Home() -> Element {
 
     let probe = use_resource(move || {
         let candidates = candidates();
+        let startup_channel_ready =
+            matches!(startup_channel_preflight.read().as_ref(), Some(Ok(())));
         async move {
             if !startup_channel_ready {
                 return ProbeSnapshot {
