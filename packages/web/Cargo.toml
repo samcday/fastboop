@@ -12,21 +12,21 @@ ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
-gobblytes-erofs = { version = "=0.0.1-rc.6" }
-gobblytes-core = { version = "=0.0.1-rc.6" }
-gibblox-core = { version = "=0.0.1-rc.6" }
-gibblox-cache = { version = "=0.0.1-rc.6", features = ["std"] }
-gibblox-cache-store-opfs = { version = "=0.0.1-rc.6" }
-gibblox-casync = { version = "=0.0.1-rc.6" }
-gibblox-casync-web = { version = "=0.0.1-rc.6" }
-gibblox-android-sparse = { version = "=0.0.1-rc.6" }
-gibblox-http = { version = "=0.0.1-rc.6", default-features = false, features = ["wasm-client"] }
-gibblox-mbr = { version = "=0.0.1-rc.6" }
-gibblox-xz = { version = "=0.0.1-rc.6" }
-gibblox-zip = { version = "=0.0.1-rc.6" }
-gibblox-web-file = { version = "=0.0.1-rc.6" }
-gibblox-blockreader-messageport = { version = "=0.0.1-rc.6" }
-gibblox-web-worker = { version = "=0.0.1-rc.6" }
+gobblytes-erofs = { version = ">=0.0.1-rc.8" }
+gobblytes-core = { version = ">=0.0.1-rc.8" }
+gibblox-core = { version = ">=0.0.1-rc.8" }
+gibblox-cache = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-cache-store-opfs = { version = ">=0.0.1-rc.8" }
+gibblox-casync = { version = ">=0.0.1-rc.8" }
+gibblox-casync-web = { version = ">=0.0.1-rc.8" }
+gibblox-android-sparse = { version = ">=0.0.1-rc.8" }
+gibblox-http = { version = ">=0.0.1-rc.8", default-features = false, features = ["wasm-client"] }
+gibblox-mbr = { version = ">=0.0.1-rc.8" }
+gibblox-xz = { version = ">=0.0.1-rc.8" }
+gibblox-zip = { version = ">=0.0.1-rc.8" }
+gibblox-web-file = { version = ">=0.0.1-rc.8" }
+gibblox-blockreader-messageport = { version = ">=0.0.1-rc.8" }
+gibblox-web-worker = { version = ">=0.0.1-rc.8" }
 url = { workspace = true }
 smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }
 smoo-host-session = { path = "../../smoo/crates/smoo-host-session" }

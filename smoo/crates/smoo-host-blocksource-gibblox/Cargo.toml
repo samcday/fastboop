@@ -7,5 +7,5 @@ license = "GPL-3.0-only"
 
 [dependencies]
 async-trait = { workspace = true }
-gibblox-core = { version = "=0.0.1-rc.6" }
+gibblox-core = { version = ">=0.0.1-rc.8" }
 smoo-host-core = { path = "../smoo-host-core" }

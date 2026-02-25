@@ -16,21 +16,21 @@ serde_json = "1.0.132"
 serde_yaml = { workspace = true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-gibblox-core = { version = "=0.0.1-rc.6", features = ["std"] }
-gibblox-ext4 = { version = "=0.0.1-rc.6" }
-gibblox-mbr = { version = "=0.0.1-rc.6", features = ["std"] }
-gibblox-casync = { version = "=0.0.1-rc.6", features = ["std"] }
-gibblox-casync-std = { version = "=0.0.1-rc.6" }
-gibblox-cache = { version = "=0.0.1-rc.6", features = ["std"] }
-gibblox-cache-store-std = { version = "=0.0.1-rc.6" }
-gibblox-file = { version = "=0.0.1-rc.6" }
-gibblox-http = { version = "=0.0.1-rc.6", default-features = false, features = ["native-client"] }
-gibblox-android-sparse = { version = "=0.0.1-rc.6", features = ["std"] }
-gibblox-xz = { version = "=0.0.1-rc.6", features = ["std"] }
-gibblox-zip = { version = "=0.0.1-rc.6", features = ["std"] }
-gobblytes-core = { version = "=0.0.1-rc.6" }
-gobblytes-erofs = { version = "=0.0.1-rc.6" }
-gobblytes-fat = { version = "=0.0.1-rc.6" }
+gibblox-core = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-ext4 = { version = ">=0.0.1-rc.8" }
+gibblox-mbr = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-casync = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-casync-std = { version = ">=0.0.1-rc.8" }
+gibblox-cache = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-cache-store-std = { version = ">=0.0.1-rc.8" }
+gibblox-file = { version = ">=0.0.1-rc.8" }
+gibblox-http = { version = ">=0.0.1-rc.8", default-features = false, features = ["native-client"] }
+gibblox-android-sparse = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-xz = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-zip = { version = ">=0.0.1-rc.8", features = ["std"] }
+gobblytes-core = { version = ">=0.0.1-rc.8" }
+gobblytes-erofs = { version = ">=0.0.1-rc.8" }
+gobblytes-fat = { version = ">=0.0.1-rc.8" }
 smoo-host-core = { path = "../smoo/crates/smoo-host-core" }
 smoo-host-session = { path = "../smoo/crates/smoo-host-session" }
 smoo-host-transport-rusb = { path = "../smoo/crates/smoo-host-transport-rusb" }

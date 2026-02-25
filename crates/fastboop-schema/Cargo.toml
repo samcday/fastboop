@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 serde = { version = "1.0.217", default-features = false, features = ["derive", "alloc"] }
 schemars = { version = "0.8.21", optional = true, features = ["preserve_order"] }
-gibblox-pipeline = { version = "=0.0.1-rc.6", default-features = false }
+gibblox-pipeline = { version = ">=0.0.1-rc.8", default-features = false }
 
 [features]
 default = []
