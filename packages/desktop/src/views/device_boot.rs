@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use dioxus::prelude::ReadableExt;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
@@ -233,16 +233,10 @@ async fn build_stage0_artifacts(
                             .await
                             .map_err(|err| anyhow!("initialize std cache for HTTP channel: {err}"))?,
                     );
-                    let reader: Arc<dyn BlockReader> = if let Some(entry_name) = zip_entry_name_from_url(&url)? {
-                        let zip_reader = ZipEntryBlockReader::new(&entry_name, cached)
-                            .await
-                            .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
-                        Arc::new(zip_reader)
-                    } else {
-                        cached
-                    };
+                    let reader = cached.clone();
                     let total_size_bytes = reader_size_bytes(reader.as_ref()).await?;
-                    let stream_head = read_channel_stream_head_from_reader(reader.as_ref(), total_size_bytes)
+                    let stream_head =
+                        read_channel_stream_head_from_reader(reader.as_ref(), total_size_bytes)
                         .await
                         .map_err(|err| {
                             anyhow!("read channel stream head {}: {err}", channel)
@@ -251,9 +245,33 @@ async fn build_stage0_artifacts(
                     validate_session_dev_profiles(&profile.id, &stream_head.dev_profiles)
                         .map_err(|err| anyhow!("channel stream device mismatch for {channel}: {err}"))?;
 
+                    if stream_head.consumed_bytes >= total_size_bytes {
+                        bail!(
+                            "channel stream has only profile records and no trailing artifact payload; desktop boot requires an artifact stream"
+                        );
+                    }
+
                     let (provider_reader, provider_size_bytes) =
-                        offset_tail_reader(reader.clone(), &stream_head, total_size_bytes)
-                            .map_err(|err| anyhow!("channel stream requires trailing artifact: {err}"))?;
+                        if let Some(entry_name) = zip_entry_name_from_url(&url)? {
+                            let source_reader: Arc<dyn BlockReader> = if stream_head.consumed_bytes == 0 {
+                                reader.clone()
+                            } else {
+                                Arc::new(OffsetChannelBlockReader::new(
+                                    reader.clone(),
+                                    stream_head.consumed_bytes,
+                                    total_size_bytes,
+                                )?)
+                            };
+                            let zip_reader = ZipEntryBlockReader::new(&entry_name, source_reader)
+                                .await
+                                .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
+                            let zip_reader = Arc::new(zip_reader);
+                            let zip_size_bytes = reader_size_bytes(zip_reader.as_ref()).await?;
+                            (zip_reader as Arc<dyn BlockReader>, zip_size_bytes)
+                        } else {
+                            offset_tail_reader(reader.clone(), &stream_head, total_size_bytes)
+                                .map_err(|err| anyhow!("channel stream requires trailing artifact: {err}"))?
+                        };
 
                     if stream_head.warning_count > 0 {
                         info!(
@@ -270,13 +288,13 @@ async fn build_stage0_artifacts(
                         build_stage0(&profile, &provider, &stage0_opts, nonempty(&extra_kargs), None)
                             .await
                             .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
-                    let channel_identity = block_identity_string(reader.as_ref());
+                    let provider_identity = block_identity_string(provider_reader.as_ref());
                     Ok((
                         build,
                         BootRuntime {
                             reader: provider_reader,
                             size_bytes: provider_size_bytes,
-                            identity: block_identity_string(provider_reader.as_ref()),
+                            identity: provider_identity,
                             smoo_stats: SmooStatsHandle::new(),
                         },
                     ))
