@@ -21,7 +21,7 @@ gibblox-zip = { version = "=0.0.1-rc.6", features = ["std"] }
 smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }
 smoo-host-session = { path = "../../smoo/crates/smoo-host-session" }
 smoo-host-transport-rusb = { path = "../../smoo/crates/smoo-host-transport-rusb" }
-smoo-host-blocksource-gibblox = { path = "../../crates/smoo-host-blocksource-gibblox" }
+smoo-host-blocksource-gibblox = { path = "../../smoo/crates/smoo-host-blocksource-gibblox" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }

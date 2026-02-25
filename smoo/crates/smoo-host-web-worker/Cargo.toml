@@ -11,7 +11,7 @@ futures-util = { workspace = true, features = ["alloc", "async-await", "async-aw
 gloo-timers = { version = "0.3.0", features = ["futures"] }
 gibblox-blockreader-messageport = { version = "=0.0.1-rc.6" }
 gibblox-core = { version = "=0.0.1-rc.6" }
-smoo-host-blocksource-gibblox = { path = "../../../crates/smoo-host-blocksource-gibblox" }
+smoo-host-blocksource-gibblox = { path = "../smoo-host-blocksource-gibblox" }
 smoo-host-core = { path = "../smoo-host-core" }
 smoo-host-session = { path = "../smoo-host-session" }
 smoo-host-webusb = { path = "../smoo-host-webusb" }
