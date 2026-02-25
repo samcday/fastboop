@@ -1,17 +1,12 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use anyhow::{anyhow, Result};
-    use async_trait::async_trait;
     use gibblox_cache::CachedBlockReader;
     use gibblox_cache_store_opfs::OpfsCacheOps;
-    use gibblox_core::{
-        AsyncRead, BlockReader, ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResult,
-        ReadContext,
-    };
+    use gibblox_core::BlockReader;
     use gibblox_http::HttpBlockReader;
     use gibblox_zip::ZipEntryBlockReader;
     use std::sync::Arc;
-    use ui::DEFAULT_CHANNEL;
     use url::Url;
 
     const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
@@ -21,11 +16,11 @@ mod wasm {
         channel_offset_bytes: u64,
     ) -> Result<Arc<dyn BlockReader>> {
         let channel = channel.trim();
-        let channel = if channel.is_empty() {
-            DEFAULT_CHANNEL
-        } else {
-            channel
-        };
+        if channel.is_empty() {
+            return Err(anyhow!(
+                "missing required channel URL for gibblox worker pipeline"
+            ));
+        }
         let url =
             Url::parse(channel).map_err(|err| anyhow!("parse channel URL {channel}: {err}"))?;
         let http_reader = HttpBlockReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
@@ -38,7 +33,7 @@ mod wasm {
             .await
             .map_err(|err| anyhow!("initialize OPFS cache: {err}"))?;
         let reader: Arc<dyn BlockReader> = Arc::new(cached);
-        let reader = maybe_offset_reader(reader, channel_offset_bytes).await?;
+        let reader = super::maybe_offset_reader(reader, channel_offset_bytes).await?;
         let reader: Arc<dyn BlockReader> = match zip_entry_name_from_url(&url)? {
             Some(entry_name) => {
                 let zip_reader = ZipEntryBlockReader::new(&entry_name, reader)
@@ -73,6 +68,11 @@ mod wasm {
         Ok(Some(format!("{stem}.ero")))
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+use gibblox_core::{ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+#[cfg(target_arch = "wasm32")]
+use std::sync::Arc;
 
 #[cfg(target_arch = "wasm32")]
 async fn maybe_offset_reader(
@@ -138,7 +138,7 @@ impl OffsetChannelBlockReader {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[async_trait]
+#[async_trait::async_trait]
 impl gibblox_core::BlockReader for OffsetChannelBlockReader {
     fn block_size(&self) -> u32 {
         self.block_size

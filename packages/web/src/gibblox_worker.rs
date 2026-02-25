@@ -3,7 +3,6 @@ mod wasm {
     use anyhow::{anyhow, Result};
     use gibblox_web_worker::GibbloxWebWorker;
     use js_sys::{Object, Reflect};
-    use ui::DEFAULT_CHANNEL;
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::spawn_local;
     use web_sys::{
@@ -19,7 +18,14 @@ mod wasm {
         if scope.name() != WORKER_NAME {
             return false;
         }
-        let channel = worker_channel(&scope);
+        let channel = match worker_channel(&scope) {
+            Ok(channel) => channel,
+            Err(err) => {
+                tracing::error!(error = %err, "missing worker channel query parameter");
+                let _ = post_worker_error(&scope, &format!("{err:#}"));
+                return true;
+            }
+        };
         let channel_offset_bytes = worker_channel_offset_bytes(&scope);
 
         spawn_local(async move {
@@ -77,13 +83,17 @@ mod wasm {
         parse_query_u64_param(&search, "channel_offset").unwrap_or(0)
     }
 
-    fn worker_channel(scope: &DedicatedWorkerGlobalScope) -> String {
+    fn worker_channel(scope: &DedicatedWorkerGlobalScope) -> Result<String> {
         let search = Reflect::get(scope.as_ref(), &JsValue::from_str("location"))
             .ok()
             .and_then(|location| Reflect::get(&location, &JsValue::from_str("search")).ok())
             .and_then(|search| search.as_string())
             .unwrap_or_default();
-        parse_query_param(&search, "channel").unwrap_or_else(|| DEFAULT_CHANNEL.to_string())
+
+        parse_query_param(&search, "channel")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow!("missing required channel query parameter: ?channel=<url>"))
     }
 
     fn post_worker_error(scope: &DedicatedWorkerGlobalScope, message: &str) -> Result<()> {

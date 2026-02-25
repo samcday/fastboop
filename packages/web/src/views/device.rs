@@ -111,6 +111,7 @@ fn BootConfigDevice(session_id: String) -> Element {
             on_extra_kargs_change,
             on_enable_serial_change,
             on_start_boot,
+            show_channel_input: false,
         }
     }
 }

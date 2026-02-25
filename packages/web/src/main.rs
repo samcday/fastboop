@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 use js_sys::Reflect;
+use std::sync::OnceLock;
 use tracing::Level;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -13,6 +14,8 @@ mod gibblox_worker;
 mod views;
 
 const LOG_LEVEL_HINT_KEY: &str = "__FASTBOOP_LOG_LEVEL";
+const CHANNEL_QUERY_KEY: &str = "channel";
+static CHANNEL: OnceLock<String> = OnceLock::new();
 
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
@@ -39,7 +42,19 @@ fn main() {
         return;
     }
 
+    let channel = global_query_channel().unwrap_or_else(|| {
+        panic!("fastboop-web requires a channel URL query parameter: ?channel=<url>")
+    });
+    let _ = CHANNEL.set(channel);
+
     dioxus::launch(App);
+}
+
+pub(crate) fn startup_channel() -> String {
+    CHANNEL
+        .get()
+        .cloned()
+        .expect("web boot channel must be initialized before app launch")
 }
 
 fn init_tracing() {
@@ -112,14 +127,37 @@ fn global_location_search() -> Option<String> {
 }
 
 fn parse_level_from_query(search: &str) -> Option<Level> {
+    query_param(search, "log").and_then(|value| parse_level_str(&value))
+}
+
+pub(crate) fn query_param(search: &str, key: &str) -> Option<String> {
     let query = search.strip_prefix('?').unwrap_or(search);
     for pair in query.split('&') {
-        let (key, value) = pair.split_once('=')?;
-        if key == "log" {
-            return parse_level_str(value);
+        let Some((param_key, param_value)) = pair.split_once('=') else {
+            continue;
+        };
+        if param_key != key {
+            continue;
         }
+        return decode_query_component(param_value).or_else(|| Some(param_value.to_string()));
     }
     None
+}
+
+fn decode_query_component(value: &str) -> Option<String> {
+    js_sys::decode_uri_component(value)
+        .ok()
+        .and_then(|decoded| decoded.as_string())
+}
+
+pub(crate) fn global_query_param(key: &str) -> Option<String> {
+    global_location_search().and_then(|search| query_param(&search, key))
+}
+
+pub(crate) fn global_query_channel() -> Option<String> {
+    global_query_param(CHANNEL_QUERY_KEY)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn parse_level_str(input: &str) -> Option<Level> {

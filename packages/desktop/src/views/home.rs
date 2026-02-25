@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use ui::{
     apply_selected_profiles, build_probe_snapshot, selected_profile_option,
     update_profile_selection, Hero, ProbeSnapshot, ProbeState, ProfileSelectionMap, TransportKind,
-    DEFAULT_CHANNEL, DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS,
+    DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS,
 };
 
 use crate::Route;
@@ -121,6 +121,7 @@ pub fn Home() -> Element {
             };
 
             let session_id = next_session_id();
+            let channel = crate::boot_channel();
             sessions.write().push(DeviceSession {
                 id: session_id.clone(),
                 device: ProbedDevice {
@@ -131,11 +132,7 @@ pub fn Home() -> Element {
                     pid: device.pid,
                     serial: device.serial,
                 },
-                boot_config: BootConfig::new(
-                    DEFAULT_CHANNEL,
-                    DEFAULT_EXTRA_KARGS,
-                    DEFAULT_ENABLE_SERIAL,
-                ),
+                boot_config: BootConfig::new(channel, DEFAULT_EXTRA_KARGS, DEFAULT_ENABLE_SERIAL),
                 phase: SessionPhase::Configuring,
             });
             navigator.push(Route::DevicePage { session_id });

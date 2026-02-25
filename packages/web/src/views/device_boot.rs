@@ -4,16 +4,19 @@ use dioxus::prelude::*;
 use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
+use fastboop_core::Personalization;
+#[cfg(target_arch = "wasm32")]
 use fastboop_core::{
-    read_channel_stream_head, ChannelStreamHead, Personalization,
-    CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES,
+    read_channel_stream_head, ChannelStreamHead, CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES,
 };
 use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
+use gibblox_core::block_identity_string;
 #[cfg(not(target_arch = "wasm32"))]
 use gibblox_core::BlockReader;
-use gibblox_core::{block_identity_string, ReadContext};
+#[cfg(target_arch = "wasm32")]
+use gibblox_core::ReadContext;
 use gibblox_http::HttpBlockReader;
 #[cfg(not(target_arch = "wasm32"))]
 use gibblox_zip::ZipEntryBlockReader;
@@ -29,9 +32,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
+use ui::oneplus_fajita_dtbo_overlays;
+#[cfg(target_arch = "wasm32")]
+use ui::SmooStatsHandle;
 #[cfg(target_arch = "wasm32")]
 use ui::{apply_transport_counters, SmooTransportCounters};
-use ui::{oneplus_fajita_dtbo_overlays, SmooStatsHandle};
 use url::Url;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
@@ -199,6 +204,7 @@ pub async fn boot_selected_device(
         channel_offset_bytes: runtime.channel_offset_bytes,
         #[cfg(target_arch = "wasm32")]
         gibblox_worker: runtime.gibblox_worker,
+        #[cfg(target_arch = "wasm32")]
         smoo_stats: runtime.smoo_stats,
     }))
 }
@@ -309,6 +315,7 @@ async fn build_stage0_artifacts(
                     channel_offset_bytes,
                     #[cfg(target_arch = "wasm32")]
                     gibblox_worker,
+                    #[cfg(target_arch = "wasm32")]
                     smoo_stats: SmooStatsHandle::new(),
                 },
             ))

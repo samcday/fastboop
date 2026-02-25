@@ -1,5 +1,9 @@
 use dioxus::prelude::*;
+use std::env;
+use std::sync::OnceLock;
 use tracing_subscriber::EnvFilter;
+
+static CHANNEL: OnceLock<String> = OnceLock::new();
 
 use views::{DevicePage, Home, SessionStore};
 
@@ -26,7 +30,60 @@ fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
 
 fn main() {
     init_tracing();
+
+    let channel = match parse_channel_from_args() {
+        Ok(channel) => channel,
+        Err(err) => {
+            eprintln!(
+                "fastboop-desktop requires a channel URL: --channel=<url> or --channel <url>"
+            );
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+    let _ = CHANNEL.set(channel);
+
     dioxus::launch(App);
+}
+
+pub(crate) fn boot_channel() -> String {
+    CHANNEL
+        .get()
+        .cloned()
+        .expect("desktop boot channel must be initialized before app launch")
+}
+
+fn parse_channel_from_args() -> anyhow::Result<String> {
+    let args = env::args().collect::<Vec<_>>();
+    let mut index = 1;
+    while index < args.len() {
+        let arg = args[index].as_str();
+
+        if let Some(value) = arg.strip_prefix("--channel=") {
+            let value = value.trim();
+            if value.is_empty() {
+                anyhow::bail!("--channel=<url> value is empty");
+            }
+            return Ok(value.to_string());
+        }
+
+        if arg == "--channel" {
+            let value = args.get(index + 1).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--channel requires a URL argument: --channel=<url> or --channel <url>"
+                )
+            })?;
+            let value = value.trim();
+            if value.is_empty() {
+                anyhow::bail!("--channel value is empty");
+            }
+            return Ok(value.to_string());
+        }
+
+        index += 1;
+    }
+
+    anyhow::bail!("missing required --channel argument")
 }
 
 fn init_tracing() {

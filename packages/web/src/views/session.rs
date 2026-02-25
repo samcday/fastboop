@@ -6,6 +6,7 @@ use fastboop_core::DeviceProfile;
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
 use gibblox_web_worker::GibbloxWebWorker;
+#[cfg(target_arch = "wasm32")]
 use ui::SmooStatsHandle;
 
 #[derive(Clone)]
@@ -44,6 +45,8 @@ pub struct BootRuntime {
     pub identity: String,
     pub channel: String,
     pub channel_offset_bytes: u64,
+    #[cfg(target_arch = "wasm32")]
+    pub gibblox_worker: Option<GibbloxWebWorker>,
     #[cfg(target_arch = "wasm32")]
     pub smoo_stats: SmooStatsHandle,
 }
