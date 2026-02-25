@@ -16,7 +16,7 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
 - `docs/dev/attic/DIOXUS.md`: Dioxus 0.7 usage in `packages/*`.
 - `docs/k8s-infra.yaml`: required when touching `infra/k8s/` or any `*.fastboop.win` infrastructure.
 - `smoo/AGENTS.md`: required when touching `smoo/` or behavior coupled to smoo protocol/runtime invariants.
-- `gibblox/AGENTS.md`: required when touching `gibblox/` or any `gibblox-*` crate integration.
+- `~/src/gibblox/AGENTS.md`: required when touching any `gibblox-*` crate integration.
 - Cross-domain changes must include all relevant docs before editing.
 
 ## Minimal working rules
@@ -33,9 +33,9 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
   - `smoo/crates/smoo-proto`
   - `smoo/crates/smoo-host-core`
   - `smoo/crates/smoo-host-session`
-  - `gibblox/crates/gibblox-core`
-  - `gibblox/crates/gibblox-cache`
-  - `gibblox/crates/gibblox-iso9660`
+  - `~/src/gibblox/crates/gibblox-core`
+  - `~/src/gibblox/crates/gibblox-cache`
+  - `~/src/gibblox/crates/gibblox-iso9660`
   - and any crate declaring `#![no_std]` or `#![cfg_attr(not(feature = "std"), no_std)]`
 - Prefer async-first code; justify blocking paths.
 - Use `tracing` for new operationally relevant behavior.

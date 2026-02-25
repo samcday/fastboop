@@ -24,9 +24,6 @@ check:
     cargo check --manifest-path smoo/Cargo.toml -p smoo-host-webusb --target wasm32-unknown-unknown
     cargo check --manifest-path smoo/Cargo.toml -p smoo-host-web-worker --target wasm32-unknown-unknown
 
-    echo "==> gibblox workspace (host target)"
-    cargo check --manifest-path gibblox/Cargo.toml --workspace
-
 # Generate deterministic channel stream fixtures under build/
 channels-fixtures:
     tools/channels/generate-fixtures.sh
