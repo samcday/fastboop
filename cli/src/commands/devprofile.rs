@@ -1,9 +1,15 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 
+use crate::devpros::{load_local_device_profiles, resolve_devpro_dirs};
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, Subcommand};
+use fastboop_core::builtin::builtin_profiles;
 use fastboop_core::{DeviceProfile, decode_dev_profile, encode_dev_profile};
+
+use super::ArtifactReaderResolver;
 
 #[derive(Args)]
 pub struct DevProfileArgs {
@@ -17,6 +23,8 @@ pub enum DevProfileCommand {
     Create(DevProfileCreateArgs),
     /// Render a compiled device profile binary as YAML.
     Show(DevProfileShowArgs),
+    /// List available device profiles.
+    List(DevProfileListArgs),
 }
 
 #[derive(Args)]
@@ -39,10 +47,18 @@ pub struct DevProfileShowArgs {
     pub output: String,
 }
 
-pub fn run_devprofile(args: DevProfileArgs) -> Result<()> {
+#[derive(Args)]
+pub struct DevProfileListArgs {
+    /// Include device profiles embedded in a channel stream.
+    #[arg(long, value_name = "CHANNEL")]
+    pub channel: Option<PathBuf>,
+}
+
+pub async fn run_devprofile(args: DevProfileArgs) -> Result<()> {
     match args.command {
         DevProfileCommand::Create(args) => run_create(args),
         DevProfileCommand::Show(args) => run_show(args),
+        DevProfileCommand::List(args) => run_list(args).await,
     }
 }
 
@@ -61,6 +77,135 @@ fn run_show(args: DevProfileShowArgs) -> Result<()> {
 
     let yaml = serde_yaml::to_string(&profile).context("serializing device profile YAML")?;
     write_output_bytes(&args.output, yaml.as_bytes())
+}
+
+#[derive(Default)]
+struct ProfileSourceSet {
+    builtin: bool,
+    local: bool,
+    channel: bool,
+}
+
+impl ProfileSourceSet {
+    fn add_local(&mut self) {
+        self.local = true;
+    }
+
+    fn add_channel(&mut self) {
+        self.channel = true;
+    }
+
+    fn render(&self) -> String {
+        let mut labels = Vec::new();
+        if self.builtin {
+            labels.push("builtin");
+        }
+        if self.local {
+            labels.push("local");
+        }
+        if self.channel {
+            labels.push("channel");
+        }
+        labels.join(",")
+    }
+}
+
+#[derive(Default)]
+struct ProfileListEntry {
+    profile: Option<DeviceProfile>,
+    source: ProfileSourceSet,
+}
+
+async fn run_list(args: DevProfileListArgs) -> Result<()> {
+    let devpro_dirs = resolve_devpro_dirs()?;
+    let mut entries = builtins_with_source()?;
+
+    let mut local_profiles = load_local_device_profiles(&devpro_dirs)?;
+    for profile in local_profiles.drain().map(|(_, profile)| profile) {
+        if let Some(entry) = entries.get_mut(profile.id.as_str()) {
+            entry.source.add_local();
+            entry.profile = Some(profile);
+        } else {
+            entries.insert(
+                profile.id.clone(),
+                ProfileListEntry {
+                    profile: Some(profile),
+                    source: ProfileSourceSet {
+                        builtin: false,
+                        local: true,
+                        channel: false,
+                    },
+                },
+            );
+        }
+    }
+
+    if let Some(channel) = args.channel {
+        let resolver = ArtifactReaderResolver::new();
+        let head = resolver
+            .read_channel_stream_head(&channel)
+            .await
+            .with_context(|| {
+                format!("reading channel profile stream head {}", channel.display())
+            })?;
+
+        if head.warning_count > 0 {
+            eprintln!(
+                "channel stream has {} warning(s) while reading profile head; using {} bytes of leading records",
+                head.warning_count, head.consumed_bytes
+            );
+        }
+
+        for profile in head.dev_profiles {
+            if let Some(entry) = entries.get_mut(profile.id.as_str()) {
+                entry.source.add_channel();
+                continue;
+            }
+
+            entries.insert(
+                profile.id.clone(),
+                ProfileListEntry {
+                    profile: Some(profile),
+                    source: ProfileSourceSet {
+                        builtin: false,
+                        local: false,
+                        channel: true,
+                    },
+                },
+            );
+        }
+    }
+
+    for entry in entries.values() {
+        let Some(profile) = entry.profile.as_ref() else {
+            continue;
+        };
+        let Some(name) = profile.display_name.as_deref() else {
+            println!("{:40} [{}]", profile.id, entry.source.render());
+            continue;
+        };
+        println!("{:40} {:24} [{}]", profile.id, name, entry.source.render());
+    }
+
+    Ok(())
+}
+
+fn builtins_with_source() -> Result<BTreeMap<String, ProfileListEntry>> {
+    let profiles = builtin_profiles().context("loading builtin device profiles")?;
+    let mut entries = BTreeMap::new();
+    for profile in profiles {
+        entries.insert(
+            profile.id.clone(),
+            ProfileListEntry {
+                profile: Some(profile),
+                source: ProfileSourceSet {
+                    builtin: true,
+                    ..Default::default()
+                },
+            },
+        );
+    }
+    Ok(entries)
 }
 
 fn read_input_bytes(path: &str) -> Result<Vec<u8>> {

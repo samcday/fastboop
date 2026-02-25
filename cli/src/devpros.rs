@@ -35,6 +35,14 @@ pub fn load_device_profiles(dirs: &[PathBuf]) -> Result<HashMap<String, DevicePr
     for profile in builtin {
         profiles.insert(profile.id.clone(), profile);
     }
+    for (id, profile) in load_local_device_profiles(dirs)? {
+        profiles.insert(id, profile);
+    }
+    Ok(profiles)
+}
+
+pub fn load_local_device_profiles(dirs: &[PathBuf]) -> Result<HashMap<String, DeviceProfile>> {
+    let mut profiles = HashMap::new();
     let mut file_ids = HashSet::new();
     for dir in dirs {
         if !dir.is_dir() {

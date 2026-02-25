@@ -34,7 +34,7 @@ enum Commands {
     Boot(BootArgs),
     /// Compile or inspect boot profile binaries.
     Bootprofile(BootProfileArgs),
-    /// Compile or inspect device profile binaries.
+    /// Compile, inspect, or list device profiles.
     Devprofile(DevProfileArgs),
     /// Detect connected fastboot devices that match a DevPro.
     Detect(DetectArgs),
@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Boot(args) => run_boot(args).await,
         Commands::Bootprofile(args) => run_bootprofile(args),
-        Commands::Devprofile(args) => run_devprofile(args),
+        Commands::Devprofile(args) => run_devprofile(args).await,
         Commands::Detect(args) => {
             setup_default_tracing();
             run_detect(args).await
