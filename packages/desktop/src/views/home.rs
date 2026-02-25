@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use ui::{
     apply_selected_profiles, build_probe_snapshot, selected_profile_option,
     update_profile_selection, Hero, ProbeSnapshot, ProbeState, ProfileSelectionMap, StartupError,
-    TransportKind, DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS,
+    TransportKind, DEFAULT_ENABLE_SERIAL,
 };
 
 use crate::Route;
@@ -174,7 +174,7 @@ pub fn Home() -> Element {
                 },
                 boot_config: BootConfig::new(
                     startup_channel_for_boot.clone(),
-                    DEFAULT_EXTRA_KARGS,
+                    "",
                     DEFAULT_ENABLE_SERIAL,
                 ),
                 phase: SessionPhase::Configuring,

@@ -1,7 +1,5 @@
 use dioxus::prelude::*;
 
-pub const DEFAULT_EXTRA_KARGS: &str =
-    "selinux=0 sysrq_always_enabled=1 panic=5 smoo.max_io_bytes=1048576 init_on_alloc=0 rhgb drm.panic_screen=kmsg smoo.queue_count=1 smoo.queue_depth=1 regulator_ignore_unused";
 pub const DEFAULT_ENABLE_SERIAL: bool = true;
 
 #[component]

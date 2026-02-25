@@ -6,7 +6,6 @@ use js_sys::{decode_uri_component, Reflect};
 use ui::{
     apply_selected_profiles, selected_profile_option, update_profile_selection, Hero,
     ProbeSnapshot, ProbeState, ProfileSelectionMap, StartupError, DEFAULT_ENABLE_SERIAL,
-    DEFAULT_EXTRA_KARGS,
 };
 #[cfg(target_arch = "wasm32")]
 use ui::{build_probe_snapshot, TransportKind};
@@ -277,7 +276,7 @@ pub fn Home() -> Element {
                 },
                 boot_config: BootConfig::new(
                     startup_channel_for_boot.clone(),
-                    DEFAULT_EXTRA_KARGS,
+                    "",
                     DEFAULT_ENABLE_SERIAL,
                 ),
                 phase: SessionPhase::Configuring,

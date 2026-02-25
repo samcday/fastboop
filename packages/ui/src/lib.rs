@@ -12,7 +12,7 @@ pub use hero::Hero;
 mod startup_error;
 pub use startup_error::StartupError;
 mod boot_config;
-pub use boot_config::{BootConfigCard, DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS};
+pub use boot_config::{BootConfigCard, DEFAULT_ENABLE_SERIAL};
 mod dtbo;
 pub use dtbo::oneplus_fajita_dtbo_overlays;
 mod cache_stats;
