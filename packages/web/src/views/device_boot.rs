@@ -25,7 +25,6 @@ use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 use gibblox_web_file::WebFileBlockReader;
 #[cfg(target_arch = "wasm32")]
 use gibblox_xz::XzBlockReader;
-#[cfg(not(target_arch = "wasm32"))]
 use gibblox_zip::ZipEntryBlockReader;
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::sleep;
@@ -302,27 +301,17 @@ async fn build_stage0_artifacts(
                 using_boot_profile_rootfs,
             ) = {
                 if channel_intake.has_artifact_payload {
-                    let artifact_size_bytes = payload_size_bytes(&channel_intake)?;
-
                     if let Some(web_file) = crate::resolve_web_file_channel(&channel) {
-                        let channel_reader = WebFileBlockReader::new(
-                            web_file,
-                            gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
-                        )
-                        .map_err(|err| anyhow::anyhow!("open web file channel reader: {err}"))?;
-
                         let channel_offset_bytes = channel_intake.consumed_bytes;
-                        let provider_reader: Arc<dyn BlockReader> = Arc::new(channel_reader);
-                        let provider_reader = crate::channel_source::maybe_offset_reader(
-                            provider_reader,
-                            channel_offset_bytes,
-                        )
-                        .await?;
+                        let provider_reader =
+                            open_web_file_channel_payload_reader(web_file, channel_offset_bytes)
+                                .await?;
+                        let size_bytes = reader_size_bytes(provider_reader.as_ref()).await?;
                         let channel_identity = block_identity_string(provider_reader.as_ref());
                         let local_reader_bridge = LocalReaderBridge::new(provider_reader.clone());
                         (
                             provider_reader,
-                            artifact_size_bytes,
+                            size_bytes,
                             None,
                             Some(local_reader_bridge),
                             channel_identity,
@@ -528,14 +517,34 @@ fn select_boot_profile_for_session(session: &DeviceSession) -> anyhow::Result<Op
 }
 
 #[cfg(target_arch = "wasm32")]
-fn payload_size_bytes(channel_intake: &SessionChannelIntake) -> anyhow::Result<u64> {
-    if !channel_intake.has_artifact_payload {
-        anyhow::bail!("channel has no trailing artifact payload")
+async fn open_web_file_channel_payload_reader(
+    web_file: web_sys::File,
+    channel_offset_bytes: u64,
+) -> anyhow::Result<Arc<dyn BlockReader>> {
+    let file_name = web_file.name();
+    let file_name_lower = file_name.to_ascii_lowercase();
+
+    if file_name_lower.ends_with(".caibx") || file_name_lower.ends_with(".caidx") {
+        anyhow::bail!(
+            "web-file channel '{}' is a casync index; use an HTTP(S) channel URL so chunk-store URLs can be resolved",
+            file_name
+        );
     }
-    channel_intake
-        .exact_total_bytes
-        .checked_sub(channel_intake.consumed_bytes)
-        .ok_or_else(|| anyhow::anyhow!("channel payload size underflow"))
+
+    let reader = WebFileBlockReader::new(web_file, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+        .map_err(|err| anyhow::anyhow!("open web file channel reader: {err}"))?;
+    let reader: Arc<dyn BlockReader> = Arc::new(reader);
+    let reader = crate::channel_source::maybe_offset_reader(reader, channel_offset_bytes).await?;
+
+    match zip_entry_name_from_file_name(Some(file_name.as_str()))? {
+        Some(entry_name) => {
+            let zip_reader = ZipEntryBlockReader::new(&entry_name, reader)
+                .await
+                .map_err(|err| anyhow::anyhow!("open ZIP entry {entry_name}: {err}"))?;
+            Ok(Arc::new(zip_reader))
+        }
+        None => Ok(reader),
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -712,7 +721,6 @@ fn zip_entry_name_from_url(url: &Url) -> anyhow::Result<Option<String>> {
     zip_entry_name_from_file_name(file_name)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn zip_entry_name_from_file_name(file_name: Option<&str>) -> anyhow::Result<Option<String>> {
     let Some(file_name) = file_name else {
         return Ok(None);
