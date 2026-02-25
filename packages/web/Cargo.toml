@@ -18,6 +18,8 @@ gibblox-cache = { path = "../../gibblox/crates/gibblox-cache", features = ["std"
 gibblox-cache-store-opfs = { path = "../../gibblox/crates/gibblox-cache-store-opfs" }
 gibblox-http = { path = "../../gibblox/crates/gibblox-http", default-features = false, features = ["wasm-client"] }
 gibblox-zip = { path = "../../gibblox/crates/gibblox-zip" }
+gibblox-web-file = { path = "../../gibblox/crates/gibblox-web-file" }
+gibblox-blockreader-messageport = { path = "../../gibblox/crates/gibblox-blockreader-messageport" }
 gibblox-web-worker = { path = "../../gibblox/crates/gibblox-web-worker" }
 url = { workspace = true }
 smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }

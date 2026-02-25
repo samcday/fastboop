@@ -75,7 +75,7 @@ use gibblox_core::{ByteRangeReader, GibbloxError, GibbloxErrorKind, GibbloxResul
 use std::sync::Arc;
 
 #[cfg(target_arch = "wasm32")]
-async fn maybe_offset_reader(
+pub(crate) async fn maybe_offset_reader(
     reader: Arc<dyn gibblox_core::BlockReader>,
     offset_bytes: u64,
 ) -> anyhow::Result<Arc<dyn gibblox_core::BlockReader>> {

@@ -13,11 +13,12 @@ use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs}
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
 use gibblox_core::block_identity_string;
-#[cfg(not(target_arch = "wasm32"))]
 use gibblox_core::BlockReader;
 #[cfg(target_arch = "wasm32")]
 use gibblox_core::ReadContext;
 use gibblox_http::HttpBlockReader;
+#[cfg(target_arch = "wasm32")]
+use gibblox_web_file::WebFileBlockReader;
 #[cfg(not(target_arch = "wasm32"))]
 use gibblox_zip::ZipEntryBlockReader;
 #[cfg(target_arch = "wasm32")]
@@ -43,6 +44,8 @@ use wasm_bindgen::JsValue;
 
 #[cfg(target_arch = "wasm32")]
 use super::session::update_session_active_host_state;
+#[cfg(target_arch = "wasm32")]
+use super::session::LocalReaderBridge;
 use super::session::{update_session_phase, BootConfig, BootRuntime, SessionPhase, SessionStore};
 #[cfg(target_arch = "wasm32")]
 use crate::gibblox_worker::spawn_gibblox_worker;
@@ -205,6 +208,8 @@ pub async fn boot_selected_device(
         #[cfg(target_arch = "wasm32")]
         gibblox_worker: runtime.gibblox_worker,
         #[cfg(target_arch = "wasm32")]
+        local_reader_bridge: runtime.local_reader_bridge,
+        #[cfg(target_arch = "wasm32")]
         smoo_stats: runtime.smoo_stats,
     }))
 }
@@ -227,44 +232,98 @@ async fn build_stage0_artifacts(
         let result: anyhow::Result<_> = async {
             tracing::info!(profile = %profile.id, channel = %channel, "opening channel for web boot");
             #[cfg(target_arch = "wasm32")]
-            let (provider, size_bytes, gibblox_worker, channel_identity, channel_offset_bytes) = {
-                let (stream_head, total_size_bytes) =
-                    read_channel_stream_head_for_url(&channel).await?;
+            let (
+                provider,
+                size_bytes,
+                gibblox_worker,
+                local_reader_bridge,
+                channel_identity,
+                channel_offset_bytes,
+            ) = {
+                if let Some(web_file) = crate::resolve_web_file_channel(&channel) {
+                    let channel_reader =
+                        WebFileBlockReader::new(web_file, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+                            .map_err(|err| {
+                                anyhow::anyhow!("open web file channel reader: {err}")
+                            })?;
+                    let (stream_head, total_size_bytes) =
+                        read_channel_stream_head_for_reader(&channel_reader).await?;
 
-                if stream_head.warning_count > 0 {
-                    tracing::info!(
-                        warning_count = stream_head.warning_count,
-                        consumed_bytes = stream_head.consumed_bytes,
-                        channel,
-                        "channel stream head stopped early while scanning records"
-                    );
+                    if stream_head.warning_count > 0 {
+                        tracing::info!(
+                            warning_count = stream_head.warning_count,
+                            consumed_bytes = stream_head.consumed_bytes,
+                            channel,
+                            "channel stream head stopped early while scanning records"
+                        );
+                    }
+
+                    validate_session_dev_profiles(&profile.id, &stream_head.dev_profiles)?;
+
+                    if stream_head.consumed_bytes >= total_size_bytes {
+                        anyhow::bail!(
+                            "channel stream has only profile records and no trailing artifact payload"
+                        );
+                    }
+
+                    let channel_offset_bytes = stream_head.consumed_bytes;
+                    let reader_for_erofs: Arc<dyn BlockReader> = Arc::new(channel_reader);
+                    let reader_for_erofs =
+                        crate::channel_source::maybe_offset_reader(reader_for_erofs, channel_offset_bytes)
+                            .await?;
+                    let size_bytes = reader_size_bytes(reader_for_erofs.as_ref()).await?;
+                    let channel_identity = block_identity_string(reader_for_erofs.as_ref());
+                    let provider = ErofsRootfs::new(reader_for_erofs.clone(), size_bytes).await?;
+                    let local_reader_bridge = LocalReaderBridge::new(reader_for_erofs);
+                    (
+                        provider,
+                        size_bytes,
+                        None,
+                        Some(local_reader_bridge),
+                        channel_identity,
+                        channel_offset_bytes,
+                    )
+                } else {
+                    let (stream_head, total_size_bytes) =
+                        read_channel_stream_head_for_url(&channel).await?;
+
+                    if stream_head.warning_count > 0 {
+                        tracing::info!(
+                            warning_count = stream_head.warning_count,
+                            consumed_bytes = stream_head.consumed_bytes,
+                            channel,
+                            "channel stream head stopped early while scanning records"
+                        );
+                    }
+
+                    validate_session_dev_profiles(&profile.id, &stream_head.dev_profiles)?;
+
+                    if stream_head.consumed_bytes >= total_size_bytes {
+                        anyhow::bail!(
+                            "channel stream has only profile records and no trailing artifact payload"
+                        );
+                    }
+
+                    let channel_offset_bytes = stream_head.consumed_bytes;
+                    let gibblox_worker =
+                        spawn_gibblox_worker(channel.clone(), channel_offset_bytes)
+                            .await
+                            .map_err(|err| anyhow::anyhow!("spawn gibblox worker failed: {err}"))?;
+                    let reader_for_erofs = gibblox_worker.create_reader().await.map_err(|err| {
+                        anyhow::anyhow!("attach gibblox block reader for stage0: {err}")
+                    })?;
+                    let size_bytes = reader_size_bytes(&reader_for_erofs).await?;
+                    let channel_identity = block_identity_string(&reader_for_erofs);
+                    let provider = ErofsRootfs::new(Arc::new(reader_for_erofs), size_bytes).await?;
+                    (
+                        provider,
+                        size_bytes,
+                        Some(gibblox_worker),
+                        None,
+                        channel_identity,
+                        channel_offset_bytes,
+                    )
                 }
-
-                validate_session_dev_profiles(&profile.id, &stream_head.dev_profiles)?;
-
-                if stream_head.consumed_bytes >= total_size_bytes {
-                    anyhow::bail!(
-                        "channel stream has only profile records and no trailing artifact payload"
-                    );
-                }
-
-                let channel_offset_bytes = stream_head.consumed_bytes;
-                let gibblox_worker = spawn_gibblox_worker(channel.clone(), channel_offset_bytes)
-                    .await
-                    .map_err(|err| anyhow::anyhow!("spawn gibblox worker failed: {err}"))?;
-                let reader_for_erofs = gibblox_worker.create_reader().await.map_err(|err| {
-                    anyhow::anyhow!("attach gibblox block reader for stage0: {err}")
-                })?;
-                let size_bytes = reader_size_bytes(&reader_for_erofs).await?;
-                let channel_identity = block_identity_string(&reader_for_erofs);
-                let provider = ErofsRootfs::new(Arc::new(reader_for_erofs), size_bytes).await?;
-                (
-                    provider,
-                    size_bytes,
-                    Some(gibblox_worker),
-                    channel_identity,
-                    channel_offset_bytes,
-                )
             };
             #[cfg(not(target_arch = "wasm32"))]
             let (provider, size_bytes, channel_identity, channel_offset_bytes) = {
@@ -316,6 +375,8 @@ async fn build_stage0_artifacts(
                     #[cfg(target_arch = "wasm32")]
                     gibblox_worker,
                     #[cfg(target_arch = "wasm32")]
+                    local_reader_bridge,
+                    #[cfg(target_arch = "wasm32")]
                     smoo_stats: SmooStatsHandle::new(),
                 },
             ))
@@ -339,12 +400,22 @@ async fn read_channel_stream_head_for_url(
             .await
             .map_err(|err| anyhow::anyhow!("open HTTP channel reader {url}: {err}"))?;
 
-    let total_size_bytes = reader_size_bytes(&channel_reader).await?;
+    read_channel_stream_head_for_reader(&channel_reader).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_channel_stream_head_for_reader<R>(
+    channel_reader: &R,
+) -> anyhow::Result<(ChannelStreamHead, u64)>
+where
+    R: BlockReader,
+{
+    let total_size_bytes = reader_size_bytes(channel_reader).await?;
     let scan_cap = core::cmp::min(
         CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
         total_size_bytes,
     ) as usize;
-    let prefix = read_channel_prefix(&channel_reader, scan_cap).await?;
+    let prefix = read_channel_prefix(channel_reader, scan_cap).await?;
     let stream_head = read_channel_stream_head(prefix.as_slice(), total_size_bytes)
         .map_err(|err| anyhow::anyhow!("decode channel stream head: {err}"))?;
 
@@ -468,13 +539,18 @@ pub async fn run_web_host_daemon(
     mut sessions: SessionStore,
     session_id: String,
 ) -> anyhow::Result<()> {
-    let gibblox_worker = runtime
-        .gibblox_worker
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("gibblox worker unavailable for host startup"))?;
-    let reader_client = gibblox_worker.create_reader().await.map_err(|err| {
-        anyhow::anyhow!("attach gibblox block reader for smoo host worker: {err}")
-    })?;
+    let reader_client = if let Some(gibblox_worker) = runtime.gibblox_worker.clone() {
+        gibblox_worker.create_reader().await.map_err(|err| {
+            anyhow::anyhow!("attach gibblox block reader for smoo host worker: {err}")
+        })?
+    } else if let Some(local_reader_bridge) = runtime.local_reader_bridge.clone() {
+        local_reader_bridge
+            .create_reader()
+            .await
+            .map_err(|err| anyhow::anyhow!("attach local channel reader bridge: {err}"))?
+    } else {
+        anyhow::bail!("channel reader bridge unavailable for host startup");
+    };
     let smoo_stats = runtime.smoo_stats.clone();
 
     let host = HostWorker::spawn(

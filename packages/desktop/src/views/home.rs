@@ -29,6 +29,9 @@ pub fn Home() -> Element {
                     title: err.title.to_string(),
                     details: err.details,
                     launch_hint: err.launch_hint,
+                    on_drop_channel: None,
+                    on_pick_channel: None,
+                    drop_hint: None,
                 }
             };
         }
@@ -203,6 +206,9 @@ pub fn Home() -> Element {
                 title,
                 details,
                 launch_hint,
+                on_drop_channel: None,
+                on_pick_channel: None,
+                drop_hint: None,
             }
         };
     }

@@ -3061,10 +3061,12 @@ dependencies = [
  "fastboop-stage0-generator",
  "futures-channel",
  "futures-util",
+ "gibblox-blockreader-messageport",
  "gibblox-cache",
  "gibblox-cache-store-opfs",
  "gibblox-core",
  "gibblox-http",
+ "gibblox-web-file",
  "gibblox-web-worker",
  "gibblox-zip",
  "gloo-timers",
@@ -3711,6 +3713,19 @@ dependencies = [
  "gibblox-core",
  "hadris-part",
  "tracing",
+]
+
+[[package]]
+name = "gibblox-web-file"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gibblox-core",
+ "js-sys",
+ "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

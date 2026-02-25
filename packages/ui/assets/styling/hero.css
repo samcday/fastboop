@@ -117,6 +117,39 @@
   font-size: 0.95rem;
 }
 
+.startup-dropzone {
+  margin-top: 18px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  border: 1px dashed rgba(105, 189, 176, 0.6);
+  background: rgba(12, 16, 20, 0.72);
+  display: grid;
+  gap: 8px;
+}
+
+.startup-dropzone--clickable {
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.startup-dropzone--clickable:hover {
+  border-color: rgba(105, 189, 176, 0.85);
+  background: rgba(12, 16, 20, 0.84);
+}
+
+.startup-dropzone__title {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.startup-dropzone__hint {
+  margin: 0;
+  color: var(--color-text-subtle);
+  font-size: 0.9rem;
+}
+
 .device-list {
   margin: 0 0 28px;
   padding: 20px 22px;
