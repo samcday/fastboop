@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
-use js_sys::Reflect;
+use js_sys::{decode_uri_component, Reflect};
 use ui::{
     apply_selected_profiles, selected_profile_option, update_profile_selection, Hero,
     ProbeSnapshot, ProbeState, ProfileSelectionMap, DEFAULT_CHANNEL, DEFAULT_ENABLE_SERIAL,
@@ -18,6 +18,7 @@ use crate::Route;
 use super::session::{
     next_session_id, BootConfig, DeviceSession, ProbedDevice, SessionPhase, SessionStore,
 };
+use super::unsupported::WebUnsupported;
 
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::builtin::builtin_profiles;
@@ -42,6 +43,13 @@ pub fn Home() -> Element {
 
     #[cfg(target_arch = "wasm32")]
     let webusb_supported = webusb_supported();
+
+    let channel_hint = cli_boot_channel_hint();
+
+    #[cfg(target_arch = "wasm32")]
+    let show_unsupported = !webusb_supported;
+    #[cfg(not(target_arch = "wasm32"))]
+    let show_unsupported = true;
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -241,11 +249,15 @@ pub fn Home() -> Element {
     };
 
     rsx! {
-        Hero {
-            state,
-            on_connect,
-            on_boot,
-            on_select_profile,
+        if show_unsupported {
+            WebUnsupported { channel: channel_hint }
+        } else {
+            Hero {
+                state,
+                on_connect,
+                on_boot,
+                on_select_profile,
+            }
         }
     }
 }
@@ -269,6 +281,39 @@ async fn probe_fastboot_devices(
         &candidates,
         |_| None,
     )
+}
+
+#[cfg(target_arch = "wasm32")]
+fn cli_boot_channel_hint() -> String {
+    let search = web_sys::window()
+        .and_then(|window| window.location().search().ok())
+        .unwrap_or_default();
+    parse_query_param(&search, "channel")
+        .filter(|channel| !channel.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_CHANNEL.to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cli_boot_channel_hint() -> String {
+    DEFAULT_CHANNEL.to_string()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_query_param(search: &str, key: &str) -> Option<String> {
+    let query = search.strip_prefix('?').unwrap_or(search);
+    for pair in query.split('&') {
+        let Some((k, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if k != key {
+            continue;
+        }
+        return decode_uri_component(value)
+            .ok()
+            .and_then(|decoded| decoded.as_string())
+            .or_else(|| Some(value.to_string()));
+    }
+    None
 }
 
 #[cfg(target_arch = "wasm32")]
