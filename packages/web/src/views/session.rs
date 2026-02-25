@@ -42,8 +42,9 @@ impl BootConfig {
 pub struct BootRuntime {
     pub size_bytes: u64,
     pub identity: String,
+    pub channel: String,
+    pub channel_offset_bytes: u64,
     #[cfg(target_arch = "wasm32")]
-    pub gibblox_worker: Option<GibbloxWebWorker>,
     pub smoo_stats: SmooStatsHandle,
 }
 

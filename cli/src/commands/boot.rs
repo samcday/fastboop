@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::task::Poll;
@@ -169,6 +169,78 @@ async fn run_boot_inner(
 ) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
     let profiles = load_device_profiles(&devpro_dirs)?;
+    let mut artifact_resolver = ArtifactReaderResolver::new();
+    let requested_profile_id = args.stage0.device_profile.as_deref();
+    let channel_head = artifact_resolver
+        .read_channel_stream_head(&args.stage0.channel)
+        .await
+        .with_context(|| {
+            format!(
+                "read channel profile stream head for {}",
+                args.stage0.channel.display()
+            )
+        })?;
+
+    if channel_head.warning_count > 0 {
+        emit(
+            &events,
+            BootEvent::Log(format!(
+                "channel stream has {} warning(s) while reading profile head; using {} bytes of leading records",
+                channel_head.warning_count, channel_head.consumed_bytes
+            )),
+        );
+    }
+
+    let loaded_profiles = dedup_profiles(&profiles);
+    let accepted_profile_ids: HashSet<&str> = channel_head
+        .dev_profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect();
+
+    let constrained_profiles: Vec<DeviceProfile> = if accepted_profile_ids.is_empty() {
+        loaded_profiles.iter().copied().cloned().collect()
+    } else {
+        loaded_profiles
+            .iter()
+            .filter(|profile| accepted_profile_ids.contains(profile.id.as_str()))
+            .copied()
+            .cloned()
+            .collect()
+    };
+
+    if !accepted_profile_ids.is_empty() && constrained_profiles.is_empty() {
+        let mut available: Vec<_> = channel_head
+            .dev_profiles
+            .iter()
+            .map(|profile| profile.id.as_str())
+            .collect();
+        available.sort_unstable();
+        bail!(
+            "channel profile constraints require one of [{}], but none are loaded from {:?}",
+            available.join(", "),
+            devpro_dirs
+        );
+    }
+
+    if !accepted_profile_ids.is_empty() {
+        if let Some(requested) = requested_profile_id {
+            if !accepted_profile_ids.contains(requested) {
+                let mut available: Vec<_> = channel_head
+                    .dev_profiles
+                    .iter()
+                    .map(|profile| profile.id.as_str())
+                    .collect();
+                available.sort_unstable();
+                bail!(
+                    "device profile '{}' is not accepted by channel profile constraints [{}]",
+                    requested,
+                    available.join(", ")
+                );
+            }
+        }
+    }
+
     let mut profile = match args.stage0.device_profile.as_deref() {
         Some(requested) => Some(resolve_profile_by_id(&profiles, &devpro_dirs, requested)?),
         None => None,
@@ -192,8 +264,6 @@ async fn run_boot_inner(
             );
             Some(wait_for_fastboot_device(selected_profile, wait, &events).await?)
         } else {
-            let unique_profiles: Vec<DeviceProfile> =
-                dedup_profiles(&profiles).into_iter().cloned().collect();
             emit(
                 &events,
                 BootEvent::Phase {
@@ -201,7 +271,8 @@ async fn run_boot_inner(
                     detail: "profile=auto".to_string(),
                 },
             );
-            let resolved = wait_for_fastboot_device_auto(&unique_profiles, wait, &events).await?;
+            let resolved =
+                wait_for_fastboot_device_auto(&constrained_profiles, wait, &events).await?;
             profile = Some(resolved.profile);
             Some(resolved.device)
         }
@@ -267,7 +338,6 @@ async fn run_boot_inner(
         },
     );
 
-    let mut artifact_resolver = ArtifactReaderResolver::new();
     let (block_reader, image_size_bytes, image_identity, build) = {
         let input = artifact_resolver
             .open_channel_input(

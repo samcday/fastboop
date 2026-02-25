@@ -20,9 +20,15 @@ mod wasm {
             return false;
         }
         let channel = worker_channel(&scope);
+        let channel_offset_bytes = worker_channel_offset_bytes(&scope);
 
         spawn_local(async move {
-            match crate::channel_source::build_channel_reader_pipeline(&channel).await {
+            match crate::channel_source::build_channel_reader_pipeline(
+                &channel,
+                channel_offset_bytes,
+            )
+            .await
+            {
                 Ok(reader) => GibbloxWebWorker::start_worker(scope, reader),
                 Err(err) => {
                     tracing::error!(error = %err, "failed to initialize gibblox worker channel pipeline");
@@ -34,11 +40,19 @@ mod wasm {
         true
     }
 
-    pub async fn spawn_gibblox_worker(channel: String) -> Result<GibbloxWebWorker> {
+    pub async fn spawn_gibblox_worker(
+        channel: String,
+        channel_offset_bytes: u64,
+    ) -> Result<GibbloxWebWorker> {
         let script_url = append_query_to_script_url(
             append_current_query_to_script_url(current_module_script_url()?),
             "channel",
             channel.trim(),
+        );
+        let script_url = append_query_to_script_url(
+            script_url,
+            "channel_offset",
+            &channel_offset_bytes_to_query(channel_offset_bytes),
         );
         tracing::info!(%script_url, "starting gibblox web worker");
 
@@ -51,6 +65,16 @@ mod wasm {
         GibbloxWebWorker::new(worker)
             .await
             .map_err(|err| anyhow!("initialize gibblox worker: {err}"))
+    }
+
+    fn worker_channel_offset_bytes(scope: &DedicatedWorkerGlobalScope) -> u64 {
+        let search = Reflect::get(scope.as_ref(), &JsValue::from_str("location"))
+            .ok()
+            .and_then(|location| Reflect::get(&location, &JsValue::from_str("search")).ok())
+            .and_then(|search| search.as_string())
+            .unwrap_or_default();
+
+        parse_query_u64_param(&search, "channel_offset").unwrap_or(0)
     }
 
     fn worker_channel(scope: &DedicatedWorkerGlobalScope) -> String {
@@ -154,6 +178,14 @@ mod wasm {
         script_url
     }
 
+    fn parse_query_u64_param(search: &str, key: &str) -> Option<u64> {
+        parse_query_param(search, key).and_then(|value| value.parse().ok())
+    }
+
+    fn channel_offset_bytes_to_query(value: u64) -> String {
+        value.to_string()
+    }
+
     fn parse_query_param(search: &str, key: &str) -> Option<String> {
         let query = search.strip_prefix('?').unwrap_or(search);
         for pair in query.split('&') {
@@ -197,7 +229,7 @@ mod non_wasm {
         false
     }
 
-    pub async fn spawn_gibblox_worker(_channel: String) -> Result<()> {
+    pub async fn spawn_gibblox_worker(_channel: String, _channel_offset_bytes: u64) -> Result<()> {
         bail!("gibblox web worker is only available on wasm32 targets")
     }
 }

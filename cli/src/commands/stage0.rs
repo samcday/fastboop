@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use fastboop_core::resolve_effective_boot_profile_stage0;
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
@@ -92,6 +93,28 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                 args.boot_profile.as_deref(),
             )
             .await?;
+
+        if input.warning_count > 0 {
+            eprintln!(
+                "channel stream has {} warning(s) while reading profile head; using {} bytes of leading records",
+                input.warning_count,
+                input.consumed_bytes
+            );
+        }
+
+        let accepted_profile_ids: HashSet<&str> =
+            input.dev_profiles.iter().map(|profile| profile.id.as_str()).collect();
+        if !accepted_profile_ids.is_empty() && !accepted_profile_ids.contains(profile.id.as_str()) {
+            let mut accepted_ids: Vec<_> =
+                input.dev_profiles.iter().map(|profile| profile.id.as_str()).collect();
+            accepted_ids.sort_unstable();
+            bail!(
+                "device profile '{}' is not accepted by channel profile constraints [{}]",
+                profile.id,
+                accepted_ids.join(", ")
+            );
+        }
+
         let profile_source_overrides = resolve_boot_profile_source_overrides(
             input.boot_profile.as_ref(),
             profile,

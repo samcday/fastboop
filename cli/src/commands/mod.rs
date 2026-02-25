@@ -11,8 +11,9 @@ use async_trait::async_trait;
 use fastboop_core::fastboot::{FastbootProtocolError, ProbeError};
 use fastboop_core::{
     BootProfile, BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
-    CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamKind, DeviceProfile, boot_profile_bin_header_version,
-    classify_channel_prefix, decode_boot_profile_prefix, validate_boot_profile,
+    CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES, CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamHead,
+    ChannelStreamKind, DeviceProfile, classify_channel_prefix, read_channel_stream_head,
+    select_boot_profile_for_device,
 };
 use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
 use gibblox_android_sparse::AndroidSparseBlockReader;
@@ -42,28 +43,27 @@ use url::Url;
 mod boot;
 mod bootprofile;
 mod detect;
+mod devprofile;
 mod stage0;
 
 pub use boot::{BootArgs, run_boot};
 pub use bootprofile::{BootProfileArgs, run_bootprofile};
 pub use detect::{DetectArgs, run_detect};
+pub use devprofile::{DevProfileArgs, run_devprofile};
 pub use stage0::{Stage0Args, run_stage0};
 
 pub(crate) struct ChannelInput {
     pub(crate) reader: Arc<dyn BlockReader>,
     pub(crate) stage0_readers: Vec<Arc<dyn BlockReader>>,
     pub(crate) boot_profile: Option<fastboop_core::BootProfile>,
+    pub(crate) consumed_bytes: u64,
+    pub(crate) dev_profiles: Vec<DeviceProfile>,
+    pub(crate) warning_count: usize,
 }
 
 struct ChannelSourceReader {
     reader: Arc<dyn BlockReader>,
     exact_size_bytes: u64,
-}
-
-#[derive(Clone, Debug, Default)]
-struct BootProfileStreamHead {
-    profiles: Vec<BootProfile>,
-    consumed_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -490,9 +490,10 @@ impl ArtifactReaderResolver {
         let source = open_channel_source_reader(channel).await?;
         let source_total_bytes = source.exact_size_bytes;
         let stream_head =
-            read_boot_profile_stream_head(source.reader.as_ref(), source_total_bytes).await?;
+            read_channel_stream_head_from_reader(source.reader.as_ref(), source_total_bytes)
+                .await?;
 
-        if stream_head.profiles.is_empty() {
+        if stream_head.boot_profiles.is_empty() {
             if let Some(requested) = requested_boot_profile_id {
                 bail!(
                     "boot profile '{}' was requested, but channel does not start with a boot profile stream",
@@ -500,20 +501,34 @@ impl ArtifactReaderResolver {
                 );
             }
 
-            let reader = unwrap_channel_reader(source.reader, Some(channel)).await?;
+            let reader = if stream_head.consumed_bytes < source_total_bytes {
+                let trailing = OffsetChannelBlockReader::new(
+                    source.reader,
+                    stream_head.consumed_bytes,
+                    source_total_bytes,
+                )?;
+                let trailing: Arc<dyn BlockReader> = Arc::new(trailing);
+                unwrap_channel_reader(trailing, Some(channel)).await?
+            } else {
+                unwrap_channel_reader(source.reader, Some(channel)).await?
+            };
             let stage0_readers = derive_stage0_readers(reader.clone()).await?;
             return Ok(ChannelInput {
                 reader,
                 stage0_readers,
                 boot_profile: None,
+                consumed_bytes: stream_head.consumed_bytes,
+                dev_profiles: stream_head.dev_profiles,
+                warning_count: stream_head.warning_count,
             });
         }
 
         let boot_profile = select_boot_profile_for_device(
-            stream_head.profiles.as_slice(),
+            stream_head.boot_profiles.as_slice(),
             device_profile_id,
             requested_boot_profile_id,
-        )?;
+        )
+        .map_err(|err| anyhow!("{err}"))?;
 
         let reader = if stream_head.consumed_bytes < source_total_bytes {
             let trailing = OffsetChannelBlockReader::new(
@@ -533,7 +548,18 @@ impl ArtifactReaderResolver {
             reader,
             stage0_readers,
             boot_profile: Some(boot_profile),
+            consumed_bytes: stream_head.consumed_bytes,
+            dev_profiles: stream_head.dev_profiles,
+            warning_count: stream_head.warning_count,
         })
+    }
+
+    pub(crate) async fn read_channel_stream_head(
+        &self,
+        channel: &Path,
+    ) -> Result<ChannelStreamHead> {
+        let source = open_channel_source_reader(channel).await?;
+        read_channel_stream_head_from_reader(source.reader.as_ref(), source.exact_size_bytes).await
     }
 
     pub(crate) fn open_artifact_source<'a>(
@@ -700,142 +726,18 @@ fn artifact_source_cache_key(source: &BootProfileArtifactSource) -> Result<Strin
 
 const CHANNEL_UNWRAP_MAX_DEPTH: usize = 16;
 const CHANNEL_PARTITION_PROBE_LIMIT: u32 = 16;
-const CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES: usize = 4 * 1024 * 1024;
-const CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS: usize = 128;
 
-async fn read_boot_profile_stream_head<R: BlockReader + ?Sized>(
+async fn read_channel_stream_head_from_reader<R: BlockReader + ?Sized>(
     reader: &R,
     exact_total_bytes: u64,
-) -> Result<BootProfileStreamHead> {
-    let total_bytes = exact_total_bytes;
-    if total_bytes == 0 {
-        return Ok(BootProfileStreamHead::default());
-    }
-
+) -> Result<ChannelStreamHead> {
     let scan_cap = core::cmp::min(
         CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
-        total_bytes,
-    );
-    let prefix = read_channel_prefix(reader, scan_cap as usize).await?;
-
-    let mut out = BootProfileStreamHead::default();
-    let mut cursor = 0usize;
-    while cursor < prefix.len() {
-        if out.profiles.len() >= CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS {
-            bail!(
-                "channel boot profile stream exceeds max profile count {}",
-                CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS
-            );
-        }
-
-        let remaining = &prefix[cursor..];
-        if boot_profile_bin_header_version(remaining).is_none() {
-            break;
-        }
-
-        let (profile, consumed) = match decode_boot_profile_prefix(remaining) {
-            Ok(decoded) => decoded,
-            Err(err) if scan_cap < total_bytes => {
-                bail!(
-                    "decode boot profile stream at offset {}: {}; stream head exceeds {} bytes",
-                    cursor,
-                    err,
-                    CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES
-                )
-            }
-            Err(err) => {
-                bail!("decode boot profile stream at offset {}: {}", cursor, err)
-            }
-        };
-        if consumed == 0 {
-            bail!("decoded boot profile consumed zero bytes at offset {cursor}");
-        }
-        validate_boot_profile(&profile).map_err(|err| {
-            anyhow!(
-                "validate boot profile '{}' at stream offset {}: {}",
-                profile.id,
-                cursor,
-                err
-            )
-        })?;
-
-        out.profiles.push(profile);
-        cursor = cursor
-            .checked_add(consumed)
-            .ok_or_else(|| anyhow!("channel boot profile cursor overflow"))?;
-    }
-
-    out.consumed_bytes = cursor as u64;
-    Ok(out)
-}
-
-fn select_boot_profile_for_device(
-    profiles: &[BootProfile],
-    device_profile_id: &str,
-    requested_boot_profile_id: Option<&str>,
-) -> Result<BootProfile> {
-    if profiles.is_empty() {
-        bail!("channel boot profile stream is empty");
-    }
-
-    if let Some(requested) = requested_boot_profile_id {
-        let Some(profile) = profiles.iter().find(|profile| profile.id == requested) else {
-            let ids = profiles
-                .iter()
-                .map(|profile| profile.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!(
-                "requested boot profile '{}' was not found in channel stream (available: {})",
-                requested,
-                ids
-            );
-        };
-        if !boot_profile_matches_device(profile, device_profile_id) {
-            bail!(
-                "boot profile '{}' is not compatible with device profile '{}'",
-                profile.id,
-                device_profile_id
-            );
-        }
-        return Ok(profile.clone());
-    }
-
-    let compatible = profiles
-        .iter()
-        .filter(|profile| boot_profile_matches_device(profile, device_profile_id))
-        .collect::<Vec<_>>();
-    match compatible.as_slice() {
-        [] => {
-            let ids = profiles
-                .iter()
-                .map(|profile| profile.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!(
-                "no compatible boot profile found for device profile '{}' in channel stream (available: {})",
-                device_profile_id,
-                ids
-            );
-        }
-        [profile] => Ok((*profile).clone()),
-        many => {
-            let ids = many
-                .iter()
-                .map(|profile| profile.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!(
-                "multiple compatible boot profiles found for device profile '{}' ({}); pass --boot-profile",
-                device_profile_id,
-                ids
-            );
-        }
-    }
-}
-
-fn boot_profile_matches_device(profile: &BootProfile, device_profile_id: &str) -> bool {
-    profile.stage0.devices.is_empty() || profile.stage0.devices.contains_key(device_profile_id)
+        exact_total_bytes,
+    ) as usize;
+    let prefix = read_channel_prefix(reader, scan_cap).await?;
+    read_channel_stream_head(prefix.as_slice(), exact_total_bytes)
+        .map_err(|err| anyhow!("read channel stream head: {err}"))
 }
 
 async fn open_channel_source_reader(channel: &Path) -> Result<ChannelSourceReader> {
@@ -1725,7 +1627,9 @@ fn resolve_rooted(root: &Path, path: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fastboop_core::{BootProfileManifest, encode_boot_profile};
+    use fastboop_core::{
+        BootProfileManifest, DeviceProfile, encode_boot_profile, encode_dev_profile,
+    };
     use gobblytes_core::MockFilesystem;
 
     #[tokio::test]
@@ -1774,8 +1678,14 @@ rootfs:
     file: ./rootfs.ero
 "#,
         );
-        assert!(boot_profile_matches_device(&profile, "oneplus-fajita"));
-        assert!(boot_profile_matches_device(&profile, "pine64-pinephone"));
+        assert!(fastboop_core::boot_profile_matches_device(
+            &profile,
+            "oneplus-fajita"
+        ));
+        assert!(fastboop_core::boot_profile_matches_device(
+            &profile,
+            "pine64-pinephone"
+        ));
     }
 
     #[test]
@@ -1879,6 +1789,99 @@ rootfs:
     }
 
     #[tokio::test]
+    async fn channel_stream_head_accepts_mixed_boot_and_dev_records() {
+        let boot = compile_boot_profile(
+            r#"
+id: boot-only
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+        let device = compile_device_profile(
+            r#"
+id: dev-one
+devicetree_name: test-device-tree
+match:
+  - fastboot:
+      vid: 0x1234
+      pid: 0x5678
+probe: []
+boot:
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 4096
+      kernel:
+        encoding: image
+stage0: {}
+"#,
+        );
+
+        let boot_encoded = encode_boot_profile(&boot).unwrap();
+        let device_encoded = encode_dev_profile(&device).unwrap();
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(device_encoded.as_slice());
+        stream.extend_from_slice(boot_encoded.as_slice());
+        let stream_len = stream.len() as u64;
+
+        let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(stream, 512));
+        let head = read_channel_stream_head_from_reader(source.as_ref(), stream_len)
+            .await
+            .unwrap();
+
+        assert_eq!(head.dev_profiles.len(), 1);
+        assert_eq!(head.dev_profiles[0].id, "dev-one");
+        assert_eq!(head.boot_profiles.len(), 1);
+        assert_eq!(head.boot_profiles[0].id, "boot-only");
+        assert_eq!(head.warning_count, 0);
+    }
+
+    #[tokio::test]
+    async fn channel_stream_head_only_keeps_dev_records() {
+        let device = compile_device_profile(
+            r#"
+id: dev-only
+devicetree_name: test-device-tree
+match:
+  - fastboot:
+      vid: 0x1234
+      pid: 0x5678
+probe: []
+boot:
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 4096
+      kernel:
+        encoding: image
+stage0: {}
+"#,
+        );
+
+        let dev_encoded = encode_dev_profile(&device).unwrap();
+        let mut trailing = vec![0u8; 2048];
+        trailing[1024..1028].copy_from_slice(&0xE0F5_E1E2u32.to_le_bytes());
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(dev_encoded.as_slice());
+        stream.extend_from_slice(trailing.as_slice());
+        let stream_len = stream.len() as u64;
+
+        let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(stream, 512));
+        let head = read_channel_stream_head_from_reader(source.as_ref(), stream_len)
+            .await
+            .unwrap();
+
+        assert_eq!(head.boot_profiles.len(), 0);
+        assert_eq!(head.dev_profiles.len(), 1);
+        assert_eq!(head.dev_profiles[0].id, "dev-only");
+        assert_eq!(head.consumed_bytes, dev_encoded.len() as u64);
+        assert_eq!(head.warning_count, 1);
+    }
+
+    #[tokio::test]
     async fn bootprofile_stream_head_consumes_profiles_then_trailing_artifact() {
         let first = compile_boot_profile(
             r#"
@@ -1912,16 +1915,17 @@ stage0:
         let stream_len = stream.len() as u64;
 
         let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(stream, 512));
-        let head = read_boot_profile_stream_head(source.as_ref(), stream_len)
+        let head = read_channel_stream_head_from_reader(source.as_ref(), stream_len)
             .await
             .unwrap();
-        assert_eq!(head.profiles.len(), 2);
-        assert_eq!(head.profiles[0].id, "first");
-        assert_eq!(head.profiles[1].id, "second");
+        assert_eq!(head.boot_profiles.len(), 2);
+        assert_eq!(head.boot_profiles[0].id, "first");
+        assert_eq!(head.boot_profiles[1].id, "second");
         assert_eq!(
             head.consumed_bytes,
             (first_encoded.len() + second_encoded.len()) as u64
         );
+        assert_eq!(head.warning_count, 1);
 
         let trailing_reader =
             OffsetChannelBlockReader::new(source, head.consumed_bytes, stream_len).unwrap();
@@ -1946,11 +1950,34 @@ rootfs:
         let exact_len = encoded.len() as u64;
         let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(encoded, 512));
 
-        let head = read_boot_profile_stream_head(source.as_ref(), exact_len)
+        let head = read_channel_stream_head_from_reader(source.as_ref(), exact_len)
             .await
             .unwrap();
-        assert_eq!(head.profiles.len(), 1);
+        assert_eq!(head.boot_profiles.len(), 1);
         assert_eq!(head.consumed_bytes, exact_len);
+    }
+
+    #[tokio::test]
+    async fn channel_stream_head_fails_on_truncated_first_record() {
+        let profile = compile_boot_profile(
+            r#"
+id: tiny
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+
+        let mut truncated = encode_boot_profile(&profile).unwrap();
+        truncated.truncate(truncated.len() - 1);
+        let exact_len = truncated.len() as u64;
+        let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(truncated, 512));
+
+        let err = read_channel_stream_head_from_reader(source.as_ref(), exact_len).await;
+        assert!(
+            err.is_err(),
+            "expected channel stream parse error for truncated first record"
+        );
     }
 
     fn compile_boot_profile(yaml: &str) -> BootProfile {
@@ -1958,6 +1985,10 @@ rootfs:
         manifest
             .compile_dt_overlays(|_| Ok::<Vec<u8>, anyhow::Error>(Vec::new()))
             .expect("compile manifest")
+    }
+
+    fn compile_device_profile(yaml: &str) -> DeviceProfile {
+        serde_yaml::from_str(yaml).expect("parse manifest")
     }
 
     struct TestBytesBlockReader {

@@ -7,14 +7,19 @@ use std::time::Duration;
 
 use anyhow::{anyhow, ensure, Context, Result};
 use dioxus::prelude::ReadableExt;
-use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
+use fastboop_core::{
+    bootimg::build_android_bootimg, read_channel_stream_head, ChannelStreamHead,
+    CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES,
+};
 use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
-use gibblox_core::{block_identity_string, BlockReader};
+use gibblox_core::{
+    block_identity_string, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
+};
 use gibblox_http::HttpBlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_erofs::ErofsRootfs;
@@ -236,8 +241,30 @@ async fn build_stage0_artifacts(
                     } else {
                         cached
                     };
-                    let size_bytes = reader_size_bytes(reader.as_ref()).await?;
-                    let provider = ErofsRootfs::new(reader.clone(), size_bytes).await?;
+                    let total_size_bytes = reader_size_bytes(reader.as_ref()).await?;
+                    let stream_head = read_channel_stream_head_from_reader(reader.as_ref(), total_size_bytes)
+                        .await
+                        .map_err(|err| {
+                            anyhow!("read channel stream head {}: {err}", channel)
+                        })?;
+
+                    validate_session_dev_profiles(&profile.id, &stream_head.dev_profiles)
+                        .map_err(|err| anyhow!("channel stream device mismatch for {channel}: {err}"))?;
+
+                    let (provider_reader, provider_size_bytes) =
+                        offset_tail_reader(reader.clone(), &stream_head, total_size_bytes)
+                            .map_err(|err| anyhow!("channel stream requires trailing artifact: {err}"))?;
+
+                    if stream_head.warning_count > 0 {
+                        info!(
+                            warning_count = stream_head.warning_count,
+                            consumed_bytes = stream_head.consumed_bytes,
+                            channel,
+                            "channel stream head stopped early while scanning records"
+                        );
+                    }
+
+                    let provider = ErofsRootfs::new(provider_reader.clone(), provider_size_bytes).await?;
                     info!(profile = %profile.id, "building stage0 payload");
                     let build =
                         build_stage0(&profile, &provider, &stage0_opts, nonempty(&extra_kargs), None)
@@ -247,9 +274,9 @@ async fn build_stage0_artifacts(
                     Ok((
                         build,
                         BootRuntime {
-                            reader,
-                            size_bytes,
-                            identity: channel_identity,
+                            reader: provider_reader,
+                            size_bytes: provider_size_bytes,
+                            identity: block_identity_string(provider_reader.as_ref()),
                             smoo_stats: SmooStatsHandle::new(),
                         },
                     ))
@@ -261,6 +288,200 @@ async fn build_stage0_artifacts(
 
     rx.await
         .map_err(|_| anyhow!("stage0 build worker thread exited unexpectedly"))?
+}
+
+fn validate_session_dev_profiles(
+    session_device_profile_id: &str,
+    accepted: &[fastboop_core::DeviceProfile],
+) -> Result<()> {
+    if accepted.is_empty() {
+        return Ok(());
+    }
+
+    if accepted
+        .iter()
+        .any(|profile| profile.id == session_device_profile_id)
+    {
+        return Ok(());
+    }
+
+    let allowed: Vec<_> = accepted.iter().map(|profile| profile.id.as_str()).collect();
+    Err(anyhow!(
+        "device '{}' is not accepted by this channel stream; channel-dev-profiles: {}",
+        session_device_profile_id,
+        allowed.join(", "),
+    ))
+}
+
+async fn read_channel_stream_head_from_reader<R: BlockReader + ?Sized>(
+    reader: &R,
+    exact_total_bytes: u64,
+) -> Result<ChannelStreamHead> {
+    let scan_cap = core::cmp::min(
+        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
+        exact_total_bytes,
+    ) as usize;
+    let prefix = read_channel_prefix(reader, scan_cap).await?;
+    read_channel_stream_head(&prefix, exact_total_bytes)
+        .map_err(|err| anyhow!("read channel stream head: {err}"))
+}
+
+async fn read_channel_prefix<R: BlockReader + ?Sized>(
+    reader: &R,
+    scan_cap: usize,
+) -> Result<Vec<u8>> {
+    let block_size = usize::try_from(reader.block_size()).map_err(|_| {
+        anyhow!(
+            "channel reader block size {} does not fit in usize",
+            reader.block_size()
+        )
+    })?;
+    if block_size == 0 {
+        bail!("channel reader block size is zero");
+    }
+
+    let total_blocks = reader
+        .total_blocks()
+        .await
+        .map_err(|err| anyhow!("read channel total blocks: {err}"))?;
+    let total_bytes = total_blocks
+        .checked_mul(reader.block_size() as u64)
+        .ok_or_else(|| anyhow!("channel total size overflows u64"))?;
+    let prefix_len = core::cmp::min(scan_cap as u64, total_bytes) as usize;
+    if prefix_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    let blocks_to_read = prefix_len.div_ceil(block_size);
+    let mut scratch = vec![0u8; blocks_to_read * block_size];
+    let mut read = reader
+        .read_blocks(0, &mut scratch, ReadContext::FOREGROUND)
+        .await
+        .map_err(|err| anyhow!("read channel prefix: {err}"))?;
+    read = core::cmp::min(read, prefix_len);
+    scratch.truncate(read);
+    Ok(scratch)
+}
+
+fn offset_tail_reader(
+    reader: Arc<dyn BlockReader>,
+    stream_head: &ChannelStreamHead,
+    total_size_bytes: u64,
+) -> Result<(Arc<dyn BlockReader>, u64)> {
+    if stream_head.consumed_bytes == 0 {
+        return Ok((reader, total_size_bytes));
+    }
+
+    if stream_head.consumed_bytes >= total_size_bytes {
+        bail!(
+            "channel stream has only profile records and no trailing artifact payload; desktop boot requires an artifact stream"
+        );
+    }
+
+    Ok((
+        Arc::new(OffsetChannelBlockReader::new(
+            reader.clone(),
+            stream_head.consumed_bytes,
+            total_size_bytes,
+        )?),
+        total_size_bytes
+            .checked_sub(stream_head.consumed_bytes)
+            .ok_or_else(|| anyhow!("channel consumed byte offset overflow"))?,
+    ))
+}
+
+struct OffsetChannelBlockReader {
+    inner: Arc<dyn BlockReader>,
+    offset_bytes: u64,
+    size_bytes: u64,
+    block_size: u32,
+    inner_size_bytes: u64,
+}
+
+impl OffsetChannelBlockReader {
+    fn new(inner: Arc<dyn BlockReader>, offset_bytes: u64, inner_size_bytes: u64) -> Result<Self> {
+        if offset_bytes > inner_size_bytes {
+            bail!(
+                "offset {offset_bytes} exceeds source size {inner_size_bytes} while truncating channel stream"
+            );
+        }
+
+        let block_size = inner.block_size();
+        if block_size == 0 {
+            bail!("block size must be non-zero");
+        }
+
+        Ok(Self {
+            inner,
+            offset_bytes,
+            size_bytes: inner_size_bytes
+                .checked_sub(offset_bytes)
+                .ok_or_else(|| anyhow!("channel consumed byte offset underflow"))?,
+            block_size,
+            inner_size_bytes,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl gibblox_core::BlockReader for OffsetChannelBlockReader {
+    fn block_size(&self) -> u32 {
+        self.block_size
+    }
+
+    async fn total_blocks(&self) -> GibbloxResult<u64> {
+        let block_size = u64::from(self.block_size);
+        if block_size == 0 {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "block size must be non-zero",
+            ));
+        }
+        Ok(self.size_bytes.div_ceil(block_size))
+    }
+
+    fn write_identity(&self, out: &mut dyn core::fmt::Write) -> std::fmt::Result {
+        let mut identity = String::new();
+        self.inner.write_identity(&mut identity)?;
+        write!(out, "{}|offset:{}", identity, self.offset_bytes)
+    }
+
+    async fn read_blocks(
+        &self,
+        lba: u64,
+        buf: &mut [u8],
+        ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let local_offset = lba.checked_mul(u64::from(self.block_size)).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "offset overflow")
+        })?;
+        if local_offset >= self.size_bytes {
+            return Ok(0);
+        }
+
+        let remaining = self.size_bytes.checked_sub(local_offset).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "read offset underflow")
+        })?;
+        let max_read = core::cmp::min(buf.len() as u64, remaining) as usize;
+        let global_offset = self.offset_bytes.checked_add(local_offset).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "global read offset overflow")
+        })?;
+
+        let byte_reader = gibblox_core::ByteRangeReader::new(
+            self.inner.clone(),
+            self.block_size as usize,
+            self.inner_size_bytes,
+        );
+        byte_reader
+            .read_exact_at(global_offset, &mut buf[..max_read], ctx)
+            .await
+            .map_err(|err| err)?;
+        Ok(max_read)
+    }
 }
 
 fn zip_entry_name_from_url(url: &Url) -> Result<Option<String>> {

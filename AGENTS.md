@@ -21,6 +21,8 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
 
 ## Minimal working rules
 - Keep diffs focused and reviewable.
+- Use Conventional Commit style for all commits (`feat:`, `fix:`, `refactor:` and similar scopes).
+- End each completed turn with a conventional commit sequence (or `fixup!` commits that targets the appropriate prior commits).
 - fastboop is currently unreleased: do not add migration shims, compatibility aliases, or deprecation warnings unless explicitly requested by the user.
 - Preserve non-mutating behavior (no flash/erase/format/slot toggles/unlock paths).
 - Keep platform-agnostic logic in core crates and platform bindings in leaf crates.

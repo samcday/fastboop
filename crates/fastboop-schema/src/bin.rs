@@ -23,6 +23,10 @@ pub const BOOT_PROFILE_BIN_FORMAT_VERSION: u16 = 1;
 pub const BOOT_PROFILE_BIN_MAGIC: [u8; 8] = *b"FBOOPROF";
 pub const BOOT_PROFILE_BIN_HEADER_LEN: usize = 10;
 
+pub const DEV_PROFILE_BIN_FORMAT_VERSION: u16 = 1;
+pub const DEV_PROFILE_BIN_MAGIC: [u8; 8] = *b"FBOODEVP";
+pub const DEV_PROFILE_BIN_HEADER_LEN: usize = 10;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BootProfileBin {
     pub id: String,
