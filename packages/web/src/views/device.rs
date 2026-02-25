@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use ui::run_smoo_stats_view_loop;
-use ui::{BootConfigCard, SmooStatsPanel, SmooStatsViewModel};
+use ui::{BootConfigCard, BootProfileOptionView, SmooStatsPanel, SmooStatsViewModel};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
 
@@ -79,6 +79,18 @@ fn BootConfigDevice(session_id: String) -> Element {
         });
     };
 
+    let mut sessions_for_boot_profile = sessions;
+    let session_id_for_boot_profile = session_id.clone();
+    let on_boot_profile_change = move |value: String| {
+        update_session_boot_config(
+            &mut sessions_for_boot_profile,
+            &session_id_for_boot_profile,
+            |config| {
+                config.selected_boot_profile_id = Some(value);
+            },
+        );
+    };
+
     let mut sessions_for_serial = sessions;
     let session_id_for_serial = session_id.clone();
     let on_enable_serial_change = move |value: bool| {
@@ -89,7 +101,27 @@ fn BootConfigDevice(session_id: String) -> Element {
 
     let mut sessions_for_start = sessions;
     let session_id_for_start = session_id.clone();
+    let compatible_boot_profile_ids: Vec<String> = session
+        .channel_intake
+        .compatible_boot_profiles
+        .iter()
+        .map(|profile| profile.id.clone())
+        .collect();
+    let selected_boot_profile_id = session.boot_config.selected_boot_profile_id.clone();
     let on_start_boot = move |_| {
+        let selected_boot_profile_id = selected_boot_profile_id.clone();
+        if compatible_boot_profile_ids.len() > 1 && selected_boot_profile_id.is_none() {
+            return;
+        }
+        if let Some(selected_boot_profile_id) = selected_boot_profile_id.as_ref() {
+            if !compatible_boot_profile_ids
+                .iter()
+                .any(|id| id == selected_boot_profile_id)
+            {
+                return;
+            }
+        }
+
         update_session_phase(
             &mut sessions_for_start,
             &session_id_for_start,
@@ -99,18 +131,35 @@ fn BootConfigDevice(session_id: String) -> Element {
         );
     };
 
+    let boot_profile_options: Vec<BootProfileOptionView> = session
+        .channel_intake
+        .compatible_boot_profiles
+        .iter()
+        .map(|profile| BootProfileOptionView {
+            id: profile.id.clone(),
+            label: profile
+                .display_name
+                .clone()
+                .unwrap_or_else(|| profile.id.clone()),
+        })
+        .collect();
+
     rsx! {
         BootConfigCard {
             device_name: session.device.name,
             device_id: format!("{:04x}:{:04x}", session.device.vid, session.device.pid),
             profile_id: session.device.profile.id,
+            boot_profile_options,
+            selected_boot_profile_id: session.boot_config.selected_boot_profile_id,
             channel: session.boot_config.channel,
             extra_kargs: session.boot_config.extra_kargs,
             enable_serial: session.boot_config.enable_serial,
             on_channel_change,
+            on_boot_profile_change,
             on_extra_kargs_change,
             on_enable_serial_change,
             on_start_boot,
+            show_channel_input: false,
         }
     }
 }
@@ -175,10 +224,11 @@ fn BootedDevice(session_id: String) -> Element {
                 s.device.vid,
                 s.device.pid,
                 s.boot_config.channel.clone(),
+                s.boot_config.selected_boot_profile_id.clone(),
                 s.phase.clone(),
             )
         });
-    let Some((device_vid, device_pid, channel, phase)) = state else {
+    let Some((device_vid, device_pid, channel, selected_boot_profile_id, phase)) = state else {
         return rsx! {};
     };
 
@@ -312,6 +362,9 @@ fn BootedDevice(session_id: String) -> Element {
                 h1 { "We're live." }
                 p { class: "landing__lede", "Please don't close this page while the session is active." }
                 p { class: "landing__note", "Channel: {channel}" }
+                if let Some(selected_boot_profile_id) = selected_boot_profile_id {
+                    p { class: "landing__note", "Boot profile: {selected_boot_profile_id}" }
+                }
                 if let Some(smoo_stats) = smoo_stats {
                     SmooStatsPanel { stats: smoo_stats }
                 }

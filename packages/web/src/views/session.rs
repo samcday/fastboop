@@ -1,12 +1,25 @@
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_arch = "wasm32")]
+use std::sync::Arc;
 
+#[cfg(target_arch = "wasm32")]
+use anyhow::Context;
 use dioxus::prelude::{Signal, WritableExt};
-use fastboop_core::DeviceProfile;
+use fastboop_core::{BootProfile, DeviceProfile};
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
+use gibblox_blockreader_messageport::{MessagePortBlockReaderClient, MessagePortBlockReaderServer};
+#[cfg(target_arch = "wasm32")]
+use gibblox_core::BlockReader;
+#[cfg(target_arch = "wasm32")]
 use gibblox_web_worker::GibbloxWebWorker;
+#[cfg(target_arch = "wasm32")]
 use ui::SmooStatsHandle;
+#[cfg(target_arch = "wasm32")]
+use web_sys::MessageChannel;
 
 #[derive(Clone)]
 pub struct ProbedDevice {
@@ -20,6 +33,7 @@ pub struct ProbedDevice {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BootConfig {
     pub channel: String,
+    pub selected_boot_profile_id: Option<String>,
     pub extra_kargs: String,
     pub enable_serial: bool,
 }
@@ -27,15 +41,70 @@ pub struct BootConfig {
 impl BootConfig {
     pub fn new(
         channel: impl Into<String>,
+        selected_boot_profile_id: Option<String>,
         extra_kargs: impl Into<String>,
         enable_serial: bool,
     ) -> Self {
         Self {
             channel: channel.into(),
+            selected_boot_profile_id,
             extra_kargs: extra_kargs.into(),
             enable_serial,
         }
     }
+}
+
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct SessionChannelIntake {
+    pub exact_total_bytes: u64,
+    pub consumed_bytes: u64,
+    pub warning_count: usize,
+    pub has_artifact_payload: bool,
+    pub accepted_dev_profiles: Vec<DeviceProfile>,
+    pub compatible_boot_profiles: Vec<BootProfile>,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+pub struct LocalReaderBridge {
+    reader: Arc<dyn BlockReader>,
+    servers: Rc<RefCell<Vec<MessagePortBlockReaderServer>>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl LocalReaderBridge {
+    pub fn new(reader: Arc<dyn BlockReader>) -> Self {
+        Self {
+            reader,
+            servers: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    pub async fn create_reader(&self) -> anyhow::Result<MessagePortBlockReaderClient> {
+        let channel = MessageChannel::new().map_err(|err| {
+            anyhow::anyhow!(
+                "create local channel reader bridge message channel: {}",
+                js_value_to_string(err)
+            )
+        })?;
+        let server = MessagePortBlockReaderServer::serve(channel.port2(), self.reader.clone())
+            .map_err(|err| anyhow::anyhow!("serve local channel reader bridge: {err}"))?;
+        let client = MessagePortBlockReaderClient::connect(channel.port1())
+            .await
+            .map_err(|err| anyhow::anyhow!("connect local channel reader bridge: {err}"))
+            .with_context(|| "attach local channel reader bridge")?;
+        self.servers.borrow_mut().push(server);
+        Ok(client)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_value_to_string(value: wasm_bindgen::JsValue) -> String {
+    js_sys::JSON::stringify(&value)
+        .ok()
+        .and_then(|s| s.as_string())
+        .unwrap_or_else(|| format!("{value:?}"))
 }
 
 #[allow(dead_code)]
@@ -44,6 +113,10 @@ pub struct BootRuntime {
     pub identity: String,
     pub channel: String,
     pub channel_offset_bytes: u64,
+    #[cfg(target_arch = "wasm32")]
+    pub gibblox_worker: Option<GibbloxWebWorker>,
+    #[cfg(target_arch = "wasm32")]
+    pub local_reader_bridge: Option<LocalReaderBridge>,
     #[cfg(target_arch = "wasm32")]
     pub smoo_stats: SmooStatsHandle,
 }
@@ -68,6 +141,7 @@ pub enum SessionPhase {
 pub struct DeviceSession {
     pub id: String,
     pub device: ProbedDevice,
+    pub channel_intake: SessionChannelIntake,
     pub boot_config: BootConfig,
     pub phase: SessionPhase,
 }

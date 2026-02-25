@@ -4,41 +4,62 @@ use dioxus::prelude::*;
 use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
-use fastboop_core::{
-    read_channel_stream_head, ChannelStreamHead, Personalization,
-    CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES,
-};
+#[cfg(target_arch = "wasm32")]
+use fastboop_core::BootProfileArtifactSource;
+use fastboop_core::Personalization;
+use fastboop_core::{resolve_effective_boot_profile_stage0, BootProfile};
 use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
+use gibblox_android_sparse::AndroidSparseBlockReader;
+use gibblox_core::block_identity_string;
 use gibblox_core::BlockReader;
-use gibblox_core::{block_identity_string, ReadContext};
-use gibblox_http::HttpBlockReader;
+#[cfg(target_arch = "wasm32")]
+use gibblox_core::{GptBlockReader, GptPartitionSelector};
 #[cfg(not(target_arch = "wasm32"))]
+use gibblox_http::HttpBlockReader;
+#[cfg(target_arch = "wasm32")]
+use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
+#[cfg(target_arch = "wasm32")]
+use gibblox_web_file::WebFileBlockReader;
+#[cfg(target_arch = "wasm32")]
+use gibblox_xz::XzBlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::sleep;
+#[cfg(target_arch = "wasm32")]
+use gobblytes_core::{Filesystem, FilesystemEntryType, OstreeFs as OstreeRootfs};
 use gobblytes_erofs::ErofsRootfs;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Reflect;
 #[cfg(target_arch = "wasm32")]
 use smoo_host_web_worker::{HostWorker, HostWorkerConfig, HostWorkerEvent, HostWorkerState};
 use std::future::Future;
+#[cfg(target_arch = "wasm32")]
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
+use ui::oneplus_fajita_dtbo_overlays;
+#[cfg(target_arch = "wasm32")]
+use ui::SmooStatsHandle;
 #[cfg(target_arch = "wasm32")]
 use ui::{apply_transport_counters, SmooTransportCounters};
-use ui::{oneplus_fajita_dtbo_overlays, SmooStatsHandle};
+#[cfg(not(target_arch = "wasm32"))]
 use url::Url;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
 
 #[cfg(target_arch = "wasm32")]
 use super::session::update_session_active_host_state;
-use super::session::{update_session_phase, BootConfig, BootRuntime, SessionPhase, SessionStore};
+#[cfg(target_arch = "wasm32")]
+use super::session::LocalReaderBridge;
+use super::session::{
+    update_session_phase, BootConfig, BootRuntime, DeviceSession, SessionChannelIntake,
+    SessionPhase, SessionStore,
+};
 #[cfg(target_arch = "wasm32")]
 use crate::gibblox_worker::spawn_gibblox_worker;
 
@@ -59,11 +80,39 @@ pub async fn boot_selected_device(
         .find(|s| s.id == session_id)
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-    let boot_config = session.boot_config.clone();
+    let mut boot_config = session.boot_config.clone();
+
+    validate_session_dev_profiles(
+        &session.device.profile.id,
+        &session.channel_intake.accepted_dev_profiles,
+    )
+    .with_context(|| {
+        format!(
+            "device '{}' is not accepted by channel stream dev profiles",
+            session.device.profile.id
+        )
+    })?;
+
+    let selected_boot_profile = select_boot_profile_for_session(&session)?;
+    let profile_stage0 = selected_boot_profile
+        .as_ref()
+        .map(|boot_profile| {
+            resolve_effective_boot_profile_stage0(boot_profile, session.device.profile.id.as_str())
+        })
+        .unwrap_or_default();
 
     let channel = boot_config.channel.trim();
     if channel.is_empty() {
         return Err(anyhow::anyhow!("channel is empty"));
+    }
+
+    if session.channel_intake.warning_count > 0 {
+        tracing::warn!(
+            warning_count = session.channel_intake.warning_count,
+            consumed_bytes = session.channel_intake.consumed_bytes,
+            channel,
+            "channel stream contained trailing bytes that were not valid profile records"
+        );
     }
 
     update_session_phase(
@@ -88,9 +137,20 @@ pub async fn boot_selected_device(
     } else {
         Vec::new()
     };
+    let mut dtbo_overlays = dtbo_overlays;
+    dtbo_overlays.extend(profile_stage0.dt_overlays);
+
+    let mut extra_modules = vec!["erofs".to_string()];
+    extra_modules.extend(profile_stage0.extra_modules);
+
+    boot_config.extra_kargs = join_cmdline(
+        profile_stage0.extra_cmdline.as_deref(),
+        nonempty(boot_config.extra_kargs.as_str()),
+    );
+
     let stage0_opts = Stage0Options {
         switchroot_fs: Stage0SwitchrootFs::Erofs,
-        extra_modules: vec!["erofs".to_string()],
+        extra_modules,
         kernel_override: None,
         dtb_override: None,
         dtbo_overlays,
@@ -106,6 +166,8 @@ pub async fn boot_selected_device(
         session.device.profile.clone(),
         stage0_opts,
         boot_config.clone(),
+        session.channel_intake.clone(),
+        selected_boot_profile,
     )
     .await
     .with_context(|| {
@@ -199,6 +261,9 @@ pub async fn boot_selected_device(
         channel_offset_bytes: runtime.channel_offset_bytes,
         #[cfg(target_arch = "wasm32")]
         gibblox_worker: runtime.gibblox_worker,
+        #[cfg(target_arch = "wasm32")]
+        local_reader_bridge: runtime.local_reader_bridge,
+        #[cfg(target_arch = "wasm32")]
         smoo_stats: runtime.smoo_stats,
     }))
 }
@@ -207,6 +272,8 @@ async fn build_stage0_artifacts(
     profile: fastboop_core::DeviceProfile,
     stage0_opts: Stage0Options,
     boot_config: BootConfig,
+    channel_intake: SessionChannelIntake,
+    selected_boot_profile: Option<BootProfile>,
 ) -> anyhow::Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
     use futures_channel::oneshot;
 
@@ -216,49 +283,85 @@ async fn build_stage0_artifacts(
     }
     let extra_kargs = boot_config.extra_kargs.trim().to_string();
 
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = (&channel_intake, &selected_boot_profile);
+
     let (tx, rx) = oneshot::channel();
     wasm_bindgen_futures::spawn_local(async move {
         let result: anyhow::Result<_> = async {
             tracing::info!(profile = %profile.id, channel = %channel, "opening channel for web boot");
             #[cfg(target_arch = "wasm32")]
-            let (provider, size_bytes, gibblox_worker, channel_identity, channel_offset_bytes) = {
-                let (stream_head, total_size_bytes) =
-                    read_channel_stream_head_for_url(&channel).await?;
-
-                if stream_head.warning_count > 0 {
-                    tracing::info!(
-                        warning_count = stream_head.warning_count,
-                        consumed_bytes = stream_head.consumed_bytes,
-                        channel,
-                        "channel stream head stopped early while scanning records"
-                    );
+            let (
+                provider_reader,
+                size_bytes,
+                gibblox_worker,
+                local_reader_bridge,
+                channel_identity,
+                channel_offset_bytes,
+                using_boot_profile_rootfs,
+            ) = {
+                if channel_intake.has_artifact_payload {
+                    if let Some(web_file) = crate::resolve_web_file_channel(&channel) {
+                        let channel_offset_bytes = channel_intake.consumed_bytes;
+                        let provider_reader =
+                            open_web_file_channel_payload_reader(web_file, channel_offset_bytes)
+                                .await?;
+                        let size_bytes = reader_size_bytes(provider_reader.as_ref()).await?;
+                        let channel_identity = block_identity_string(provider_reader.as_ref());
+                        let local_reader_bridge = LocalReaderBridge::new(provider_reader.clone());
+                        (
+                            provider_reader,
+                            size_bytes,
+                            None,
+                            Some(local_reader_bridge),
+                            channel_identity,
+                            channel_offset_bytes,
+                            false,
+                        )
+                    } else {
+                        let channel_offset_bytes = channel_intake.consumed_bytes;
+                        let gibblox_worker =
+                            spawn_gibblox_worker(channel.clone(), channel_offset_bytes, None)
+                                .await
+                                .map_err(|err| {
+                                    anyhow::anyhow!("spawn gibblox worker failed: {err}")
+                                })?;
+                        let provider_reader = gibblox_worker.create_reader().await.map_err(|err| {
+                            anyhow::anyhow!("attach gibblox block reader for stage0: {err}")
+                        })?;
+                        let size_bytes = reader_size_bytes(&provider_reader).await?;
+                        let channel_identity = block_identity_string(&provider_reader);
+                        let provider_reader: Arc<dyn BlockReader> = Arc::new(provider_reader);
+                        (
+                            provider_reader,
+                            size_bytes,
+                            Some(gibblox_worker),
+                            None,
+                            channel_identity,
+                            channel_offset_bytes,
+                            false,
+                        )
+                    }
+                } else {
+                    let boot_profile = selected_boot_profile.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "channel has no trailing artifact payload and no compatible boot profile selected"
+                        )
+                    })?;
+                    let provider_reader = open_boot_profile_rootfs_reader(boot_profile).await?;
+                    let size_bytes = reader_size_bytes(provider_reader.as_ref()).await?;
+                    let channel_identity = block_identity_string(provider_reader.as_ref());
+                    let local_reader_bridge = LocalReaderBridge::new(provider_reader.clone());
+                    (
+                        provider_reader,
+                        size_bytes,
+                        None,
+                        Some(local_reader_bridge),
+                        channel_identity,
+                        0,
+                        true,
+                    )
                 }
-
-                validate_session_dev_profiles(&profile.id, &stream_head.dev_profiles)?;
-
-                if stream_head.consumed_bytes >= total_size_bytes {
-                    anyhow::bail!(
-                        "channel stream has only profile records and no trailing artifact payload"
-                    );
-                }
-
-                let channel_offset_bytes = stream_head.consumed_bytes;
-                let gibblox_worker = spawn_gibblox_worker(channel.clone(), channel_offset_bytes)
-                    .await
-                    .map_err(|err| anyhow::anyhow!("spawn gibblox worker failed: {err}"))?;
-                let reader_for_erofs = gibblox_worker.create_reader().await.map_err(|err| {
-                    anyhow::anyhow!("attach gibblox block reader for stage0: {err}")
-                })?;
-                let size_bytes = reader_size_bytes(&reader_for_erofs).await?;
-                let channel_identity = block_identity_string(&reader_for_erofs);
-                let provider = ErofsRootfs::new(Arc::new(reader_for_erofs), size_bytes).await?;
-                (
-                    provider,
-                    size_bytes,
-                    Some(gibblox_worker),
-                    channel_identity,
-                    channel_offset_bytes,
-                )
             };
             #[cfg(not(target_arch = "wasm32"))]
             let (provider, size_bytes, channel_identity, channel_offset_bytes) = {
@@ -290,15 +393,68 @@ async fn build_stage0_artifacts(
             #[cfg(target_arch = "wasm32")]
             gloo_timers::future::sleep(std::time::Duration::from_millis(100)).await;
 
-            let build = build_stage0(
-                &profile,
-                &provider,
-                &stage0_opts,
-                nonempty(&extra_kargs),
-                None,
-            )
-            .await
+            #[cfg(target_arch = "wasm32")]
+            let build = {
+                let provider = ErofsRootfs::new(provider_reader.clone(), size_bytes).await?;
+                let selected_ostree = if using_boot_profile_rootfs
+                    && selected_boot_profile
+                        .as_ref()
+                        .is_some_and(|boot_profile| boot_profile.rootfs.is_ostree())
+                {
+                    let detected = auto_detect_ostree_deployment_path(&provider).await?;
+                    tracing::debug!(ostree = %detected, "auto-detected ostree deployment path");
+                    Some(detected)
+                } else {
+                    None
+                };
+                let extra_cmdline = if let Some(ostree) = selected_ostree.as_deref() {
+                    Some(join_cmdline(
+                        Some(format!("ostree=/{ostree}").as_str()),
+                        nonempty(&extra_kargs),
+                    ))
+                } else {
+                    nonempty(&extra_kargs).map(str::to_string)
+                };
+
+                if let Some(ostree) = selected_ostree.as_deref() {
+                    let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree)
+                        .await
+                        .map_err(|err| anyhow::anyhow!(
+                            "resolve ostree deployment path {ostree}: {err}"
+                        ))?;
+                    tracing::debug!(
+                        ostree = %ostree,
+                        resolved_ostree = %resolved_ostree,
+                        "resolved ostree deployment path"
+                    );
+                    let provider = OstreeRootfs::new(provider, &resolved_ostree).map_err(|err| {
+                        anyhow::anyhow!("initialize ostree filesystem view: {err}")
+                    })?;
+                    build_stage0(
+                        &profile,
+                        &provider,
+                        &stage0_opts,
+                        extra_cmdline.as_deref(),
+                        None,
+                    )
+                    .await
+                } else {
+                    build_stage0(
+                        &profile,
+                        &provider,
+                        &stage0_opts,
+                        extra_cmdline.as_deref(),
+                        None,
+                    )
+                    .await
+                }
+            }
             .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?;
+
+            #[cfg(not(target_arch = "wasm32"))]
+            let build = build_stage0(&profile, &provider, &stage0_opts, nonempty(&extra_kargs), None)
+                .await
+                .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?;
 
             Ok((
                 build,
@@ -309,6 +465,9 @@ async fn build_stage0_artifacts(
                     channel_offset_bytes,
                     #[cfg(target_arch = "wasm32")]
                     gibblox_worker,
+                    #[cfg(target_arch = "wasm32")]
+                    local_reader_bridge,
+                    #[cfg(target_arch = "wasm32")]
                     smoo_stats: SmooStatsHandle::new(),
                 },
             ))
@@ -321,68 +480,194 @@ async fn build_stage0_artifacts(
         .map_err(|_| anyhow::anyhow!("stage0 build task was cancelled"))?
 }
 
-#[cfg(target_arch = "wasm32")]
-async fn read_channel_stream_head_for_url(
-    channel: &str,
-) -> anyhow::Result<(ChannelStreamHead, u64)> {
-    let url =
-        Url::parse(channel).map_err(|err| anyhow::anyhow!("parse channel URL {channel}: {err}"))?;
-    let channel_reader =
-        HttpBlockReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-            .await
-            .map_err(|err| anyhow::anyhow!("open HTTP channel reader {url}: {err}"))?;
+fn select_boot_profile_for_session(session: &DeviceSession) -> anyhow::Result<Option<BootProfile>> {
+    let compatible = &session.channel_intake.compatible_boot_profiles;
+    if compatible.is_empty() {
+        return Ok(None);
+    }
 
-    let total_size_bytes = reader_size_bytes(&channel_reader).await?;
-    let scan_cap = core::cmp::min(
-        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
-        total_size_bytes,
-    ) as usize;
-    let prefix = read_channel_prefix(&channel_reader, scan_cap).await?;
-    let stream_head = read_channel_stream_head(prefix.as_slice(), total_size_bytes)
-        .map_err(|err| anyhow::anyhow!("decode channel stream head: {err}"))?;
+    if let Some(selected_id) = session.boot_config.selected_boot_profile_id.as_deref() {
+        let selected = compatible
+            .iter()
+            .find(|profile| profile.id == selected_id)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "selected boot profile '{}' is not compatible with device profile '{}'",
+                    selected_id,
+                    session.device.profile.id
+                )
+            })?;
+        return Ok(Some(selected));
+    }
 
-    Ok((stream_head, total_size_bytes))
+    if compatible.len() == 1 {
+        return Ok(Some(compatible[0].clone()));
+    }
+
+    let available: Vec<_> = compatible
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect();
+    anyhow::bail!(
+        "multiple compatible boot profiles available for '{}'; choose one: {}",
+        session.device.profile.id,
+        available.join(", ")
+    )
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn read_channel_prefix<R>(reader: &R, scan_cap: usize) -> anyhow::Result<Vec<u8>>
-where
-    R: gibblox_core::BlockReader + ?Sized,
-{
-    let block_size = usize::try_from(reader.block_size()).map_err(|_| {
-        anyhow::anyhow!(
-            "channel block size {} does not fit in usize",
-            reader.block_size()
-        )
-    })?;
-    if block_size == 0 {
-        anyhow::bail!("channel block size is zero");
+async fn open_web_file_channel_payload_reader(
+    web_file: web_sys::File,
+    channel_offset_bytes: u64,
+) -> anyhow::Result<Arc<dyn BlockReader>> {
+    let file_name = web_file.name();
+    let file_name_lower = file_name.to_ascii_lowercase();
+
+    if file_name_lower.ends_with(".caibx") || file_name_lower.ends_with(".caidx") {
+        anyhow::bail!(
+            "web-file channel '{}' is a casync index; use an HTTP(S) channel URL so chunk-store URLs can be resolved",
+            file_name
+        );
     }
 
-    let total_blocks = reader
-        .total_blocks()
-        .await
-        .map_err(|err| anyhow::anyhow!("read channel total blocks: {err}"))?;
-    let total_size_bytes = total_blocks
-        .checked_mul(reader.block_size() as u64)
-        .ok_or_else(|| anyhow::anyhow!("channel total size overflows u64"))?;
-    let prefix_len = core::cmp::min(scan_cap as u64, total_size_bytes) as usize;
-    if prefix_len == 0 {
-        return Ok(Vec::new());
-    }
+    let reader = WebFileBlockReader::new(web_file, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+        .map_err(|err| anyhow::anyhow!("open web file channel reader: {err}"))?;
+    let reader: Arc<dyn BlockReader> = Arc::new(reader);
+    let reader = crate::channel_source::maybe_offset_reader(reader, channel_offset_bytes).await?;
 
-    let blocks_to_read = prefix_len.div_ceil(block_size);
-    let mut scratch = vec![0u8; blocks_to_read * block_size];
-    let mut read = reader
-        .read_blocks(0, &mut scratch, ReadContext::FOREGROUND)
-        .await
-        .map_err(|err| anyhow::anyhow!("read channel prefix: {err}"))?;
-    read = core::cmp::min(read, prefix_len);
-    scratch.truncate(read);
-    Ok(scratch)
+    match zip_entry_name_from_file_name(Some(file_name.as_str()))? {
+        Some(entry_name) => {
+            let zip_reader = ZipEntryBlockReader::new(&entry_name, reader)
+                .await
+                .map_err(|err| anyhow::anyhow!("open ZIP entry {entry_name}: {err}"))?;
+            Ok(Arc::new(zip_reader))
+        }
+        None => Ok(reader),
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
+async fn open_boot_profile_rootfs_reader(
+    boot_profile: &BootProfile,
+) -> anyhow::Result<Arc<dyn BlockReader>> {
+    open_boot_profile_artifact_source(boot_profile.rootfs.source()).await
+}
+
+#[cfg(target_arch = "wasm32")]
+fn open_boot_profile_artifact_source<'a>(
+    source: &'a BootProfileArtifactSource,
+) -> Pin<Box<dyn Future<Output = anyhow::Result<Arc<dyn BlockReader>>> + 'a>> {
+    Box::pin(async move {
+        match source {
+            BootProfileArtifactSource::Http(source) => {
+                let channel = source.http.trim();
+                if channel.is_empty() {
+                    anyhow::bail!("boot profile rootfs.http source is empty");
+                }
+                crate::channel_source::build_channel_reader_pipeline(channel, 0, None)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open HTTP artifact source {channel}: {err}"))
+            }
+            BootProfileArtifactSource::Casync(source) => {
+                let index = source.casync.index.trim();
+                if index.is_empty() {
+                    anyhow::bail!("boot profile rootfs.casync.index source is empty");
+                }
+                let chunk_store = source
+                    .casync
+                    .chunk_store
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                crate::channel_source::build_channel_reader_pipeline(index, 0, chunk_store)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open casync artifact source {index}: {err}"))
+            }
+            BootProfileArtifactSource::File(source) => {
+                let path = source.file.trim();
+                if path.is_empty() {
+                    anyhow::bail!("boot profile rootfs.file source is empty");
+                }
+                let Some(web_file) = crate::resolve_web_file_channel(path) else {
+                    anyhow::bail!(
+                        "boot profile file source '{}' is not accessible in browser; use HTTP/casync sources or a web-file://<id> source",
+                        path
+                    );
+                };
+                let reader =
+                    WebFileBlockReader::new(web_file, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+                        .map_err(|err| {
+                            anyhow::anyhow!("open web file artifact source {path}: {err}")
+                        })?;
+                let reader: Arc<dyn BlockReader> = Arc::new(reader);
+                Ok(reader)
+            }
+            BootProfileArtifactSource::Xz(source) => {
+                let upstream = open_boot_profile_artifact_source(source.xz.as_ref()).await?;
+                let reader = XzBlockReader::new(upstream)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open xz block reader: {err}"))?;
+                let reader: Arc<dyn BlockReader> = Arc::new(reader);
+                Ok(reader)
+            }
+            BootProfileArtifactSource::AndroidSparseImg(source) => {
+                let upstream =
+                    open_boot_profile_artifact_source(source.android_sparseimg.as_ref()).await?;
+                let reader = AndroidSparseBlockReader::new(upstream)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open android sparse reader: {err}"))?;
+                let reader: Arc<dyn BlockReader> = Arc::new(reader);
+                Ok(reader)
+            }
+            BootProfileArtifactSource::Mbr(source) => {
+                let selector = if let Some(partuuid) = source.mbr.partuuid.as_deref() {
+                    MbrPartitionSelector::part_uuid(partuuid)
+                } else if let Some(index) = source.mbr.index {
+                    MbrPartitionSelector::index(index)
+                } else {
+                    anyhow::bail!("boot profile MBR source missing selector")
+                };
+
+                let upstream =
+                    open_boot_profile_artifact_source(source.mbr.source.as_ref()).await?;
+                let reader = MbrBlockReader::new(
+                    upstream,
+                    selector,
+                    gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
+                )
+                .await
+                .map_err(|err| anyhow::anyhow!("open MBR partition reader: {err}"))?;
+                let reader: Arc<dyn BlockReader> = Arc::new(reader);
+                Ok(reader)
+            }
+            BootProfileArtifactSource::Gpt(source) => {
+                let selector = if let Some(partlabel) = source.gpt.partlabel.as_deref() {
+                    GptPartitionSelector::part_label(partlabel)
+                } else if let Some(partuuid) = source.gpt.partuuid.as_deref() {
+                    GptPartitionSelector::part_uuid(partuuid)
+                } else if let Some(index) = source.gpt.index {
+                    GptPartitionSelector::index(index)
+                } else {
+                    anyhow::bail!("boot profile GPT source missing selector")
+                };
+
+                let upstream =
+                    open_boot_profile_artifact_source(source.gpt.source.as_ref()).await?;
+                let reader = GptBlockReader::new(
+                    upstream,
+                    selector,
+                    gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
+                )
+                .await
+                .map_err(|err| anyhow::anyhow!("open GPT partition reader: {err}"))?;
+                let reader: Arc<dyn BlockReader> = Arc::new(reader);
+                Ok(reader)
+            }
+        }
+    })
+}
+
 fn validate_session_dev_profiles(
     session_device_profile_id: &str,
     accepted: &[fastboop_core::DeviceProfile],
@@ -436,7 +721,6 @@ fn zip_entry_name_from_url(url: &Url) -> anyhow::Result<Option<String>> {
     zip_entry_name_from_file_name(file_name)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn zip_entry_name_from_file_name(file_name: Option<&str>) -> anyhow::Result<Option<String>> {
     let Some(file_name) = file_name else {
         return Ok(None);
@@ -461,13 +745,18 @@ pub async fn run_web_host_daemon(
     mut sessions: SessionStore,
     session_id: String,
 ) -> anyhow::Result<()> {
-    let gibblox_worker = runtime
-        .gibblox_worker
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("gibblox worker unavailable for host startup"))?;
-    let reader_client = gibblox_worker.create_reader().await.map_err(|err| {
-        anyhow::anyhow!("attach gibblox block reader for smoo host worker: {err}")
-    })?;
+    let reader_client = if let Some(gibblox_worker) = runtime.gibblox_worker.clone() {
+        gibblox_worker.create_reader().await.map_err(|err| {
+            anyhow::anyhow!("attach gibblox block reader for smoo host worker: {err}")
+        })?
+    } else if let Some(local_reader_bridge) = runtime.local_reader_bridge.clone() {
+        local_reader_bridge
+            .create_reader()
+            .await
+            .map_err(|err| anyhow::anyhow!("attach local channel reader bridge: {err}"))?
+    } else {
+        anyhow::bail!("channel reader bridge unavailable for host startup");
+    };
     let smoo_stats = runtime.smoo_stats.clone();
 
     let host = HostWorker::spawn(
@@ -611,6 +900,94 @@ fn nonempty(value: &str) -> Option<&str> {
     } else {
         Some(trimmed)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn auto_detect_ostree_deployment_path<P>(rootfs: &P) -> anyhow::Result<String>
+where
+    P: Filesystem,
+    P::Error: core::fmt::Display,
+{
+    const OSTREE_ROOT: &str = "/ostree";
+
+    if !is_directory(rootfs, OSTREE_ROOT).await? {
+        anyhow::bail!("auto-detect ostree deployment failed: {OSTREE_ROOT} is not a directory");
+    }
+
+    for boot_dir in sorted_dir_entries(rootfs, OSTREE_ROOT).await? {
+        if !boot_dir.starts_with("boot.") {
+            continue;
+        }
+        let boot_path = format!("{OSTREE_ROOT}/{boot_dir}");
+        if !is_directory(rootfs, &boot_path).await? {
+            continue;
+        }
+
+        for stateroot in sorted_dir_entries(rootfs, &boot_path).await? {
+            let stateroot_path = format!("{boot_path}/{stateroot}");
+            if !is_directory(rootfs, &stateroot_path).await? {
+                continue;
+            }
+
+            for checksum in sorted_dir_entries(rootfs, &stateroot_path).await? {
+                let checksum_path = format!("{stateroot_path}/{checksum}");
+                if !is_directory(rootfs, &checksum_path).await? {
+                    continue;
+                }
+
+                for deploy_index in sorted_dir_entries(rootfs, &checksum_path).await? {
+                    let candidate_path = format!("{checksum_path}/{deploy_index}");
+                    if is_symlink(rootfs, &candidate_path).await? {
+                        return Ok(candidate_path.trim_start_matches('/').to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "auto-detect ostree deployment failed: no deployment symlink found under /ostree/boot.*"
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn sorted_dir_entries<P>(rootfs: &P, path: &str) -> anyhow::Result<Vec<String>>
+where
+    P: Filesystem,
+    P::Error: core::fmt::Display,
+{
+    let mut entries = rootfs
+        .read_dir(path)
+        .await
+        .map_err(|err| anyhow::anyhow!("read directory {path}: {err}"))?;
+    entries.sort();
+    Ok(entries)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn is_directory<P>(rootfs: &P, path: &str) -> anyhow::Result<bool>
+where
+    P: Filesystem,
+    P::Error: core::fmt::Display,
+{
+    let ty = rootfs
+        .entry_type(path)
+        .await
+        .map_err(|err| anyhow::anyhow!("read entry type {path}: {err}"))?;
+    Ok(matches!(ty, Some(FilesystemEntryType::Directory)))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn is_symlink<P>(rootfs: &P, path: &str) -> anyhow::Result<bool>
+where
+    P: Filesystem,
+    P::Error: core::fmt::Display,
+{
+    let ty = rootfs
+        .entry_type(path)
+        .await
+        .map_err(|err| anyhow::anyhow!("read entry type {path}: {err}"))?;
+    Ok(matches!(ty, Some(FilesystemEntryType::Symlink)))
 }
 
 fn personalization_from_browser() -> Personalization {

@@ -1958,6 +1958,32 @@ rootfs:
     }
 
     #[tokio::test]
+    async fn bootprofile_stream_head_is_best_effort_with_padded_zero_tail() {
+        let profile = compile_boot_profile(
+            r#"
+id: tiny
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+
+        let encoded = encode_boot_profile(&profile).unwrap();
+        let mut padded = encoded.clone();
+        let padded_len = encoded.len().div_ceil(512) * 512;
+        padded.resize(padded_len, 0);
+
+        let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(padded, 512));
+        let head = read_channel_stream_head_from_reader(source.as_ref(), padded_len as u64)
+            .await
+            .unwrap();
+
+        assert_eq!(head.boot_profiles.len(), 1);
+        assert_eq!(head.consumed_bytes, encoded.len() as u64);
+        assert_eq!(head.warning_count, 1);
+    }
+
+    #[tokio::test]
     async fn channel_stream_head_fails_on_truncated_first_record() {
         let profile = compile_boot_profile(
             r#"

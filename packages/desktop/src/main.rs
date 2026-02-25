@@ -1,5 +1,32 @@
 use dioxus::prelude::*;
+use fastboop_core::{read_channel_stream_head, CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES};
+use gibblox_core::{BlockReader, ReadContext};
+use gibblox_http::HttpBlockReader;
+use std::env;
+use std::sync::OnceLock;
 use tracing_subscriber::EnvFilter;
+use url::Url;
+
+static STARTUP_CHANNEL: OnceLock<Result<String, StartupChannelError>> = OnceLock::new();
+
+#[derive(Clone, Debug)]
+pub(crate) struct StartupChannelError {
+    pub(crate) title: &'static str,
+    pub(crate) details: String,
+    pub(crate) launch_hint: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StartupChannelIntake {
+    pub(crate) exact_total_bytes: u64,
+    pub(crate) stream_head: fastboop_core::ChannelStreamHead,
+}
+
+impl StartupChannelIntake {
+    pub(crate) fn has_artifact_payload(&self) -> bool {
+        self.stream_head.consumed_bytes < self.exact_total_bytes
+    }
+}
 
 use views::{DevicePage, Home, SessionStore};
 
@@ -26,7 +53,170 @@ fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
 
 fn main() {
     init_tracing();
+
+    let startup_channel = parse_channel_from_args();
+    if let Err(err) = &startup_channel {
+        eprintln!("{}", err.details);
+    }
+    let _ = STARTUP_CHANNEL.set(startup_channel);
+
     dioxus::launch(App);
+}
+
+pub(crate) fn startup_channel() -> Result<String, StartupChannelError> {
+    STARTUP_CHANNEL.get().cloned().unwrap_or_else(|| {
+        Err(missing_desktop_channel_error(
+            "desktop startup channel state was not initialized",
+        ))
+    })
+}
+
+pub(crate) async fn load_startup_channel_intake(
+    channel: &str,
+) -> Result<StartupChannelIntake, StartupChannelError> {
+    let url = Url::parse(channel)
+        .map_err(|err| invalid_desktop_channel_error(channel, &err.to_string()))?;
+
+    let reader = HttpBlockReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+        .await
+        .map_err(|err| {
+            invalid_desktop_channel_error(channel, &format!("open HTTP reader for {url}: {err}"))
+        })?;
+
+    read_startup_channel_intake(channel, &reader, reader.size_bytes()).await
+}
+
+async fn read_startup_channel_intake<R>(
+    channel: &str,
+    reader: &R,
+    exact_total_bytes: u64,
+) -> Result<StartupChannelIntake, StartupChannelError>
+where
+    R: BlockReader + ?Sized,
+{
+    if exact_total_bytes == 0 {
+        return Err(invalid_desktop_channel_error(
+            channel,
+            "channel stream is empty",
+        ));
+    }
+
+    let scan_cap = core::cmp::min(
+        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
+        exact_total_bytes,
+    ) as usize;
+    let prefix = read_channel_prefix(reader, scan_cap, exact_total_bytes)
+        .await
+        .map_err(|err| invalid_desktop_channel_error(channel, &err))?;
+    let stream_head = read_channel_stream_head(prefix.as_slice(), exact_total_bytes)
+        .map_err(|err| invalid_desktop_channel_error(channel, &err.to_string()))?;
+
+    let intake = StartupChannelIntake {
+        exact_total_bytes,
+        stream_head,
+    };
+
+    if intake.stream_head.warning_count > 0 {
+        tracing::warn!(
+            warning_count = intake.stream_head.warning_count,
+            consumed_bytes = intake.stream_head.consumed_bytes,
+            channel,
+            "channel stream stopped after valid records due trailing bytes"
+        );
+    }
+
+    Ok(intake)
+}
+
+fn parse_channel_from_args() -> Result<String, StartupChannelError> {
+    let args = env::args().collect::<Vec<_>>();
+    let mut index = 1;
+    while index < args.len() {
+        let arg = args[index].as_str();
+
+        if let Some(value) = arg.strip_prefix("--channel=") {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(missing_desktop_channel_error(
+                    "--channel=<url> value is empty",
+                ));
+            }
+            return validate_desktop_channel_url(value);
+        }
+
+        if arg == "--channel" {
+            let value = args.get(index + 1).ok_or_else(|| {
+                missing_desktop_channel_error(
+                    "--channel requires a URL argument: --channel=<url> or --channel <url>",
+                )
+            })?;
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(missing_desktop_channel_error("--channel value is empty"));
+            }
+            return validate_desktop_channel_url(value);
+        }
+
+        index += 1;
+    }
+
+    Err(missing_desktop_channel_error(
+        "fastboop-desktop requires --channel=<url> or --channel <url>",
+    ))
+}
+
+fn validate_desktop_channel_url(channel: &str) -> Result<String, StartupChannelError> {
+    Url::parse(channel).map_err(|err| invalid_desktop_channel_error(channel, &err.to_string()))?;
+    Ok(channel.to_string())
+}
+
+async fn read_channel_prefix<R>(
+    reader: &R,
+    scan_cap: usize,
+    exact_total_bytes: u64,
+) -> Result<Vec<u8>, String>
+where
+    R: BlockReader + ?Sized,
+{
+    let block_size = usize::try_from(reader.block_size())
+        .map_err(|_| format!("channel block size {} is invalid", reader.block_size()))?;
+    if block_size == 0 {
+        return Err("channel block size is zero".to_string());
+    }
+
+    let prefix_len = core::cmp::min(scan_cap as u64, exact_total_bytes) as usize;
+    if prefix_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    let blocks_to_read = prefix_len.div_ceil(block_size);
+    let mut scratch = vec![0u8; blocks_to_read * block_size];
+    let mut read = reader
+        .read_blocks(0, &mut scratch, ReadContext::FOREGROUND)
+        .await
+        .map_err(|err| format!("read channel prefix: {err}"))?;
+    read = core::cmp::min(read, prefix_len);
+    scratch.truncate(read);
+    Ok(scratch)
+}
+
+fn missing_desktop_channel_error(details: &str) -> StartupChannelError {
+    StartupChannelError {
+        title: "Missing launch channel",
+        details: details.to_string(),
+        launch_hint:
+            "Launch with --channel=<url> (or --channel <url>) so fastboop can boot from an explicit channel."
+                .to_string(),
+    }
+}
+
+fn invalid_desktop_channel_error(channel: &str, reason: &str) -> StartupChannelError {
+    StartupChannelError {
+        title: "Invalid launch channel",
+        details: format!("channel '{channel}' is invalid or unreadable: {reason}"),
+        launch_hint: "Launch with a full URL like --channel=https://example.invalid/path.ero"
+            .to_string(),
+    }
 }
 
 fn init_tracing() {

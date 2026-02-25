@@ -70,6 +70,12 @@ a {
     justify-self: start;
 }
 
+.boot-config__hint {
+    margin: 0;
+    color: var(--color-text-subtle);
+    font-size: 0.9rem;
+}
+
 .serial-logs {
     margin-top: 1.5rem;
     padding: 1rem;

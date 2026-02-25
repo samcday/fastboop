@@ -1,9 +1,22 @@
 use dioxus::prelude::*;
+use fastboop_core::{read_channel_stream_head, CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES};
+use gibblox_core::{BlockReader, ReadContext};
+use gibblox_http::HttpBlockReader;
+#[cfg(target_arch = "wasm32")]
+use gibblox_web_file::WebFileBlockReader;
 use js_sys::Reflect;
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
+use std::collections::BTreeMap;
+#[cfg(target_arch = "wasm32")]
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use tracing::Level;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tracing_wasm::{WASMLayer, WASMLayerConfigBuilder};
+use url::Url;
 use wasm_bindgen::JsValue;
 
 use views::{DevicePage, Home, SessionStore};
@@ -13,6 +26,37 @@ mod gibblox_worker;
 mod views;
 
 const LOG_LEVEL_HINT_KEY: &str = "__FASTBOOP_LOG_LEVEL";
+const CHANNEL_QUERY_KEY: &str = "channel";
+#[cfg(target_arch = "wasm32")]
+const WEB_FILE_CHANNEL_PREFIX: &str = "web-file://";
+static STARTUP_CHANNEL: OnceLock<Result<String, StartupChannelError>> = OnceLock::new();
+#[cfg(target_arch = "wasm32")]
+static WEB_FILE_CHANNEL_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static WEB_FILE_CHANNEL_REGISTRY: RefCell<BTreeMap<String, web_sys::File>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StartupChannelError {
+    pub(crate) title: &'static str,
+    pub(crate) details: String,
+    pub(crate) launch_hint: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StartupChannelIntake {
+    pub(crate) exact_total_bytes: u64,
+    pub(crate) stream_head: fastboop_core::ChannelStreamHead,
+}
+
+impl StartupChannelIntake {
+    pub(crate) fn has_artifact_payload(&self) -> bool {
+        self.stream_head.consumed_bytes < self.exact_total_bytes
+    }
+}
 
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
@@ -39,7 +83,179 @@ fn main() {
         return;
     }
 
+    let startup_channel = match global_query_channel() {
+        Some(channel) => validate_web_channel_url(&channel),
+        None => Err(missing_web_channel_error(
+            "fastboop-web requires a channel URL query parameter: ?channel=<url>",
+        )),
+    };
+    if let Err(err) = &startup_channel {
+        tracing::warn!(details = %err.details, "startup channel validation failed");
+    }
+    let _ = STARTUP_CHANNEL.set(startup_channel);
+
     dioxus::launch(App);
+}
+
+pub(crate) fn startup_channel() -> Result<String, StartupChannelError> {
+    STARTUP_CHANNEL.get().cloned().unwrap_or_else(|| {
+        Err(missing_web_channel_error(
+            "web startup channel state was not initialized",
+        ))
+    })
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) async fn preflight_startup_channel(channel: &str) -> Result<(), StartupChannelError> {
+    load_startup_channel_intake(channel).await.map(|_| ())
+}
+
+pub(crate) async fn load_startup_channel_intake(
+    channel: &str,
+) -> Result<StartupChannelIntake, StartupChannelError> {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(file) = resolve_web_file_channel(channel) {
+        let reader = WebFileBlockReader::new(file, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+            .map_err(|err| {
+                invalid_web_channel_error(channel, &format!("open web file reader: {err}"))
+            })?;
+        let exact_total_bytes = reader.size_bytes();
+        return read_startup_channel_intake(channel, &reader, exact_total_bytes).await;
+    }
+
+    let url =
+        Url::parse(channel).map_err(|err| invalid_web_channel_error(channel, &err.to_string()))?;
+
+    let reader = HttpBlockReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+        .await
+        .map_err(|err| {
+            invalid_web_channel_error(channel, &format!("open HTTP reader for {url}: {err}"))
+        })?;
+
+    read_startup_channel_intake(channel, &reader, reader.size_bytes()).await
+}
+
+async fn read_startup_channel_intake<R>(
+    channel: &str,
+    reader: &R,
+    exact_total_bytes: u64,
+) -> Result<StartupChannelIntake, StartupChannelError>
+where
+    R: BlockReader + ?Sized,
+{
+    if exact_total_bytes == 0 {
+        return Err(invalid_web_channel_error(
+            channel,
+            "channel stream is empty",
+        ));
+    }
+
+    let scan_cap = core::cmp::min(
+        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
+        exact_total_bytes,
+    ) as usize;
+    let prefix = read_channel_prefix(reader, scan_cap, exact_total_bytes)
+        .await
+        .map_err(|err| invalid_web_channel_error(channel, &err))?;
+    let stream_head = read_channel_stream_head(prefix.as_slice(), exact_total_bytes)
+        .map_err(|err| invalid_web_channel_error(channel, &err.to_string()))?;
+
+    let intake = StartupChannelIntake {
+        exact_total_bytes,
+        stream_head,
+    };
+
+    if intake.stream_head.warning_count > 0 {
+        tracing::warn!(
+            warning_count = intake.stream_head.warning_count,
+            consumed_bytes = intake.stream_head.consumed_bytes,
+            channel,
+            "channel stream stopped after valid records due trailing bytes"
+        );
+    }
+
+    Ok(intake)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn register_web_file_channel(file: web_sys::File) -> String {
+    let channel_id = WEB_FILE_CHANNEL_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let channel_key = channel_id.to_string();
+    WEB_FILE_CHANNEL_REGISTRY.with(|registry| {
+        registry.borrow_mut().insert(channel_key.clone(), file);
+    });
+    format!("{WEB_FILE_CHANNEL_PREFIX}{channel_key}")
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn unregister_web_file_channel(channel: &str) {
+    let Some(channel_key) = channel.strip_prefix(WEB_FILE_CHANNEL_PREFIX) else {
+        return;
+    };
+    WEB_FILE_CHANNEL_REGISTRY.with(|registry| {
+        registry.borrow_mut().remove(channel_key);
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn resolve_web_file_channel(channel: &str) -> Option<web_sys::File> {
+    let channel_key = channel.strip_prefix(WEB_FILE_CHANNEL_PREFIX)?;
+    WEB_FILE_CHANNEL_REGISTRY.with(|registry| registry.borrow().get(channel_key).cloned())
+}
+
+fn validate_web_channel_url(channel: &str) -> Result<String, StartupChannelError> {
+    Url::parse(channel).map_err(|err| invalid_web_channel_error(channel, &err.to_string()))?;
+    Ok(channel.to_string())
+}
+
+async fn read_channel_prefix<R>(
+    reader: &R,
+    scan_cap: usize,
+    exact_total_bytes: u64,
+) -> Result<Vec<u8>, String>
+where
+    R: BlockReader + ?Sized,
+{
+    let block_size = usize::try_from(reader.block_size())
+        .map_err(|_| format!("channel block size {} is invalid", reader.block_size()))?;
+    if block_size == 0 {
+        return Err("channel block size is zero".to_string());
+    }
+
+    let prefix_len = core::cmp::min(scan_cap as u64, exact_total_bytes) as usize;
+    if prefix_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    let blocks_to_read = prefix_len.div_ceil(block_size);
+    let mut scratch = vec![0u8; blocks_to_read * block_size];
+    let mut read = reader
+        .read_blocks(0, &mut scratch, ReadContext::FOREGROUND)
+        .await
+        .map_err(|err| format!("read channel prefix: {err}"))?;
+    read = core::cmp::min(read, prefix_len);
+    scratch.truncate(read);
+    Ok(scratch)
+}
+
+fn missing_web_channel_error(details: &str) -> StartupChannelError {
+    StartupChannelError {
+        title: "Missing launch channel",
+        details: details.to_string(),
+        launch_hint:
+            "Open fastboop-web with ?channel=<url> so fastboop can boot from an explicit channel."
+                .to_string(),
+    }
+}
+
+fn invalid_web_channel_error(channel: &str, reason: &str) -> StartupChannelError {
+    StartupChannelError {
+        title: "Invalid launch channel",
+        details: format!("channel '{channel}' is invalid or unreadable: {reason}"),
+        launch_hint:
+            "Open fastboop-web with a full URL like ?channel=https://example.invalid/path.ero"
+                .to_string(),
+    }
 }
 
 fn init_tracing() {
@@ -112,14 +328,37 @@ fn global_location_search() -> Option<String> {
 }
 
 fn parse_level_from_query(search: &str) -> Option<Level> {
+    query_param(search, "log").and_then(|value| parse_level_str(&value))
+}
+
+pub(crate) fn query_param(search: &str, key: &str) -> Option<String> {
     let query = search.strip_prefix('?').unwrap_or(search);
     for pair in query.split('&') {
-        let (key, value) = pair.split_once('=')?;
-        if key == "log" {
-            return parse_level_str(value);
+        let Some((param_key, param_value)) = pair.split_once('=') else {
+            continue;
+        };
+        if param_key != key {
+            continue;
         }
+        return decode_query_component(param_value).or_else(|| Some(param_value.to_string()));
     }
     None
+}
+
+fn decode_query_component(value: &str) -> Option<String> {
+    js_sys::decode_uri_component(value)
+        .ok()
+        .and_then(|decoded| decoded.as_string())
+}
+
+pub(crate) fn global_query_param(key: &str) -> Option<String> {
+    global_location_search().and_then(|search| query_param(&search, key))
+}
+
+pub(crate) fn global_query_channel() -> Option<String> {
+    global_query_param(CHANNEL_QUERY_KEY)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn parse_level_str(input: &str) -> Option<Level> {

@@ -6,17 +6,26 @@ license.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
 gobblytes-erofs = { path = "../../gibblox/crates/gobblytes-erofs" }
+gobblytes-core = { path = "../../gibblox/crates/gobblytes-core" }
 gibblox-core = { path = "../../gibblox/crates/gibblox-core" }
 gibblox-cache = { path = "../../gibblox/crates/gibblox-cache", features = ["std"] }
 gibblox-cache-store-opfs = { path = "../../gibblox/crates/gibblox-cache-store-opfs" }
+gibblox-casync = { path = "../../gibblox/crates/gibblox-casync" }
+gibblox-casync-web = { path = "../../gibblox/crates/gibblox-casync-web" }
+gibblox-android-sparse = { path = "../../gibblox/crates/gibblox-android-sparse" }
 gibblox-http = { path = "../../gibblox/crates/gibblox-http", default-features = false, features = ["wasm-client"] }
+gibblox-mbr = { path = "../../gibblox/crates/gibblox-mbr" }
+gibblox-xz = { path = "../../gibblox/crates/gibblox-xz" }
 gibblox-zip = { path = "../../gibblox/crates/gibblox-zip" }
+gibblox-web-file = { path = "../../gibblox/crates/gibblox-web-file" }
+gibblox-blockreader-messageport = { path = "../../gibblox/crates/gibblox-blockreader-messageport" }
 gibblox-web-worker = { path = "../../gibblox/crates/gibblox-web-worker" }
 url = { workspace = true }
 smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }

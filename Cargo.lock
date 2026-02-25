@@ -3054,19 +3054,28 @@ name = "fastboop-web"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "dioxus",
  "fastboop-core",
  "fastboop-fastboot-webusb",
  "fastboop-stage0-generator",
  "futures-channel",
  "futures-util",
+ "gibblox-android-sparse",
+ "gibblox-blockreader-messageport",
  "gibblox-cache",
  "gibblox-cache-store-opfs",
+ "gibblox-casync",
+ "gibblox-casync-web",
  "gibblox-core",
  "gibblox-http",
+ "gibblox-mbr",
+ "gibblox-web-file",
  "gibblox-web-worker",
+ "gibblox-xz",
  "gibblox-zip",
  "gloo-timers",
+ "gobblytes-core",
  "gobblytes-erofs",
  "js-sys",
  "smoo-host-blocksource-gibblox",
@@ -3641,6 +3650,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "gibblox-casync-web"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "flate2",
+ "gibblox-casync",
+ "gibblox-core",
+ "js-sys",
+ "lzma-rs",
+ "ruzstd 0.8.2",
+ "tracing",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "gibblox-core"
 version = "0.0.1"
 dependencies = [
@@ -3710,6 +3737,19 @@ dependencies = [
  "gibblox-core",
  "hadris-part",
  "tracing",
+]
+
+[[package]]
+name = "gibblox-web-file"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gibblox-core",
+ "js-sys",
+ "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
