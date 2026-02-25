@@ -28,13 +28,6 @@ jobs:
           lfs: true
           submodules: recursive
 
-      - name: Checkout gibblox dependency
-        run: |
-          set -euo pipefail
-          sudo mkdir -p /var/home/sam/src
-          sudo chown -R "$(id -u):$(id -g)" /var/home/sam
-          git clone --depth 1 https://github.com/samcday/gibblox.git /var/home/sam/src/gibblox
-
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -138,13 +131,6 @@ jobs:
         with:
           lfs: true
           submodules: recursive
-
-      - name: Checkout gibblox dependency
-        run: |
-          set -euo pipefail
-          sudo mkdir -p /var/home/sam/src
-          sudo chown -R "$(id -u):$(id -g)" /var/home/sam
-          git clone --depth 1 https://github.com/samcday/gibblox.git /var/home/sam/src/gibblox
 
       - name: Install system dependencies
         run: |

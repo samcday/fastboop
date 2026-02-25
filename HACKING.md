@@ -52,7 +52,7 @@ See `docs/dev/DEVICE_PROFILES.md` for schema and semantics.
 - `packages/*`: desktop/web/mobile/ui frontends.
 - `devprofiles.d/`: device profile definitions.
 - `smoo/`: vendored subtree with its own agent docs.
-- `~/src/gibblox/`: external sibling checkout used for `gibblox-*` crates and agent docs.
+- `gibblox-*` crates: consumed from crates.io (see upstream gibblox docs for internals).
 
 ## Contributor workflow
 
