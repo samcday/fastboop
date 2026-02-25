@@ -1,7 +1,10 @@
+use std::collections::BTreeSet;
+
 use dioxus::prelude::*;
 use fastboop_core::builtin::builtin_profiles;
 use fastboop_core::device::{profile_filters, DeviceEvent, DeviceHandle as _, DeviceWatcher as _};
 use fastboop_core::prober::probe_candidates;
+use fastboop_core::BootProfile;
 use fastboop_fastboot_rusb::{DeviceWatcher, RusbDeviceHandle};
 use tracing::{debug, info};
 use ui::{
@@ -13,7 +16,8 @@ use ui::{
 use crate::Route;
 
 use super::session::{
-    next_session_id, BootConfig, DeviceSession, ProbedDevice, SessionPhase, SessionStore,
+    next_session_id, BootConfig, DeviceSession, ProbedDevice, SessionChannelIntake, SessionPhase,
+    SessionStore,
 };
 
 #[component]
@@ -37,25 +41,26 @@ pub fn Home() -> Element {
         }
     };
 
-    let startup_channel_preflight = {
+    let startup_channel_intake = {
         let startup_channel = startup_channel.clone();
         use_resource(move || {
             let startup_channel = startup_channel.clone();
-            async move { crate::preflight_startup_channel(&startup_channel).await }
+            async move { crate::load_startup_channel_intake(&startup_channel).await }
         })
     };
-    let startup_channel_ready = matches!(startup_channel_preflight.read().as_ref(), Some(Ok(())));
+    let startup_channel_ready = matches!(startup_channel_intake.read().as_ref(), Some(Ok(_)));
 
     let mut watcher_started = use_signal(|| false);
     let candidates = use_signal(Vec::<RusbDeviceHandle>::new);
     let selected_profiles = use_signal(ProfileSelectionMap::new);
-    let startup_channel_preflight_for_watcher = startup_channel_preflight;
+    let startup_channel_intake_for_watcher = startup_channel_intake;
 
     use_effect(move || {
-        let startup_channel_ready = matches!(
-            startup_channel_preflight_for_watcher.read().as_ref(),
-            Some(Ok(()))
-        );
+        let intake = match startup_channel_intake_for_watcher.read().as_ref() {
+            Some(Ok(intake)) => intake.clone(),
+            _ => return,
+        };
+
         if !startup_channel_ready {
             return;
         }
@@ -64,9 +69,8 @@ pub fn Home() -> Element {
         }
         watcher_started.set(true);
 
-        let filters = builtin_profiles()
-            .map(|profiles| profile_filters(&profiles))
-            .unwrap_or_default();
+        let profiles = load_profiles_for_channel(&intake);
+        let filters = profile_filters(&profiles);
         let mut candidates = candidates;
 
         spawn(async move {
@@ -107,16 +111,17 @@ pub fn Home() -> Element {
 
     let probe = use_resource(move || {
         let candidates = candidates();
-        let startup_channel_ready =
-            matches!(startup_channel_preflight.read().as_ref(), Some(Ok(())));
+        let startup_channel_intake = startup_channel_intake.read().as_ref().cloned();
         async move {
-            if !startup_channel_ready {
+            let Some(Ok(intake)) = startup_channel_intake else {
                 return ProbeSnapshot {
                     state: ProbeState::Loading,
                     devices: Vec::new(),
                 };
-            }
-            probe_fastboot_devices(candidates).await
+            };
+
+            let profiles = load_profiles_for_channel(&intake);
+            probe_fastboot_devices(candidates, profiles).await
         }
     });
 
@@ -151,9 +156,15 @@ pub fn Home() -> Element {
     let on_boot = {
         let mut sessions = sessions;
         let devices = snapshot.devices.clone();
+        let startup_channel_intake = startup_channel_intake;
         Some(EventHandler::new(move |index: usize| {
             let Some(device) = devices.get(index).cloned() else {
                 return;
+            };
+
+            let intake = match startup_channel_intake.read().as_ref() {
+                Some(Ok(intake)) => intake.clone(),
+                _ => return,
             };
 
             let profile = {
@@ -162,6 +173,14 @@ pub fn Home() -> Element {
             };
             let Some(profile) = profile else {
                 return;
+            };
+
+            let compatible_boot_profiles =
+                compatible_boot_profiles_for_device(&intake, profile.profile.id.as_str());
+            let selected_boot_profile_id = if compatible_boot_profiles.len() == 1 {
+                Some(compatible_boot_profiles[0].id.clone())
+            } else {
+                None
             };
 
             let session_id = next_session_id();
@@ -175,8 +194,17 @@ pub fn Home() -> Element {
                     pid: device.pid,
                     serial: device.serial,
                 },
+                channel_intake: SessionChannelIntake {
+                    exact_total_bytes: intake.exact_total_bytes,
+                    consumed_bytes: intake.stream_head.consumed_bytes,
+                    warning_count: intake.stream_head.warning_count,
+                    has_artifact_payload: intake.has_artifact_payload(),
+                    accepted_dev_profiles: intake.stream_head.dev_profiles.clone(),
+                    compatible_boot_profiles,
+                },
                 boot_config: BootConfig::new(
                     startup_channel_for_boot.clone(),
+                    selected_boot_profile_id,
                     "",
                     DEFAULT_ENABLE_SERIAL,
                 ),
@@ -187,7 +215,7 @@ pub fn Home() -> Element {
     };
 
     if !startup_channel_ready {
-        let (title, details, launch_hint) = match startup_channel_preflight.read().as_ref() {
+        let (title, details, launch_hint) = match startup_channel_intake.read().as_ref() {
             Some(Err(err)) => (
                 err.title.to_string(),
                 err.details.clone(),
@@ -225,20 +253,8 @@ pub fn Home() -> Element {
 
 async fn probe_fastboot_devices(
     candidates: Vec<RusbDeviceHandle>,
+    profiles: Vec<fastboop_core::DeviceProfile>,
 ) -> ProbeSnapshot<RusbDeviceHandle> {
-    let profiles = match builtin_profiles() {
-        Ok(profiles) => profiles,
-        Err(_) => {
-            return ProbeSnapshot {
-                state: ProbeState::Ready {
-                    transport: TransportKind::NativeUsb,
-                    devices: Vec::new(),
-                },
-                devices: Vec::new(),
-            };
-        }
-    };
-
     debug!(
         candidates = candidates.len(),
         "desktop probe candidates queued"
@@ -251,4 +267,52 @@ async fn probe_fastboot_devices(
         &candidates,
         RusbDeviceHandle::usb_serial_number,
     )
+}
+
+fn load_profiles_for_channel(
+    intake: &crate::StartupChannelIntake,
+) -> Vec<fastboop_core::DeviceProfile> {
+    let profiles = builtin_profiles().unwrap_or_default();
+
+    let allowed_by_boot_profiles =
+        allowed_boot_profile_device_ids(&intake.stream_head.boot_profiles);
+
+    profiles
+        .into_iter()
+        .filter(|profile| match allowed_by_boot_profiles.as_ref() {
+            Some(allowed) => allowed.contains(profile.id.as_str()),
+            None => true,
+        })
+        .collect()
+}
+
+fn allowed_boot_profile_device_ids(boot_profiles: &[BootProfile]) -> Option<BTreeSet<String>> {
+    if boot_profiles.is_empty()
+        || boot_profiles
+            .iter()
+            .any(|profile| profile.stage0.devices.is_empty())
+    {
+        return None;
+    }
+
+    let mut out = BTreeSet::new();
+    for profile in boot_profiles {
+        out.extend(profile.stage0.devices.keys().cloned());
+    }
+    Some(out)
+}
+
+fn compatible_boot_profiles_for_device(
+    intake: &crate::StartupChannelIntake,
+    device_profile_id: &str,
+) -> Vec<BootProfile> {
+    intake
+        .stream_head
+        .boot_profiles
+        .iter()
+        .filter(|boot_profile| {
+            fastboop_core::boot_profile_matches_device(boot_profile, device_profile_id)
+        })
+        .cloned()
+        .collect()
 }

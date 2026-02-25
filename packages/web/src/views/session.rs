@@ -8,7 +8,7 @@ use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use anyhow::Context;
 use dioxus::prelude::{Signal, WritableExt};
-use fastboop_core::DeviceProfile;
+use fastboop_core::{BootProfile, DeviceProfile};
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
 use gibblox_blockreader_messageport::{MessagePortBlockReaderClient, MessagePortBlockReaderServer};
@@ -33,6 +33,7 @@ pub struct ProbedDevice {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BootConfig {
     pub channel: String,
+    pub selected_boot_profile_id: Option<String>,
     pub extra_kargs: String,
     pub enable_serial: bool,
 }
@@ -40,15 +41,28 @@ pub struct BootConfig {
 impl BootConfig {
     pub fn new(
         channel: impl Into<String>,
+        selected_boot_profile_id: Option<String>,
         extra_kargs: impl Into<String>,
         enable_serial: bool,
     ) -> Self {
         Self {
             channel: channel.into(),
+            selected_boot_profile_id,
             extra_kargs: extra_kargs.into(),
             enable_serial,
         }
     }
+}
+
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct SessionChannelIntake {
+    pub exact_total_bytes: u64,
+    pub consumed_bytes: u64,
+    pub warning_count: usize,
+    pub has_artifact_payload: bool,
+    pub accepted_dev_profiles: Vec<DeviceProfile>,
+    pub compatible_boot_profiles: Vec<BootProfile>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -127,6 +141,7 @@ pub enum SessionPhase {
 pub struct DeviceSession {
     pub id: String,
     pub device: ProbedDevice,
+    pub channel_intake: SessionChannelIntake,
     pub boot_config: BootConfig,
     pub phase: SessionPhase,
 }

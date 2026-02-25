@@ -46,6 +46,18 @@ pub(crate) struct StartupChannelError {
     pub(crate) launch_hint: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct StartupChannelIntake {
+    pub(crate) exact_total_bytes: u64,
+    pub(crate) stream_head: fastboop_core::ChannelStreamHead,
+}
+
+impl StartupChannelIntake {
+    pub(crate) fn has_artifact_payload(&self) -> bool {
+        self.stream_head.consumed_bytes < self.exact_total_bytes
+    }
+}
+
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
 enum Route {
@@ -93,10 +105,22 @@ pub(crate) fn startup_channel() -> Result<String, StartupChannelError> {
     })
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) async fn preflight_startup_channel(channel: &str) -> Result<(), StartupChannelError> {
+    load_startup_channel_intake(channel).await.map(|_| ())
+}
+
+pub(crate) async fn load_startup_channel_intake(
+    channel: &str,
+) -> Result<StartupChannelIntake, StartupChannelError> {
     #[cfg(target_arch = "wasm32")]
     if let Some(file) = resolve_web_file_channel(channel) {
-        return preflight_web_file_channel(channel, file).await;
+        let reader = WebFileBlockReader::new(file, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+            .map_err(|err| {
+                invalid_web_channel_error(channel, &format!("open web file reader: {err}"))
+            })?;
+        let exact_total_bytes = reader.size_bytes();
+        return read_startup_channel_intake(channel, &reader, exact_total_bytes).await;
     }
 
     let url =
@@ -108,49 +132,18 @@ pub(crate) async fn preflight_startup_channel(channel: &str) -> Result<(), Start
             invalid_web_channel_error(channel, &format!("open HTTP reader for {url}: {err}"))
         })?;
 
-    let total_size_bytes = reader_size_bytes(&reader).await.map_err(|err| {
-        invalid_web_channel_error(channel, &format!("read channel size for {url}: {err}"))
-    })?;
-    if total_size_bytes == 0 {
-        return Err(invalid_web_channel_error(
-            channel,
-            "channel stream is empty",
-        ));
-    }
-
-    let scan_cap = core::cmp::min(
-        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
-        total_size_bytes,
-    ) as usize;
-    let prefix = read_channel_prefix(&reader, scan_cap)
-        .await
-        .map_err(|err| invalid_web_channel_error(channel, &err))?;
-    let stream_head = read_channel_stream_head(prefix.as_slice(), total_size_bytes)
-        .map_err(|err| invalid_web_channel_error(channel, &err.to_string()))?;
-
-    if stream_head.consumed_bytes >= total_size_bytes {
-        return Err(invalid_web_channel_error(
-            channel,
-            "channel stream contains only profile records and no artifact payload",
-        ));
-    }
-
-    Ok(())
+    read_startup_channel_intake(channel, &reader, reader.size_bytes()).await
 }
 
-#[cfg(target_arch = "wasm32")]
-async fn preflight_web_file_channel(
+async fn read_startup_channel_intake<R>(
     channel: &str,
-    file: web_sys::File,
-) -> Result<(), StartupChannelError> {
-    let reader = WebFileBlockReader::new(file, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE).map_err(
-        |err| invalid_web_channel_error(channel, &format!("open web file reader: {err}")),
-    )?;
-
-    let total_size_bytes = reader_size_bytes(&reader)
-        .await
-        .map_err(|err| invalid_web_channel_error(channel, &err))?;
-    if total_size_bytes == 0 {
+    reader: &R,
+    exact_total_bytes: u64,
+) -> Result<StartupChannelIntake, StartupChannelError>
+where
+    R: BlockReader + ?Sized,
+{
+    if exact_total_bytes == 0 {
         return Err(invalid_web_channel_error(
             channel,
             "channel stream is empty",
@@ -159,22 +152,29 @@ async fn preflight_web_file_channel(
 
     let scan_cap = core::cmp::min(
         CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
-        total_size_bytes,
+        exact_total_bytes,
     ) as usize;
-    let prefix = read_channel_prefix(&reader, scan_cap)
+    let prefix = read_channel_prefix(reader, scan_cap, exact_total_bytes)
         .await
         .map_err(|err| invalid_web_channel_error(channel, &err))?;
-    let stream_head = read_channel_stream_head(prefix.as_slice(), total_size_bytes)
+    let stream_head = read_channel_stream_head(prefix.as_slice(), exact_total_bytes)
         .map_err(|err| invalid_web_channel_error(channel, &err.to_string()))?;
 
-    if stream_head.consumed_bytes >= total_size_bytes {
-        return Err(invalid_web_channel_error(
+    let intake = StartupChannelIntake {
+        exact_total_bytes,
+        stream_head,
+    };
+
+    if intake.stream_head.warning_count > 0 {
+        tracing::warn!(
+            warning_count = intake.stream_head.warning_count,
+            consumed_bytes = intake.stream_head.consumed_bytes,
             channel,
-            "channel stream contains only profile records and no artifact payload",
-        ));
+            "channel stream stopped after valid records due trailing bytes"
+        );
     }
 
-    Ok(())
+    Ok(intake)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -208,20 +208,11 @@ fn validate_web_channel_url(channel: &str) -> Result<String, StartupChannelError
     Ok(channel.to_string())
 }
 
-async fn reader_size_bytes<R>(reader: &R) -> Result<u64, String>
-where
-    R: BlockReader + ?Sized,
-{
-    let total_blocks = reader
-        .total_blocks()
-        .await
-        .map_err(|err| format!("read total blocks: {err}"))?;
-    total_blocks
-        .checked_mul(reader.block_size() as u64)
-        .ok_or_else(|| "channel size overflow".to_string())
-}
-
-async fn read_channel_prefix<R>(reader: &R, scan_cap: usize) -> Result<Vec<u8>, String>
+async fn read_channel_prefix<R>(
+    reader: &R,
+    scan_cap: usize,
+    exact_total_bytes: u64,
+) -> Result<Vec<u8>, String>
 where
     R: BlockReader + ?Sized,
 {
@@ -231,8 +222,7 @@ where
         return Err("channel block size is zero".to_string());
     }
 
-    let total_size_bytes = reader_size_bytes(reader).await?;
-    let prefix_len = core::cmp::min(scan_cap as u64, total_size_bytes) as usize;
+    let prefix_len = core::cmp::min(scan_cap as u64, exact_total_bytes) as usize;
     if prefix_len == 0 {
         return Ok(Vec::new());
     }

@@ -69,3 +69,9 @@ a {
     margin-top: 0.35rem;
     justify-self: start;
 }
+
+.boot-config__hint {
+    margin: 0;
+    color: var(--color-text-subtle);
+    font-size: 0.9rem;
+}

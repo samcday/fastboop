@@ -26,7 +26,7 @@ This plan tracks the ongoing channel direction from issue `#20` and related boot
 
 - Keep fastboop non-mutating (no flash/erase/format/slot toggles/unlock paths).
 - Keep existing DevPro and Stage0 invariants.
-- Keep behavior deterministic and fail loudly on invalid inputs.
+- Keep behavior deterministic; fail loudly only when no valid channel content can be accepted.
 - Preserve conventional-commit history hygiene across this track (each logical checkpoint should land as a focused `feat`/`fix`/`refactor` commit with intent-first message).
 
 ## Target Behavior
@@ -34,13 +34,14 @@ This plan tracks the ongoing channel direction from issue `#20` and related boot
 Given one `channel` input:
 
 1. Open it as a readable source (path/URL/stream).
-2. Attempt profile-record scan from stream head, forward-only:
+2. Attempt profile-record scan from stream head, forward-only, in best-effort/lossy mode:
    - if next bytes decode as BootProfile binary record, accept and continue
    - if next bytes decode as DevProfile binary record, accept and continue
    - if next bytes are not a known profile-record header, stop scan and treat remaining bytes as artifact tail
 3. Validation/error boundary:
    - if record decode/validation fails before any valid record is accepted, fail
-   - if one or more valid records were already accepted, stop at first invalid record and continue with trailing bytes; emit warning
+   - if one or more valid records were already accepted, stop at first invalid/truncated/non-decodable record and continue with trailing bytes; emit warning
+   - trailing zero-padding bytes from block-rounded reads are treated the same as other trailing junk: warning-only after at least one accepted record
 4. Session handling:
    - accepted records are loaded into session-scoped in-memory state only
    - no local persistence
@@ -125,6 +126,11 @@ Status:
 - [x] BootProfile schema/validation supports casync `.caibx` sources (including nested GPT selection).
 - [ ] Channel-stream DevProfile record ingestion.
 - [ ] Desktop/web parity with CLI channel intake behavior.
+  - [x] Desktop/web startup intake now uses best-effort/lossy profile stream-head parsing semantics (warning-only when trailing junk appears after accepted records).
+  - [x] Desktop/web startup now retains channel stream-head metadata for session use and probe filtering.
+  - [x] Desktop/web probe candidate filtering now narrows to BootProfile-referenced device IDs (`stage0.devices`) unless wildcard/all-device behavior applies.
+  - [x] Desktop/web session boot config now displays the selected BootProfile and requires an explicit pick when multiple compatible profiles exist.
+  - [ ] Desktop/web UI boot flows still have partial BootProfile rootfs source support when booting without trailing artifact payload (desktop: HTTP-only; web: HTTP/casync plus wrapper pipelines `xz`/`android_sparseimg`/`mbr`/`gpt`, with `file` limited to `web-file://` handles due browser sandbox constraints, and OSTree deployment auto-detection now wired for web BootProfile `rootfs.ostree` no-tail flow).
 
 ### Phase 1: Surface Migration (`rootfs` -> `channel`)
 
@@ -146,6 +152,8 @@ Phase gate:
 - [x] Core stream-head scan and selection module exists in `fastboop-core`.
 - [x] CLI resolves profile stream head and selection through core module (`read_boot_profile_stream_head`, `select_boot_profile_for_device`).
 - [ ] Desktop and web adopt the same core helpers.
+  - [x] Desktop/web now consume `read_channel_stream_head` output and use core BootProfile compatibility rules for runtime selection.
+  - [ ] Shared reusable channel-intake entrypoint (single implementation across CLI/desktop/web) is still pending.
 
 Deliverable: one reusable channel intake stack for all runtimes.
 
@@ -250,7 +258,7 @@ For substantial implementation phases, run Tier 2 gate from `HACKING.md` before 
 - Channel streams with leading profile records load accepted records into memory only.
 - Mixed/interleaved DevProfile + BootProfile record heads are supported.
 - If the first record is invalid, fail loudly.
-- If an invalid record appears after at least one valid record, warn and continue with trailing bytes.
+- If an invalid record appears after at least one valid record, warn and continue with trailing bytes (including block-padding zeros).
 - Naked artifact channels remain valid and are processed as generic artifacts.
 - BootProfile options after device/profile selection include only compatible variants (`stage0.devices = {}` means all devices).
 - Existing artifact types still boot through channel intake.

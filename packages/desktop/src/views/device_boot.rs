@@ -11,8 +11,8 @@ use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
 use fastboop_core::{
-    bootimg::build_android_bootimg, read_channel_stream_head, ChannelStreamHead,
-    CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES,
+    bootimg::build_android_bootimg, resolve_effective_boot_profile_stage0, BootProfile,
+    BootProfileArtifactSource,
 };
 use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 use gibblox_cache::CachedBlockReader;
@@ -39,7 +39,10 @@ use ui::{
 };
 use url::Url;
 
-use super::session::{update_session_phase, BootConfig, BootRuntime, SessionPhase, SessionStore};
+use super::session::{
+    update_session_phase, BootConfig, BootRuntime, DeviceSession, SessionChannelIntake,
+    SessionPhase, SessionStore,
+};
 
 const SMOO_INTERFACE_CLASS: u8 = 0xFF;
 const SMOO_INTERFACE_SUBCLASS: u8 = 0x53;
@@ -61,11 +64,39 @@ pub async fn boot_selected_device(
         .find(|s| s.id == session_id)
         .cloned()
         .ok_or_else(|| anyhow!("session not found"))?;
-    let boot_config = session.boot_config.clone();
+    let mut boot_config = session.boot_config.clone();
+
+    validate_session_dev_profiles(
+        &session.device.profile.id,
+        &session.channel_intake.accepted_dev_profiles,
+    )
+    .with_context(|| {
+        format!(
+            "device '{}' is not accepted by channel stream dev profiles",
+            session.device.profile.id
+        )
+    })?;
+
+    let selected_boot_profile = select_boot_profile_for_session(&session)?;
+    let profile_stage0 = selected_boot_profile
+        .as_ref()
+        .map(|boot_profile| {
+            resolve_effective_boot_profile_stage0(boot_profile, session.device.profile.id.as_str())
+        })
+        .unwrap_or_default();
 
     let channel = boot_config.channel.trim();
     if channel.is_empty() {
         return Err(anyhow!("channel is empty"));
+    }
+
+    if session.channel_intake.warning_count > 0 {
+        info!(
+            warning_count = session.channel_intake.warning_count,
+            consumed_bytes = session.channel_intake.consumed_bytes,
+            channel,
+            "channel stream contained trailing bytes that were not valid profile records"
+        );
     }
 
     update_session_phase(
@@ -90,9 +121,20 @@ pub async fn boot_selected_device(
     } else {
         Vec::new()
     };
+    let mut dtbo_overlays = dtbo_overlays;
+    dtbo_overlays.extend(profile_stage0.dt_overlays);
+
+    let mut extra_modules = vec!["erofs".to_string()];
+    extra_modules.extend(profile_stage0.extra_modules);
+
+    boot_config.extra_kargs = join_cmdline(
+        profile_stage0.extra_cmdline.as_deref(),
+        nonempty(boot_config.extra_kargs.as_str()),
+    );
+
     let stage0_opts = Stage0Options {
         switchroot_fs: Stage0SwitchrootFs::Erofs,
-        extra_modules: vec!["erofs".to_string()],
+        extra_modules,
         kernel_override: None,
         dtb_override: None,
         dtbo_overlays,
@@ -103,10 +145,15 @@ pub async fn boot_selected_device(
         smoo_serial: session.device.serial.clone(),
         personalization: Some(personalization_from_host()),
     };
-    let (build, runtime) =
-        build_stage0_artifacts(session.device.profile.clone(), stage0_opts, boot_config)
-            .await
-            .context("open channel and build stage0")?;
+    let (build, runtime) = build_stage0_artifacts(
+        session.device.profile.clone(),
+        stage0_opts,
+        boot_config,
+        session.channel_intake.clone(),
+        selected_boot_profile,
+    )
+    .await
+    .context("open channel and build stage0")?;
 
     update_session_phase(
         sessions,
@@ -199,6 +246,8 @@ async fn build_stage0_artifacts(
     profile: fastboop_core::DeviceProfile,
     stage0_opts: Stage0Options,
     boot_config: BootConfig,
+    channel_intake: SessionChannelIntake,
+    selected_boot_profile: Option<BootProfile>,
 ) -> Result<(fastboop_stage0_generator::Stage0Build, BootRuntime)> {
     let channel = boot_config.channel.trim().to_string();
     if channel.is_empty() {
@@ -217,51 +266,32 @@ async fn build_stage0_artifacts(
                     .context("create tokio runtime for stage0 build")?;
                 runtime.block_on(async move {
                     info!(profile = %profile.id, channel = %channel, "opening channel for desktop boot");
-                    let url = Url::parse(&channel)
-                        .map_err(|err| anyhow!("parse channel URL {channel}: {err}"))?;
-                    let http_reader = HttpBlockReader::new(
-                        url.clone(),
-                        gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
-                    )
-                    .await
-                    .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
-                    let cache = StdCacheOps::open_default_for_reader(&http_reader)
-                        .await
-                        .map_err(|err| anyhow!("open std cache for HTTP channel: {err}"))?;
-                    let cached = Arc::new(
-                        CachedBlockReader::new(http_reader, cache)
-                            .await
-                            .map_err(|err| anyhow!("initialize std cache for HTTP channel: {err}"))?,
-                    );
-                    let reader = cached.clone();
-                    let total_size_bytes = reader_size_bytes(reader.as_ref()).await?;
-                    let stream_head =
-                        read_channel_stream_head_from_reader(reader.as_ref(), total_size_bytes)
-                        .await
-                        .map_err(|err| {
-                            anyhow!("read channel stream head {}: {err}", channel)
-                        })?;
+                    let (provider_reader, provider_size_bytes) = if channel_intake.has_artifact_payload
+                    {
+                        let url = Url::parse(&channel)
+                            .map_err(|err| anyhow!("parse channel URL {channel}: {err}"))?;
+                        let (reader, exact_size_bytes) = open_cached_http_reader(&url).await?;
 
-                    validate_session_dev_profiles(&profile.id, &stream_head.dev_profiles)
-                        .map_err(|err| anyhow!("channel stream device mismatch for {channel}: {err}"))?;
+                        if exact_size_bytes != channel_intake.exact_total_bytes {
+                            warn!(
+                                expected = channel_intake.exact_total_bytes,
+                                observed = exact_size_bytes,
+                                channel,
+                                "channel size changed since startup intake"
+                            );
+                        }
 
-                    if stream_head.consumed_bytes >= total_size_bytes {
-                        bail!(
-                            "channel stream has only profile records and no trailing artifact payload; desktop boot requires an artifact stream"
-                        );
-                    }
-
-                    let (provider_reader, provider_size_bytes) =
                         if let Some(entry_name) = zip_entry_name_from_url(&url)? {
-                            let source_reader: Arc<dyn BlockReader> = if stream_head.consumed_bytes == 0 {
-                                reader.clone()
-                            } else {
-                                Arc::new(OffsetChannelBlockReader::new(
-                                    reader.clone(),
-                                    stream_head.consumed_bytes,
-                                    total_size_bytes,
-                                )?)
-                            };
+                            let source_reader: Arc<dyn BlockReader> =
+                                if channel_intake.consumed_bytes == 0 {
+                                    reader.clone()
+                                } else {
+                                    Arc::new(OffsetChannelBlockReader::new(
+                                        reader.clone(),
+                                        channel_intake.consumed_bytes,
+                                        exact_size_bytes,
+                                    )?)
+                                };
                             let zip_reader = ZipEntryBlockReader::new(&entry_name, source_reader)
                                 .await
                                 .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
@@ -269,18 +299,36 @@ async fn build_stage0_artifacts(
                             let zip_size_bytes = reader_size_bytes(zip_reader.as_ref()).await?;
                             (zip_reader as Arc<dyn BlockReader>, zip_size_bytes)
                         } else {
-                            offset_tail_reader(reader.clone(), &stream_head, total_size_bytes)
-                                .map_err(|err| anyhow!("channel stream requires trailing artifact: {err}"))?
-                        };
-
-                    if stream_head.warning_count > 0 {
-                        info!(
-                            warning_count = stream_head.warning_count,
-                            consumed_bytes = stream_head.consumed_bytes,
-                            channel,
-                            "channel stream head stopped early while scanning records"
-                        );
-                    }
+                            offset_tail_reader(
+                                reader.clone(),
+                                channel_intake.consumed_bytes,
+                                exact_size_bytes,
+                            )
+                            .map_err(|err| anyhow!("channel stream requires trailing artifact: {err}"))?
+                        }
+                    } else {
+                        let boot_profile = selected_boot_profile.as_ref().ok_or_else(|| {
+                            anyhow!(
+                                "channel has no trailing artifact payload and no compatible boot profile selected"
+                            )
+                        })?;
+                        let rootfs_channel = boot_profile_http_source_url(boot_profile)?;
+                        let rootfs_url = Url::parse(&rootfs_channel).map_err(|err| {
+                            anyhow!("parse boot profile rootfs URL {rootfs_channel}: {err}")
+                        })?;
+                        let (reader, _exact_size_bytes) = open_cached_http_reader(&rootfs_url).await?;
+                        if let Some(entry_name) = zip_entry_name_from_url(&rootfs_url)? {
+                            let zip_reader = ZipEntryBlockReader::new(&entry_name, reader.clone())
+                                .await
+                                .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
+                            let zip_reader = Arc::new(zip_reader);
+                            let zip_size_bytes = reader_size_bytes(zip_reader.as_ref()).await?;
+                            (zip_reader as Arc<dyn BlockReader>, zip_size_bytes)
+                        } else {
+                            let size_bytes = reader_size_bytes(reader.as_ref()).await?;
+                            (reader as Arc<dyn BlockReader>, size_bytes)
+                        }
+                    };
 
                     let provider = ErofsRootfs::new(provider_reader.clone(), provider_size_bytes).await?;
                     info!(profile = %profile.id, "building stage0 payload");
@@ -331,66 +379,90 @@ fn validate_session_dev_profiles(
     ))
 }
 
-async fn read_channel_stream_head_from_reader<R: BlockReader + ?Sized>(
-    reader: &R,
-    exact_total_bytes: u64,
-) -> Result<ChannelStreamHead> {
-    let scan_cap = core::cmp::min(
-        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
-        exact_total_bytes,
-    ) as usize;
-    let prefix = read_channel_prefix(reader, scan_cap).await?;
-    read_channel_stream_head(&prefix, exact_total_bytes)
-        .map_err(|err| anyhow!("read channel stream head: {err}"))
+fn select_boot_profile_for_session(session: &DeviceSession) -> Result<Option<BootProfile>> {
+    let compatible = &session.channel_intake.compatible_boot_profiles;
+    if compatible.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some(selected_id) = session.boot_config.selected_boot_profile_id.as_deref() {
+        let selected = compatible
+            .iter()
+            .find(|profile| profile.id == selected_id)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!(
+                    "selected boot profile '{}' is not compatible with device profile '{}'",
+                    selected_id,
+                    session.device.profile.id
+                )
+            })?;
+        return Ok(Some(selected));
+    }
+
+    if compatible.len() == 1 {
+        return Ok(Some(compatible[0].clone()));
+    }
+
+    let available: Vec<_> = compatible
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect();
+    bail!(
+        "multiple compatible boot profiles available for '{}'; choose one: {}",
+        session.device.profile.id,
+        available.join(", ")
+    )
 }
 
-async fn read_channel_prefix<R: BlockReader + ?Sized>(
-    reader: &R,
-    scan_cap: usize,
-) -> Result<Vec<u8>> {
-    let block_size = usize::try_from(reader.block_size()).map_err(|_| {
-        anyhow!(
-            "channel reader block size {} does not fit in usize",
-            reader.block_size()
-        )
-    })?;
-    if block_size == 0 {
-        bail!("channel reader block size is zero");
+fn boot_profile_http_source_url(boot_profile: &BootProfile) -> Result<String> {
+    match boot_profile.rootfs.source() {
+        BootProfileArtifactSource::Http(source) => {
+            let source = source.http.trim();
+            if source.is_empty() {
+                bail!("boot profile '{}' rootfs.http is empty", boot_profile.id);
+            }
+            Url::parse(source)
+                .map(|url| url.to_string())
+                .map_err(|err| {
+                    anyhow!(
+                        "parse boot profile '{}' rootfs HTTP source {}: {err}",
+                        boot_profile.id,
+                        source
+                    )
+                })
+        }
+        _ => bail!(
+            "boot profile '{}' rootfs source is not supported in fastboop-desktop yet; expected HTTP source",
+            boot_profile.id
+        ),
     }
+}
 
-    let total_blocks = reader
-        .total_blocks()
+async fn open_cached_http_reader(url: &Url) -> Result<(Arc<dyn BlockReader>, u64)> {
+    let http_reader = HttpBlockReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
         .await
-        .map_err(|err| anyhow!("read channel total blocks: {err}"))?;
-    let total_bytes = total_blocks
-        .checked_mul(reader.block_size() as u64)
-        .ok_or_else(|| anyhow!("channel total size overflows u64"))?;
-    let prefix_len = core::cmp::min(scan_cap as u64, total_bytes) as usize;
-    if prefix_len == 0 {
-        return Ok(Vec::new());
-    }
-
-    let blocks_to_read = prefix_len.div_ceil(block_size);
-    let mut scratch = vec![0u8; blocks_to_read * block_size];
-    let mut read = reader
-        .read_blocks(0, &mut scratch, ReadContext::FOREGROUND)
+        .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
+    let exact_size_bytes = http_reader.size_bytes();
+    let cache = StdCacheOps::open_default_for_reader(&http_reader)
         .await
-        .map_err(|err| anyhow!("read channel prefix: {err}"))?;
-    read = core::cmp::min(read, prefix_len);
-    scratch.truncate(read);
-    Ok(scratch)
+        .map_err(|err| anyhow!("open std cache for HTTP source: {err}"))?;
+    let cached = CachedBlockReader::new(http_reader, cache)
+        .await
+        .map_err(|err| anyhow!("initialize std cache for HTTP source: {err}"))?;
+    Ok((Arc::new(cached), exact_size_bytes))
 }
 
 fn offset_tail_reader(
     reader: Arc<dyn BlockReader>,
-    stream_head: &ChannelStreamHead,
+    consumed_bytes: u64,
     total_size_bytes: u64,
 ) -> Result<(Arc<dyn BlockReader>, u64)> {
-    if stream_head.consumed_bytes == 0 {
+    if consumed_bytes == 0 {
         return Ok((reader, total_size_bytes));
     }
 
-    if stream_head.consumed_bytes >= total_size_bytes {
+    if consumed_bytes >= total_size_bytes {
         bail!(
             "channel stream has only profile records and no trailing artifact payload; desktop boot requires an artifact stream"
         );
@@ -399,11 +471,11 @@ fn offset_tail_reader(
     Ok((
         Arc::new(OffsetChannelBlockReader::new(
             reader.clone(),
-            stream_head.consumed_bytes,
+            consumed_bytes,
             total_size_bytes,
         )?),
         total_size_bytes
-            .checked_sub(stream_head.consumed_bytes)
+            .checked_sub(consumed_bytes)
             .ok_or_else(|| anyhow!("channel consumed byte offset overflow"))?,
     ))
 }

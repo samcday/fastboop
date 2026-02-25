@@ -1,0 +1,7 @@
+id: boobs
+display_name: balls
+rootfs:
+  ostree:
+    erofs:
+      casync:
+        index: https://bleeding.fastboop.win/live-pocket-fedora/casync/indexes/compose-22240659617-1-bf887e869003.caibx
