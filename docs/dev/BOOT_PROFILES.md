@@ -9,6 +9,7 @@ Use them when a plain rootfs path/URL is not enough.
 
 - Schema types: [`crates/fastboop-schema/src/lib.rs`](https://github.com/samcday/fastboop/blob/main/crates/fastboop-schema/src/lib.rs)
 - Codec + validation: [`crates/fastboop-core/src/bootprofile.rs`](https://github.com/samcday/fastboop/blob/main/crates/fastboop-core/src/bootprofile.rs)
+- Artifact pipeline schema/codec: [`gibblox-pipeline`](https://github.com/samcday/gibblox/tree/main/crates/gibblox-pipeline)
 - CLI tooling: [`cli/src/commands/bootprofile.rs`](https://github.com/samcday/fastboop/blob/main/cli/src/commands/bootprofile.rs)
 
 ## Two Representations
@@ -72,7 +73,7 @@ extra_cmdline: console=ttyMSM0,115200n8
 
 - `rootfs` schema supports `erofs`, `ext4`, and `fat`.
 - Stage0 lower-root currently accepts `erofs` and `ext4`; use `fat` for kernel/dtbs source pipelines.
-- Artifact pipeline depth is capped at 16 steps.
+- Artifact pipeline validation/limits come from `gibblox-pipeline` (`MAX_PIPELINE_DEPTH=16`).
 - GPT/MBR selector steps must choose exactly one selector field.
 - `kernel.path` and `dtbs.path` (if present) must be non-empty.
 - `dt_overlays` compile/decompile requires `dtc`.

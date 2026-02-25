@@ -16,4 +16,3 @@ Historical docs kept for context. These may not reflect current direction.
 - [Device Profiles v0 spec (archived)](attic/DEVICE_PROFILES-v0.md)
 - [Stage0 v0 spec (archived)](attic/STAGE0-v0.md)
 - [Dioxus notes (legacy)](attic/DIOXUS.md)
-- [Subtree management (legacy)](attic/SUBTREES.md)

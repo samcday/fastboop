@@ -6,9 +6,10 @@ use fastboop_schema::bin::{
     BootProfileBin,
 };
 use fastboop_schema::{
-    BootProfile, BootProfileArtifactPathSource, BootProfileArtifactSource, BootProfileRootfs,
+    BootProfile, BootProfileArtifactPathSource, BootProfileRootfs,
     BootProfileRootfsFilesystemSource,
 };
+use gibblox_pipeline::{PipelineValidationError, validate_pipeline};
 
 #[derive(Debug)]
 pub enum BootProfileCodecError {
@@ -132,13 +133,7 @@ pub fn resolve_effective_boot_profile_stage0(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootProfileValidationError {
     UnsupportedRootfsFilesystem { filesystem: &'static str },
-    UnsupportedCasyncArchiveIndex { index: String },
-    PipelineDepthExceeded { max_depth: usize },
-    InvalidMbrSelectorCount { selectors: usize },
-    EmptyMbrPartuuid,
-    InvalidGptSelectorCount { selectors: usize },
-    EmptyGptPartlabel,
-    EmptyGptPartuuid,
+    Pipeline(PipelineValidationError),
     EmptyKernelPath,
     EmptyDtbsPath,
 }
@@ -150,33 +145,7 @@ impl core::fmt::Display for BootProfileValidationError {
                 f,
                 "boot profile rootfs filesystem '{filesystem}' is not supported for stage0 switchroot (supported: erofs, ext4)"
             ),
-            Self::UnsupportedCasyncArchiveIndex { index } => write!(
-                f,
-                "unsupported casync archive index (.caidx) in boot profile: {index}; expected casync blob index (.caibx)"
-            ),
-            Self::PipelineDepthExceeded { max_depth } => {
-                write!(
-                    f,
-                    "boot profile rootfs pipeline exceeds max depth {max_depth}"
-                )
-            }
-            Self::InvalidMbrSelectorCount { selectors } => write!(
-                f,
-                "boot profile mbr step must specify exactly one selector (partuuid or index); found {selectors}"
-            ),
-            Self::EmptyMbrPartuuid => {
-                write!(f, "boot profile mbr partuuid must not be empty")
-            }
-            Self::InvalidGptSelectorCount { selectors } => write!(
-                f,
-                "boot profile gpt step must specify exactly one selector (partlabel, partuuid, or index); found {selectors}"
-            ),
-            Self::EmptyGptPartlabel => {
-                write!(f, "boot profile gpt partlabel must not be empty")
-            }
-            Self::EmptyGptPartuuid => {
-                write!(f, "boot profile gpt partuuid must not be empty")
-            }
+            Self::Pipeline(err) => write!(f, "{err}"),
             Self::EmptyKernelPath => {
                 write!(f, "boot profile kernel path must not be empty")
             }
@@ -191,7 +160,7 @@ pub fn validate_boot_profile(profile: &BootProfile) -> Result<(), BootProfileVal
     if !rootfs_supports_stage0_switchroot(&profile.rootfs) {
         return Err(BootProfileValidationError::UnsupportedRootfsFilesystem { filesystem: "fat" });
     }
-    validate_artifact_source(profile.rootfs.source(), 0)?;
+    validate_pipeline(profile.rootfs.source()).map_err(BootProfileValidationError::Pipeline)?;
     if let Some(kernel) = profile.kernel.as_ref() {
         validate_profile_artifact_path_source(kernel, BootProfileValidationError::EmptyKernelPath)?;
     }
@@ -224,94 +193,6 @@ fn join_cmdline_parts(primary: Option<&str>, secondary: Option<&str>) -> Option<
     }
 }
 
-fn strip_query_and_fragment(value: &str) -> &str {
-    let mut end = value.len();
-    if let Some(pos) = value.find('?') {
-        end = end.min(pos);
-    }
-    if let Some(pos) = value.find('#') {
-        end = end.min(pos);
-    }
-    &value[..end]
-}
-
-const MAX_ROOTFS_PIPELINE_DEPTH: usize = 16;
-
-fn validate_artifact_source(
-    source: &BootProfileArtifactSource,
-    depth: usize,
-) -> Result<(), BootProfileValidationError> {
-    if depth > MAX_ROOTFS_PIPELINE_DEPTH {
-        return Err(BootProfileValidationError::PipelineDepthExceeded {
-            max_depth: MAX_ROOTFS_PIPELINE_DEPTH,
-        });
-    }
-
-    match source {
-        BootProfileArtifactSource::Casync(source) => {
-            let index_path = strip_query_and_fragment(source.casync.index.as_str());
-            if index_path.ends_with(".caidx") {
-                return Err(BootProfileValidationError::UnsupportedCasyncArchiveIndex {
-                    index: source.casync.index.clone(),
-                });
-            }
-            Ok(())
-        }
-        BootProfileArtifactSource::Http(_) => Ok(()),
-        BootProfileArtifactSource::File(_) => Ok(()),
-        BootProfileArtifactSource::Xz(source) => {
-            validate_artifact_source(source.xz.as_ref(), depth + 1)
-        }
-        BootProfileArtifactSource::AndroidSparseImg(source) => {
-            validate_artifact_source(source.android_sparseimg.as_ref(), depth + 1)
-        }
-        BootProfileArtifactSource::Mbr(source) => {
-            let mut selectors = 0usize;
-
-            if let Some(partuuid) = source.mbr.partuuid.as_deref() {
-                if partuuid.trim().is_empty() {
-                    return Err(BootProfileValidationError::EmptyMbrPartuuid);
-                }
-                selectors += 1;
-            }
-            if source.mbr.index.is_some() {
-                selectors += 1;
-            }
-
-            if selectors != 1 {
-                return Err(BootProfileValidationError::InvalidMbrSelectorCount { selectors });
-            }
-
-            validate_artifact_source(source.mbr.source.as_ref(), depth + 1)
-        }
-        BootProfileArtifactSource::Gpt(source) => {
-            let mut selectors = 0usize;
-
-            if let Some(partlabel) = source.gpt.partlabel.as_deref() {
-                if partlabel.trim().is_empty() {
-                    return Err(BootProfileValidationError::EmptyGptPartlabel);
-                }
-                selectors += 1;
-            }
-            if let Some(partuuid) = source.gpt.partuuid.as_deref() {
-                if partuuid.trim().is_empty() {
-                    return Err(BootProfileValidationError::EmptyGptPartuuid);
-                }
-                selectors += 1;
-            }
-            if source.gpt.index.is_some() {
-                selectors += 1;
-            }
-
-            if selectors != 1 {
-                return Err(BootProfileValidationError::InvalidGptSelectorCount { selectors });
-            }
-
-            validate_artifact_source(source.gpt.source.as_ref(), depth + 1)
-        }
-    }
-}
-
 fn validate_profile_artifact_path_source(
     source: &BootProfileArtifactPathSource,
     empty_path_err: BootProfileValidationError,
@@ -319,5 +200,5 @@ fn validate_profile_artifact_path_source(
     if source.path.trim().is_empty() {
         return Err(empty_path_err);
     }
-    validate_artifact_source(source.artifact_source(), 0)
+    validate_pipeline(source.artifact_source()).map_err(BootProfileValidationError::Pipeline)
 }

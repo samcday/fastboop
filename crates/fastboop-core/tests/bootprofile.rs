@@ -12,6 +12,7 @@ use fastboop_core::{
     decode_boot_profile, decode_boot_profile_prefix, encode_boot_profile,
     resolve_effective_boot_profile_stage0, validate_boot_profile,
 };
+use gibblox_pipeline::PipelineValidationError;
 
 #[test]
 fn boot_profile_roundtrip_binary_codec() {
@@ -244,7 +245,9 @@ fn rejects_gpt_step_without_selector() {
     let err = validate_boot_profile(&profile).expect_err("gpt selector validation should fail");
     assert_eq!(
         err,
-        BootProfileValidationError::InvalidGptSelectorCount { selectors: 0 }
+        BootProfileValidationError::Pipeline(PipelineValidationError::InvalidGptSelectorCount {
+            selectors: 0
+        })
     );
 }
 
@@ -276,7 +279,9 @@ fn rejects_mbr_step_without_selector() {
     let err = validate_boot_profile(&profile).expect_err("mbr selector validation should fail");
     assert_eq!(
         err,
-        BootProfileValidationError::InvalidMbrSelectorCount { selectors: 0 }
+        BootProfileValidationError::Pipeline(PipelineValidationError::InvalidMbrSelectorCount {
+            selectors: 0
+        })
     );
 }
 

@@ -51,7 +51,8 @@ See `docs/dev/DEVICE_PROFILES.md` for schema and semantics.
 - `crates/fastboop-core/`: core model/state-machine traits.
 - `packages/*`: desktop/web/mobile/ui frontends.
 - `devprofiles.d/`: device profile definitions.
-- `smoo/`, `gibblox/`: sibling subtrees with their own agent docs.
+- `smoo/`: vendored subtree with its own agent docs.
+- `gibblox-*` crates: consumed from crates.io (see upstream gibblox docs for internals).
 
 ## Contributor workflow
 

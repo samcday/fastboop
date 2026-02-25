@@ -16,25 +16,25 @@ serde_json = "1.0.132"
 serde_yaml = { workspace = true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-gibblox-core = { path = "../gibblox/crates/gibblox-core", features = ["std"] }
-gibblox-ext4 = { path = "../gibblox/crates/gibblox-ext4" }
-gibblox-mbr = { path = "../gibblox/crates/gibblox-mbr", features = ["std"] }
-gibblox-casync = { path = "../gibblox/crates/gibblox-casync", features = ["std"] }
-gibblox-casync-std = { path = "../gibblox/crates/gibblox-casync-std" }
-gibblox-cache = { path = "../gibblox/crates/gibblox-cache", features = ["std"] }
-gibblox-cache-store-std = { path = "../gibblox/crates/gibblox-cache-store-std" }
-gibblox-file = { path = "../gibblox/crates/gibblox-file" }
-gibblox-http = { path = "../gibblox/crates/gibblox-http", default-features = false, features = ["native-client"] }
-gibblox-android-sparse = { path = "../gibblox/crates/gibblox-android-sparse", features = ["std"] }
-gibblox-xz = { path = "../gibblox/crates/gibblox-xz", features = ["std"] }
-gibblox-zip = { path = "../gibblox/crates/gibblox-zip", features = ["std"] }
-gobblytes-core = { path = "../gibblox/crates/gobblytes-core" }
-gobblytes-erofs = { path = "../gibblox/crates/gobblytes-erofs" }
-gobblytes-fat = { path = "../gibblox/crates/gobblytes-fat" }
+gibblox-core = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-ext4 = { version = ">=0.0.1-rc.8" }
+gibblox-mbr = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-casync = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-casync-std = { version = ">=0.0.1-rc.8" }
+gibblox-cache = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-cache-store-std = { version = ">=0.0.1-rc.8" }
+gibblox-file = { version = ">=0.0.1-rc.8" }
+gibblox-http = { version = ">=0.0.1-rc.8", default-features = false, features = ["native-client"] }
+gibblox-android-sparse = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-xz = { version = ">=0.0.1-rc.8", features = ["std"] }
+gibblox-zip = { version = ">=0.0.1-rc.8", features = ["std"] }
+gobblytes-core = { version = ">=0.0.1-rc.8" }
+gobblytes-erofs = { version = ">=0.0.1-rc.8" }
+gobblytes-fat = { version = ">=0.0.1-rc.8" }
 smoo-host-core = { path = "../smoo/crates/smoo-host-core" }
 smoo-host-session = { path = "../smoo/crates/smoo-host-session" }
 smoo-host-transport-rusb = { path = "../smoo/crates/smoo-host-transport-rusb" }
-smoo-host-blocksource-gibblox = { path = "../crates/smoo-host-blocksource-gibblox" }
+smoo-host-blocksource-gibblox = { path = "../smoo/crates/smoo-host-blocksource-gibblox" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-util = { workspace = true }
 url = { workspace = true }
