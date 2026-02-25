@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -61,6 +61,12 @@ fn run_create(args: BootProfileCreateArgs) -> Result<()> {
     validate_boot_profile(&compiled).map_err(|err| anyhow!("{err}"))?;
 
     let bytes = encode_boot_profile(&compiled).context("encoding boot profile binary")?;
+
+    validate_binary_output(
+        &args.output,
+        "bootprofile create",
+        std::io::stdout().is_terminal(),
+    )?;
     write_output_bytes(&args.output, &bytes)
 }
 
@@ -149,6 +155,16 @@ fn read_input_bytes(path: &str) -> Result<Vec<u8>> {
     }
 
     fs::read(path).with_context(|| format!("reading {}", io_label(path)))
+}
+
+fn validate_binary_output(path: &str, command: &str, stdout_is_tty: bool) -> Result<()> {
+    if path == "-" && stdout_is_tty {
+        bail!(
+            "{} output is binary and terminal output is disabled by default; use --output <FILE>",
+            command
+        );
+    }
+    Ok(())
 }
 
 fn write_output_bytes(path: &str, bytes: &[u8]) -> Result<()> {
@@ -417,5 +433,21 @@ rootfs:
             }
             other => panic!("expected casync source, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn create_output_rejects_tty_stdout() {
+        let err = validate_binary_output("-", "bootprofile create", true)
+            .expect_err("expected tty stdout to be rejected");
+        let message = format!("{err}");
+        assert!(message.contains("terminal output is disabled by default"));
+    }
+
+    #[test]
+    fn create_output_allows_non_tty_stdout() {
+        assert!(
+            validate_binary_output("-", "bootprofile create", false).is_ok(),
+            "expected non-tty stdout to be allowed"
+        );
     }
 }
