@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 use crate::devpros::{load_local_device_profiles, resolve_devpro_dirs};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Subcommand};
 use fastboop_core::builtin::builtin_profiles;
 use fastboop_core::{DeviceProfile, decode_dev_profile, encode_dev_profile};
@@ -68,6 +68,12 @@ fn run_create(args: DevProfileCreateArgs) -> Result<()> {
         .with_context(|| format!("parsing device profile document {}", io_label(&args.input)))?;
 
     let bytes = encode_dev_profile(&profile).context("encoding device profile binary")?;
+
+    validate_binary_output(
+        &args.output,
+        "devprofile create",
+        std::io::stdout().is_terminal(),
+    )?;
     write_output_bytes(&args.output, &bytes)
 }
 
@@ -233,6 +239,16 @@ fn write_output_bytes(path: &str, bytes: &[u8]) -> Result<()> {
     fs::write(path, bytes).with_context(|| format!("writing {}", io_label(path)))
 }
 
+fn validate_binary_output(path: &str, command: &str, stdout_is_tty: bool) -> Result<()> {
+    if path == "-" && stdout_is_tty {
+        bail!(
+            "{} output is binary and terminal output is disabled by default; use --output <FILE>",
+            command
+        );
+    }
+    Ok(())
+}
+
 fn io_label(path: &str) -> String {
     if path == "-" {
         "stdin/stdout".to_string()
@@ -280,6 +296,22 @@ probe: []
         assert_eq!(
             decoded.r#match[0].fastboot.pid,
             profile.r#match[0].fastboot.pid
+        );
+    }
+
+    #[test]
+    fn create_output_rejects_tty_stdout() {
+        let err = validate_binary_output("-", "devprofile create", true)
+            .expect_err("expected tty stdout to be rejected");
+        let message = format!("{err}");
+        assert!(message.contains("terminal output is disabled by default"));
+    }
+
+    #[test]
+    fn create_output_allows_non_tty_stdout() {
+        assert!(
+            validate_binary_output("-", "devprofile create", false).is_ok(),
+            "expected non-tty stdout to be allowed"
         );
     }
 }
