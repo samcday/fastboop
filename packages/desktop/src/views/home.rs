@@ -34,11 +34,23 @@ pub fn Home() -> Element {
         }
     };
 
+    let startup_channel_preflight = {
+        let startup_channel = startup_channel.clone();
+        use_resource(move || {
+            let startup_channel = startup_channel.clone();
+            async move { crate::preflight_startup_channel(&startup_channel).await }
+        })
+    };
+    let startup_channel_ready = matches!(startup_channel_preflight.read().as_ref(), Some(Ok(())));
+
     let mut watcher_started = use_signal(|| false);
     let candidates = use_signal(Vec::<RusbDeviceHandle>::new);
     let selected_profiles = use_signal(ProfileSelectionMap::new);
 
     use_effect(move || {
+        if !startup_channel_ready {
+            return;
+        }
         if watcher_started() {
             return;
         }
@@ -87,7 +99,15 @@ pub fn Home() -> Element {
 
     let probe = use_resource(move || {
         let candidates = candidates();
-        async move { probe_fastboot_devices(candidates).await }
+        async move {
+            if !startup_channel_ready {
+                return ProbeSnapshot {
+                    state: ProbeState::Loading,
+                    devices: Vec::new(),
+                };
+            }
+            probe_fastboot_devices(candidates).await
+        }
     });
 
     let snapshot = probe
@@ -117,6 +137,7 @@ pub fn Home() -> Element {
         ))
     };
 
+    let startup_channel_for_boot = startup_channel.clone();
     let on_boot = {
         let mut sessions = sessions;
         let devices = snapshot.devices.clone();
@@ -145,7 +166,7 @@ pub fn Home() -> Element {
                     serial: device.serial,
                 },
                 boot_config: BootConfig::new(
-                    startup_channel.clone(),
+                    startup_channel_for_boot.clone(),
                     DEFAULT_EXTRA_KARGS,
                     DEFAULT_ENABLE_SERIAL,
                 ),
@@ -154,6 +175,30 @@ pub fn Home() -> Element {
             navigator.push(Route::DevicePage { session_id });
         }))
     };
+
+    if !startup_channel_ready {
+        let (title, details, launch_hint) = match startup_channel_preflight.read().as_ref() {
+            Some(Err(err)) => (
+                err.title.to_string(),
+                err.details.clone(),
+                err.launch_hint.clone(),
+            ),
+            _ => (
+                "Validating launch channel".to_string(),
+                "Checking channel reachability and stream shape before enabling device boot."
+                    .to_string(),
+                format!("Validating channel: {startup_channel}"),
+            ),
+        };
+
+        return rsx! {
+            StartupError {
+                title,
+                details,
+                launch_hint,
+            }
+        };
+    }
 
     rsx! {
         Hero {

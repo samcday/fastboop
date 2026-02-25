@@ -49,6 +49,15 @@ pub fn Home() -> Element {
         }
     };
 
+    let startup_channel_preflight = {
+        let startup_channel = startup_channel.clone();
+        use_resource(move || {
+            let startup_channel = startup_channel.clone();
+            async move { crate::preflight_startup_channel(&startup_channel).await }
+        })
+    };
+    let startup_channel_ready = matches!(startup_channel_preflight.read().as_ref(), Some(Ok(())));
+
     let refresh = use_signal(|| 0u32);
     let selected_profiles = use_signal(ProfileSelectionMap::new);
 
@@ -72,6 +81,9 @@ pub fn Home() -> Element {
         let mut candidates = candidates;
 
         use_effect(move || {
+            if !startup_channel_ready {
+                return;
+            }
             if !webusb_supported {
                 return;
             }
@@ -138,6 +150,12 @@ pub fn Home() -> Element {
             let candidates = candidates();
             async move {
                 let _ = refresh;
+                if !startup_channel_ready {
+                    return ProbeSnapshot {
+                        state: ProbeState::Loading,
+                        devices: Vec::new(),
+                    };
+                }
                 if !webusb_supported {
                     return ProbeSnapshot {
                         state: ProbeState::Unsupported,
@@ -225,6 +243,7 @@ pub fn Home() -> Element {
     #[cfg(not(target_arch = "wasm32"))]
     let on_connect: Option<EventHandler<MouseEvent>> = None;
 
+    let startup_channel_for_boot = startup_channel.clone();
     let on_boot = {
         let mut sessions = sessions;
         let devices = snapshot.devices.clone();
@@ -252,7 +271,7 @@ pub fn Home() -> Element {
                     pid: device.pid,
                 },
                 boot_config: BootConfig::new(
-                    startup_channel.clone(),
+                    startup_channel_for_boot.clone(),
                     DEFAULT_EXTRA_KARGS,
                     DEFAULT_ENABLE_SERIAL,
                 ),
@@ -261,6 +280,30 @@ pub fn Home() -> Element {
             navigator.push(Route::DevicePage { session_id });
         }))
     };
+
+    if !startup_channel_ready {
+        let (title, details, launch_hint) = match startup_channel_preflight.read().as_ref() {
+            Some(Err(err)) => (
+                err.title.to_string(),
+                err.details.clone(),
+                err.launch_hint.clone(),
+            ),
+            _ => (
+                "Validating launch channel".to_string(),
+                "Checking channel reachability and stream shape before enabling device boot."
+                    .to_string(),
+                format!("Validating channel: {startup_channel}"),
+            ),
+        };
+
+        return rsx! {
+            StartupError {
+                title,
+                details,
+                launch_hint,
+            }
+        };
+    }
 
     rsx! {
         if show_unsupported {
