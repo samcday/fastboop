@@ -15,7 +15,7 @@ mod views;
 
 const LOG_LEVEL_HINT_KEY: &str = "__FASTBOOP_LOG_LEVEL";
 const CHANNEL_QUERY_KEY: &str = "channel";
-static CHANNEL: OnceLock<String> = OnceLock::new();
+static STARTUP_CHANNEL: OnceLock<Result<String, String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
@@ -42,19 +42,22 @@ fn main() {
         return;
     }
 
-    let channel = global_query_channel().unwrap_or_else(|| {
-        panic!("fastboop-web requires a channel URL query parameter: ?channel=<url>")
+    let startup_channel = global_query_channel().ok_or_else(|| {
+        "fastboop-web requires a channel URL query parameter: ?channel=<url>".to_string()
     });
-    let _ = CHANNEL.set(channel);
+    if let Err(err) = &startup_channel {
+        tracing::warn!(%err, "missing startup channel query parameter");
+    }
+    let _ = STARTUP_CHANNEL.set(startup_channel);
 
     dioxus::launch(App);
 }
 
-pub(crate) fn startup_channel() -> String {
-    CHANNEL
+pub(crate) fn startup_channel() -> Result<String, String> {
+    STARTUP_CHANNEL
         .get()
         .cloned()
-        .expect("web boot channel must be initialized before app launch")
+        .unwrap_or_else(|| Err("web startup channel state was not initialized".to_string()))
 }
 
 fn init_tracing() {

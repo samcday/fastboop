@@ -3,7 +3,7 @@ use std::env;
 use std::sync::OnceLock;
 use tracing_subscriber::EnvFilter;
 
-static CHANNEL: OnceLock<String> = OnceLock::new();
+static STARTUP_CHANNEL: OnceLock<Result<String, String>> = OnceLock::new();
 
 use views::{DevicePage, Home, SessionStore};
 
@@ -31,26 +31,24 @@ fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
 fn main() {
     init_tracing();
 
-    let channel = match parse_channel_from_args() {
-        Ok(channel) => channel,
-        Err(err) => {
-            eprintln!(
-                "fastboop-desktop requires a channel URL: --channel=<url> or --channel <url>"
-            );
-            eprintln!("{err}");
-            std::process::exit(1);
-        }
-    };
-    let _ = CHANNEL.set(channel);
+    let startup_channel = parse_channel_from_args().map_err(|err| {
+        format!(
+            "fastboop-desktop requires a channel URL: --channel=<url> or --channel <url> ({err})"
+        )
+    });
+    if let Err(err) = &startup_channel {
+        eprintln!("{err}");
+    }
+    let _ = STARTUP_CHANNEL.set(startup_channel);
 
     dioxus::launch(App);
 }
 
-pub(crate) fn boot_channel() -> String {
-    CHANNEL
+pub(crate) fn startup_channel() -> Result<String, String> {
+    STARTUP_CHANNEL
         .get()
         .cloned()
-        .expect("desktop boot channel must be initialized before app launch")
+        .unwrap_or_else(|| Err("desktop startup channel state was not initialized".to_string()))
 }
 
 fn parse_channel_from_args() -> anyhow::Result<String> {

@@ -9,6 +9,8 @@ use fastboop_core::DeviceProfile;
 
 mod hero;
 pub use hero::Hero;
+mod startup_error;
+pub use startup_error::StartupError;
 mod boot_config;
 pub use boot_config::{BootConfigCard, DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS};
 mod dtbo;

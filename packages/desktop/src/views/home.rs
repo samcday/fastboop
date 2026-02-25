@@ -6,8 +6,8 @@ use fastboop_fastboot_rusb::{DeviceWatcher, RusbDeviceHandle};
 use tracing::{debug, info};
 use ui::{
     apply_selected_profiles, build_probe_snapshot, selected_profile_option,
-    update_profile_selection, Hero, ProbeSnapshot, ProbeState, ProfileSelectionMap, TransportKind,
-    DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS,
+    update_profile_selection, Hero, ProbeSnapshot, ProbeState, ProfileSelectionMap, StartupError,
+    TransportKind, DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS,
 };
 
 use crate::Route;
@@ -20,6 +20,18 @@ use super::session::{
 pub fn Home() -> Element {
     let sessions = use_context::<SessionStore>();
     let navigator = use_navigator();
+
+    let startup_channel = match crate::startup_channel() {
+        Ok(channel) => channel,
+        Err(details) => {
+            return rsx! {
+                StartupError {
+                    details,
+                    launch_hint: "Launch with --channel=<url> (or --channel <url>) so fastboop can boot from an explicit channel.".to_string(),
+                }
+            };
+        }
+    };
 
     let mut watcher_started = use_signal(|| false);
     let candidates = use_signal(Vec::<RusbDeviceHandle>::new);
@@ -121,7 +133,6 @@ pub fn Home() -> Element {
             };
 
             let session_id = next_session_id();
-            let channel = crate::boot_channel();
             sessions.write().push(DeviceSession {
                 id: session_id.clone(),
                 device: ProbedDevice {
@@ -132,7 +143,11 @@ pub fn Home() -> Element {
                     pid: device.pid,
                     serial: device.serial,
                 },
-                boot_config: BootConfig::new(channel, DEFAULT_EXTRA_KARGS, DEFAULT_ENABLE_SERIAL),
+                boot_config: BootConfig::new(
+                    startup_channel.clone(),
+                    DEFAULT_EXTRA_KARGS,
+                    DEFAULT_ENABLE_SERIAL,
+                ),
                 phase: SessionPhase::Configuring,
             });
             navigator.push(Route::DevicePage { session_id });

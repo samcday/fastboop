@@ -5,7 +5,8 @@ use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 use js_sys::{decode_uri_component, Reflect};
 use ui::{
     apply_selected_profiles, selected_profile_option, update_profile_selection, Hero,
-    ProbeSnapshot, ProbeState, ProfileSelectionMap, DEFAULT_ENABLE_SERIAL, DEFAULT_EXTRA_KARGS,
+    ProbeSnapshot, ProbeState, ProfileSelectionMap, StartupError, DEFAULT_ENABLE_SERIAL,
+    DEFAULT_EXTRA_KARGS,
 };
 #[cfg(target_arch = "wasm32")]
 use ui::{build_probe_snapshot, TransportKind};
@@ -34,6 +35,19 @@ use tracing::{debug, info, warn};
 pub fn Home() -> Element {
     let sessions = use_context::<SessionStore>();
     let navigator = use_navigator();
+
+    let startup_channel = match crate::startup_channel() {
+        Ok(channel) => channel,
+        Err(details) => {
+            return rsx! {
+                StartupError {
+                    details,
+                    launch_hint: "Open fastboop-web with ?channel=<url> so fastboop can boot from an explicit channel.".to_string(),
+                }
+            };
+        }
+    };
+
     let refresh = use_signal(|| 0u32);
     let selected_profiles = use_signal(ProfileSelectionMap::new);
 
@@ -213,7 +227,6 @@ pub fn Home() -> Element {
     let on_boot = {
         let mut sessions = sessions;
         let devices = snapshot.devices.clone();
-        let channel = crate::startup_channel();
         Some(EventHandler::new(move |index: usize| {
             let Some(device) = devices.get(index).cloned() else {
                 return;
@@ -238,7 +251,7 @@ pub fn Home() -> Element {
                     pid: device.pid,
                 },
                 boot_config: BootConfig::new(
-                    channel.clone(),
+                    startup_channel.clone(),
                     DEFAULT_EXTRA_KARGS,
                     DEFAULT_ENABLE_SERIAL,
                 ),
