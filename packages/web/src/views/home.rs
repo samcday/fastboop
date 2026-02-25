@@ -40,6 +40,7 @@ use tracing::{debug, info, warn};
 
 #[cfg(target_arch = "wasm32")]
 const STARTUP_CHANNEL_FILE_PICKER_ID: &str = "startup-channel-file-picker";
+const CLI_BOOT_CHANNEL_HINT_FALLBACK: &str = "<channel-url>";
 
 #[component]
 pub fn Home() -> Element {
@@ -651,12 +652,12 @@ fn cli_boot_channel_hint() -> String {
         .unwrap_or_default();
     parse_query_param(&search, "channel")
         .filter(|channel| !channel.trim().is_empty())
-        .unwrap_or_else(|| crate::DEFAULT_CHANNEL.to_string())
+        .unwrap_or_else(|| CLI_BOOT_CHANNEL_HINT_FALLBACK.to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn cli_boot_channel_hint() -> String {
-    crate::DEFAULT_CHANNEL.to_string()
+    CLI_BOOT_CHANNEL_HINT_FALLBACK.to_string()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -675,6 +676,7 @@ fn parse_query_param(search: &str, key: &str) -> Option<String> {
             .or_else(|| Some(value.to_string()));
     }
     None
+}
 
 #[cfg(target_arch = "wasm32")]
 fn allowed_boot_profile_device_ids(boot_profiles: &[BootProfile]) -> Option<BTreeSet<String>> {
