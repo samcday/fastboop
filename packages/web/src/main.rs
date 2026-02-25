@@ -5,6 +5,7 @@ use tracing::Level;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tracing_wasm::{WASMLayer, WASMLayerConfigBuilder};
+use url::Url;
 use wasm_bindgen::JsValue;
 
 use views::{DevicePage, Home, SessionStore};
@@ -15,7 +16,14 @@ mod views;
 
 const LOG_LEVEL_HINT_KEY: &str = "__FASTBOOP_LOG_LEVEL";
 const CHANNEL_QUERY_KEY: &str = "channel";
-static STARTUP_CHANNEL: OnceLock<Result<String, String>> = OnceLock::new();
+static STARTUP_CHANNEL: OnceLock<Result<String, StartupChannelError>> = OnceLock::new();
+
+#[derive(Clone, Debug)]
+pub(crate) struct StartupChannelError {
+    pub(crate) title: &'static str,
+    pub(crate) details: String,
+    pub(crate) launch_hint: String,
+}
 
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
@@ -42,22 +50,51 @@ fn main() {
         return;
     }
 
-    let startup_channel = global_query_channel().ok_or_else(|| {
-        "fastboop-web requires a channel URL query parameter: ?channel=<url>".to_string()
-    });
+    let startup_channel = match global_query_channel() {
+        Some(channel) => validate_web_channel_url(&channel),
+        None => Err(missing_web_channel_error(
+            "fastboop-web requires a channel URL query parameter: ?channel=<url>",
+        )),
+    };
     if let Err(err) = &startup_channel {
-        tracing::warn!(%err, "missing startup channel query parameter");
+        tracing::warn!(details = %err.details, "startup channel validation failed");
     }
     let _ = STARTUP_CHANNEL.set(startup_channel);
 
     dioxus::launch(App);
 }
 
-pub(crate) fn startup_channel() -> Result<String, String> {
-    STARTUP_CHANNEL
-        .get()
-        .cloned()
-        .unwrap_or_else(|| Err("web startup channel state was not initialized".to_string()))
+pub(crate) fn startup_channel() -> Result<String, StartupChannelError> {
+    STARTUP_CHANNEL.get().cloned().unwrap_or_else(|| {
+        Err(missing_web_channel_error(
+            "web startup channel state was not initialized",
+        ))
+    })
+}
+
+fn validate_web_channel_url(channel: &str) -> Result<String, StartupChannelError> {
+    Url::parse(channel).map_err(|err| invalid_web_channel_error(channel, &err.to_string()))?;
+    Ok(channel.to_string())
+}
+
+fn missing_web_channel_error(details: &str) -> StartupChannelError {
+    StartupChannelError {
+        title: "Missing launch channel",
+        details: details.to_string(),
+        launch_hint:
+            "Open fastboop-web with ?channel=<url> so fastboop can boot from an explicit channel."
+                .to_string(),
+    }
+}
+
+fn invalid_web_channel_error(channel: &str, parse_error: &str) -> StartupChannelError {
+    StartupChannelError {
+        title: "Invalid launch channel",
+        details: format!("channel '{channel}' is not a valid URL: {parse_error}"),
+        launch_hint:
+            "Open fastboop-web with a full URL like ?channel=https://example.invalid/path.ero"
+                .to_string(),
+    }
 }
 
 fn init_tracing() {

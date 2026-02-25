@@ -38,11 +38,12 @@ pub fn Home() -> Element {
 
     let startup_channel = match crate::startup_channel() {
         Ok(channel) => channel,
-        Err(details) => {
+        Err(err) => {
             return rsx! {
                 StartupError {
-                    details,
-                    launch_hint: "Open fastboop-web with ?channel=<url> so fastboop can boot from an explicit channel.".to_string(),
+                    title: err.title.to_string(),
+                    details: err.details,
+                    launch_hint: err.launch_hint,
                 }
             };
         }

@@ -11,7 +11,7 @@ fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
 }
 
 #[component]
-pub fn StartupError(details: String, launch_hint: String) -> Element {
+pub fn StartupError(title: String, details: String, launch_hint: String) -> Element {
     let hero_css = stylesheet_href(&HERO_CSS, "/assets/styling/hero.css");
 
     rsx! {
@@ -21,7 +21,7 @@ pub fn StartupError(details: String, launch_hint: String) -> Element {
             div { class: "landing__glow" }
             div { class: "landing__panel",
                 p { class: "landing__eyebrow", "Startup error" }
-                h1 { "Missing launch channel" }
+                h1 { "{title}" }
                 p { class: "landing__lede",
                     "fastboop is intended to be launched by a distro integration that provides a boot channel automatically."
                 }

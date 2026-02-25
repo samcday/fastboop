@@ -2,8 +2,16 @@ use dioxus::prelude::*;
 use std::env;
 use std::sync::OnceLock;
 use tracing_subscriber::EnvFilter;
+use url::Url;
 
-static STARTUP_CHANNEL: OnceLock<Result<String, String>> = OnceLock::new();
+static STARTUP_CHANNEL: OnceLock<Result<String, StartupChannelError>> = OnceLock::new();
+
+#[derive(Clone, Debug)]
+pub(crate) struct StartupChannelError {
+    pub(crate) title: &'static str,
+    pub(crate) details: String,
+    pub(crate) launch_hint: String,
+}
 
 use views::{DevicePage, Home, SessionStore};
 
@@ -31,27 +39,24 @@ fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
 fn main() {
     init_tracing();
 
-    let startup_channel = parse_channel_from_args().map_err(|err| {
-        format!(
-            "fastboop-desktop requires a channel URL: --channel=<url> or --channel <url> ({err})"
-        )
-    });
+    let startup_channel = parse_channel_from_args();
     if let Err(err) = &startup_channel {
-        eprintln!("{err}");
+        eprintln!("{}", err.details);
     }
     let _ = STARTUP_CHANNEL.set(startup_channel);
 
     dioxus::launch(App);
 }
 
-pub(crate) fn startup_channel() -> Result<String, String> {
-    STARTUP_CHANNEL
-        .get()
-        .cloned()
-        .unwrap_or_else(|| Err("desktop startup channel state was not initialized".to_string()))
+pub(crate) fn startup_channel() -> Result<String, StartupChannelError> {
+    STARTUP_CHANNEL.get().cloned().unwrap_or_else(|| {
+        Err(missing_desktop_channel_error(
+            "desktop startup channel state was not initialized",
+        ))
+    })
 }
 
-fn parse_channel_from_args() -> anyhow::Result<String> {
+fn parse_channel_from_args() -> Result<String, StartupChannelError> {
     let args = env::args().collect::<Vec<_>>();
     let mut index = 1;
     while index < args.len() {
@@ -60,28 +65,56 @@ fn parse_channel_from_args() -> anyhow::Result<String> {
         if let Some(value) = arg.strip_prefix("--channel=") {
             let value = value.trim();
             if value.is_empty() {
-                anyhow::bail!("--channel=<url> value is empty");
+                return Err(missing_desktop_channel_error(
+                    "--channel=<url> value is empty",
+                ));
             }
-            return Ok(value.to_string());
+            return validate_desktop_channel_url(value);
         }
 
         if arg == "--channel" {
             let value = args.get(index + 1).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "--channel requires a URL argument: --channel=<url> or --channel <url>"
+                missing_desktop_channel_error(
+                    "--channel requires a URL argument: --channel=<url> or --channel <url>",
                 )
             })?;
             let value = value.trim();
             if value.is_empty() {
-                anyhow::bail!("--channel value is empty");
+                return Err(missing_desktop_channel_error("--channel value is empty"));
             }
-            return Ok(value.to_string());
+            return validate_desktop_channel_url(value);
         }
 
         index += 1;
     }
 
-    anyhow::bail!("missing required --channel argument")
+    Err(missing_desktop_channel_error(
+        "fastboop-desktop requires --channel=<url> or --channel <url>",
+    ))
+}
+
+fn validate_desktop_channel_url(channel: &str) -> Result<String, StartupChannelError> {
+    Url::parse(channel).map_err(|err| invalid_desktop_channel_error(channel, &err.to_string()))?;
+    Ok(channel.to_string())
+}
+
+fn missing_desktop_channel_error(details: &str) -> StartupChannelError {
+    StartupChannelError {
+        title: "Missing launch channel",
+        details: details.to_string(),
+        launch_hint:
+            "Launch with --channel=<url> (or --channel <url>) so fastboop can boot from an explicit channel."
+                .to_string(),
+    }
+}
+
+fn invalid_desktop_channel_error(channel: &str, parse_error: &str) -> StartupChannelError {
+    StartupChannelError {
+        title: "Invalid launch channel",
+        details: format!("channel '{channel}' is not a valid URL: {parse_error}"),
+        launch_hint: "Launch with a full URL like --channel=https://example.invalid/path.ero"
+            .to_string(),
+    }
 }
 
 fn init_tracing() {
