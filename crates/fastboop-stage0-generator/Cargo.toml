@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 dtoolkit = { version = "0.1.1", features = ["write"] }
 fastboop-core = { path = "../fastboop-core" }
-gobblytes-core = { path = "../../gibblox/crates/gobblytes-core" }
+gobblytes-core = { version = "=0.0.1-rc.6" }
 futures-util = { workspace = true, features = ["alloc"] }
 miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
 ruzstd = { version = "0.7.3", default-features = false }

@@ -12,21 +12,21 @@ ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
-gobblytes-erofs = { path = "../../gibblox/crates/gobblytes-erofs" }
-gobblytes-core = { path = "../../gibblox/crates/gobblytes-core" }
-gibblox-core = { path = "../../gibblox/crates/gibblox-core" }
-gibblox-cache = { path = "../../gibblox/crates/gibblox-cache", features = ["std"] }
-gibblox-cache-store-opfs = { path = "../../gibblox/crates/gibblox-cache-store-opfs" }
-gibblox-casync = { path = "../../gibblox/crates/gibblox-casync" }
-gibblox-casync-web = { path = "../../gibblox/crates/gibblox-casync-web" }
-gibblox-android-sparse = { path = "../../gibblox/crates/gibblox-android-sparse" }
-gibblox-http = { path = "../../gibblox/crates/gibblox-http", default-features = false, features = ["wasm-client"] }
-gibblox-mbr = { path = "../../gibblox/crates/gibblox-mbr" }
-gibblox-xz = { path = "../../gibblox/crates/gibblox-xz" }
-gibblox-zip = { path = "../../gibblox/crates/gibblox-zip" }
-gibblox-web-file = { path = "../../gibblox/crates/gibblox-web-file" }
-gibblox-blockreader-messageport = { path = "../../gibblox/crates/gibblox-blockreader-messageport" }
-gibblox-web-worker = { path = "../../gibblox/crates/gibblox-web-worker" }
+gobblytes-erofs = { version = "=0.0.1-rc.6" }
+gobblytes-core = { version = "=0.0.1-rc.6" }
+gibblox-core = { version = "=0.0.1-rc.6" }
+gibblox-cache = { version = "=0.0.1-rc.6", features = ["std"] }
+gibblox-cache-store-opfs = { version = "=0.0.1-rc.6" }
+gibblox-casync = { version = "=0.0.1-rc.6" }
+gibblox-casync-web = { version = "=0.0.1-rc.6" }
+gibblox-android-sparse = { version = "=0.0.1-rc.6" }
+gibblox-http = { version = "=0.0.1-rc.6", default-features = false, features = ["wasm-client"] }
+gibblox-mbr = { version = "=0.0.1-rc.6" }
+gibblox-xz = { version = "=0.0.1-rc.6" }
+gibblox-zip = { version = "=0.0.1-rc.6" }
+gibblox-web-file = { version = "=0.0.1-rc.6" }
+gibblox-blockreader-messageport = { version = "=0.0.1-rc.6" }
+gibblox-web-worker = { version = "=0.0.1-rc.6" }
 url = { workspace = true }
 smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }
 smoo-host-session = { path = "../../smoo/crates/smoo-host-session" }

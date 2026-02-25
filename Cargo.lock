@@ -111,15 +111,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "addr2line"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
-dependencies = [
- "gimli",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -244,9 +235,6 @@ name = "anyhow"
 version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
-dependencies = [
- "backtrace",
-]
 
 [[package]]
 name = "anyrender"
@@ -694,21 +682,6 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
-]
-
-[[package]]
-name = "backtrace"
-version = "0.3.76"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
-dependencies = [
- "addr2line",
- "cfg-if",
- "libc 0.2.180",
- "miniz_oxide 0.8.9",
- "object",
- "rustc-demangle",
- "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -2829,17 +2802,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
-name = "erofs-rs"
-version = "0.1.1"
-dependencies = [
- "async-trait",
- "bitflags 2.10.0",
- "lz4_flex",
- "miniz_oxide 0.9.0",
- "spin 0.10.0",
-]
-
-[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2884,17 +2846,6 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
-]
-
-[[package]]
-name = "ext4-view"
-version = "0.9.3"
-dependencies = [
- "anyhow",
- "async-trait",
- "bitflags 2.10.0",
- "crc",
- "pollster 0.4.0",
 ]
 
 [[package]]
@@ -2944,6 +2895,7 @@ version = "0.0.1"
 dependencies = [
  "fastboop-schema",
  "gibblox-core",
+ "gibblox-pipeline",
  "postcard",
  "serde",
  "serde_yaml",
@@ -3017,6 +2969,7 @@ dependencies = [
 name = "fastboop-schema"
 version = "0.0.1"
 dependencies = [
+ "gibblox-pipeline",
  "schemars",
  "serde",
 ]
@@ -3560,17 +3513,20 @@ dependencies = [
 
 [[package]]
 name = "gibblox-android-sparse"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76cd9a0fd5aa7ba74c50c6bac05fb051cd4acb285eb103cbdf7ef5df5ab2255a"
 dependencies = [
  "async-trait",
- "futures",
  "gibblox-core",
  "tracing",
 ]
 
 [[package]]
 name = "gibblox-blockreader-messageport"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13cd0b14880f19aaeab6ce0deba8b7d437122ac4d5f303a681cbee74e6ae0715"
 dependencies = [
  "async-trait",
  "futures-channel",
@@ -3584,7 +3540,9 @@ dependencies = [
 
 [[package]]
 name = "gibblox-cache"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc8299982eb19e87a7f55882269ff282401a08e3c25be14f848062831575a482"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3592,13 +3550,14 @@ dependencies = [
  "futures-util",
  "gibblox-core",
  "serde",
- "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "gibblox-cache-store-opfs"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d75247c474827e1e74e5d0f1c8e9dc192e66d7550c0ac625d5c7818ad679ccef"
 dependencies = [
  "async-trait",
  "futures-channel",
@@ -3612,7 +3571,9 @@ dependencies = [
 
 [[package]]
 name = "gibblox-cache-store-std"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aac5cc13c146e58ad15ccb40544dc6262f3bea2dcc6b8bb23c2d1505720ffe3b"
 dependencies = [
  "async-trait",
  "gibblox-cache",
@@ -3622,18 +3583,21 @@ dependencies = [
 
 [[package]]
 name = "gibblox-casync"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "806dc6f553acfd4dcdea76930eaec8b1caeb419f247a85499c24b0d2bb6e7c48"
 dependencies = [
  "async-trait",
  "gibblox-core",
  "sha2",
- "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "gibblox-casync-std"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ff2de8a69a7c73efe7b5d5395a7dd20664fa547cc2e93befa32b85fdd823e31"
 dependencies = [
  "async-trait",
  "flate2",
@@ -3642,8 +3606,6 @@ dependencies = [
  "lzma-rs",
  "reqwest",
  "ruzstd 0.8.2",
- "sha2",
- "tempfile",
  "tokio",
  "tracing",
  "url",
@@ -3651,7 +3613,9 @@ dependencies = [
 
 [[package]]
 name = "gibblox-casync-web"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23886d7afcc0b7b3104a22ffc4647411a234a5ef8919a7ec10a0d117e119da51"
 dependencies = [
  "async-trait",
  "flate2",
@@ -3669,35 +3633,34 @@ dependencies = [
 
 [[package]]
 name = "gibblox-core"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8098e92472634612f080ed8a0c19796829e64bda9b8295a6de98c2fc6b6c81d6"
 dependencies = [
  "async-lock",
  "async-trait",
- "erofs-rs",
- "futures",
  "futures-channel",
- "gibblox-cache",
- "gibblox-cache-store-std",
- "gibblox-file",
- "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
 name = "gibblox-ext4"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ac2175b6313a59d251196f7dc870d76ccd8085baf6898e47682d27ee6b53dac"
 dependencies = [
  "async-trait",
- "ext4-view",
  "gibblox-core",
+ "gobblytes-ext4-view-rs",
  "pollster 0.4.0",
  "tracing",
 ]
 
 [[package]]
 name = "gibblox-file"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee08695dc9696dfdb54b25222faa7db1ac0430063296a4ff4ec8535d6300d1b"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -3706,16 +3669,14 @@ dependencies = [
 
 [[package]]
 name = "gibblox-http"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdcf4438780a2afe141e6f29f32ace00b86ca6b49010a5c2caf587f6ea96f005"
 dependencies = [
  "async-trait",
- "bytes",
  "futures-util",
  "gibblox-core",
  "http 1.4.0",
- "http-body-util",
- "hyper 1.8.1",
- "hyper-util",
  "js-sys",
  "reqwest",
  "thiserror 1.0.69",
@@ -3729,19 +3690,32 @@ dependencies = [
 
 [[package]]
 name = "gibblox-mbr"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b31c65632674410dca25d76bf7fd60bc5c3d8d79f8c25fb5c25bd099b98170d1"
 dependencies = [
  "async-trait",
  "bytemuck",
- "futures",
  "gibblox-core",
  "hadris-part",
  "tracing",
 ]
 
 [[package]]
+name = "gibblox-pipeline"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32c0bf0dada0755678370f088a482ee1645336ae70d5768105737f2755b57f20"
+dependencies = [
+ "postcard",
+ "serde",
+]
+
+[[package]]
 name = "gibblox-web-file"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97db129b4f203bc90eb2e9a4d0274a72c83cb7f2d5cca9b10a67aa94d9509070"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -3754,7 +3728,9 @@ dependencies = [
 
 [[package]]
 name = "gibblox-web-worker"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ae6e270da1c86634f1bdf4cd0a98e881fc6e81cfe792a4e98051b73e128417d"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -3770,12 +3746,13 @@ dependencies = [
 
 [[package]]
 name = "gibblox-xz"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69f3a08876040aedec516427bc66cd484755a31198127441e70a79bc0d00e8b4"
 dependencies = [
  "async-lock",
  "async-trait",
  "crc32fast",
- "futures",
  "gibblox-core",
  "tracing",
  "xz4rust",
@@ -3783,10 +3760,11 @@ dependencies = [
 
 [[package]]
 name = "gibblox-zip"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbc7a844186ea7d049a5d7eba7e5b00f2ca89187ba9a702302d8fb58f6df354a"
 dependencies = [
  "async-trait",
- "futures",
  "gibblox-core",
  "tracing",
 ]
@@ -3800,12 +3778,6 @@ dependencies = [
  "color_quant",
  "weezl",
 ]
-
-[[package]]
-name = "gimli"
-version = "0.32.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "gio"
@@ -4010,27 +3982,54 @@ dependencies = [
 
 [[package]]
 name = "gobblytes-core"
-version = "0.0.1"
-dependencies = [
- "futures",
-]
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2eeac7efd1075e5a954794caf7c17ad9e230314c339a11e923ee5d58bb900bc8"
 
 [[package]]
 name = "gobblytes-erofs"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "848183d4e6e8309e8becaa9f5e5570b246271b88f4c54e1aec9f684ba210019e"
 dependencies = [
  "anyhow",
  "async-trait",
  "gibblox-core",
  "gobblytes-core",
+ "gobblytes-erofs-rs",
+]
+
+[[package]]
+name = "gobblytes-erofs-rs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1257e4a733e0a752b8f0a5d687551e40aa465e38ef97e148e1b56fc80f8bb5ee"
+dependencies = [
+ "async-trait",
+ "bitflags 2.10.0",
+ "lz4_flex",
+ "miniz_oxide 0.9.0",
+ "spin 0.10.0",
+]
+
+[[package]]
+name = "gobblytes-ext4-view-rs"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32ef3778f083e48387ace6e449dce8e36a62b513785afdb9110196ca741cad22"
+dependencies = [
+ "async-trait",
+ "bitflags 2.10.0",
+ "crc",
+ "pollster 0.4.0",
 ]
 
 [[package]]
 name = "gobblytes-fat"
-version = "0.0.1"
+version = "0.0.1-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e680b4e9fbcb8979309cf5c12f84fbd204d5f9dc9cd5df6c06b271b2cf3b613f"
 dependencies = [
- "async-trait",
- "futures",
  "gibblox-core",
  "gobblytes-core",
  "hadris-fat",
@@ -4589,7 +4588,6 @@ dependencies = [
  "http 1.4.0",
  "http-body 1.0.1",
  "httparse",
- "httpdate",
  "itoa",
  "pin-project-lite",
  "pin-utils",
@@ -6254,15 +6252,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "object"
-version = "0.37.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7425,12 +7414,6 @@ dependencies = [
  "libc 0.2.180",
  "libusb1-sys",
 ]
-
-[[package]]
-name = "rustc-demangle"
-version = "0.1.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d"
 
 [[package]]
 name = "rustc-hash"

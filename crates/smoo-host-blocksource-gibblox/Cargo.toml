@@ -7,5 +7,5 @@ license.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
-gibblox-core = { path = "../../gibblox/crates/gibblox-core" }
+gibblox-core = { version = "=0.0.1-rc.6" }
 smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }

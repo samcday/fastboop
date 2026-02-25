@@ -2,10 +2,22 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+pub use gibblox_pipeline::{
+    PipelineSource as BootProfileArtifactSource,
+    PipelineSourceAndroidSparseImgSource as BootProfileArtifactSourceAndroidSparseImgSource,
+    PipelineSourceCasync as BootProfileArtifactSourceCasync,
+    PipelineSourceCasyncSource as BootProfileArtifactSourceCasyncSource,
+    PipelineSourceFileSource as BootProfileArtifactSourceFileSource,
+    PipelineSourceGpt as BootProfileArtifactSourceGpt,
+    PipelineSourceGptSource as BootProfileArtifactSourceGptSource,
+    PipelineSourceHttpSource as BootProfileArtifactSourceHttpSource,
+    PipelineSourceMbr as BootProfileArtifactSourceMbr,
+    PipelineSourceMbrSource as BootProfileArtifactSourceMbrSource,
+    PipelineSourceXzSource as BootProfileArtifactSourceXzSource,
+};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "schema")]
@@ -529,125 +541,6 @@ pub struct BootProfileRootfsExt4Source {
 #[serde(deny_unknown_fields)]
 pub struct BootProfileRootfsFatSource {
     pub fat: BootProfileArtifactSource,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(untagged)]
-pub enum BootProfileArtifactSource {
-    Casync(BootProfileArtifactSourceCasyncSource),
-    Http(BootProfileArtifactSourceHttpSource),
-    File(BootProfileArtifactSourceFileSource),
-    Xz(BootProfileArtifactSourceXzSource),
-    AndroidSparseImg(BootProfileArtifactSourceAndroidSparseImgSource),
-    Mbr(BootProfileArtifactSourceMbrSource),
-    Gpt(BootProfileArtifactSourceGptSource),
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct BootProfileArtifactSourceCasyncSource {
-    #[serde(deserialize_with = "deserialize_casync_source")]
-    pub casync: BootProfileArtifactSourceCasync,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
-enum BootProfileArtifactSourceCasyncValue {
-    Index(String),
-    Source(BootProfileArtifactSourceCasync),
-}
-
-fn deserialize_casync_source<'de, D>(
-    deserializer: D,
-) -> Result<BootProfileArtifactSourceCasync, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = BootProfileArtifactSourceCasyncValue::deserialize(deserializer)?;
-    Ok(match value {
-        BootProfileArtifactSourceCasyncValue::Index(index) => BootProfileArtifactSourceCasync {
-            index,
-            chunk_store: None,
-        },
-        BootProfileArtifactSourceCasyncValue::Source(source) => source,
-    })
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct BootProfileArtifactSourceHttpSource {
-    pub http: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct BootProfileArtifactSourceFileSource {
-    pub file: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct BootProfileArtifactSourceXzSource {
-    pub xz: Box<BootProfileArtifactSource>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct BootProfileArtifactSourceAndroidSparseImgSource {
-    pub android_sparseimg: Box<BootProfileArtifactSource>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct BootProfileArtifactSourceMbrSource {
-    pub mbr: BootProfileArtifactSourceMbr,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-pub struct BootProfileArtifactSourceMbr {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub partuuid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index: Option<u32>,
-    #[serde(flatten)]
-    pub source: Box<BootProfileArtifactSource>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct BootProfileArtifactSourceGptSource {
-    pub gpt: BootProfileArtifactSourceGpt,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-pub struct BootProfileArtifactSourceGpt {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub partlabel: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub partuuid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index: Option<u32>,
-    #[serde(flatten)]
-    pub source: Box<BootProfileArtifactSource>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct BootProfileArtifactSourceCasync {
-    pub index: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chunk_store: Option<String>,
 }
 
 pub mod bin;

@@ -65,7 +65,7 @@ Channel intake is split into two deterministic parts:
 
 Profile-record headers:
 
-- BootProfile v1: `FBOOPROF` magic + `format_version=1`
+- BootProfile v2: `FBOOPROF` magic + `format_version=2`
 - DevProfile v1: `FBOODEVP` magic + `format_version=1`
 
 Artifact classifier:
