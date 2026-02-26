@@ -15,15 +15,6 @@ check:
     cargo check -p fastboop-fastboot-webusb --target wasm32-unknown-unknown
     cargo check -p fastboop-web --target wasm32-unknown-unknown
 
-    echo "==> smoo workspace (host target, excluding wasm-only crates)"
-    cargo check --manifest-path smoo/Cargo.toml --workspace \
-        --exclude smoo-host-webusb \
-        --exclude smoo-host-web-worker
-
-    echo "==> smoo wasm-only crates"
-    cargo check --manifest-path smoo/Cargo.toml -p smoo-host-webusb --target wasm32-unknown-unknown
-    cargo check --manifest-path smoo/Cargo.toml -p smoo-host-web-worker --target wasm32-unknown-unknown
-
 # Generate deterministic channel stream fixtures under build/
 channels-fixtures:
     tools/channels/generate-fixtures.sh
