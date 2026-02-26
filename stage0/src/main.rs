@@ -64,29 +64,6 @@ const STAGE0_ROLE_KMSG_CHILD: &str = "kmsg-child";
 const STAGE0_ROLE_FRAMEBUFFER_CHILD: &str = "framebuffer-child";
 const STAGE0_CONFIG_DIR: &str = "/etc/stage0";
 const STAGE0_CREDSTORE_DIR: &str = "/run/credstore";
-const STAGE0_SELINUX_MODULE_DIR: &str = "/run/fastboop-stage0/selinux";
-const STAGE0_SELINUX_MODULE_PATH: &str = "/run/fastboop-stage0/selinux/fastboop_stage0.cil";
-const STAGE0_SELINUX_MODULE_NAME: &str = "fastboop_stage0";
-const STAGE0_SELINUX_CIL: &str = r#"(block fastboop_stage0
-    (allow init_t configfs_t (dir (add_name create getattr open read remove_name search write)))
-    (allow init_t configfs_t (file (create getattr map open read rename setattr unlink write)))
-
-    (allow init_t functionfs_t (dir (add_name create getattr open read remove_name search write)))
-    (allow init_t functionfs_t (file (create getattr map open read rename setattr unlink write)))
-    (allow init_t functionfs_t (chr_file (getattr ioctl lock map open read write)))
-
-    (allow init_t device_t (chr_file (getattr ioctl lock map open read write)))
-
-    (allow kernel_t configfs_t (dir (add_name create getattr open read remove_name search write)))
-    (allow kernel_t configfs_t (file (create getattr map open read rename setattr unlink write)))
-
-    (allow kernel_t functionfs_t (dir (add_name create getattr open read remove_name search write)))
-    (allow kernel_t functionfs_t (file (create getattr map open read rename setattr unlink write)))
-    (allow kernel_t functionfs_t (chr_file (getattr ioctl lock map open read write)))
-
-    (allow kernel_t device_t (chr_file (getattr ioctl lock map open read write)))
-)
-"#;
 
 static STAGE0_CONFIG: OnceLock<HashMap<String, String>> = OnceLock::new();
 
@@ -547,7 +524,6 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
     } else {
         warn!("pid1: /run/systemd/system missing before exec");
     }
-    stage_selinux_handoff_policy();
     ensure_serial_getty().ok();
     stage_firstboot_credentials().context("stage firstboot credentials")?;
 
@@ -605,27 +581,16 @@ fn cmdline_flag(key: &str) -> bool {
 
 fn cmdline_bool(key: &str) -> bool {
     if let Some(raw) = cmdline_value(key) {
-        return parse_bool_setting(key, raw.as_str()).unwrap_or(false);
+        return match raw.as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => {
+                warn!("pid1: invalid {key} value '{raw}'");
+                false
+            }
+        };
     }
     cmdline_flag(key)
-}
-
-fn cmdline_bool_with_default(key: &str, default: bool) -> bool {
-    if let Some(raw) = cmdline_value(key) {
-        return parse_bool_setting(key, raw.as_str()).unwrap_or(default);
-    }
-    default
-}
-
-fn parse_bool_setting(key: &str, raw: &str) -> Option<bool> {
-    match raw {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => {
-            warn!("pid1: invalid {key} value '{raw}'");
-            None
-        }
-    }
 }
 
 fn stage0_rootfs() -> Result<Stage0Rootfs> {
@@ -704,7 +669,7 @@ fn stage_firstboot_credentials() -> Result<()> {
             continue;
         }
         std::fs::create_dir_all(STAGE0_CREDSTORE_DIR)
-            .with_context(|| format!("create {STAGE0_CREDSTORE_DIR}"))?;
+            .with_context(|| format!("create {}", STAGE0_CREDSTORE_DIR))?;
         let path = Path::new(STAGE0_CREDSTORE_DIR).join(key);
         std::fs::write(&path, value.as_bytes())
             .with_context(|| format!("write {}", path.display()))?;
@@ -716,167 +681,6 @@ fn stage_firstboot_credentials() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn stage_selinux_handoff_policy() {
-    if !cmdline_bool_with_default("stage0.selinux", true) {
-        info!("pid1: stage0 SELinux handoff policy disabled by stage0.selinux");
-        return;
-    }
-
-    if !selinux_runtime_active() {
-        info!("pid1: SELinux runtime not active; skipping handoff policy staging");
-        return;
-    }
-
-    if rootfs_selinux_disabled() {
-        info!("pid1: rootfs SELinux configured disabled; skipping handoff policy staging");
-        return;
-    }
-
-    let Some(semodule) = find_semodule_binary() else {
-        warn!("pid1: semodule not found; skipping stage0 SELinux handoff policy");
-        return;
-    };
-
-    if let Err(err) = std::fs::create_dir_all(STAGE0_SELINUX_MODULE_DIR) {
-        warn!(
-            error = ?err,
-            path = STAGE0_SELINUX_MODULE_DIR,
-            "pid1: failed to create SELinux module staging dir"
-        );
-        return;
-    }
-    if let Err(err) = std::fs::write(STAGE0_SELINUX_MODULE_PATH, STAGE0_SELINUX_CIL.as_bytes()) {
-        warn!(
-            error = ?err,
-            path = STAGE0_SELINUX_MODULE_PATH,
-            "pid1: failed to write stage0 SELinux handoff module"
-        );
-        return;
-    }
-
-    let output = std::process::Command::new(semodule)
-        .arg("-n")
-        .arg("-i")
-        .arg(STAGE0_SELINUX_MODULE_PATH)
-        .stdin(std::process::Stdio::null())
-        .output();
-    match output {
-        Ok(output) if output.status.success() => {
-            info!(
-                module = STAGE0_SELINUX_MODULE_NAME,
-                "pid1: staged SELinux handoff policy for stage0 runtime"
-            );
-        }
-        Ok(output) => {
-            warn!(
-                status = %output.status,
-                stderr = %String::from_utf8_lossy(&output.stderr),
-                "pid1: semodule install failed for stage0 SELinux handoff policy"
-            );
-        }
-        Err(err) => {
-            warn!(
-                error = ?err,
-                "pid1: failed to execute semodule for stage0 SELinux handoff policy"
-            );
-        }
-    }
-}
-
-fn selinux_runtime_active() -> bool {
-    let enforce_path = Path::new("/sys/fs/selinux/enforce");
-    let enforce = match std::fs::read_to_string(enforce_path) {
-        Ok(value) => value,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return false,
-        Err(err) => {
-            warn!(
-                error = ?err,
-                path = %enforce_path.display(),
-                "pid1: failed reading SELinux enforce state"
-            );
-            return false;
-        }
-    };
-
-    match enforce.trim() {
-        "0" => {
-            info!("pid1: SELinux runtime detected (permissive)");
-            true
-        }
-        "1" => {
-            info!("pid1: SELinux runtime detected (enforcing)");
-            true
-        }
-        value => {
-            warn!(
-                value = value,
-                "pid1: unexpected SELinux enforce value; treating runtime as active"
-            );
-            true
-        }
-    }
-}
-
-fn rootfs_selinux_disabled() -> bool {
-    let config_path = Path::new("/etc/selinux/config");
-    let config = match std::fs::read_to_string(config_path) {
-        Ok(config) => config,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            info!("pid1: /etc/selinux/config missing; assuming SELinux is enabled");
-            return false;
-        }
-        Err(err) => {
-            warn!(
-                error = ?err,
-                path = %config_path.display(),
-                "pid1: failed reading SELinux config; assuming enabled"
-            );
-            return false;
-        }
-    };
-
-    for line in config.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = trimmed.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "SELINUX" {
-            continue;
-        }
-        let value = value
-            .split('#')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .trim_matches('"');
-
-        if value.eq_ignore_ascii_case("disabled") {
-            return true;
-        }
-        if value.eq_ignore_ascii_case("permissive") || value.eq_ignore_ascii_case("enforcing") {
-            return false;
-        }
-
-        warn!(
-            value = value,
-            "pid1: unexpected SELINUX value; assuming SELinux is enabled"
-        );
-        return false;
-    }
-
-    info!("pid1: SELINUX key missing in /etc/selinux/config; assuming enabled");
-    false
-}
-
-fn find_semodule_binary() -> Option<&'static str> {
-    ["/usr/sbin/semodule", "/sbin/semodule", "/usr/bin/semodule"]
-        .into_iter()
-        .find(|path| Path::new(path).exists())
 }
 
 fn path_to_string(path: &Path) -> Result<String> {
@@ -1941,18 +1745,5 @@ mod tests {
             Some(Stage0Rootfs::Ext4)
         );
         assert_eq!(Stage0Rootfs::from_stage0_value("xfs"), None);
-    }
-
-    #[test]
-    fn parse_bool_setting_accepts_known_values() {
-        assert_eq!(parse_bool_setting("test", "1"), Some(true));
-        assert_eq!(parse_bool_setting("test", "true"), Some(true));
-        assert_eq!(parse_bool_setting("test", "0"), Some(false));
-        assert_eq!(parse_bool_setting("test", "off"), Some(false));
-    }
-
-    #[test]
-    fn parse_bool_setting_rejects_unknown_values() {
-        assert_eq!(parse_bool_setting("test", "wat"), None);
     }
 }
