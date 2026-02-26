@@ -9,7 +9,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 drm = "0.14.1"
 libc = "0.2.177"
-smoo-gadget-app = { path = "../smoo/crates/smoo-gadget-app" }
+smoo-gadget-app = { version = ">=0.0.1-rc.1" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }

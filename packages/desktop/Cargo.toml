@@ -18,10 +18,10 @@ gibblox-cache = { version = ">=0.0.1-rc.8", features = ["std"] }
 gibblox-cache-store-std = { version = ">=0.0.1-rc.8" }
 gibblox-http = { version = ">=0.0.1-rc.8", default-features = false, features = ["native-client"] }
 gibblox-zip = { version = ">=0.0.1-rc.8", features = ["std"] }
-smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }
-smoo-host-session = { path = "../../smoo/crates/smoo-host-session" }
-smoo-host-transport-rusb = { path = "../../smoo/crates/smoo-host-transport-rusb" }
-smoo-host-blocksource-gibblox = { path = "../../smoo/crates/smoo-host-blocksource-gibblox" }
+smoo-host-core = { version = ">=0.0.1-rc.1" }
+smoo-host-session = { version = ">=0.0.1-rc.1" }
+smoo-host-transport-rusb = { version = ">=0.0.1-rc.1" }
+smoo-host-blocksource-gibblox = { version = ">=0.0.1-rc.1" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
