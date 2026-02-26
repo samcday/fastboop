@@ -77,15 +77,6 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets
 
-      - name: Check smoo workspace
-        run: cargo check --manifest-path smoo/Cargo.toml --workspace --locked
-
-      - name: Clippy smoo workspace
-        run: cargo clippy --manifest-path smoo/Cargo.toml --workspace --all-targets --locked
-
-      - name: Test smoo workspace
-        run: cargo test --manifest-path smoo/Cargo.toml --workspace --locked
-
       - name: Test
         run: cargo test --workspace --locked
 

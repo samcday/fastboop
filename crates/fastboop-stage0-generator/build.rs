@@ -25,10 +25,6 @@ fn main() {
     );
     println!(
         "cargo:rerun-if-changed={}",
-        workspace_root.join("smoo/crates/smoo-gadget-app").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
         workspace_root.join("Cargo.lock").display()
     );
 

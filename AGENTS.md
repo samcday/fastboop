@@ -15,7 +15,7 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
 - `docs/dev/STAGE0.md`: stage0 contract, PID1 flow, handoff behavior.
 - `docs/dev/attic/DIOXUS.md`: Dioxus 0.7 usage in `packages/*`.
 - `docs/k8s-infra.yaml`: required when touching `infra/k8s/` or any `*.fastboop.win` infrastructure.
-- `smoo/AGENTS.md`: required when touching `smoo/` or behavior coupled to smoo protocol/runtime invariants.
+- Upstream smoo guide (`https://github.com/samcday/smoo/blob/main/AGENTS.md`): required when touching behavior coupled to smoo protocol/runtime invariants.
 - Upstream gibblox guide (`https://github.com/samcday/gibblox/blob/main/AGENTS.md`): required when touching any `gibblox-*` crate integration.
 - Cross-domain changes must include all relevant docs before editing.
 
@@ -30,9 +30,9 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
   - `crates/fastboop-core`
   - `crates/fastboop-schema` (no-std path)
   - `crates/fastboop-stage0-generator` (no-std path)
-  - `smoo/crates/smoo-proto`
-  - `smoo/crates/smoo-host-core`
-  - `smoo/crates/smoo-host-session`
+  - `smoo-proto` (upstream crate)
+  - `smoo-host-core` (upstream crate)
+  - `smoo-host-session` (upstream crate)
   - `gibblox-core`
   - `gibblox-cache`
   - `gibblox-iso9660`

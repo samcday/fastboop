@@ -28,9 +28,9 @@ gibblox-web-file = { version = ">=0.0.1-rc.8" }
 gibblox-blockreader-messageport = { version = ">=0.0.1-rc.8" }
 gibblox-web-worker = { version = ">=0.0.1-rc.8" }
 url = { workspace = true }
-smoo-host-core = { path = "../../smoo/crates/smoo-host-core" }
-smoo-host-session = { path = "../../smoo/crates/smoo-host-session" }
-smoo-host-blocksource-gibblox = { path = "../../smoo/crates/smoo-host-blocksource-gibblox" }
+smoo-host-core = { version = ">=0.0.1-rc.1" }
+smoo-host-session = { version = ">=0.0.1-rc.1" }
+smoo-host-blocksource-gibblox = { version = ">=0.0.1-rc.1" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "registry", "std"] }
 tracing-wasm = "0.2.1"
@@ -47,5 +47,5 @@ default = ["web"]
 web = ["dioxus/web"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-smoo-host-web-worker = { path = "../../smoo/crates/smoo-host-web-worker" }
-smoo-host-webusb = { path = "../../smoo/crates/smoo-host-webusb" }
+smoo-host-web-worker = { version = ">=0.0.1-rc.1" }
+smoo-host-webusb = { version = ">=0.0.1-rc.1" }

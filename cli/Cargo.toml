@@ -31,10 +31,10 @@ gibblox-zip = { version = ">=0.0.1-rc.8", features = ["std"] }
 gobblytes-core = { version = ">=0.0.1-rc.8" }
 gobblytes-erofs = { version = ">=0.0.1-rc.8" }
 gobblytes-fat = { version = ">=0.0.1-rc.8" }
-smoo-host-core = { path = "../smoo/crates/smoo-host-core" }
-smoo-host-session = { path = "../smoo/crates/smoo-host-session" }
-smoo-host-transport-rusb = { path = "../smoo/crates/smoo-host-transport-rusb" }
-smoo-host-blocksource-gibblox = { path = "../smoo/crates/smoo-host-blocksource-gibblox" }
+smoo-host-core = { version = ">=0.0.1-rc.1" }
+smoo-host-session = { version = ">=0.0.1-rc.1" }
+smoo-host-transport-rusb = { version = ">=0.0.1-rc.1" }
+smoo-host-blocksource-gibblox = { version = ">=0.0.1-rc.1" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-util = { workspace = true }
 url = { workspace = true }
