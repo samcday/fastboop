@@ -30,11 +30,11 @@ flashing or permanently modifying the device.
 %else
 %cargo_prep
 %generate_buildrequires
-%cargo_generate_buildrequires
+%{__cargo_to_rpm} --path cli/Cargo.toml buildrequires %{?with_check:--with-check}
 %endif
 
 %build
-%cargo_build
+%cargo_build -- -p fastboop-cli
 %cargo_vendor_manifest
 %{cargo_license_summary}
 %{cargo_license} > LICENSE.dependencies
@@ -45,7 +45,7 @@ install -Dpm0755 target/rpm/fastboop-cli \
 
 %if %{with check}
 %check
-%cargo_test
+%cargo_test -- -p fastboop-cli
 %endif
 
 %files
