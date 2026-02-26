@@ -37,6 +37,7 @@ Stage0 reads runtime settings from files under `/etc/stage0` in the generated in
 Notable keys include:
 
 - `stage0.rootfs` (required)
+- `stage0.selinux` (`1` by default; set `0` to disable stage0 SELinux handoff policy install)
 - `ostree`
 - `smoo.acm`, `smoo.queue_count`, `smoo.queue_depth`, `smoo.max_io_bytes`
 - `firstboot.locale`, `firstboot.locale-messages`, `firstboot.keymap`, `firstboot.timezone`
