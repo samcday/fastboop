@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   pull_request:
   push:
     branches: [main]
@@ -235,15 +236,3 @@ jobs:
         with:
           name: fastboop-${{ matrix.name }}
           path: target/${{ matrix.target }}/release/fastboop-cli
-
-      - name: Prepare release binary
-        if: github.event_name == 'release'
-        run: |
-          cp target/${{ matrix.target }}/release/fastboop-cli fastboop-${{ matrix.name }}
-
-      - name: Upload binary to release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ github.event.release.name }}
-          files: fastboop-${{ matrix.name }}

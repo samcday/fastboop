@@ -1,8 +1,13 @@
 name: alpine
 
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      release_mode:
+        description: Release mode from orchestrator
+        required: false
+        type: string
+        default: none
   workflow_dispatch:
 
 concurrency:
@@ -41,13 +46,13 @@ jobs:
         shell: alpine.sh --root {0}
 
       - name: set git revision for prerelease builds
-        if: github.event_name != 'release'
+        if: github.event_name != 'workflow_call' || inputs.release_mode != 'tag'
         run: |
           sed -i -e "s/^_gitrev=main$/_gitrev=$GITHUB_SHA/" APKBUILD
         shell: alpine.sh --root {0}
 
       - name: release prep
-        if: github.event_name == 'release'
+        if: github.event_name == 'workflow_call' && inputs.release_mode == 'tag'
         run: |
           sed -i -e 's/^\(pkgver=.*\)_git$/\1/' APKBUILD
           sed -i -e '/^_gitrev=/d' -e 's/_gitrev/pkgver/g' APKBUILD
@@ -75,19 +80,3 @@ jobs:
         with:
           name: packages-${{ matrix.arch }}
           path: ${{ steps.alpine.outputs.root-path }}/packages/fastboop/${{ matrix.arch }}/*.apk
-
-      - name: upload .apk artifacts to release
-        uses: softprops/action-gh-release@v2
-        if: github.event_name == 'release'
-        with:
-          name: ${{ github.event.release.name }}
-          files: |
-            ${{ steps.alpine.outputs.root-path }}/packages/fastboop/${{ matrix.arch }}/*.apk
-
-      - name: upload APKBUILD to release
-        uses: softprops/action-gh-release@v2
-        if: github.event_name == 'release' && matrix.arch == 'x86_64'
-        with:
-          name: ${{ github.event.release.name }}
-          files: |
-            ${{ steps.alpine.outputs.root-path }}/packages/APKBUILD
