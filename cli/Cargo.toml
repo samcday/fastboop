@@ -3,14 +3,27 @@ name = "fastboop-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "CLI for non-mutating live boots on fastboot-class devices."
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-x86_64-unknown-linux-musl.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-aarch64-unknown-linux-musl.tar.gz"
 
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
-fastboop-core = { path = "../crates/fastboop-core" }
-fastboop-stage0-generator = { path = "../crates/fastboop-stage0-generator" }
-fastboop-fastboot-rusb = { path = "../crates/fastboop-fastboot-rusb" }
+fastboop-core = { path = "../crates/fastboop-core", version = ">=0.0.1-rc.1" }
+fastboop-stage0-generator = { path = "../crates/fastboop-stage0-generator", version = ">=0.0.1-rc.1" }
+fastboop-fastboot-rusb = { path = "../crates/fastboop-fastboot-rusb", version = ">=0.0.1-rc.1" }
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.132"
 serde_yaml = { workspace = true }

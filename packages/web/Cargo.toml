@@ -3,6 +3,7 @@ name = "fastboop-web"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+publish = false
 
 [dependencies]
 anyhow = { workspace = true }

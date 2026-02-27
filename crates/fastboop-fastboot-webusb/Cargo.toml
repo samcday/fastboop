@@ -3,9 +3,11 @@ name = "fastboop-fastboot-webusb"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "WebUSB transport adapter for fastboop fastboot sessions."
 
 [dependencies]
-fastboop-core = { path = "../fastboop-core" }
+fastboop-core = { path = "../fastboop-core", version = ">=0.0.1-rc.1" }
 futures-channel = { workspace = true }
 futures-core = { workspace = true }
 tracing = "0.1.41"
