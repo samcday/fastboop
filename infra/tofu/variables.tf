@@ -16,12 +16,6 @@ variable "hostname" {
   default     = "bleeding.fastboop.win"
 }
 
-variable "www_hostname" {
-  type        = string
-  description = "Hostname for the public web frontend."
-  default     = "www.fastboop.win"
-}
-
 variable "worker_name" {
   type        = string
   description = "Workers script name."
