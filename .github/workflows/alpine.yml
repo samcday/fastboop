@@ -70,6 +70,7 @@ jobs:
 
       - name: build package
         run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
           if [ -n "${{ inputs.release_mode }}" ] && [ "${{ inputs.release_mode }}" != "none" ]; then
             export FASTBOOP_STAGE0_EMBED_PATH=/tmp/stage0-artifacts/fastboop-stage0-aarch64-unknown-linux-musl
             test -f "$FASTBOOP_STAGE0_EMBED_PATH"
