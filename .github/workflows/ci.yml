@@ -294,8 +294,13 @@ jobs:
           linker_var="CARGO_TARGET_${target_env}_LINKER"
           rustflags_var="CARGO_TARGET_${target_env}_RUSTFLAGS"
 
+          target_rustflags="-C target-feature=+crt-static"
+          if [ "${{ matrix.target }}" = "armv7-unknown-linux-musleabihf" ]; then
+            target_rustflags="$target_rustflags --cfg=io_uring_skip_arch_check"
+          fi
+
           export "${linker_var}=rust-lld"
-          export "${rustflags_var}=-C target-feature=+crt-static"
+          export "${rustflags_var}=${target_rustflags}"
 
           cargo build \
             -p fastboop-stage0 \
