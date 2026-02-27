@@ -13,9 +13,9 @@ jobs:
     enable_net: true
     targets:
       fedora-all-aarch64:
-        with_opts: [vendor]
+        without_opts: [vendor]
       fedora-all-x86_64:
-        with_opts: [vendor]
+        without_opts: [vendor]
 
   # Build main commits in samcday/fastboop-nightly COPR
   - job: copr_build
