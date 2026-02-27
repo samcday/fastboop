@@ -248,9 +248,6 @@ jobs:
           - artifact: fastboop-stage0-aarch64
             target: aarch64-unknown-linux-musl
             asset_name: fastboop-stage0-aarch64-unknown-linux-musl
-          - artifact: fastboop-stage0-armv7
-            target: armv7-unknown-linux-musleabihf
-            asset_name: fastboop-stage0-armv7-unknown-linux-musleabihf
 
     steps:
       - name: Checkout
@@ -294,13 +291,8 @@ jobs:
           linker_var="CARGO_TARGET_${target_env}_LINKER"
           rustflags_var="CARGO_TARGET_${target_env}_RUSTFLAGS"
 
-          target_rustflags="-C target-feature=+crt-static"
-          if [ "${{ matrix.target }}" = "armv7-unknown-linux-musleabihf" ]; then
-            target_rustflags="$target_rustflags --cfg=io_uring_skip_arch_check"
-          fi
-
           export "${linker_var}=rust-lld"
-          export "${rustflags_var}=${target_rustflags}"
+          export "${rustflags_var}=-C target-feature=+crt-static"
 
           cargo build \
             -p fastboop-stage0 \
