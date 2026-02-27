@@ -74,6 +74,14 @@ gha_proxy:
     - bleeding.fastboop.win/pocketblue/gha/<runid>/<artifact-name>[.zip]
     - bleeding.fastboop.win/live-pocket-fedora/gha/<runid>/<artifact-name>[.zip]
 
+fastboop_apex_redirects:
+  host: fastboop.win
+  rules:
+    - path_prefix: /device-permissions
+      target: https://docs.fastboop.win/user/device-permissions/
+    - path_prefix: /
+      target: https://www.fastboop.win{path}
+
 layout_and_conventions:
   - Put each deployable in infra/k8s/<component>/ with its own kustomization.yaml.
   - Add new component directories to infra/k8s/kustomization.yaml resources.

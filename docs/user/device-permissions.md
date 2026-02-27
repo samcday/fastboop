@@ -1,5 +1,7 @@
 # Device permissions
 
+Stable link: `https://fastboop.win/device-permissions`.
+
 fastboop requires access to vendor USB boot mode interfaces so it can detect and boot a supported device.
 
 ## Safety and scope
