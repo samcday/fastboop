@@ -74,6 +74,7 @@ ingress_dns_tls:
       source_repo: samcday/fastboop
       name_template: fastboop-web-{version}.tar.gz
       live_version_file: infra/k8s/fastboop-web/live-version.txt
+      live_version_source: .github/workflows/ci.yml release event pushes this pin to main
 
 gha_proxy:
   namespace: gha-proxy
