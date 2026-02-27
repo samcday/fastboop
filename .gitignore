@@ -3,3 +3,5 @@ target/
 terraform.tfstate.backup
 repo/
 build/
+__pycache__/
+*.py[cod]
