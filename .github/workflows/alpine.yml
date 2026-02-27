@@ -35,7 +35,7 @@ jobs:
           packages: alpine-sdk
 
       - uses: actions/download-artifact@v4
-        if: inputs.release_mode == 'pr' || inputs.release_mode == 'tag'
+        if: inputs.release_mode != '' && inputs.release_mode != 'none'
         with:
           name: fastboop-stage0-aarch64
           path: ${{ steps.alpine.outputs.root-path }}/tmp/stage0-artifacts
@@ -45,7 +45,7 @@ jobs:
           abuild-keygen -a -n
           cp ~/.abuild/*.pub /etc/apk/keys/
           abuild -F deps
-          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+          if [ "${{ matrix.arch }}" = "x86_64" ] && { [ "${{ inputs.release_mode }}" = "none" ] || [ -z "${{ inputs.release_mode }}" ]; }; then
             apk add --no-cache curl
             export RUSTUP_INIT_SKIP_PATH_CHECK=yes
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
