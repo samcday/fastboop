@@ -168,6 +168,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: fastboop-stage0-armv7
+          path: release-artifacts/fastboop-stage0-armv7
+
+      - uses: actions/download-artifact@v4
+        with:
           name: debs-amd64
           path: release-artifacts/debs-amd64
 
@@ -201,6 +206,7 @@ jobs:
 
           cp release-artifacts/fastboop-stage0-x86_64/fastboop-stage0-x86_64-unknown-linux-musl release-assets/
           cp release-artifacts/fastboop-stage0-aarch64/fastboop-stage0-aarch64-unknown-linux-musl release-assets/
+          cp release-artifacts/fastboop-stage0-armv7/fastboop-stage0-armv7-unknown-linux-musleabihf release-assets/
 
           cp release-artifacts/debs-amd64/*.deb release-assets/
           cp release-artifacts/debs-arm64/*.deb release-assets/
@@ -222,6 +228,7 @@ jobs:
           test -f release-assets/fastboop-cli-aarch64-unknown-linux-musl.tar.gz
           test -f release-assets/fastboop-stage0-x86_64-unknown-linux-musl
           test -f release-assets/fastboop-stage0-aarch64-unknown-linux-musl
+          test -f release-assets/fastboop-stage0-armv7-unknown-linux-musleabihf
           test -f release-assets/APKBUILD
           test -f release-assets/SHA256SUMS
 
@@ -250,6 +257,7 @@ jobs:
             release-assets/fastboop-cli-aarch64-unknown-linux-musl.tar.gz
             release-assets/fastboop-stage0-x86_64-unknown-linux-musl
             release-assets/fastboop-stage0-aarch64-unknown-linux-musl
+            release-assets/fastboop-stage0-armv7-unknown-linux-musleabihf
             release-assets/*.deb
             release-assets/APKBUILD
             release-assets/*.apk
