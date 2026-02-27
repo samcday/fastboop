@@ -310,7 +310,7 @@ checksum = "0348a1c054491f4bfe6ab86a7b6ab1e44e45d899005de92f58b3df180b36ddaf"
 dependencies = [
  "clipboard-win",
  "log",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "parking_lot",
@@ -789,7 +789,7 @@ dependencies = [
  "keyboard-types",
  "linebender_resource_handle",
  "markup5ever 0.35.0",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "parley",
  "percent-encoding",
  "rayon",
@@ -917,7 +917,7 @@ version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
 dependencies = [
- "objc2 0.6.3",
+ "objc2 0.6.4",
 ]
 
 [[package]]
@@ -2534,14 +2534,14 @@ checksum = "bd0c93bb4b0c6d9b77f4435b0ae98c24d17f1c45b2ff844c6151a07256ca923b"
 
 [[package]]
 name = "dispatch2"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89a09f22a6c6069a18470eb92d2298acf25463f14256d24778e1230d789a2aec"
+checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.11.0",
  "block2 0.6.2",
  "libc 0.2.182",
- "objc2 0.6.3",
+ "objc2 0.6.4",
 ]
 
 [[package]]
@@ -2557,9 +2557,9 @@ dependencies = [
 
 [[package]]
 name = "dlib"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330c60081dcc4c72131f8eb70510f1ac07223e5d4163db481a04a0befcffa412"
+checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
  "libloading 0.8.9",
 ]
@@ -3135,7 +3135,7 @@ dependencies = [
  "icu_locale_core",
  "linebender_resource_handle",
  "memmap2",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-core-text",
  "objc2-foundation 0.3.2",
@@ -3872,7 +3872,7 @@ checksum = "b9247516746aa8e53411a0db9b62b0e24efbcf6a76e0ba73e5a91b512ddabed7"
 dependencies = [
  "crossbeam-channel",
  "keyboard-types",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "once_cell",
  "thiserror 2.0.18",
@@ -3971,9 +3971,9 @@ dependencies = [
 
 [[package]]
 name = "gobblytes-core"
-version = "0.0.1-rc.8"
+version = "0.0.1-rc.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fb8102a132b660d9abbe05175370f3c2f71b6462e03dea107600b86dc853cfe"
+checksum = "61f152fde26a5542092830b879a235735da8b62f3edd97771848b3493e6952e6"
 
 [[package]]
 name = "gobblytes-erofs"
@@ -5013,9 +5013,9 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.82"
+version = "0.3.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b011eec8cc36da2aab2d5cff675ec18454fad408585853910a202391cf9f8e65"
+checksum = "14dc6f6450b3f6d4ed5b16327f38fed626d375a886159ca555bd7822c0c3a5a6"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
@@ -5623,7 +5623,7 @@ dependencies = [
  "gtk",
  "keyboard-types",
  "libxdo",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -5910,9 +5910,9 @@ dependencies = [
 
 [[package]]
 name = "objc2"
-version = "0.6.3"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7c2599ce0ec54857b29ce62166b0ed9b4f6f1a70ccc9a71165b6154caca8c05"
+checksum = "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f"
 dependencies = [
  "objc2-encode",
  "objc2-exception-helper",
@@ -5942,7 +5942,7 @@ checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.11.0",
  "block2 0.6.2",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
@@ -5992,7 +5992,7 @@ checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
  "bitflags 2.11.0",
  "dispatch2",
- "objc2 0.6.3",
+ "objc2 0.6.4",
 ]
 
 [[package]]
@@ -6003,7 +6003,7 @@ checksum = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
 dependencies = [
  "bitflags 2.11.0",
  "dispatch2",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-io-surface",
 ]
@@ -6078,7 +6078,7 @@ checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.11.0",
  "block2 0.6.2",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-core-foundation",
 ]
 
@@ -6089,7 +6089,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
 dependencies = [
  "bitflags 2.11.0",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-core-foundation",
 ]
 
@@ -6168,7 +6168,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d87d638e33c06f577498cbcc50491496a3ed4246998a7fbba7ccb98b1e7eab22"
 dependencies = [
  "bitflags 2.11.0",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
@@ -6205,7 +6205,7 @@ checksum = "b2e5aaab980c433cf470df9d7af96a7b46a9d892d521a2cbbb2f8a4c16751e7f"
 dependencies = [
  "bitflags 2.11.0",
  "block2 0.6.2",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -7350,7 +7350,7 @@ dependencies = [
  "js-sys",
  "libc 0.2.182",
  "log",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -8030,9 +8030,9 @@ dependencies = [
 
 [[package]]
 name = "smoo-gadget-app"
-version = "0.0.1-rc.1"
+version = "0.0.1-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3a376ea73bdbfd7e18a4d25c2e5e47e2e7365403a72d2490221e5feda21ee14"
+checksum = "6044d6b4e66c1a5f36d7376021a88352cfe88e09e3d0f8e6949ba7e15eba8d77"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8051,9 +8051,9 @@ dependencies = [
 
 [[package]]
 name = "smoo-gadget-core"
-version = "0.0.1-rc.1"
+version = "0.0.1-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbee3f36bfab8860bef6621ce0c6c7e689271f852d6c4a93ce255381f8f48d11"
+checksum = "677080d6ddf90c032d8897872e125e7627c36913e56b25b0fd586149a3b95b72"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8075,9 +8075,9 @@ dependencies = [
 
 [[package]]
 name = "smoo-gadget-ublk"
-version = "0.0.1-rc.1"
+version = "0.0.1-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "819d995771763b4f99d2496011b80a1c22c050646252b8c39fec67f3f353f489"
+checksum = "5ad81f39eff876fe37f99ea79bb52f4ad794c4f486e610a12c289f8b0fa6944b"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -8092,9 +8092,9 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-blocksource-gibblox"
-version = "0.0.1-rc.1"
+version = "0.0.1-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f53266697e7be820e90ba7fecabb91ff37d9c49dd80d132f06b8ad00ff9c11e0"
+checksum = "4316d910217971fe991825ab00239a929d1ac2b9934f3fd113893eac0e77ce76"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -8103,9 +8103,9 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-core"
-version = "0.0.1-rc.1"
+version = "0.0.1-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e95021f138683c7a32de75d42a9af1aed40064156e25c70132ec8f82c8b660e"
+checksum = "3fea7e98b21ea81ffd82afa0b6def128739197f269b7a22b34beec46e78ba6d5"
 dependencies = [
  "async-trait",
  "futures-channel",
@@ -8116,9 +8116,9 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-session"
-version = "0.0.1-rc.1"
+version = "0.0.1-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f90e9b6c48ce31b26cea8fed2c99b783b1f4e3f7d67919329fe58b5105a1b5d3"
+checksum = "b1c97a5f2bcccc39ee496be6d88d0e3db59e0b64e60192730f8eec2bf82a2833"
 dependencies = [
  "futures-util",
  "smoo-host-core",
@@ -8127,9 +8127,9 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-transport-rusb"
-version = "0.0.1-rc.1"
+version = "0.0.1-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80ab27cc99d57dd0e08d73ebfad569fd1b7b04c55850a44f5df2de84f9c94541"
+checksum = "6aaa2a51aadf99150e95b6549d93c21401f164ad86dce082be466aab0f5346aa"
 dependencies = [
  "async-trait",
  "crossbeam-channel",
@@ -8141,9 +8141,9 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-web-worker"
-version = "0.0.1-rc.1"
+version = "0.0.1-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0dcaf13f6573428135634314d3c461f54a406dfc83a360647200f0834d472397"
+checksum = "a46349fce7b141136baa4768ea9b2f8ca0d77d8a732308d9bd2627d71a64d0ee"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -8163,9 +8163,9 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-webusb"
-version = "0.0.1-rc.1"
+version = "0.0.1-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15ce9f39d5d757f1d96d8ff7936485f7a290c7d947dd02c246d4df9f1841ac12"
+checksum = "cb60f66629e264a7288b5464db953a9692e739a815a061f7b3220a446ce994fd"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -8179,9 +8179,9 @@ dependencies = [
 
 [[package]]
 name = "smoo-proto"
-version = "0.0.1-rc.1"
+version = "0.0.1-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e10ca6530f85ff4078bbfc2cdf8fdb3f75d597ce7be45abfbcca3b6cec7be964"
+checksum = "769a496e264af984603ea82937942cfac53653ea27a3ca9fa1a823f158f05524"
 dependencies = [
  "heapless 0.8.0",
 ]
@@ -8681,7 +8681,7 @@ dependencies = [
  "ndk",
  "ndk-context",
  "ndk-sys 0.6.0+11769913",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "once_cell",
@@ -9185,7 +9185,7 @@ dependencies = [
  "dirs",
  "libappindicator",
  "muda",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -9640,9 +9640,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.105"
+version = "0.2.113"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da95793dfc411fbbd93f5be7715b0578ec61fe87cb1a42b12eb625caa5c5ea60"
+checksum = "60722a937f594b7fde9adb894d7c092fc1bb6612897c46368d18e7a20208eff2"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -9653,11 +9653,12 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.55"
+version = "0.4.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "551f88106c6d5e7ccc7cd9a16f312dd3b5d36ea8b4954304657d5dfba115d4a0"
+checksum = "8a89f4650b770e4521aa6573724e2aed4704372151bd0de9d16a3bbabb87441a"
 dependencies = [
  "cfg-if",
+ "futures-util",
  "js-sys",
  "once_cell",
  "wasm-bindgen",
@@ -9666,9 +9667,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.105"
+version = "0.2.113"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04264334509e04a7bf8690f2384ef5265f05143a4bff3889ab7a3269adab59c2"
+checksum = "0fac8c6395094b6b91c4af293f4c79371c163f9a6f56184d2c9a85f5a95f3950"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -9676,9 +9677,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.105"
+version = "0.2.113"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "420bc339d9f322e562942d52e115d57e950d12d88983a14c79b86859ee6c7ebc"
+checksum = "ab3fabce6159dc20728033842636887e4877688ae94382766e00b180abac9d60"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -9689,9 +9690,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.105"
+version = "0.2.113"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76f218a38c84bcb33c25ec7059b07847d465ce0e0a76b995e134a45adcb6af76"
+checksum = "de0e091bdb824da87dc01d967388880d017a0a9bc4f3bdc0d86ee9f9336e3bb5"
 dependencies = [
  "unicode-ident",
 ]
@@ -9854,9 +9855,9 @@ dependencies = [
 
 [[package]]
 name = "web-sys"
-version = "0.3.82"
+version = "0.3.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a1f95c0d03a47f4ae1f7a64643a6bb97465d9b740f0fa8f90ea33915c99a9a1"
+checksum = "705eceb4ce901230f8625bd1d665128056ccbe4b7408faa625eec1ba80f59a97"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -9894,7 +9895,7 @@ dependencies = [
  "jni",
  "log",
  "ndk-context",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-foundation 0.3.2",
  "url",
  "web-sys",
@@ -10962,7 +10963,7 @@ dependencies = [
  "kuchikiki",
  "libc 0.2.182",
  "ndk",
- "objc2 0.6.3",
+ "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -11245,18 +11246,18 @@ checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
 
 [[package]]
 name = "zerocopy"
-version = "0.8.39"
+version = "0.8.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db6d35d663eadb6c932438e763b262fe1a70987f9ae936e60158176d710cae4a"
+checksum = "a789c6e490b576db9f7e6b6d661bcc9799f7c0ac8352f56ea20193b2681532e5"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.39"
+version = "0.8.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4122cd3169e94605190e77839c9a40d40ed048d305bfdc146e7df40ab0f3e517"
+checksum = "f65c489a7071a749c849713807783f70672b28094011623e200cb86dcb835953"
 dependencies = [
  "proc-macro2",
  "quote",
