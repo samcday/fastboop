@@ -66,9 +66,9 @@ fn main() {
         .arg(&target_dir)
         .arg("--locked");
 
-    if stage0_target == "aarch64-unknown-linux-musl" {
-        cmd.env(&stage0_linker_env, "rust-lld");
-    }
+    // Always force rust-lld for the embedded cross-build so CI/user shell
+    // linker environment does not silently break the stage0 sub-build.
+    cmd.env(&stage0_linker_env, "rust-lld");
     if env::var_os(&stage0_rustflags_env).is_none() {
         cmd.env(&stage0_rustflags_env, "-C target-feature=+crt-static");
     }
