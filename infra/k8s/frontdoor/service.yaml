@@ -7,6 +7,7 @@ metadata:
     load-balancer.hetzner.cloud/name: fastboop-frontdoor
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
     external-dns.alpha.kubernetes.io/hostname: fastboop.win,www.fastboop.win,flux.fastboop.win,matrix.fastboop.win
+    external-dns.alpha.kubernetes.io/target: 46.225.42.74,2a01:4f8:1c1f:6b50::1
     external-dns.alpha.kubernetes.io/ttl: "60"
 spec:
   type: LoadBalancer
