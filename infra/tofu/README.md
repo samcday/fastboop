@@ -3,8 +3,8 @@
 This OpenTofu config provisions:
 - An R2 bucket for bleeding snapshots.
 - A Workers script that serves `https://bleeding.fastboop.win`.
-- A Workers route to map the hostname.
-- A DNS A record for the bleeding hostname.
+- Workers routes for `bleeding.fastboop.win` and `www.fastboop.win`.
+- DNS A records for the bleeding and www hostnames.
 - A DNS CNAME record for `docs.fastboop.win` -> GitHub Pages.
 
 The worker behavior:

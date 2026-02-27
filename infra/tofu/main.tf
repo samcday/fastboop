@@ -52,9 +52,24 @@ resource "cloudflare_workers_route" "bleeding" {
   script_name = cloudflare_workers_script.bleeding.name
 }
 
+resource "cloudflare_workers_route" "www" {
+  zone_id     = local.zone_id
+  pattern     = "${var.www_hostname}/*"
+  script_name = cloudflare_workers_script.bleeding.name
+}
+
 resource "cloudflare_record" "bleeding" {
   zone_id         = local.zone_id
   name            = var.hostname
+  type            = "A"
+  content         = "192.0.2.1"
+  proxied         = true
+  allow_overwrite = true
+}
+
+resource "cloudflare_record" "www" {
+  zone_id         = local.zone_id
+  name            = var.www_hostname
   type            = "A"
   content         = "192.0.2.1"
   proxied         = true
