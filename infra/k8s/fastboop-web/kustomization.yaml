@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: fastboop-web
+resources:
+  - deployment.yaml
+  - service.yaml
+configMapGenerator:
+  - name: fastboop-web-config
+    literals:
+      - PORT=8080
+      - CACHE_DIR=/cache
+      - GITHUB_OWNER=samcday
+      - GITHUB_REPO=fastboop
+      - ASSET_NAME_TEMPLATE=fastboop-web-{version}.tar.gz
+      - REQUEST_TIMEOUT_SECONDS=300
+  - name: fastboop-web-live
+    files:
+      - LIVE_VERSION=live-version.txt
+  - name: fastboop-web-app
+    files:
+      - web_release_app.py=web_release_app.py

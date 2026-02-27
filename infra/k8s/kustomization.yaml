@@ -4,6 +4,7 @@ resources:
   - namespaces.yaml
   - repositories.yaml
   - cert-manager
+  - fastboop-web
   - frontdoor
   - external-dns
   - conduit

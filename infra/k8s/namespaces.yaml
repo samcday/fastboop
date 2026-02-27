@@ -16,6 +16,11 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: fastboop-web
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: frontdoor
 ---
 apiVersion: v1

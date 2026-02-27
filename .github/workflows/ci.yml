@@ -80,8 +80,17 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Resolve web base path
+        id: web-base
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            echo "base_path=/${{ github.event.release.tag_name }}/" >> "$GITHUB_OUTPUT"
+          else
+            echo "base_path=/commit/${GITHUB_SHA}/" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Dioxus build (web release)
-        run: dx build -p fastboop-web --release --base-path "/commit/${GITHUB_SHA}/"
+        run: dx build -p fastboop-web --release --base-path "${{ steps.web-base.outputs.base_path }}"
 
       - name: Dioxus build (desktop release)
         run: dx build -p fastboop-desktop --release
@@ -100,6 +109,29 @@ jobs:
           aws s3 sync "$build_dir" "s3://fastboop-bleeding/$dest_prefix/" --endpoint-url "$AWS_ENDPOINT_URL"
           printf '%s' "$GITHUB_SHA" > latest.txt
           aws s3 cp latest.txt "s3://fastboop-bleeding/latest.txt" --endpoint-url "$AWS_ENDPOINT_URL" --cache-control "no-store"
+
+      - name: Package web release tarball
+        if: github.event_name == 'release'
+        env:
+          WEB_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$WEB_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "release tag must match vX.Y.Z or vX.Y.Z-rc.N" >&2
+            exit 1
+          fi
+          build_dir="target/dx/fastboop-web/release/web/public"
+          tarball="fastboop-web-${WEB_TAG}.tar.gz"
+          tar -C "$build_dir" -czf "$tarball" .
+          echo "WEB_TARBALL=$tarball" >> "$GITHUB_ENV"
+
+      - name: Upload web release asset
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.event.release.name }}
+          files: |
+            ${{ env.WEB_TARBALL }}
 
   build:
     runs-on: ${{ matrix.runner }}

@@ -61,6 +61,19 @@ ingress_dns_tls:
   tls:
     certificate: frontdoor/frontdoor-tls
     issuer: ClusterIssuer/letsencrypt
+  web_release_app:
+    component: infra/k8s/fastboop-web
+    deployment: fastboop-web/fastboop-web
+    service: fastboop-web/fastboop-web
+    host: www.fastboop.win
+    route_contract:
+      - / serves the configured live release version.
+      - /vX.Y.Z(-rc.N)/ serves that explicit tagged release.
+      - release bundles are lazy-fetched and extracted from GitHub release assets.
+    release_asset:
+      source_repo: samcday/fastboop
+      name_template: fastboop-web-{version}.tar.gz
+      live_version_file: infra/k8s/fastboop-web/live-version.txt
 
 gha_proxy:
   namespace: gha-proxy
@@ -91,6 +104,7 @@ layout_and_conventions:
   - Store secrets in infra/k8s as SOPS-encrypted manifests.
   - Keep external DNS behavior explicit via annotations on Service resources.
   - Keep frontdoor Caddyfile as the single source of public host/path routing.
+  - Keep fastboop-web live version pin in infra/k8s/fastboop-web/live-version.txt.
 
 secrets_and_encryption:
   sops_config: infra/k8s/.sops.yaml

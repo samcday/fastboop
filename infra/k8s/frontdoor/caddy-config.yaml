@@ -44,12 +44,7 @@ data:
     https://www.fastboop.win {
       tls /certs/tls.crt /certs/tls.key
 
-      reverse_proxy https://bleeding.fastboop.win {
-        header_up Host bleeding.fastboop.win
-        transport http {
-          tls_server_name bleeding.fastboop.win
-        }
-      }
+      reverse_proxy fastboop-web.fastboop-web.svc.cluster.local:80
     }
 
     https://flux.fastboop.win {
