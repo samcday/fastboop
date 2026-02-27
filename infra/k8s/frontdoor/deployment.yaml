@@ -15,6 +15,8 @@ spec:
       containers:
         - name: caddy
           image: caddy:2.10.2
+          command:
+            - caddy
           args:
             - run
             - --config
