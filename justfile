@@ -30,22 +30,42 @@ bump version:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    echo "Bumping fastboop to {{version}}"
+    version="{{version}}"
+
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+      echo "version must match X.Y.Z or X.Y.Z-rc.N" >&2
+      exit 1
+    fi
+
+    cargo_version="$version"
+    rpm_apk_version="$version"
+    debian_version="$version"
+
+    if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)$ ]]; then
+      base="${BASH_REMATCH[1]}"
+      rc="${BASH_REMATCH[2]}"
+      rpm_apk_version="${base}_rc${rc}"
+      debian_version="${base}~rc${rc}"
+    fi
+
+    echo "Bumping fastboop to ${cargo_version}"
+    echo "  - RPM/APK version: ${rpm_apk_version}"
+    echo "  - Debian version:  ${debian_version}"
 
     # Cargo.toml workspace version
-    sed -i 's/^version = ".*"/version = "{{version}}"/' Cargo.toml
+    sed -i "s/^version = \".*\"/version = \"${cargo_version}\"/" Cargo.toml
 
     # RPM spec
-    sed -i 's/^Version:        .*/Version:        {{version}}/' fastboop.spec
+    sed -i "s/^Version:        .*/Version:        ${rpm_apk_version}/" fastboop.spec
 
     # Alpine APKBUILD (set base version, keep _git suffix for dev builds)
-    sed -i 's/^pkgver=.*_git$/pkgver={{version}}_git/' APKBUILD
+    sed -i "s/^pkgver=.*_git$/pkgver=${rpm_apk_version}_git/" APKBUILD
 
     # Debian changelog (add new entry)
-    sed -i '1s/.*/fastboop ({{version}}) UNRELEASED; urgency=medium/' debian/changelog
+    sed -i "1s/.*/fastboop (${debian_version}) UNRELEASED; urgency=medium/" debian/changelog
 
-    # Update lockfile
-    cargo generate-lockfile
+    # Update lockfile without drifting transitive dependencies
+    cargo update -p fastboop-cli --precise "$cargo_version"
 
     echo "Done. Files updated:"
     echo "  Cargo.toml"
@@ -55,8 +75,8 @@ bump version:
     echo ""
     echo "Next steps:"
     echo "  1. Review changes: git diff"
-    echo "  2. Commit: git commit -am 'v{{version}}'"
-    echo "  3. Tag: git tag v{{version}}"
+    echo "  2. Commit: git commit -am 'v${cargo_version}'"
+    echo "  3. Tag: git tag v${cargo_version}"
     echo "  4. Push: git push && git push --tags"
 
 # Set live www.fastboop.win release version
