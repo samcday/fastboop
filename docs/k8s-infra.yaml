@@ -42,22 +42,24 @@ topology:
       Owns app, networking, and routing manifests for fastboop public endpoints.
 
 ingress_dns_tls:
-  gateway:
-    api: gateway.networking.k8s.io/v1
-    resource: ingress-nginx/public
-    controller: cilium
+  frontdoor:
+    component: infra/k8s/frontdoor
+    deployment: frontdoor/frontdoor
+    service: frontdoor/frontdoor
+    proxy: caddy
     listeners:
-      - HTTP :80
+      - HTTP :80 (redirect to HTTPS)
       - HTTPS :443 (TLS terminate)
   dns:
     managed_by: external-dns
-    anchor_service: kube-system/public-gateway-dns
+    source: Service annotations on frontdoor/frontdoor
     current_hostnames:
       - fastboop.win
+      - www.fastboop.win
       - flux.fastboop.win
       - matrix.fastboop.win
   tls:
-    certificate: ingress-nginx/public-gateway-tls
+    certificate: frontdoor/frontdoor-tls
     issuer: ClusterIssuer/letsencrypt
 
 gha_proxy:
@@ -87,8 +89,8 @@ layout_and_conventions:
   - Add new component directories to infra/k8s/kustomization.yaml resources.
   - Add required namespaces to infra/k8s/namespaces.yaml.
   - Store secrets in infra/k8s as SOPS-encrypted manifests.
-  - Keep external DNS behavior explicit via annotations on route/service resources.
-  - Prefer Gateway API resources over Ingress for new public routes.
+  - Keep external DNS behavior explicit via annotations on Service resources.
+  - Keep frontdoor Caddyfile as the single source of public host/path routing.
 
 secrets_and_encryption:
   sops_config: infra/k8s/.sops.yaml

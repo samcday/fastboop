@@ -4,7 +4,7 @@ resources:
   - namespaces.yaml
   - repositories.yaml
   - cert-manager
-  - gateway-api
+  - frontdoor
   - external-dns
   - conduit
   - gha-proxy

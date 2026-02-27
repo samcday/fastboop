@@ -16,7 +16,7 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: ingress-nginx
+  name: frontdoor
 ---
 apiVersion: v1
 kind: Namespace

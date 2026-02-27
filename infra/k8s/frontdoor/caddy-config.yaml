@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontdoor-caddy
+data:
+  Caddyfile: |-
+    {
+      admin off
+      auto_https off
+    }
+
+    :8080 {
+      respond /healthz "ok" 200
+      respond "not found" 404
+    }
+
+    http://fastboop.win, http://www.fastboop.win, http://flux.fastboop.win, http://matrix.fastboop.win {
+      redir https://{host}{uri} 308
+    }
+
+    https://fastboop.win {
+      tls /certs/tls.crt /certs/tls.key
+
+      @gha path /gha /gha/*
+      handle @gha {
+        reverse_proxy gha-proxy.gha-proxy.svc.cluster.local:80
+      }
+
+      @matrix_well_known path /.well-known/matrix /.well-known/matrix/*
+      handle @matrix_well_known {
+        reverse_proxy matrix-well-known.conduit.svc.cluster.local:80
+      }
+
+      @device_permissions path /device-permissions /device-permissions/*
+      handle @device_permissions {
+        redir https://docs.fastboop.win/user/device-permissions/ 308
+      }
+
+      handle {
+        redir https://www.fastboop.win{uri} 308
+      }
+    }
+
+    https://www.fastboop.win {
+      tls /certs/tls.crt /certs/tls.key
+
+      reverse_proxy https://bleeding.fastboop.win {
+        header_up Host bleeding.fastboop.win
+        transport http {
+          tls_server_name bleeding.fastboop.win
+        }
+      }
+    }
+
+    https://flux.fastboop.win {
+      tls /certs/tls.crt /certs/tls.key
+
+      reverse_proxy webhook-receiver.flux-system.svc.cluster.local:80
+    }
+
+    https://matrix.fastboop.win {
+      tls /certs/tls.crt /certs/tls.key
+
+      reverse_proxy conduit-generic.conduit.svc.cluster.local:80
+    }

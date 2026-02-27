@@ -1,7 +1,7 @@
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  name: allow-webhooks-gateway
+  name: allow-webhooks-public-edge
   namespace: flux-system
 spec:
   endpointSelector:
@@ -11,6 +11,14 @@ spec:
     - fromEntities:
         - ingress
         - world
+      toPorts:
+        - ports:
+            - port: "9292"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: frontdoor
+            k8s:app.kubernetes.io/name: frontdoor
       toPorts:
         - ports:
             - port: "9292"

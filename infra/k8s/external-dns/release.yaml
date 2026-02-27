@@ -29,5 +29,4 @@ spec:
       name: cloudflare
     sources:
       - service
-      - ingress
     txtOwnerId: fastboop-20260222
