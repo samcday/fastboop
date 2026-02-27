@@ -1,0 +1,114 @@
+name: Bump from version issue
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    if: |
+      github.event.issue.author_association == 'COLLABORATOR' ||
+      github.event.issue.author_association == 'OWNER' ||
+      contains(github.event.issue.labels.*.name, 'ci-ok')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require release automation token
+        env:
+          RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$RELEASE_GITHUB_TOKEN" ]]; then
+            echo "RELEASE_GITHUB_TOKEN secret is required for issue-bump automation."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+
+      - uses: taiki-e/install-action@just
+
+      - name: Configure git
+        run: |
+          git config user.name "FastboopBot"
+          git config user.email "fastboop@beep.boop"
+
+      - name: Parse version
+        id: parse
+        run: |
+          title="${{ github.event.issue.title }}"
+          if [[ "$title" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create stable bump PR
+        if: steps.parse.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.parse.outputs.version }}"
+          branch="release/v${version}"
+          base="${{ github.event.repository.default_branch }}"
+          body="Automated bump for v${version}."
+
+          if [[ -n "$(git ls-remote --heads origin "$branch")" ]]; then
+            echo "Branch $branch already exists; skipping"
+            exit 0
+          fi
+
+          git checkout -B "$branch" "origin/$base"
+          just bump "$version"
+
+          if git diff --quiet; then
+            echo "No version file changes for $version; creating empty bootstrap commit"
+            git commit --allow-empty -m "release: v${version}"
+            body="Automated release bootstrap for v${version} (no version file changes needed)."
+          else
+            git add -A
+            git commit -m "release: v${version}"
+          fi
+
+          git push -u origin "$branch"
+          gh pr create \
+            --title "v${version}" \
+            --body "$body" \
+            --base "$base"
+
+      - name: Create rc bump PR
+        if: steps.parse.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          base_version="${{ steps.parse.outputs.version }}"
+          version="${base_version}-rc.1"
+          branch="release/v${version}"
+          base="${{ github.event.repository.default_branch }}"
+
+          if [[ -n "$(git ls-remote --heads origin "$branch")" ]]; then
+            echo "Branch $branch already exists; skipping"
+            exit 0
+          fi
+
+          git checkout -B "$branch" "origin/$base"
+          just bump "$version"
+
+          if git diff --quiet; then
+            echo "No version changes for $version; skipping"
+            exit 0
+          fi
+
+          git add -A
+          git commit -m "release: v${version}"
+          git push -u origin "$branch"
+          gh pr create \
+            --title "v${version}" \
+            --body "Automated bump for v${version}." \
+            --base "$base"
