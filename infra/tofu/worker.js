@@ -586,5 +586,9 @@ function contentTypeFor(key) {
 }
 
 function isR2DirectArtifactPath(path) {
-  return path.endsWith(".ero") || path.startsWith("/live-pocket-fedora/casync/");
+  return (
+    path.endsWith(".ero") ||
+    path === "/live-pocket-fedora" ||
+    path.startsWith("/live-pocket-fedora/")
+  );
 }

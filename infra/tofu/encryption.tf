@@ -1,7 +1,5 @@
 terraform {
   encryption {
-    method "unencrypted" "migrate" {}
-
     key_provider "pbkdf2" "state" {
       passphrase = var.state_passphrase
     }
@@ -12,16 +10,10 @@ terraform {
 
     state {
       method = method.aes_gcm.state
-      fallback {
-        method = method.unencrypted.migrate
-      }
     }
 
     plan {
       method = method.aes_gcm.state
-      fallback {
-        method = method.unencrypted.migrate
-      }
     }
   }
 }

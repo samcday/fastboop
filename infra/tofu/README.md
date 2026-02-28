@@ -13,7 +13,7 @@ The worker behavior:
 - Missing paths fall back to `/commit/<sha>/index.html` for SPA routing.
 - Direct artifact paths are served from R2 with CORS + range support:
   - any `*.ero` object (for EROFS image fetches), and
-  - `/live-pocket-fedora/casync/*` (manifests, indexes, chunks).
+  - `/live-pocket-fedora/*` (casync manifests/indexes/chunks and other live-pocket-fedora artifacts, excluding legacy `/live-pocket-fedora/gha/*` compatibility proxy paths).
 - Legacy GitHub Actions artifact routes are compatibility proxies with CORS + range support:
   - `/pocketblue/gha/<runid>/<artifact-name>[.zip]`
   - `/live-pocket-fedora/gha/<runid>/<artifact-name>[.zip]`
@@ -139,9 +139,6 @@ export TF_VAR_artifact_proxy_github_token="<optional token for /<project>/gha/*>
 tofu init
 tofu apply
 ```
-
-After the first encrypted apply, remove the `fallback` blocks in
-`infra/tofu/encryption.tf` and re-apply to enforce encryption.
 
 The zone is discovered automatically using `fastboop.win`.
 
