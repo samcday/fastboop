@@ -9,6 +9,7 @@ Its job is short and strict: bring up gadget runtime, mount exported root, and e
 - Runtime PID1 flow: [`stage0/src/main.rs`](https://github.com/samcday/fastboop/blob/main/stage0/src/main.rs)
 - Stage0 assembly: [`crates/fastboop-stage0-generator`](https://github.com/samcday/fastboop/tree/main/crates/fastboop-stage0-generator)
 - CLI entrypoint: [`cli/src/commands/stage0.rs`](https://github.com/samcday/fastboop/blob/main/cli/src/commands/stage0.rs)
+- Distribution contract: [`docs/dev/STAGE0_DISTRIBUTION.md`](STAGE0_DISTRIBUTION.md)
 
 ## Contract
 

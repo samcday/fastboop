@@ -8,6 +8,7 @@ This section collects contributor-facing architecture and implementation referen
 - [Device Profiles](DEVICE_PROFILES.md)
 - [Boot Profiles](BOOT_PROFILES.md)
 - [Stage0](STAGE0.md)
+- [Stage0 distribution](STAGE0_DISTRIBUTION.md)
 
 ## Attic
 
