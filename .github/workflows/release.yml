@@ -97,14 +97,44 @@ jobs:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
 
+  stage0-preflight:
+    needs: [gate, release, ci]
+    if: needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fastboop-stage0-x86_64
+          path: stage0-preflight/fastboop-stage0-x86_64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: fastboop-stage0-aarch64
+          path: stage0-preflight/fastboop-stage0-aarch64
+
+      - name: Verify stage0 artifact contract
+        run: |
+          set -euo pipefail
+
+          x86_64_bin="stage0-preflight/fastboop-stage0-x86_64/fastboop-stage0-x86_64-unknown-linux-musl"
+          aarch64_bin="stage0-preflight/fastboop-stage0-aarch64/fastboop-stage0-aarch64-unknown-linux-musl"
+
+          test -s "$x86_64_bin"
+          test -s "$aarch64_bin"
+
+          file "$x86_64_bin" | grep -Eq 'statically linked|static-pie linked'
+          file "$aarch64_bin" | grep -Eq 'statically linked|static-pie linked'
+
   debian:
-    needs: [gate, release]
+    needs: [gate, release, stage0-preflight]
     if: needs.gate.outputs.enabled == 'true'
     uses: ./.github/workflows/debian.yml
+    with:
+      release_mode: ${{ needs.gate.outputs.mode }}
     secrets: inherit
 
   alpine:
-    needs: [gate, release]
+    needs: [gate, release, stage0-preflight]
     if: needs.gate.outputs.enabled == 'true'
     uses: ./.github/workflows/alpine.yml
     with:
@@ -112,7 +142,7 @@ jobs:
     secrets: inherit
 
   publish-assets:
-    needs: [gate, release, ci, debian, alpine]
+    needs: [gate, release, ci, stage0-preflight, debian, alpine]
     if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -125,6 +155,16 @@ jobs:
         with:
           name: fastboop-aarch64
           path: release-artifacts/fastboop-aarch64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: fastboop-stage0-x86_64
+          path: release-artifacts/fastboop-stage0-x86_64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: fastboop-stage0-aarch64
+          path: release-artifacts/fastboop-stage0-aarch64
 
       - uses: actions/download-artifact@v4
         with:
@@ -159,6 +199,9 @@ jobs:
           tar -C release-artifacts/fastboop-x86_64 -czf release-assets/fastboop-cli-x86_64-unknown-linux-musl.tar.gz fastboop-cli
           tar -C release-artifacts/fastboop-aarch64 -czf release-assets/fastboop-cli-aarch64-unknown-linux-musl.tar.gz fastboop-cli
 
+          cp release-artifacts/fastboop-stage0-x86_64/fastboop-stage0-x86_64-unknown-linux-musl release-assets/
+          cp release-artifacts/fastboop-stage0-aarch64/fastboop-stage0-aarch64-unknown-linux-musl release-assets/
+
           cp release-artifacts/debs-amd64/*.deb release-assets/
           cp release-artifacts/debs-arm64/*.deb release-assets/
 
@@ -177,6 +220,8 @@ jobs:
           set -euo pipefail
           test -f release-assets/fastboop-cli-x86_64-unknown-linux-musl.tar.gz
           test -f release-assets/fastboop-cli-aarch64-unknown-linux-musl.tar.gz
+          test -f release-assets/fastboop-stage0-x86_64-unknown-linux-musl
+          test -f release-assets/fastboop-stage0-aarch64-unknown-linux-musl
           test -f release-assets/APKBUILD
           test -f release-assets/SHA256SUMS
 
@@ -203,6 +248,8 @@ jobs:
           files: |
             release-assets/fastboop-cli-x86_64-unknown-linux-musl.tar.gz
             release-assets/fastboop-cli-aarch64-unknown-linux-musl.tar.gz
+            release-assets/fastboop-stage0-x86_64-unknown-linux-musl
+            release-assets/fastboop-stage0-aarch64-unknown-linux-musl
             release-assets/*.deb
             release-assets/APKBUILD
             release-assets/*.apk
@@ -210,7 +257,7 @@ jobs:
 
   pass:
     name: "✅ Pass"
-    needs: [gate, release, ci, debian, alpine, publish-assets]
+    needs: [gate, release, ci, stage0-preflight, debian, alpine, publish-assets]
     runs-on: ubuntu-latest
     if: always() && needs.gate.outputs.enabled == 'true'
     steps:
