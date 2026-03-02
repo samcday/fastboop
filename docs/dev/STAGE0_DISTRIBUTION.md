@@ -18,12 +18,13 @@ Checksums are recorded in release `SHA256SUMS`.
 
 ## Embed Modes
 
-`crates/fastboop-stage0-generator/build.rs` supports two embed modes:
+`crates/fastboop-stage0-generator/build.rs` supports three embed modes:
 
 1. `FASTBOOP_STAGE0_EMBED_PATH` set: copy the provided prebuilt stage0 binary and embed it.
 2. `FASTBOOP_STAGE0_EMBED_PATH` unset: run the local nested stage0 sub-build only when source-repo layout includes `stage0/Cargo.toml` (contributor convenience).
+3. `FASTBOOP_STAGE0_EMBED_PATH` unset and no local `stage0/Cargo.toml`: for `aarch64-unknown-linux-musl`, download `fastboop-stage0-aarch64-unknown-linux-musl` from release tag `v${CARGO_PKG_VERSION}` and verify its checksum from sidecar `stage0-aarch64.sha256sum`.
 
-If `FASTBOOP_STAGE0_EMBED_PATH` is unset and the local source tree does not expose `stage0/Cargo.toml` (for example crates.io/source package consumption), build.rs fails fast and requires an explicit prebuilt stage0 path.
+If none of these modes apply, build.rs fails fast and requires an explicit prebuilt stage0 path.
 
 Optional knobs for nested sub-builds:
 
@@ -37,6 +38,7 @@ This preserves local `cargo build -p fastboop-cli` round-trips while allowing di
 - `.github/workflows/ci.yml` builds stage0 static artifacts in a dedicated `stage0-static` matrix.
 - `.github/workflows/release.yml` runs `stage0-preflight` before downstream packaging jobs.
 - `stage0-preflight` verifies both required stage0 artifacts exist and are static/static-pie linked.
+- `.github/workflows/release.yml` tag mode bakes `crates/fastboop-stage0-generator/stage0-aarch64.sha256sum` from CI stage0 artifacts immediately before `just publish`.
 - Release asset fan-in includes stage0 binaries and `SHA256SUMS`.
 
 ## Downstream Packaging

@@ -134,6 +134,21 @@ print(int(parsed.timestamp()))
 PY
 }
 
+require_stage0_provenance_sidecar() {
+    local sidecar="crates/fastboop-stage0-generator/stage0-aarch64.sha256sum"
+    if [[ ! -s "$sidecar" ]]; then
+        echo "missing required stage0 provenance sidecar: $sidecar" >&2
+        exit 1
+    fi
+
+    local checksum
+    checksum="$(tr -d '[:space:]' < "$sidecar")"
+    if [[ ! "$checksum" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        echo "invalid stage0 provenance sidecar checksum in $sidecar" >&2
+        exit 1
+    fi
+}
+
 for package in "${packages[@]}"; do
     if [[ "$mode" == "--dry-run" ]]; then
         patch_file="$(mktemp)"
@@ -202,8 +217,12 @@ PY
         cargo package -p "$package" --locked --no-verify --config "$patch_file"
         rm -f "$patch_file"
     else
-        echo "==> cargo publish -p $package --locked --no-verify"
-        if output="$(cargo publish -p "$package" --locked --no-verify 2>&1)"; then
+        if [[ "$package" == "fastboop-stage0-generator" ]]; then
+            require_stage0_provenance_sidecar
+        fi
+
+        echo "==> cargo publish -p $package --locked --no-verify --allow-dirty"
+        if output="$(cargo publish -p "$package" --locked --no-verify --allow-dirty 2>&1)"; then
             printf '%s\n' "$output"
             continue
         fi
@@ -225,8 +244,8 @@ PY
                 echo "==> crates.io scheduled retry time already passed for $package; retrying now"
             fi
 
-            echo "==> cargo publish -p $package --locked --no-verify (scheduled retry)"
-            if retry_output="$(cargo publish -p "$package" --locked --no-verify 2>&1)"; then
+            echo "==> cargo publish -p $package --locked --no-verify --allow-dirty (scheduled retry)"
+            if retry_output="$(cargo publish -p "$package" --locked --no-verify --allow-dirty 2>&1)"; then
                 printf '%s\n' "$retry_output"
                 continue
             fi
