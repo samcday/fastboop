@@ -101,7 +101,7 @@ is_already_uploaded_error() {
 }
 
 extract_retry_after_epoch() {
-    python - <<'PY'
+    python -c '
 import datetime
 import email.utils
 import re
@@ -131,7 +131,7 @@ if parsed.tzinfo is None:
     parsed = parsed.replace(tzinfo=datetime.timezone.utc)
 
 print(int(parsed.timestamp()))
-PY
+'
 }
 
 require_stage0_provenance_sidecar() {
