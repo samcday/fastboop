@@ -32,6 +32,7 @@ nav:
       - Device profiles: dev/DEVICE_PROFILES.md
       - Boot profiles: dev/BOOT_PROFILES.md
       - Stage0 contract: dev/STAGE0.md
+      - Stage0 distribution: dev/STAGE0_DISTRIBUTION.md
       - Attic:
           - Device profiles v0 spec: dev/attic/DEVICE_PROFILES-v0.md
           - Stage0 v0 spec: dev/attic/STAGE0-v0.md

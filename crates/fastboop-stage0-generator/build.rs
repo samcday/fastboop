@@ -1,11 +1,33 @@
 use std::env;
 use std::fs;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=PROFILE");
+    println!("cargo:rerun-if-env-changed=FASTBOOP_STAGE0_EMBED_PATH");
+    println!("cargo:rerun-if-env-changed=FASTBOOP_STAGE0_CARGO");
+    println!("cargo:rerun-if-env-changed=FASTBOOP_STAGE0_TARGET");
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+
+    if let Some(prebuilt_embed_path) = resolve_prebuilt_embed_path(&manifest_dir) {
+        println!("cargo:rerun-if-changed={}", prebuilt_embed_path.display());
+        let embedded = copy_embedded_stage0(&prebuilt_embed_path, &out_dir);
+        println!(
+            "cargo:warning=fastboop-stage0 embed source: {}",
+            prebuilt_embed_path.display()
+        );
+        println!(
+            "cargo:rustc-env=FASTBOOP_STAGE0_EMBED_PATH={}",
+            embedded.display()
+        );
+        return;
+    }
+
     let workspace_root = manifest_dir
         .parent()
         .and_then(|p| p.parent())
@@ -13,12 +35,16 @@ fn main() {
         .to_path_buf();
 
     let stage0_manifest = workspace_root.join("stage0/Cargo.toml");
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     let target_dir = out_dir.join("stage0-target");
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let stage0_cargo = env::var("FASTBOOP_STAGE0_CARGO").unwrap_or_else(|_| cargo.clone());
+    let stage0_target = env::var("FASTBOOP_STAGE0_TARGET")
+        .unwrap_or_else(|_| "aarch64-unknown-linux-musl".to_string());
+    let stage0_target_env = stage0_target.replace('-', "_").to_ascii_uppercase();
+    let stage0_linker_env = format!("CARGO_TARGET_{stage0_target_env}_LINKER");
+    let stage0_rustflags_env = format!("CARGO_TARGET_{stage0_target_env}_RUSTFLAGS");
 
-    println!("cargo:rerun-if-env-changed=PROFILE");
     println!(
         "cargo:rerun-if-changed={}",
         workspace_root.join("stage0").display()
@@ -28,26 +54,23 @@ fn main() {
         workspace_root.join("Cargo.lock").display()
     );
 
-    let mut cmd = Command::new(cargo);
+    let mut cmd = Command::new(stage0_cargo);
     cmd.arg("build")
         .arg("--manifest-path")
         .arg(&stage0_manifest)
         .arg("--package")
         .arg("fastboop-stage0")
         .arg("--target")
-        .arg("aarch64-unknown-linux-musl")
+        .arg(&stage0_target)
         .arg("--target-dir")
         .arg(&target_dir)
         .arg("--locked");
 
-    // Always force rust-lld for the embedded cross-build so CI/user shell
-    // linker environment does not silently break the stage0 sub-build.
-    cmd.env("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER", "rust-lld");
-    if env::var_os("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS").is_none() {
-        cmd.env(
-            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS",
-            "-C target-feature=+crt-static",
-        );
+    if stage0_target == "aarch64-unknown-linux-musl" {
+        cmd.env(&stage0_linker_env, "rust-lld");
+    }
+    if env::var_os(&stage0_rustflags_env).is_none() {
+        cmd.env(&stage0_rustflags_env, "-C target-feature=+crt-static");
     }
 
     let profile_dir = match profile.as_str() {
@@ -90,20 +113,47 @@ fn main() {
     }
 
     let artifact = target_dir
-        .join("aarch64-unknown-linux-musl")
+        .join(&stage0_target)
         .join(profile_dir)
         .join("fastboop-stage0");
-    let embedded = out_dir.join("fastboop-stage0-embedded");
-    fs::copy(&artifact, &embedded).unwrap_or_else(|err| {
-        panic!(
-            "copy embedded stage0 {} -> {} failed: {err}",
-            artifact.display(),
-            embedded.display()
-        )
-    });
+    let embedded = copy_embedded_stage0(&artifact, &out_dir);
 
     println!(
         "cargo:rustc-env=FASTBOOP_STAGE0_EMBED_PATH={}",
         embedded.display()
     );
+}
+
+fn resolve_prebuilt_embed_path(manifest_dir: &Path) -> Option<PathBuf> {
+    let Some(value) = env::var_os("FASTBOOP_STAGE0_EMBED_PATH") else {
+        return None;
+    };
+
+    let configured = PathBuf::from(value);
+    let resolved = if configured.is_absolute() {
+        configured
+    } else {
+        manifest_dir.join(configured)
+    };
+
+    if !resolved.is_file() {
+        panic!(
+            "FASTBOOP_STAGE0_EMBED_PATH points to missing file: {}",
+            resolved.display()
+        );
+    }
+
+    Some(resolved)
+}
+
+fn copy_embedded_stage0(source: &Path, out_dir: &Path) -> PathBuf {
+    let embedded = out_dir.join("fastboop-stage0-embedded");
+    fs::copy(source, &embedded).unwrap_or_else(|err| {
+        panic!(
+            "copy embedded stage0 {} -> {} failed: {err}",
+            source.display(),
+            embedded.display()
+        )
+    });
+    embedded
 }

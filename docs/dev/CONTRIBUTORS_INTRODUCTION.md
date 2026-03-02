@@ -60,3 +60,4 @@ Then run path-specific checks from `HACKING.md` for whatever you touched.
 - [Device Profiles](DEVICE_PROFILES.md)
 - [Boot Profiles](BOOT_PROFILES.md)
 - [Stage0](STAGE0.md)
+- [Stage0 distribution](STAGE0_DISTRIBUTION.md)

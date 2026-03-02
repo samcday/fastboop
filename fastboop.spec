@@ -17,6 +17,13 @@ BuildRequires:  cargo-rpm-macros >= 24
 BuildRequires:  clang-devel
 BuildRequires:  pkgconfig(libusb-1.0)
 
+# Optional prebuilt stage0 artifact path (release asset flow):
+#   rpmbuild --define 'fastboop_stage0_embed_path /path/to/fastboop-stage0-aarch64-unknown-linux-musl' ...
+# If the define is omitted, %{_sourcedir}/fastboop-stage0-aarch64-unknown-linux-musl
+# is used when present.
+%global stage0_embed_asset fastboop-stage0-aarch64-unknown-linux-musl
+%global stage0_embed_default %{_sourcedir}/%{stage0_embed_asset}
+
 %description
 fastboop ephemerally boots Linux installations on pocket computers that expose
 a non-mutating USB-enabled bootloader interface (i.e. fastboot), without
@@ -34,6 +41,17 @@ flashing or permanently modifying the device.
 %endif
 
 %build
+stage0_embed_path="%{?fastboop_stage0_embed_path}"
+if [ -z "$stage0_embed_path" ] && [ -f "%{stage0_embed_default}" ]; then
+  stage0_embed_path="%{stage0_embed_default}"
+fi
+if [ -n "$stage0_embed_path" ]; then
+  if [ ! -f "$stage0_embed_path" ]; then
+    echo "FASTBOOP stage0 embed artifact not found: $stage0_embed_path" >&2
+    exit 1
+  fi
+  export FASTBOOP_STAGE0_EMBED_PATH="$stage0_embed_path"
+fi
 %cargo_build
 %cargo_vendor_manifest
 %{cargo_license_summary}

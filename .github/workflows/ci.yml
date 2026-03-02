@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -236,3 +236,90 @@ jobs:
         with:
           name: fastboop-${{ matrix.name }}
           path: target/${{ matrix.target }}/release/fastboop-cli
+
+  stage0-static:
+    name: Stage0 static (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    needs: check
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: fastboop-stage0-x86_64
+            target: x86_64-unknown-linux-musl
+            asset_name: fastboop-stage0-x86_64-unknown-linux-musl
+          - artifact: fastboop-stage0-aarch64
+            target: aarch64-unknown-linux-musl
+            asset_name: fastboop-stage0-aarch64-unknown-linux-musl
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools linux-libc-dev
+
+      - name: Set up musl kernel headers
+        run: |
+          sudo mkdir -p /usr/include/$(uname -m)-linux-musl
+          sudo ln -sf /usr/include/linux /usr/include/$(uname -m)-linux-musl/linux
+          sudo ln -sf /usr/include/asm-generic /usr/include/$(uname -m)-linux-musl/asm-generic
+          if [ -d /usr/include/$(uname -m)-linux-gnu/asm ]; then
+            sudo ln -sf /usr/include/$(uname -m)-linux-gnu/asm /usr/include/$(uname -m)-linux-musl/asm
+          elif [ -d /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm /usr/include/$(uname -m)-linux-musl/asm
+          fi
+          if [ ! -e /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm-generic /usr/include/asm
+          fi
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Preflight stage0 target support
+        run: |
+          set -euo pipefail
+          rustc --print target-list | grep -Fx "${{ matrix.target }}" >/dev/null
+
+      - name: Build stage0 (static musl)
+        run: |
+          set -euo pipefail
+          target_env="$(echo "${{ matrix.target }}" | tr '-' '_' | tr '[:lower:]' '[:upper:]')"
+          linker_var="CARGO_TARGET_${target_env}_LINKER"
+          rustflags_var="CARGO_TARGET_${target_env}_RUSTFLAGS"
+
+          export "${linker_var}=rust-lld"
+          export "${rustflags_var}=-C target-feature=+crt-static"
+
+          cargo build \
+            -p fastboop-stage0 \
+            --release \
+            --target "${{ matrix.target }}" \
+            --locked
+
+      - name: Verify stage0 binary is static
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/fastboop-stage0"
+          file "$bin"
+          file "$bin" | grep -Eq 'statically linked|static-pie linked'
+
+      - name: Stage stage0 release asset
+        run: |
+          set -euo pipefail
+          mkdir -p stage0-assets
+          cp "target/${{ matrix.target }}/release/fastboop-stage0" "stage0-assets/${{ matrix.asset_name }}"
+
+      - name: Upload stage0 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: stage0-assets/${{ matrix.asset_name }}

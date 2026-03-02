@@ -2,19 +2,21 @@ name: debian
 
 on:
   workflow_call:
+    inputs:
+      release_mode:
+        description: Release mode from orchestrator
+        required: false
+        type: string
+        default: none
   push:
     branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'debs')
+    if: inputs.release_mode == 'pr' || inputs.release_mode == 'tag' || github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'debs')
     name: Build .debs
     runs-on: ${{ matrix.runner }}
     container: debian:unstable
@@ -56,6 +58,21 @@ jobs:
           export PATH="$HOME/.cargo/bin:$PATH"
           rustup target add aarch64-unknown-linux-musl
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Download prebuilt stage0 artifact
+        if: inputs.release_mode == 'pr' || inputs.release_mode == 'tag'
+        uses: actions/download-artifact@v4
+        with:
+          name: fastboop-stage0-aarch64
+          path: ${{ github.workspace }}/stage0-artifacts
+
+      - name: Export prebuilt stage0 embed path
+        if: inputs.release_mode == 'pr' || inputs.release_mode == 'tag'
+        run: |
+          set -euo pipefail
+          stage0_path="${GITHUB_WORKSPACE}/stage0-artifacts/fastboop-stage0-aarch64-unknown-linux-musl"
+          test -f "$stage0_path"
+          echo "FASTBOOP_STAGE0_EMBED_PATH=$stage0_path" >> "$GITHUB_ENV"
 
       - name: Set up musl kernel headers
         run: |
