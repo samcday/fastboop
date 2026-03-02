@@ -3,6 +3,7 @@ name = "ui"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+publish = false
 
 [dependencies]
 dioxus = { workspace = true }

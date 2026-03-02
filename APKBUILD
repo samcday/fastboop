@@ -1,6 +1,6 @@
 # Maintainer: Sam Day <me@samcday.com>
 pkgname=fastboop
-pkgver=0.0.1_git
+pkgver=0.0.1_rc1_git
 pkgrel=0
 pkgdesc="Ephemeral Linux boot tool for USB-enabled pocket computers"
 url=https://github.com/samcday/fastboop

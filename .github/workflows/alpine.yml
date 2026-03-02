@@ -35,7 +35,7 @@ jobs:
           packages: alpine-sdk
 
       - uses: actions/download-artifact@v4
-        if: inputs.release_mode == 'pr' || inputs.release_mode == 'tag'
+        if: inputs.release_mode != '' && inputs.release_mode != 'none'
         with:
           name: fastboop-stage0-aarch64
           path: ${{ steps.alpine.outputs.root-path }}/tmp/stage0-artifacts

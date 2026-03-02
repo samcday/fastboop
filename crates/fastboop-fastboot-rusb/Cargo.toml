@@ -3,9 +3,11 @@ name = "fastboop-fastboot-rusb"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "rusb transport adapter for fastboop fastboot sessions."
 
 [dependencies]
-fastboop-core = { path = "../fastboop-core" }
+fastboop-core = { path = "../fastboop-core", version = ">=0.0.1-rc.1" }
 futures-channel = { workspace = true }
 futures-core = { workspace = true }
 rusb = "0.9.4"
