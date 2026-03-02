@@ -15,6 +15,7 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
 
     if let Some(prebuilt_embed_path) = resolve_prebuilt_embed_path(&manifest_dir) {
+        println!("cargo:rerun-if-changed={}", prebuilt_embed_path.display());
         let embedded = copy_embedded_stage0(&prebuilt_embed_path, &out_dir);
         println!(
             "cargo:warning=fastboop-stage0 embed source: {}",
