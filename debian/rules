@@ -15,10 +15,10 @@ override_dh_auto_build:
 
 override_dh_auto_install:
 	dh_auto_install
-	install -Dm0755 target/release/fastboop-cli \
+	install -Dm0755 target/release/fastboop \
 		debian/fastboop/usr/bin/fastboop
 
 override_dh_installman:
 	help2man -N -n "Ephemeral Linux boot tool for USB-enabled pocket computers" \
-		-o debian/fastboop.1 ./target/release/fastboop-cli
+		-o debian/fastboop.1 ./target/release/fastboop
 	dh_installman

@@ -252,8 +252,8 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
 
-          tar -C release-artifacts/fastboop-x86_64 -czf release-assets/fastboop-cli-x86_64-unknown-linux-musl.tar.gz fastboop-cli
-          tar -C release-artifacts/fastboop-aarch64 -czf release-assets/fastboop-cli-aarch64-unknown-linux-musl.tar.gz fastboop-cli
+          tar -C release-artifacts/fastboop-x86_64 -czf release-assets/fastboop-cli-x86_64-unknown-linux-musl.tar.gz fastboop
+          tar -C release-artifacts/fastboop-aarch64 -czf release-assets/fastboop-cli-aarch64-unknown-linux-musl.tar.gz fastboop
 
           cp release-artifacts/fastboop-stage0-x86_64/fastboop-stage0-x86_64-unknown-linux-musl release-assets/
           cp release-artifacts/fastboop-stage0-aarch64/fastboop-stage0-aarch64-unknown-linux-musl release-assets/

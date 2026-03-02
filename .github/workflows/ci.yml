@@ -231,7 +231,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fastboop-${{ matrix.name }}
-          path: target/${{ matrix.target }}/release/fastboop-cli
+          path: target/${{ matrix.target }}/release/fastboop
 
   stage0-static:
     name: Stage0 static (${{ matrix.target }})

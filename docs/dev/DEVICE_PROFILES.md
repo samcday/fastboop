@@ -4,7 +4,7 @@ Device Profiles (`DevPro`s) are fastboop's hardware playbook: they tell fastboop
 
 If you want concrete examples, start with the bundled profiles in [`devprofiles.d/`](https://github.com/samcday/fastboop/tree/main/devprofiles.d). Those built-ins are always loaded by fastboop (CLI, desktop, and web).
 
-For local authoring and iteration, `fastboop-cli` also loads profiles from:
+For local authoring and iteration, `fastboop` also loads profiles from:
 
 - colon-separated directories listed in `$FASTBOOP_SCHEMA_PATH`
 - `$XDG_CONFIG_HOME/fastboop/devpro` (or `~/.config/fastboop/devpro`)

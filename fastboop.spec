@@ -6,7 +6,7 @@
 %endif
 
 Name:           fastboop
-Version:        0.0.1_rc4
+Version:        0.0.1_rc5
 Release:        %autorelease
 Summary:        Ephemeral Linux boot tool for USB-enabled pocket computers
 License:        GPL-3.0-only
@@ -58,7 +58,7 @@ fi
 %{cargo_license} > LICENSE.dependencies
 
 %install
-install -Dpm0755 target/rpm/fastboop-cli \
+install -Dpm0755 target/rpm/fastboop \
     %{buildroot}%{_bindir}/fastboop
 
 %if %{with check}

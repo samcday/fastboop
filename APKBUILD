@@ -1,6 +1,6 @@
 # Maintainer: Sam Day <me@samcday.com>
 pkgname=fastboop
-pkgver=0.0.1_rc4_git
+pkgver=0.0.1_rc5_git
 pkgrel=0
 pkgdesc="Ephemeral Linux boot tool for USB-enabled pocket computers"
 url=https://github.com/samcday/fastboop
@@ -44,7 +44,7 @@ check() {
 package() {
 	local target_dir="$_cargo_target_dir/release"
 
-	install -Dm755 "$target_dir"/fastboop-cli "$pkgdir"/usr/bin/fastboop
+	install -Dm755 "$target_dir"/fastboop "$pkgdir"/usr/bin/fastboop
 }
 
 sha512sums=""
