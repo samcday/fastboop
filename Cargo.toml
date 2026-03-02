@@ -15,10 +15,11 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.1-rc.1"
 rust-version = "1.88"
 edition = "2024"
 license = "GPL-3.0-only"
+repository = "https://github.com/samcday/fastboop"
 
 [workspace.dependencies]
 dioxus = { version = "0.7.1" }

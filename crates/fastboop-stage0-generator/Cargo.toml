@@ -3,10 +3,12 @@ name = "fastboop-stage0-generator"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Builds fastboop stage0 payloads from upstream rootfs artifacts."
 
 [dependencies]
 dtoolkit = { version = "0.1.1", features = ["write"] }
-fastboop-core = { path = "../fastboop-core" }
+fastboop-core = { path = "../fastboop-core", version = ">=0.0.1-rc.1" }
 gobblytes-core = { version = ">=0.0.1-rc.8" }
 futures-util = { workspace = true, features = ["alloc"] }
 miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }

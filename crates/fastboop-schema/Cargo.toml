@@ -3,6 +3,8 @@ name = "fastboop-schema"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Schema types for fastboop device and boot profiles."
 
 [dependencies]
 serde = { version = "1.0.217", default-features = false, features = ["derive", "alloc"] }

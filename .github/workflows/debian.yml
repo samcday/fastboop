@@ -60,14 +60,14 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Download prebuilt stage0 artifact
-        if: inputs.release_mode == 'pr' || inputs.release_mode == 'tag'
+        if: inputs.release_mode != '' && inputs.release_mode != 'none'
         uses: actions/download-artifact@v4
         with:
           name: fastboop-stage0-aarch64
           path: ${{ github.workspace }}/stage0-artifacts
 
       - name: Export prebuilt stage0 embed path
-        if: inputs.release_mode == 'pr' || inputs.release_mode == 'tag'
+        if: inputs.release_mode != '' && inputs.release_mode != 'none'
         run: |
           set -euo pipefail
           stage0_path="${GITHUB_WORKSPACE}/stage0-artifacts/fastboop-stage0-aarch64-unknown-linux-musl"

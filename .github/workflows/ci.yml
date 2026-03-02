@@ -9,10 +9,6 @@ on:
     types: [published]
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
 
@@ -278,7 +274,6 @@ jobs:
           if [ ! -e /usr/include/asm ]; then
             sudo ln -sf /usr/include/asm-generic /usr/include/asm
           fi
-
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
