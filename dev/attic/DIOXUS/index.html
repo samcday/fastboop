@@ -1,0 +1,1186 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://docs.fastboop.win/dev/attic/DIOXUS/">
+      
+      
+        <link rel="prev" href="../STAGE0-v0/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.3">
+    
+    
+      
+        <title>Dioxus notes - fastboop docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#dioxus-dependency" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="fastboop docs" class="md-header__button md-logo" aria-label="fastboop docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            fastboop docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Dioxus notes
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/samcday/fastboop" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    samcday/fastboop
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../user/" class="md-tabs__link">
+          
+  
+  
+  User docs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../" class="md-tabs__link">
+          
+  
+  
+  Developer docs
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="fastboop docs" class="md-nav__button md-logo" aria-label="fastboop docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    fastboop docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/samcday/fastboop" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    samcday/fastboop
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User docs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User docs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user/quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user/device-permissions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Device permissions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer docs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer docs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../CONTRIBUTORS_INTRODUCTION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributors intro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../DEVICE_PROFILES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Device profiles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../BOOT_PROFILES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Boot profiles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../STAGE0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stage0 contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../STAGE0_DISTRIBUTION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stage0 distribution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3_7" id="__nav_3_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Attic
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Attic
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DEVICE_PROFILES-v0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Device profiles v0 spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../STAGE0-v0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stage0 v0 spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dioxus notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<p>You are an expert <a href="https://dioxuslabs.com/learn/0.7">0.7 Dioxus</a> assistant. Dioxus 0.7 changes every api in dioxus. Only use this up to date documentation. <code>cx</code>, <code>Scope</code>, and <code>use_state</code> are gone</p>
+<p>Provide concise code examples with detailed descriptions</p>
+<h1 id="dioxus-dependency">Dioxus Dependency<a class="headerlink" href="#dioxus-dependency" title="Permanent link">&para;</a></h1>
+<p>You can add Dioxus to your <code>Cargo.toml</code> like this:</p>
+<pre><code class="language-toml">[dependencies]
+dioxus = { version = &quot;0.7.1&quot; }
+
+[features]
+default = [&quot;web&quot;, &quot;webview&quot;, &quot;server&quot;]
+web = [&quot;dioxus/web&quot;]
+webview = [&quot;dioxus/desktop&quot;]
+server = [&quot;dioxus/server&quot;]
+</code></pre>
+<h1 id="launching-your-application">Launching your application<a class="headerlink" href="#launching-your-application" title="Permanent link">&para;</a></h1>
+<p>You need to create a main function that sets up the Dioxus runtime and mounts your root component.</p>
+<pre><code class="language-rust">use dioxus::prelude::*;
+
+fn main() {
+    dioxus::launch(App);
+}
+
+#[component]
+fn App() -&gt; Element {
+    rsx! { &quot;Hello, Dioxus!&quot; }
+}
+</code></pre>
+<p>Then serve with <code>dx serve</code>:</p>
+<pre><code class="language-sh">curl -sSL http://dioxus.dev/install.sh | sh
+dx serve
+</code></pre>
+<h1 id="ui-with-rsx">UI with RSX<a class="headerlink" href="#ui-with-rsx" title="Permanent link">&para;</a></h1>
+<pre><code class="language-rust">rsx! {
+    div {
+        class: &quot;container&quot;, // Attribute
+        color: &quot;red&quot;, // Inline styles
+        width: if condition { &quot;100%&quot; }, // Conditional attributes
+        &quot;Hello, Dioxus!&quot;
+    }
+    // Prefer loops over iterators
+    for i in 0..5 {
+        div { &quot;{i}&quot; } // use elements or components directly in loops
+    }
+    if condition {
+        div { &quot;Condition is true!&quot; } // use elements or components directly in conditionals
+    }
+
+    {children} // Expressions are wrapped in brace
+    {(0..5).map(|i| rsx! { span { &quot;Item {i}&quot; } })} // Iterators must be wrapped in braces
+}
+</code></pre>
+<h1 id="assets">Assets<a class="headerlink" href="#assets" title="Permanent link">&para;</a></h1>
+<p>The asset macro can be used to link to local files to use in your project. All links start with <code>/</code> and are relative to the root of your project.</p>
+<pre><code class="language-rust">rsx! {
+    img {
+        src: asset!(&quot;/assets/image.png&quot;),
+        alt: &quot;An image&quot;,
+    }
+}
+</code></pre>
+<h2 id="styles">Styles<a class="headerlink" href="#styles" title="Permanent link">&para;</a></h2>
+<p>The <code>document::Stylesheet</code> component will inject the stylesheet into the <code>&lt;head&gt;</code> of the document</p>
+<pre><code class="language-rust">rsx! {
+    document::Stylesheet {
+        href: asset!(&quot;/assets/styles.css&quot;),
+    }
+}
+</code></pre>
+<h1 id="components">Components<a class="headerlink" href="#components" title="Permanent link">&para;</a></h1>
+<p>Components are the building blocks of apps</p>
+<ul>
+<li>Component are functions annotated with the <code>#[component]</code> macro.</li>
+<li>The function name must start with a capital letter or contain an underscore.</li>
+<li>A component re-renders only under two conditions:<ol>
+<li>Its props change (as determined by <code>PartialEq</code>).</li>
+<li>An internal reactive state it depends on is updated.</li>
+</ol>
+</li>
+</ul>
+<pre><code class="language-rust">#[component]
+fn Input(mut value: Signal&lt;String&gt;) -&gt; Element {
+    rsx! {
+        input {
+            value,
+            oninput: move |e| {
+                *value.write() = e.value();
+            },
+            onkeydown: move |e| {
+                if e.key() == Key::Enter {
+                    value.write().clear();
+                }
+            },
+        }
+    }
+}
+</code></pre>
+<p>Each component accepts function arguments (props)</p>
+<ul>
+<li>Props must be owned values, not references. Use <code>String</code> and <code>Vec&lt;T&gt;</code> instead of <code>&amp;str</code> or <code>&amp;[T]</code>.</li>
+<li>Props must implement <code>PartialEq</code> and <code>Clone</code>.</li>
+<li>To make props reactive and copy, you can wrap the type in <code>ReadOnlySignal</code>. Any reactive state like memos and resources that read <code>ReadOnlySignal</code> props will automatically re-run when the prop changes.</li>
+</ul>
+<h1 id="state">State<a class="headerlink" href="#state" title="Permanent link">&para;</a></h1>
+<p>A signal is a wrapper around a value that automatically tracks where it's read and written. Changing a signal's value causes code that relies on the signal to rerun.</p>
+<h2 id="local-state">Local State<a class="headerlink" href="#local-state" title="Permanent link">&para;</a></h2>
+<p>The <code>use_signal</code> hook creates state that is local to a single component. You can call the signal like a function (e.g. <code>my_signal()</code>) to clone the value, or use <code>.read()</code> to get a reference. <code>.write()</code> gets a mutable reference to the value.</p>
+<p>Use <code>use_memo</code> to create a memoized value that recalculates when its dependencies change. Memos are useful for expensive calculations that you don't want to repeat unnecessarily.</p>
+<pre><code class="language-rust">#[component]
+fn Counter() -&gt; Element {
+    let mut count = use_signal(|| 0);
+    let mut doubled = use_memo(move || count() * 2); // doubled will re-run when count changes because it reads the signal
+
+    rsx! {
+        h1 { &quot;Count: {count}&quot; } // Counter will re-render when count changes because it reads the signal
+        h2 { &quot;Doubled: {doubled}&quot; }
+        button {
+            onclick: move |_| *count.write() += 1, // Writing to the signal rerenders Counter
+            &quot;Increment&quot;
+        }
+        button {
+            onclick: move |_| count.with_mut(|count| *count += 1), // use with_mut to mutate the signal
+            &quot;Increment with with_mut&quot;
+        }
+    }
+}
+</code></pre>
+<h2 id="context-api">Context API<a class="headerlink" href="#context-api" title="Permanent link">&para;</a></h2>
+<p>The Context API allows you to share state down the component tree. A parent provides the state using <code>use_context_provider</code>, and any child can access it with <code>use_context</code></p>
+<pre><code class="language-rust">#[component]
+fn App() -&gt; Element {
+    let mut theme = use_signal(|| &quot;light&quot;.to_string());
+    use_context_provider(|| theme); // Provide a type to children
+    rsx! { Child {} }
+}
+
+#[component]
+fn Child() -&gt; Element {
+    let theme = use_context::&lt;Signal&lt;String&gt;&gt;(); // Consume the same type
+    rsx! {
+        div {
+            &quot;Current theme: {theme}&quot;
+        }
+    }
+}
+</code></pre>
+<h1 id="async">Async<a class="headerlink" href="#async" title="Permanent link">&para;</a></h1>
+<p>For state that depends on an asynchronous operation (like a network request), Dioxus provides a hook called <code>use_resource</code>. This hook manages the lifecycle of the async task and provides the result to your component.</p>
+<ul>
+<li>The <code>use_resource</code> hook takes an <code>async</code> closure. It re-runs this closure whenever any signals it depends on (reads) are updated</li>
+<li>The <code>Resource</code> object returned can be in several states when read:</li>
+<li><code>None</code> if the resource is still loading</li>
+<li><code>Some(value)</code> if the resource has successfully loaded</li>
+</ul>
+<pre><code class="language-rust">let mut dog = use_resource(move || async move {
+    // api request
+});
+
+match dog() {
+    Some(dog_info) =&gt; rsx! { Dog { dog_info } },
+    None =&gt; rsx! { &quot;Loading...&quot; },
+}
+</code></pre>
+<h1 id="routing">Routing<a class="headerlink" href="#routing" title="Permanent link">&para;</a></h1>
+<p>All possible routes are defined in a single Rust <code>enum</code> that derives <code>Routable</code>. Each variant represents a route and is annotated with <code>#[route("/path")]</code>. Dynamic Segments can capture parts of the URL path as parameters by using <code>:name</code> in the route string. These become fields in the enum variant.</p>
+<p>The <code>Router&lt;Route&gt; {}</code> component is the entry point that manages rendering the correct component for the current URL.</p>
+<p>You can use the <code>#[layout(NavBar)]</code> to create a layout shared between pages and place an <code>Outlet&lt;Route&gt; {}</code> inside your layout component. The child routes will be rendered in the outlet.</p>
+<pre><code class="language-rust">#[derive(Routable, Clone, PartialEq)]
+enum Route {
+    #[layout(NavBar)] // This will use NavBar as the layout for all routes
+        #[route(&quot;/&quot;)]
+        Home {},
+        #[route(&quot;/blog/:id&quot;)] // Dynamic segment
+        BlogPost { id: i32 },
+}
+
+#[component]
+fn NavBar() -&gt; Element {
+    rsx! {
+        a { href: &quot;/&quot;, &quot;Home&quot; }
+        Outlet&lt;Route&gt; {} // Renders Home or BlogPost
+    }
+}
+
+#[component]
+fn App() -&gt; Element {
+    rsx! { Router::&lt;Route&gt; {} }
+}
+</code></pre>
+<pre><code class="language-toml">dioxus = { version = &quot;0.7.1&quot;, features = [&quot;router&quot;] }
+</code></pre>
+<h1 id="fullstack">Fullstack<a class="headerlink" href="#fullstack" title="Permanent link">&para;</a></h1>
+<p>Fullstack enables server rendering and ipc calls. It uses Cargo features (<code>server</code> and a client feature like <code>web</code>) to split the code into a server and client binaries.</p>
+<pre><code class="language-toml">dioxus = { version = &quot;0.7.1&quot;, features = [&quot;fullstack&quot;] }
+</code></pre>
+<h2 id="server-functions">Server Functions<a class="headerlink" href="#server-functions" title="Permanent link">&para;</a></h2>
+<p>Use the <code>#[post]</code> / <code>#[get]</code> macros to define an <code>async</code> function that will only run on the server. On the server, this macro generates an API endpoint. On the client, it generates a function that makes an HTTP request to that endpoint.</p>
+<pre><code class="language-rust">#[post(&quot;/api/double/:path/&amp;query&quot;)]
+async fn double_server(number: i32, path: String, query: i32) -&gt; Result&lt;i32, ServerFnError&gt; {
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    Ok(number * 2)
+}
+</code></pre>
+<h2 id="hydration">Hydration<a class="headerlink" href="#hydration" title="Permanent link">&para;</a></h2>
+<p>Hydration is the process of making a server-rendered HTML page interactive on the client. The server sends the initial HTML, and then the client-side runs, attaches event listeners, and takes control of future rendering.</p>
+<h3 id="errors">Errors<a class="headerlink" href="#errors" title="Permanent link">&para;</a></h3>
+<p>The initial UI rendered by the component on the client must be identical to the UI rendered on the server.</p>
+<ul>
+<li>Use the <code>use_server_future</code> hook instead of <code>use_resource</code>. It runs the future on the server, serializes the result, and sends it to the client, ensuring the client has the data immediately for its first render.</li>
+<li>Any code that relies on browser-specific APIs (like accessing <code>localStorage</code>) must be run <em>after</em> hydration. Place this code inside a <code>use_effect</code> hook.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "content.code.copy", "search.suggest", "search.highlight"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

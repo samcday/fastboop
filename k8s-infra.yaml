@@ -1,0 +1,121 @@
+schema_version: 1
+title: fastboop k8s and fastboop.win infrastructure guide
+purpose: >-
+  Operational context and invariants for changes under infra/k8s and tasks
+  involving any *.fastboop.win infrastructure.
+
+read_contract:
+  required_when:
+    - touching_path_glob: infra/k8s/**
+    - task_mentions_domain_glob: '*.fastboop.win'
+    - task_mentions:
+        - bleeding.fastboop.win
+        - flux.fastboop.win
+        - matrix.fastboop.win
+
+topology:
+  parent_cluster:
+    repo: ~/src/infra
+    reconciler: Flux kustomize-controller
+    source:
+      kind: Kustomization
+      namespace: flux-system
+      name: fastboop
+      path: hub/cluster/fastboop
+    role: >-
+      Manages the fastboop child control-plane stack and bootstrap resources.
+  child_cluster:
+    repo: this repository (samcday/fastboop)
+    reconciler: Flux kustomize-controller
+    source:
+      kind: GitRepository
+      namespace: flux-system
+      name: fastboop
+      url: https://github.com/samcday/fastboop
+    kustomization:
+      kind: Kustomization
+      namespace: flux-system
+      name: fastboop
+      path: ./infra/k8s
+      interval: 5m
+    role: >-
+      Owns app, networking, and routing manifests for fastboop public endpoints.
+
+ingress_dns_tls:
+  frontdoor:
+    component: infra/k8s/frontdoor
+    deployment: frontdoor/frontdoor
+    service: frontdoor/frontdoor
+    proxy: caddy
+    listeners:
+      - HTTP :80 (redirect to HTTPS)
+      - HTTPS :443 (TLS terminate)
+  dns:
+    managed_by: external-dns
+    source: Service annotations on frontdoor/frontdoor
+    current_hostnames:
+      - fastboop.win
+      - www.fastboop.win
+      - flux.fastboop.win
+      - matrix.fastboop.win
+  tls:
+    certificate: frontdoor/frontdoor-tls
+    issuer: ClusterIssuer/letsencrypt
+  web_release_app:
+    component: infra/k8s/fastboop-web
+    deployment: fastboop-web/fastboop-web
+    service: fastboop-web/fastboop-web
+    host: www.fastboop.win
+    route_contract:
+      - / serves the configured live release version.
+      - /vX.Y.Z(-rc.N)/ serves that explicit tagged release.
+      - release bundles are lazy-fetched and extracted from GitHub release assets.
+    release_asset:
+      source_repo: samcday/fastboop
+      name_template: fastboop-web-{version}.tar.gz
+      live_version_file: infra/k8s/fastboop-web/live-version.txt
+      live_version_source: .github/workflows/ci.yml release event pushes this pin to main
+
+gha_proxy:
+  namespace: gha-proxy
+  route:
+    hostname: fastboop.win
+    path: /gha/<org>/<repo>/<runid>
+  contract:
+    - repo must be allow-listed
+    - run must resolve to exactly one active GitHub Actions artifact
+    - artifact zip must contain exactly one non-directory file entry
+    - serve that inner file with CORS and single-range support
+  compatibility_paths:
+    - bleeding.fastboop.win/pocketblue/gha/<runid>/<artifact-name>[.zip]
+    - bleeding.fastboop.win/live-pocket-fedora/gha/<runid>/<artifact-name>[.zip]
+
+fastboop_apex_redirects:
+  host: fastboop.win
+  rules:
+    - path_prefix: /device-permissions
+      target: https://docs.fastboop.win/user/device-permissions/
+    - path_prefix: /
+      target: https://www.fastboop.win{path}
+
+layout_and_conventions:
+  - Put each deployable in infra/k8s/<component>/ with its own kustomization.yaml.
+  - Add new component directories to infra/k8s/kustomization.yaml resources.
+  - Add required namespaces to infra/k8s/namespaces.yaml.
+  - Store secrets in infra/k8s as SOPS-encrypted manifests.
+  - Keep external DNS behavior explicit via annotations on Service resources.
+  - Keep frontdoor Caddyfile as the single source of public host/path routing.
+  - Keep fastboop-web live version pin in infra/k8s/fastboop-web/live-version.txt.
+
+secrets_and_encryption:
+  sops_config: infra/k8s/.sops.yaml
+  encrypted_regex: ^(data|stringData)$
+
+scope_boundaries:
+  - Kubernetes-hosted *.fastboop.win routing belongs in infra/k8s.
+  - bleeding.fastboop.win Cloudflare bootstrap infra currently lives in infra/tofu.
+  - Changes spanning infra/k8s and infra/tofu are cross-domain changes.
+
+validation:
+  local_render: kustomize build infra/k8s
+  child_cluster_reconcile: kubectl get kustomization -n flux-system fastboop

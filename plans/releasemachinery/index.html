@@ -1,0 +1,1281 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://docs.fastboop.win/plans/releasemachinery/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.3">
+    
+    
+      
+        <title>Release Machinery Plan (first pass) - fastboop docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#release-machinery-plan-first-pass" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="fastboop docs" class="md-header__button md-logo" aria-label="fastboop docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            fastboop docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Release Machinery Plan (first pass)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/samcday/fastboop" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    samcday/fastboop
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../user/" class="md-tabs__link">
+          
+  
+  
+  User docs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../dev/" class="md-tabs__link">
+          
+  
+  
+  Developer docs
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="fastboop docs" class="md-nav__button md-logo" aria-label="fastboop docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    fastboop docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/samcday/fastboop" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    samcday/fastboop
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User docs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User docs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user/quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user/device-permissions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Device permissions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer docs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer docs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../dev/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../dev/CONTRIBUTORS_INTRODUCTION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributors intro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../dev/DEVICE_PROFILES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Device profiles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../dev/BOOT_PROFILES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Boot profiles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../dev/STAGE0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stage0 contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../dev/STAGE0_DISTRIBUTION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stage0 distribution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_7" id="__nav_3_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Attic
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Attic
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../dev/attic/DEVICE_PROFILES-v0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Device profiles v0 spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../dev/attic/STAGE0-v0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stage0 v0 spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../dev/attic/DIOXUS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dioxus notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#goal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Goal
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#current-state-baseline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current State (baseline)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#first-pass-decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        First-Pass Decisions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#release-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Release Contract
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Release Contract">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#version-and-ref-forms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Version and ref forms
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mode-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mode gate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#artifact-set-first-pass" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artifact set (first pass)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scope-first-pass" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope (first pass)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-first-pass" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of Scope (first pass)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#release-plz-release-please-positioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        release-plz / release-please Positioning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementation-sketch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementation Sketch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#secrets-and-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Secrets and Access
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation Plan
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#acceptance-criteria" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acceptance Criteria
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#follow-up-after-canonical-repo-rcs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Follow-up After Canonical Repo RCs
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="release-machinery-plan-first-pass">Release Machinery Plan (first pass)<a class="headerlink" href="#release-machinery-plan-first-pass" title="Permanent link">&para;</a></h1>
+<h2 id="goal">Goal<a class="headerlink" href="#goal" title="Permanent link">&para;</a></h2>
+<p>Stand up a reliable <code>0.0.1-rc.N</code> -&gt; <code>0.0.1</code> release pipeline for fastboop that:</p>
+<ul>
+<li>publishes GitHub Releases with downstream-consumable artifacts (<code>.deb</code>, <code>.apk</code>, binary tarballs),</li>
+<li>supports rehearsal via <code>release/v*</code> PRs before tagging,</li>
+<li>keeps crates.io publishing sane while <code>smoo</code> and <code>gibblox</code> are being peeled back to canonical repos.</li>
+</ul>
+<p>This first pass is intentionally pragmatic: artifact release orchestration now, full crates.io automation after subtree split work lands.</p>
+<h2 id="current-state-baseline">Current State (baseline)<a class="headerlink" href="#current-state-baseline" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>.github/workflows/release.yml</code> is tag-only and only creates a release shell.</li>
+<li><code>.github/workflows/ci.yml</code> builds/tests and can upload release binaries only on <code>release: published</code> events.</li>
+<li><code>.github/workflows/debian.yml</code> builds <code>.deb</code> artifacts for CI contexts.</li>
+<li><code>.github/workflows/alpine.yml</code> builds <code>.apk</code> artifacts and uploads on <code>release: published</code>.</li>
+<li><code>just bump</code> exists, but it is not yet semver-rc aware for distro-specific version formats.</li>
+</ul>
+<h2 id="first-pass-decisions">First-Pass Decisions<a class="headerlink" href="#first-pass-decisions" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Keep a <strong>single orchestrator</strong> in fastboop (<code>.github/workflows/release.yml</code>) that decides release mode and coordinates artifact jobs.</li>
+<li>Use <strong>two modes</strong>:</li>
+<li><code>tag</code> mode: triggered by <code>v*</code> tags, creates/publishes the real GitHub Release.</li>
+<li><code>pr</code> mode: triggered by <code>release/v*</code> PRs from same repo, builds and verifies release payload without publishing.</li>
+<li>Treat <code>-rc.N</code> as prerelease everywhere release metadata needs it.</li>
+<li>Defer cross-workspace crates.io publishing (<code>fastboop</code> + vendored <code>smoo</code> + vendored <code>gibblox</code>) until canonical repo prereleases exist and dependency edges are clean.</li>
+</ul>
+<h2 id="release-contract">Release Contract<a class="headerlink" href="#release-contract" title="Permanent link">&para;</a></h2>
+<h3 id="version-and-ref-forms">Version and ref forms<a class="headerlink" href="#version-and-ref-forms" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Release branch: <code>release/vX.Y.Z</code> or <code>release/vX.Y.Z-rc.N</code></li>
+<li>Release tag: <code>vX.Y.Z</code> or <code>vX.Y.Z-rc.N</code></li>
+<li>Prerelease detection: semver suffix <code>-rc.N</code></li>
+</ul>
+<h3 id="mode-gate">Mode gate<a class="headerlink" href="#mode-gate" title="Permanent link">&para;</a></h3>
+<p>Release orchestration is enabled only when:</p>
+<ul>
+<li>event is <code>push</code> and ref is a matching <code>v*</code> tag, or</li>
+<li>event is <code>pull_request</code> and head ref matches <code>release/vX.Y.Z(-rc.N)?</code> from the same repository.</li>
+</ul>
+<h3 id="artifact-set-first-pass">Artifact set (first pass)<a class="headerlink" href="#artifact-set-first-pass" title="Permanent link">&para;</a></h3>
+<ul>
+<li>static CLI binaries bundled as tarballs (at least <code>x86_64-unknown-linux-musl</code>, <code>aarch64-unknown-linux-musl</code>)</li>
+<li>Debian packages: <code>debs/*.deb</code></li>
+<li>Alpine packages: <code>packages/*.apk</code></li>
+<li>packaging metadata: <code>APKBUILD</code></li>
+<li>checksum manifest for uploaded artifacts (<code>SHA256SUMS</code>)</li>
+</ul>
+<p>PR mode verifies this full set exists. Tag mode uploads the same set to the GitHub Release.</p>
+<h2 id="scope-first-pass">Scope (first pass)<a class="headerlink" href="#scope-first-pass" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Release orchestrator upgrade</strong></li>
+<li>Replace current minimal <code>.github/workflows/release.yml</code> with phrog-style gate + fan-out + fan-in structure.</li>
+<li>
+<p>Include <code>pass</code> job and publish-only-on-success behavior.</p>
+</li>
+<li>
+<p><strong>Artifact fan-out wiring</strong></p>
+</li>
+<li>Reuse existing build logic from current CI/debian/alpine workflows where practical.</li>
+<li>
+<p>If reuse needs <code>workflow_call</code>, refactor those workflows minimally to support both standalone CI and orchestration.</p>
+</li>
+<li>
+<p><strong>PR rehearsal behavior</strong></p>
+</li>
+<li>
+<p><code>release/v*</code> PRs run the release pipeline in dry-run style:</p>
+<ul>
+<li>no GitHub Release publication,</li>
+<li>no crates.io publication,</li>
+<li>artifact completeness verification only.</li>
+</ul>
+</li>
+<li>
+<p><strong>Tag publish behavior</strong></p>
+</li>
+<li><code>v*</code> tags create draft release (prerelease flag derived from version),</li>
+<li>upload artifacts,</li>
+<li>
+<p>publish draft only after all required jobs are green.</p>
+</li>
+<li>
+<p><strong>Version bump helper hardening</strong></p>
+</li>
+<li>Upgrade <code>just bump</code> semantics to map semver prerelease forms correctly:<ul>
+<li>Cargo: <code>0.0.1-rc.1</code></li>
+<li>RPM/APK version fields: <code>0.0.1_rc1</code> where required by packaging constraints</li>
+<li>Debian changelog version: <code>0.0.1~rc1</code></li>
+</ul>
+</li>
+</ol>
+<h2 id="out-of-scope-first-pass">Out of Scope (first pass)<a class="headerlink" href="#out-of-scope-first-pass" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Enabling crates.io publish for all vendored subtree crates from fastboop.</li>
+<li>Full <code>release-plz</code> ownership in this repository.</li>
+<li>Auto-generated release PRs/issues as the source of truth for versioning.</li>
+<li>Any compatibility shims/migration aliases (project remains unreleased policy).</li>
+</ul>
+<h2 id="release-plz-release-please-positioning">release-plz / release-please Positioning<a class="headerlink" href="#release-plz-release-please-positioning" title="Permanent link">&para;</a></h2>
+<p>For this repo shape, use them as helpers, not the conductor:</p>
+<ul>
+<li><strong>Now (first pass):</strong> orchestrated GitHub release + packaging assets in fastboop; crates publishing deferred.</li>
+<li><strong>During subtree peel-out:</strong> publish <code>smoo</code> and <code>gibblox</code> prereleases from canonical repos.</li>
+<li><strong>After peel-out stabilizes:</strong> introduce <code>release-plz</code> where dependency graph and publish order are clean.</li>
+</ul>
+<p>Rationale: fastboop currently has many path-linked edges into vendored workspaces; reliable crates.io automation needs canonical published versions first.</p>
+<h2 id="implementation-sketch">Implementation Sketch<a class="headerlink" href="#implementation-sketch" title="Permanent link">&para;</a></h2>
+<p>Target job graph in <code>.github/workflows/release.yml</code>:</p>
+<ol>
+<li><code>gate</code> -&gt; decide <code>enabled</code>, <code>mode</code>, <code>prerelease</code></li>
+<li><code>release</code> -&gt; create draft (tag mode) or skip creation (PR mode)</li>
+<li><code>build-binaries</code>, <code>debian</code>, <code>alpine</code> -&gt; produce artifacts</li>
+<li><code>publish-assets</code> -&gt; upload to release in tag mode; verify payload in PR mode</li>
+<li><code>pass</code> -&gt; aggregate required checks</li>
+<li><code>publish-release</code> -&gt; undraft release after successful <code>pass</code> (tag mode only)</li>
+</ol>
+<h2 id="secrets-and-access">Secrets and Access<a class="headerlink" href="#secrets-and-access" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>RELEASE_GITHUB_TOKEN</code> for release/tag operations that need elevated permissions.</li>
+<li><code>GITHUB_TOKEN</code> for normal artifact and PR operations.</li>
+<li><code>CARGO_REGISTRY_TOKEN</code> is intentionally not required in first pass (no crates publish yet).</li>
+</ul>
+<h2 id="validation-plan">Validation Plan<a class="headerlink" href="#validation-plan" title="Permanent link">&para;</a></h2>
+<p>For release-machinery edits:</p>
+<ul>
+<li>Tier 0:</li>
+<li><code>cargo fmt</code></li>
+<li>targeted checks only if Rust code changes</li>
+<li>Workflow verification:</li>
+<li>syntax sanity via CI run on a throwaway <code>release/v0.0.1-rc.1</code> PR branch</li>
+<li>confirm PR mode verifies complete artifact set</li>
+<li>confirm tag mode creates draft, uploads assets, then publishes after pass</li>
+</ul>
+<p>If workflow behavior cannot be fully verified in-session (no remote actions execution), report explicitly and leave an operator checklist.</p>
+<h2 id="acceptance-criteria">Acceptance Criteria<a class="headerlink" href="#acceptance-criteria" title="Permanent link">&para;</a></h2>
+<ul>
+<li>A <code>release/v0.0.1-rc.1</code> PR exercises full release artifact flow without publishing a release.</li>
+<li>A <code>v0.0.1-rc.1</code> tag produces a GitHub prerelease with all expected assets.</li>
+<li>A <code>v0.0.1</code> tag produces a non-prerelease GitHub release with the same artifact families.</li>
+<li>Pipeline fails loudly when any artifact family is missing.</li>
+<li>No crates.io publish side effects occur from fastboop first-pass machinery.</li>
+</ul>
+<h2 id="follow-up-after-canonical-repo-rcs">Follow-up After Canonical Repo RCs<a class="headerlink" href="#follow-up-after-canonical-repo-rcs" title="Permanent link">&para;</a></h2>
+<p>Once <code>smoo</code> and <code>gibblox</code> canonical prereleases are in place and fastboop consumes registry versions where needed:</p>
+<ul>
+<li>add publish dry-runs in PR mode,</li>
+<li>add real crates.io publish in tag mode,</li>
+<li>decide whether <code>release-plz</code> becomes authoritative for version/changelog/publish automation.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "content.code.copy", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
