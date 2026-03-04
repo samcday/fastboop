@@ -4,7 +4,7 @@ use dioxus::web::WebFileExt;
 #[cfg(target_arch = "wasm32")]
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
-use js_sys::{decode_uri_component, Reflect};
+use js_sys::Reflect;
 #[cfg(target_arch = "wasm32")]
 use std::collections::BTreeSet;
 use ui::{
@@ -40,7 +40,6 @@ use tracing::{debug, info, warn};
 
 #[cfg(target_arch = "wasm32")]
 const STARTUP_CHANNEL_FILE_PICKER_ID: &str = "startup-channel-file-picker";
-const CLI_BOOT_CHANNEL_HINT_FALLBACK: &str = "<channel-url>";
 
 #[component]
 pub fn Home() -> Element {
@@ -143,8 +142,6 @@ pub fn Home() -> Element {
 
     #[cfg(target_arch = "wasm32")]
     let webusb_supported = webusb_supported();
-
-    let channel_hint = cli_boot_channel_hint();
 
     #[cfg(target_arch = "wasm32")]
     let show_unsupported = !webusb_supported;
@@ -432,7 +429,9 @@ pub fn Home() -> Element {
 
     rsx! {
         if show_unsupported {
-            WebUnsupported { channel: channel_hint }
+            WebUnsupported {
+                channel: startup_channel.clone(),
+            }
         } else {
             Hero {
                 state,
@@ -643,39 +642,6 @@ async fn probe_fastboot_devices(
         &candidates,
         |_| None,
     )
-}
-
-#[cfg(target_arch = "wasm32")]
-fn cli_boot_channel_hint() -> String {
-    let search = web_sys::window()
-        .and_then(|window| window.location().search().ok())
-        .unwrap_or_default();
-    parse_query_param(&search, "channel")
-        .filter(|channel| !channel.trim().is_empty())
-        .unwrap_or_else(|| CLI_BOOT_CHANNEL_HINT_FALLBACK.to_string())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn cli_boot_channel_hint() -> String {
-    CLI_BOOT_CHANNEL_HINT_FALLBACK.to_string()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn parse_query_param(search: &str, key: &str) -> Option<String> {
-    let query = search.strip_prefix('?').unwrap_or(search);
-    for pair in query.split('&') {
-        let Some((k, value)) = pair.split_once('=') else {
-            continue;
-        };
-        if k != key {
-            continue;
-        }
-        return decode_uri_component(value)
-            .ok()
-            .and_then(|decoded| decoded.as_string())
-            .or_else(|| Some(value.to_string()));
-    }
-    None
 }
 
 #[cfg(target_arch = "wasm32")]
