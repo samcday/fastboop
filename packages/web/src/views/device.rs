@@ -26,7 +26,7 @@ use super::session::{
 const CACHE_STATS_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 #[component]
-pub fn DevicePage(session_id: String) -> Element {
+pub fn DevicePage(session_id: String, channel: Option<String>) -> Element {
     let sessions = use_context::<SessionStore>();
     let navigator = use_navigator();
 
@@ -36,7 +36,15 @@ pub fn DevicePage(session_id: String) -> Element {
                 div { class: "landing__panel",
                     h1 { "Session not found" }
                     p { "That device session no longer exists." }
-                    button { class: "cta__button", onclick: move |_| { navigator.push(crate::Route::Home {}); }, "Back" }
+                    button {
+                        class: "cta__button",
+                        onclick: move |_| {
+                            navigator.push(crate::Route::Home {
+                                channel: channel.clone(),
+                            });
+                        },
+                        "Back"
+                    }
                 }
             }
         };

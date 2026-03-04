@@ -61,10 +61,10 @@ impl StartupChannelIntake {
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
 enum Route {
-    #[route("/")]
-    Home {},
-    #[route("/device/:session_id")]
-    DevicePage { session_id: String },
+    #[route("/?:channel")]
+    Home { channel: Option<String> },
+    #[route("/device/:session_id?:channel")]
+    DevicePage { session_id: String, channel: Option<String> },
 }
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");

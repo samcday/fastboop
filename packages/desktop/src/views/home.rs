@@ -36,6 +36,10 @@ pub fn Home() -> Element {
                     on_drop_channel: None,
                     on_pick_channel: None,
                     drop_hint: None,
+                    channel_url_value: None,
+                    on_channel_url_input: None,
+                    on_submit_channel_url: None,
+                    submit_channel_url_pending: None,
                 }
             };
         }
@@ -237,6 +241,10 @@ pub fn Home() -> Element {
                 on_drop_channel: None,
                 on_pick_channel: None,
                 drop_hint: None,
+                channel_url_value: None,
+                on_channel_url_input: None,
+                on_submit_channel_url: None,
+                submit_channel_url_pending: None,
             }
         };
     }

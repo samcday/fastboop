@@ -42,12 +42,17 @@ use tracing::{debug, info, warn};
 const STARTUP_CHANNEL_FILE_PICKER_ID: &str = "startup-channel-file-picker";
 
 #[component]
-pub fn Home() -> Element {
+pub fn Home(channel: Option<String>) -> Element {
     let sessions = use_context::<SessionStore>();
     let navigator = use_navigator();
 
     let startup_channel_override = use_signal(|| None::<String>);
     let startup_channel_drop_error = use_signal(|| None::<crate::StartupChannelError>);
+    let route_channel = channel
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let startup_channel_url_value = use_signal(|| route_channel.clone().unwrap_or_default());
+    let startup_channel_url_submit_pending = use_signal(|| false);
 
     #[cfg(target_arch = "wasm32")]
     let drop_channel_handler: Option<EventHandler<DragEvent>> = {
@@ -103,7 +108,63 @@ pub fn Home() -> Element {
     #[cfg(not(target_arch = "wasm32"))]
     let pick_channel_handler: Option<EventHandler<MouseEvent>> = None;
 
+    let channel_url_input_handler: Option<EventHandler<FormEvent>> = {
+        let mut startup_channel_url_value = startup_channel_url_value;
+        Some(EventHandler::new(move |evt: FormEvent| {
+            startup_channel_url_value.set(evt.value());
+        }))
+    };
+
+    let submit_channel_url_handler: Option<EventHandler<MouseEvent>> = {
+        let startup_channel_url_value = startup_channel_url_value;
+        let mut startup_channel_drop_error = startup_channel_drop_error;
+        let mut startup_channel_url_submit_pending = startup_channel_url_submit_pending;
+        let navigator = navigator.clone();
+        Some(EventHandler::new(move |_evt: MouseEvent| {
+            if startup_channel_url_submit_pending() {
+                return;
+            }
+
+            let channel = startup_channel_url_value().trim().to_string();
+            if channel.is_empty() {
+                startup_channel_drop_error.set(Some(crate::StartupChannelError {
+                    title: "Invalid launch channel",
+                    details: "channel URL is empty".to_string(),
+                    launch_hint:
+                        "Enter a full channel URL like https://example.invalid/channel.ero."
+                            .to_string(),
+                }));
+                return;
+            }
+
+            startup_channel_url_submit_pending.set(true);
+            startup_channel_drop_error.set(Some(crate::StartupChannelError {
+                title: "Validating launch channel",
+                details: format!("Checking channel URL: {channel}"),
+                launch_hint: "Waiting for channel validation to complete.".to_string(),
+            }));
+
+            spawn(async move {
+                match crate::preflight_startup_channel(&channel).await {
+                    Ok(()) => {
+                        startup_channel_drop_error.set(None);
+                        startup_channel_url_submit_pending.set(false);
+                        navigator.replace(Route::Home {
+                            channel: Some(channel),
+                        });
+                    }
+                    Err(err) => {
+                        startup_channel_drop_error.set(Some(err));
+                        startup_channel_url_submit_pending.set(false);
+                    }
+                }
+            });
+        }))
+    };
+
     let startup_channel = if let Some(channel) = startup_channel_override() {
+        channel
+    } else if let Some(channel) = route_channel.clone() {
         channel
     } else {
         match crate::startup_channel() {
@@ -119,6 +180,10 @@ pub fn Home() -> Element {
                         on_drop_channel: drop_channel_handler.clone(),
                         on_pick_channel: pick_channel_handler.clone(),
                         drop_hint: Some("Drop a local channel artifact, or click here to choose one from disk.".to_string()),
+                        channel_url_value: Some(startup_channel_url_value()),
+                        on_channel_url_input: channel_url_input_handler.clone(),
+                        on_submit_channel_url: submit_channel_url_handler.clone(),
+                        submit_channel_url_pending: Some(startup_channel_url_submit_pending()),
                     }
                 };
             }
@@ -387,7 +452,10 @@ pub fn Home() -> Element {
                 ),
                 phase: SessionPhase::Configuring,
             });
-            navigator.push(Route::DevicePage { session_id });
+            navigator.push(Route::DevicePage {
+                session_id,
+                channel: Some(startup_channel_for_boot.clone()),
+            });
         }))
     };
 
@@ -423,6 +491,10 @@ pub fn Home() -> Element {
                 on_drop_channel: drop_channel_handler.clone(),
                 on_pick_channel: pick_channel_handler.clone(),
                 drop_hint: Some("Drop a local channel artifact, or click here to choose one from disk.".to_string()),
+                channel_url_value: Some(startup_channel_url_value()),
+                on_channel_url_input: channel_url_input_handler.clone(),
+                on_submit_channel_url: submit_channel_url_handler.clone(),
+                submit_channel_url_pending: Some(startup_channel_url_submit_pending()),
             }
         };
     }

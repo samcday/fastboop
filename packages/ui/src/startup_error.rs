@@ -18,6 +18,10 @@ pub fn StartupError(
     on_drop_channel: Option<EventHandler<DragEvent>>,
     on_pick_channel: Option<EventHandler<MouseEvent>>,
     drop_hint: Option<String>,
+    channel_url_value: Option<String>,
+    on_channel_url_input: Option<EventHandler<FormEvent>>,
+    on_submit_channel_url: Option<EventHandler<MouseEvent>>,
+    submit_channel_url_pending: Option<bool>,
 ) -> Element {
     let hero_css = stylesheet_href(&HERO_CSS, "/assets/styling/hero.css");
     let drop_hint = drop_hint.unwrap_or_else(|| {
@@ -25,6 +29,10 @@ pub fn StartupError(
     });
     let dropzone_clickable = on_pick_channel.is_some();
     let on_pick_channel_for_dropzone = on_pick_channel.clone();
+    let channel_url_value = channel_url_value.unwrap_or_default();
+    let submit_channel_url_pending = submit_channel_url_pending.unwrap_or(false);
+    let submit_channel_url_disabled =
+        submit_channel_url_pending || channel_url_value.trim().is_empty();
 
     rsx! {
         document::Link { rel: "stylesheet", href: hero_css }
@@ -64,6 +72,47 @@ pub fn StartupError(
                         },
                         p { class: "startup-dropzone__title", "Drop a channel file to continue" }
                         p { class: "startup-dropzone__hint", "{drop_hint}" }
+                    }
+                }
+
+                if let (Some(on_channel_url_input), Some(on_submit_channel_url)) =
+                    (on_channel_url_input, on_submit_channel_url)
+                {
+                    div { class: "startup-channel-url",
+                        p { class: "startup-channel-url__label", "or enter a channel URL" }
+                        div { class: "startup-channel-url__row",
+                            input {
+                                class: "startup-channel-url__input",
+                                r#type: "url",
+                                placeholder: "https://example.invalid/channel.ero",
+                                value: channel_url_value,
+                                disabled: submit_channel_url_pending,
+                                oninput: move |evt| on_channel_url_input.call(evt),
+                            }
+                            button {
+                                class: "cta__button startup-channel-url__button",
+                                disabled: submit_channel_url_disabled,
+                                onclick: move |evt| {
+                                    evt.prevent_default();
+                                    if !submit_channel_url_disabled {
+                                        on_submit_channel_url.call(evt);
+                                    }
+                                },
+                                if submit_channel_url_pending {
+                                    span {
+                                        class: "startup-channel-url__spinner",
+                                        aria_hidden: "true",
+                                    }
+                                    span { "Checking..." }
+                                } else {
+                                    "Go"
+                                }
+                            }
+                        }
+                        p {
+                            class: "startup-channel-url__hint",
+                            "HTTP(S) URLs are supported. The channel remains in your address bar."
+                        }
                     }
                 }
 
