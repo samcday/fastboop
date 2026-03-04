@@ -13,15 +13,15 @@ The worker behavior:
 - Missing paths fall back to `/commit/<sha>/index.html` for SPA routing.
 - Direct artifact paths are served from R2 with CORS + range support:
   - any `*.ero` object (for EROFS image fetches), and
-  - `/live-pocket-fedora/*` (casync manifests/indexes/chunks and other live-pocket-fedora artifacts, excluding legacy `/live-pocket-fedora/gha/*` compatibility proxy paths).
+  - `/rokkitpokkit/*` (casync manifests/indexes/chunks and other rokkitpokkit artifacts, excluding legacy `/rokkitpokkit/gha/*` compatibility proxy paths).
 - Legacy GitHub Actions artifact routes are compatibility proxies with CORS + range support:
   - `/pocketblue/gha/<runid>/<artifact-name>[.zip]`
-  - `/live-pocket-fedora/gha/<runid>/<artifact-name>[.zip]`
+  - `/rokkitpokkit/gha/<runid>/<artifact-name>[.zip]`
   - requests are forwarded to `https://fastboop.win/gha/<org>/<repo>/<runid>` first
     (new canonical contract), then fall back to direct GitHub artifact proxying.
   - examples:
     - `/pocketblue/gha/22110319241/rootfs-qualcomm-sdm845-phosh-43.zip`
-    - `/live-pocket-fedora/gha/22128265185/live-pocket-fedora`
+    - `/rokkitpokkit/gha/22128265185/rokkitpokkit`
 
 ## Prereqs
 
@@ -113,7 +113,7 @@ running OpenTofu.
 
 Set `TF_VAR_artifact_proxy_github_token` to a GitHub token that can read
 Actions artifacts from both `pocketblue/pocketblue` and
-`samcday/live-pocket-fedora` (for fine-grained PATs: grant repository
+`samcday/rokkitpokkit` (for fine-grained PATs: grant repository
 `Actions: Read` on both repos). The token is used by the compatibility fallback
 path if the canonical Kubernetes `/gha/<org>/<repo>/<runid>` endpoint cannot
 serve the request.

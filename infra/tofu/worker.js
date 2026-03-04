@@ -8,9 +8,9 @@ const GHA_ARTIFACT_ROUTES = [
     repo: "pocketblue",
   },
   {
-    prefix: "/live-pocket-fedora/gha/",
+    prefix: "/rokkitpokkit/gha/",
     owner: "samcday",
-    repo: "live-pocket-fedora",
+    repo: "rokkitpokkit",
   },
 ];
 const GHA_PROXY_BASE_URL =
@@ -433,7 +433,7 @@ function githubApiHeaders() {
   if (!token) {
     throw httpError(
       500,
-      "GITHUB_TOKEN worker binding is required for /pocketblue/gha/* and /live-pocket-fedora/gha/* artifact proxies"
+      "GITHUB_TOKEN worker binding is required for /pocketblue/gha/* and /rokkitpokkit/gha/* artifact proxies"
     );
   }
 
@@ -588,7 +588,7 @@ function contentTypeFor(key) {
 function isR2DirectArtifactPath(path) {
   return (
     path.endsWith(".ero") ||
-    path === "/live-pocket-fedora" ||
-    path.startsWith("/live-pocket-fedora/")
+    path === "/rokkitpokkit" ||
+    path.startsWith("/rokkitpokkit/")
   );
 }

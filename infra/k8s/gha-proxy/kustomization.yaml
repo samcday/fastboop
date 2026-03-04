@@ -8,7 +8,7 @@ resources:
 configMapGenerator:
   - name: gha-proxy-config
     literals:
-      - ALLOWLIST=pocketblue/pocketblue,samcday/live-pocket-fedora
+      - ALLOWLIST=pocketblue/pocketblue,samcday/rokkitpokkit
       - CACHE_DIR=/cache
       - CACHE_MAX_BYTES=32212254720
       - PORT=8080

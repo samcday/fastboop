@@ -88,7 +88,7 @@ gha_proxy:
     - serve that inner file with CORS and single-range support
   compatibility_paths:
     - bleeding.fastboop.win/pocketblue/gha/<runid>/<artifact-name>[.zip]
-    - bleeding.fastboop.win/live-pocket-fedora/gha/<runid>/<artifact-name>[.zip]
+    - bleeding.fastboop.win/rokkitpokkit/gha/<runid>/<artifact-name>[.zip]
 
 fastboop_apex_redirects:
   host: fastboop.win
