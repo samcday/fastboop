@@ -16,7 +16,9 @@ use fastboop_core::{
     select_boot_profile_for_device,
 };
 use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
-use gibblox_android_sparse::AndroidSparseBlockReader;
+use gibblox_android_sparse::{
+    AndroidSparseBlockReader, AndroidSparseChunkIndex, AndroidSparseImageIndex,
+};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
 use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
@@ -25,8 +27,8 @@ use gibblox_casync_std::{
     StdCasyncIndexLocator, StdCasyncIndexSource,
 };
 use gibblox_core::{
-    AlignedByteReader, BlockByteReader, BlockReader, GibbloxError, GibbloxErrorKind,
-    GibbloxResult, GptBlockReader, GptPartitionSelector, ReadContext,
+    AlignedByteReader, BlockByteReader, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult,
+    GptBlockReader, GptPartitionSelector, ReadContext,
 };
 use gibblox_ext4::{Ext4EntryType, Ext4Fs};
 use gibblox_file::FileReader;
@@ -578,7 +580,9 @@ impl ArtifactReaderResolver {
                         format!("canonicalize file artifact path {}", path.display())
                     })?;
                     let file_reader = FileReader::open(&canonical, DEFAULT_IMAGE_BLOCK_SIZE)
-                        .map_err(|err| anyhow!("open file artifact {}: {err}", canonical.display()))?;
+                        .map_err(|err| {
+                            anyhow!("open file artifact {}: {err}", canonical.display())
+                        })?;
                     Arc::new(file_reader)
                 }
                 BootProfileArtifactSource::Casync(source) => {
@@ -616,11 +620,44 @@ impl ArtifactReaderResolver {
                 }
                 BootProfileArtifactSource::AndroidSparseImg(source) => {
                     let upstream = self
-                        .open_artifact_source(source.android_sparseimg.as_ref())
+                        .open_artifact_source(source.android_sparseimg.source.as_ref())
                         .await?;
-                    let reader = AndroidSparseBlockReader::new(upstream)
-                        .await
-                        .map_err(|err| anyhow!("open android sparse reader: {err}"))?;
+                    let reader = if let Some(index) = source.android_sparseimg.index.as_ref() {
+                        let sparse_index = AndroidSparseImageIndex {
+                            file_hdr_sz: index.file_hdr_sz,
+                            chunk_hdr_sz: index.chunk_hdr_sz,
+                            blk_sz: index.blk_sz,
+                            total_blks: index.total_blks,
+                            total_chunks: index.total_chunks,
+                            image_checksum: index.image_checksum,
+                            chunks: index
+                                .chunks
+                                .iter()
+                                .map(|chunk| AndroidSparseChunkIndex {
+                                    chunk_index: chunk.chunk_index,
+                                    chunk_type: chunk.chunk_type,
+                                    chunk_sz: chunk.chunk_sz,
+                                    total_sz: chunk.total_sz,
+                                    chunk_offset: chunk.chunk_offset,
+                                    payload_offset: chunk.payload_offset,
+                                    payload_size: chunk.payload_size,
+                                    output_start: chunk.output_start,
+                                    output_end: chunk.output_end,
+                                    fill_pattern: chunk.fill_pattern,
+                                    crc32: chunk.crc32,
+                                })
+                                .collect(),
+                        };
+                        AndroidSparseBlockReader::new_with_index(upstream, sparse_index)
+                            .await
+                            .map_err(|err| {
+                                anyhow!("open android sparse reader from index: {err}")
+                            })?
+                    } else {
+                        AndroidSparseBlockReader::new(upstream)
+                            .await
+                            .map_err(|err| anyhow!("open android sparse reader: {err}"))?
+                    };
                     Arc::new(reader)
                 }
                 BootProfileArtifactSource::Mbr(source) => {
@@ -686,7 +723,7 @@ fn artifact_source_cache_key(source: &BootProfileArtifactSource) -> Result<Strin
         )),
         BootProfileArtifactSource::AndroidSparseImg(source) => Ok(format!(
             "android_sparseimg:{}",
-            artifact_source_cache_key(source.android_sparseimg.as_ref())?
+            artifact_source_cache_key(source.android_sparseimg.source.as_ref())?
         )),
         BootProfileArtifactSource::Mbr(source) => {
             let selector = if let Some(partuuid) = source.mbr.partuuid.as_deref() {
