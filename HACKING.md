@@ -54,6 +54,11 @@ See `docs/dev/DEVICE_PROFILES.md` for schema and semantics.
 - `smoo-*` crates: consumed from crates.io (see upstream smoo docs for internals).
 - `gibblox-*` crates: consumed from crates.io (see upstream gibblox docs for internals).
 
+For local gibblox integration work, clone/worktree gibblox into `./gibblox` and run
+`./tools/cargo-local-gibblox.sh ...` (or pass `--config .cargo/config.gibblox-local.toml`
+to cargo commands directly). That applies a local `[patch.crates-io]` overlay without
+mutating workspace manifests.
+
 ## Contributor workflow
 
 - Read `AGENTS.md` and use its read-on-demand doc index.

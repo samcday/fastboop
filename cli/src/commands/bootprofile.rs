@@ -5,8 +5,11 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Subcommand};
 use fastboop_core::{
-    BootProfileManifest, decode_boot_profile, encode_boot_profile, validate_boot_profile,
+    BootProfile, BootProfileArtifactPathSource, BootProfileArtifactSource, BootProfileManifest,
+    BootProfileRootfs, BootProfileRootfsFilesystemSource, decode_boot_profile, encode_boot_profile,
+    validate_boot_profile,
 };
+use gibblox_pipeline::{OptimizePipelineOptions, OptimizePipelineReport, optimize_pipeline};
 
 #[derive(Args)]
 pub struct BootProfileArgs {
@@ -30,6 +33,12 @@ pub struct BootProfileCreateArgs {
     /// Output compiled boot profile path ("-" for stdout).
     #[arg(short, long, value_name = "OUTPUT", default_value = "-")]
     pub output: String,
+    /// Materialize pipeline optimization hints (currently android sparse indexes).
+    #[arg(long)]
+    pub optimize_pipeline_hints: bool,
+    /// Recompute existing pipeline hints while optimizing.
+    #[arg(long, requires = "optimize_pipeline_hints")]
+    pub optimize_pipeline_hints_force: bool,
 }
 
 #[derive(Args)]
@@ -42,21 +51,25 @@ pub struct BootProfileShowArgs {
     pub output: String,
 }
 
-pub fn run_bootprofile(args: BootProfileArgs) -> Result<()> {
+pub async fn run_bootprofile(args: BootProfileArgs) -> Result<()> {
     match args.command {
-        BootProfileCommand::Create(args) => run_create(args),
+        BootProfileCommand::Create(args) => run_create(args).await,
         BootProfileCommand::Show(args) => run_show(args),
     }
 }
 
-fn run_create(args: BootProfileCreateArgs) -> Result<()> {
+async fn run_create(args: BootProfileCreateArgs) -> Result<()> {
     let input = read_input_bytes(&args.input)?;
     let manifest: BootProfileManifest = serde_yaml::from_slice(&input)
         .with_context(|| format!("parsing boot profile document {}", io_label(&args.input)))?;
 
-    let compiled = manifest
+    let mut compiled = manifest
         .compile_dt_overlays(compile_dt_overlay)
         .context("compiling dt_overlays with dtc")?;
+
+    if args.optimize_pipeline_hints {
+        optimize_profile_pipeline_hints(&mut compiled, args.optimize_pipeline_hints_force).await?;
+    }
 
     validate_boot_profile(&compiled).map_err(|err| anyhow!("{err}"))?;
 
@@ -82,6 +95,78 @@ fn run_show(args: BootProfileShowArgs) -> Result<()> {
 
     let yaml = serde_yaml::to_string(&manifest).context("serializing boot profile YAML")?;
     write_output_bytes(&args.output, yaml.as_bytes())
+}
+
+async fn optimize_profile_pipeline_hints(
+    profile: &mut BootProfile,
+    force: bool,
+) -> Result<OptimizePipelineReport> {
+    let opts = OptimizePipelineOptions {
+        force,
+        ..OptimizePipelineOptions::default()
+    };
+    let mut report = OptimizePipelineReport::default();
+
+    add_optimize_report(
+        &mut report,
+        optimize_pipeline(profile_rootfs_source_mut(&mut profile.rootfs), &opts)
+            .await
+            .context("optimizing boot profile rootfs pipeline hints")?,
+    );
+
+    if let Some(kernel) = profile.kernel.as_mut() {
+        add_optimize_report(
+            &mut report,
+            optimize_pipeline(profile_artifact_path_source_mut(kernel), &opts)
+                .await
+                .context("optimizing boot profile kernel pipeline hints")?,
+        );
+    }
+
+    if let Some(dtbs) = profile.dtbs.as_mut() {
+        add_optimize_report(
+            &mut report,
+            optimize_pipeline(profile_artifact_path_source_mut(dtbs), &opts)
+                .await
+                .context("optimizing boot profile dtbs pipeline hints")?,
+        );
+    }
+
+    Ok(report)
+}
+
+fn add_optimize_report(total: &mut OptimizePipelineReport, report: OptimizePipelineReport) {
+    total.android_sparse_stages_visited = total
+        .android_sparse_stages_visited
+        .saturating_add(report.android_sparse_stages_visited);
+    total.android_sparse_indexes_added = total
+        .android_sparse_indexes_added
+        .saturating_add(report.android_sparse_indexes_added);
+    total.android_sparse_indexes_updated = total
+        .android_sparse_indexes_updated
+        .saturating_add(report.android_sparse_indexes_updated);
+    total.android_sparse_indexes_skipped = total
+        .android_sparse_indexes_skipped
+        .saturating_add(report.android_sparse_indexes_skipped);
+}
+
+fn profile_artifact_path_source_mut(
+    source: &mut BootProfileArtifactPathSource,
+) -> &mut BootProfileArtifactSource {
+    profile_rootfs_source_mut(&mut source.source)
+}
+
+fn profile_rootfs_source_mut(rootfs: &mut BootProfileRootfs) -> &mut BootProfileArtifactSource {
+    match rootfs {
+        BootProfileRootfs::Ostree(source) => match &mut source.ostree {
+            BootProfileRootfsFilesystemSource::Erofs(source) => &mut source.erofs,
+            BootProfileRootfsFilesystemSource::Ext4(source) => &mut source.ext4,
+            BootProfileRootfsFilesystemSource::Fat(source) => &mut source.fat,
+        },
+        BootProfileRootfs::Erofs(source) => &mut source.erofs,
+        BootProfileRootfs::Ext4(source) => &mut source.ext4,
+        BootProfileRootfs::Fat(source) => &mut source.fat,
+    }
 }
 
 fn compile_dt_overlay(dtso: &str) -> Result<Vec<u8>> {
@@ -193,6 +278,11 @@ mod tests {
     use super::*;
     use fastboop_core::{
         BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
+    };
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     #[test]
@@ -436,6 +526,50 @@ rootfs:
     }
 
     #[test]
+    fn optimize_pipeline_hints_materializes_sparse_index() {
+        let sparse_path = write_temp_sparse_image();
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            format!(
+                "id: local-ext4\nrootfs:\n  ext4:\n    android_sparseimg:\n      file: '{}'\n",
+                sparse_path.display()
+            )
+            .as_str(),
+        )
+        .expect("parse manifest");
+
+        let mut profile = manifest
+            .compile_dt_overlays::<core::convert::Infallible, _>(|_| unreachable!())
+            .expect("compile profile");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+        let report = runtime
+            .block_on(optimize_profile_pipeline_hints(&mut profile, false))
+            .expect("optimize profile pipeline hints");
+
+        assert_eq!(report.android_sparse_stages_visited, 1);
+        assert_eq!(report.android_sparse_indexes_added, 1);
+        assert_eq!(report.android_sparse_indexes_updated, 0);
+        assert_eq!(report.android_sparse_indexes_skipped, 0);
+
+        let source = profile.rootfs.source();
+        let BootProfileArtifactSource::AndroidSparseImg(source) = source else {
+            panic!("expected android sparse source, got {source:?}")
+        };
+        let index = source
+            .android_sparseimg
+            .index
+            .as_ref()
+            .expect("android sparse index should be embedded");
+        assert_eq!(index.total_blks, 2);
+        assert_eq!(index.total_chunks, 2);
+
+        let _ = fs::remove_file(sparse_path);
+    }
+
+    #[test]
     fn create_output_rejects_tty_stdout() {
         let err = validate_binary_output("-", "bootprofile create", true)
             .expect_err("expected tty stdout to be rejected");
@@ -449,5 +583,84 @@ rootfs:
             validate_binary_output("-", "bootprofile create", false).is_ok(),
             "expected non-tty stdout to be allowed"
         );
+    }
+
+    const SPARSE_MAGIC: u32 = 0xED26_FF3A;
+    const SPARSE_MAJOR_VERSION: u16 = 1;
+    const CHUNK_TYPE_RAW: u16 = 0xCAC1;
+    const CHUNK_TYPE_DONT_CARE: u16 = 0xCAC3;
+
+    fn write_temp_sparse_image() -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        path.push(format!("fastboop-bootprofile-optimize-{nonce}.simg"));
+        fs::write(&path, sparse_image_fixture()).expect("write sparse fixture");
+        path
+    }
+
+    fn sparse_image_fixture() -> Vec<u8> {
+        let mut out = Vec::new();
+        append_sparse_header(&mut out, 8, 2, 2, 28, 12);
+        append_raw_chunk(&mut out, 1, b"ABCDEFGH", 12);
+        append_dont_care_chunk(&mut out, 1, 12);
+        out
+    }
+
+    fn append_sparse_header(
+        out: &mut Vec<u8>,
+        blk_sz: u32,
+        total_blks: u32,
+        total_chunks: u32,
+        file_hdr_sz: u16,
+        chunk_hdr_sz: u16,
+    ) {
+        out.extend_from_slice(&SPARSE_MAGIC.to_le_bytes());
+        out.extend_from_slice(&SPARSE_MAJOR_VERSION.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&file_hdr_sz.to_le_bytes());
+        out.extend_from_slice(&chunk_hdr_sz.to_le_bytes());
+        out.extend_from_slice(&blk_sz.to_le_bytes());
+        out.extend_from_slice(&total_blks.to_le_bytes());
+        out.extend_from_slice(&total_chunks.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.resize(file_hdr_sz as usize, 0);
+    }
+
+    fn append_raw_chunk(out: &mut Vec<u8>, blocks: u32, payload: &[u8], chunk_hdr_sz: u16) {
+        append_chunk_header(
+            out,
+            CHUNK_TYPE_RAW,
+            blocks,
+            (chunk_hdr_sz as u32) + (payload.len() as u32),
+            chunk_hdr_sz,
+        );
+        out.extend_from_slice(payload);
+    }
+
+    fn append_dont_care_chunk(out: &mut Vec<u8>, blocks: u32, chunk_hdr_sz: u16) {
+        append_chunk_header(
+            out,
+            CHUNK_TYPE_DONT_CARE,
+            blocks,
+            chunk_hdr_sz as u32,
+            chunk_hdr_sz,
+        );
+    }
+
+    fn append_chunk_header(
+        out: &mut Vec<u8>,
+        chunk_type: u16,
+        chunk_sz: u32,
+        total_sz: u32,
+        chunk_hdr_sz: u16,
+    ) {
+        out.extend_from_slice(&chunk_type.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&chunk_sz.to_le_bytes());
+        out.extend_from_slice(&total_sz.to_le_bytes());
+        out.resize(out.len() + (chunk_hdr_sz as usize - 12), 0);
     }
 }

@@ -15,6 +15,24 @@ check:
     cargo check -p fastboop-fastboot-webusb --target wasm32-unknown-unknown
     cargo check -p fastboop-web --target wasm32-unknown-unknown
 
+# Same as `check`, but with local ./gibblox crate overlays.
+check-local-gibblox:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    local_cargo="$(pwd)/tools/cargo-local-gibblox.sh"
+    export FASTBOOP_STAGE0_CARGO="$local_cargo"
+
+    echo "==> rustfmt"
+    "$local_cargo" fmt --all --check
+
+    echo "==> root workspace (host target, local gibblox)"
+    "$local_cargo" check --workspace --exclude fastboop-web
+
+    echo "==> root wasm targets (local gibblox)"
+    "$local_cargo" check -p fastboop-fastboot-webusb --target wasm32-unknown-unknown
+    "$local_cargo" check -p fastboop-web --target wasm32-unknown-unknown
+
 # Generate deterministic channel stream fixtures under build/
 channels-fixtures:
     tools/channels/generate-fixtures.sh

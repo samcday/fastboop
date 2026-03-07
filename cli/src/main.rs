@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Boot(args) => run_boot(args).await,
-        Commands::Bootprofile(args) => run_bootprofile(args),
+        Commands::Bootprofile(args) => run_bootprofile(args).await,
         Commands::Devprofile(args) => run_devprofile(args).await,
         Commands::Detect(args) => {
             setup_default_tracing();

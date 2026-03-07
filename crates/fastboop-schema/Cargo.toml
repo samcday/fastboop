@@ -9,7 +9,7 @@ description = "Schema types for fastboop device and boot profiles."
 [dependencies]
 serde = { version = "1.0.217", default-features = false, features = ["derive", "alloc"] }
 schemars = { version = "0.8.21", optional = true, features = ["preserve_order"] }
-gibblox-pipeline = { version = "=0.0.1-rc.11", default-features = false }
+gibblox-pipeline = { version = "=0.0.1-rc.12", default-features = false }
 
 [features]
 default = []

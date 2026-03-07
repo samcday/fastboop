@@ -13,12 +13,12 @@ ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-rusb = { path = "../../crates/fastboop-fastboot-rusb" }
-gobblytes-erofs = { version = "=0.0.1-rc.11" }
-gibblox-core = { version = "=0.0.1-rc.11", features = ["std"] }
-gibblox-cache = { version = "=0.0.1-rc.11", features = ["std"] }
-gibblox-cache-store-std = { version = "=0.0.1-rc.11" }
-gibblox-http = { version = "=0.0.1-rc.11", default-features = false, features = ["native-client"] }
-gibblox-zip = { version = "=0.0.1-rc.11", features = ["std"] }
+gobblytes-erofs = { version = "=0.0.1-rc.12" }
+gibblox-core = { version = "=0.0.1-rc.12", features = ["std"] }
+gibblox-cache = { version = "=0.0.1-rc.12", features = ["std"] }
+gibblox-cache-store-std = { version = "=0.0.1-rc.12" }
+gibblox-http = { version = "=0.0.1-rc.12", default-features = false, features = ["native-client"] }
+gibblox-zip = { version = "=0.0.1-rc.12", features = ["std"] }
 smoo-host-core = { version = "=0.0.1-rc.1" }
 smoo-host-session = { version = "=0.0.1-rc.1" }
 smoo-host-transport-rusb = { version = "=0.0.1-rc.1" }

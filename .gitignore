@@ -3,5 +3,6 @@ target/
 terraform.tfstate.backup
 repo/
 build/
+gibblox/
 __pycache__/
 *.py[cod]

@@ -58,27 +58,3 @@ rustix = { version = "1", default-features = false }
 [workspace.lints.clippy]
 nursery = { level = "warn", priority = -1 }
 missing_const_for_fn = "allow"
-
-[patch.crates-io]
-gobblytes-core = { path = "../../src/gibblox/crates/gobblytes-core" }
-gobblytes-erofs = { path = "../../src/gibblox/crates/gobblytes-erofs" }
-gobblytes-fat = { path = "../../src/gibblox/crates/gobblytes-fat" }
-gibblox-android-sparse = { path = "../../src/gibblox/crates/gibblox-android-sparse" }
-gibblox-blockreader-messageport = { path = "../../src/gibblox/crates/gibblox-blockreader-messageport" }
-gibblox-cache = { path = "../../src/gibblox/crates/gibblox-cache" }
-gibblox-cache-store-opfs = { path = "../../src/gibblox/crates/gibblox-cache-store-opfs" }
-gibblox-cache-store-std = { path = "../../src/gibblox/crates/gibblox-cache-store-std" }
-gibblox-casync = { path = "../../src/gibblox/crates/gibblox-casync" }
-gibblox-casync-std = { path = "../../src/gibblox/crates/gibblox-casync-std" }
-gibblox-casync-web = { path = "../../src/gibblox/crates/gibblox-casync-web" }
-gibblox-core = { path = "../../src/gibblox/crates/gibblox-core" }
-gibblox-ext4 = { path = "../../src/gibblox/crates/gibblox-ext4" }
-gibblox-file = { path = "../../src/gibblox/crates/gibblox-file" }
-gibblox-http = { path = "../../src/gibblox/crates/gibblox-http" }
-gibblox-iso9660 = { path = "../../src/gibblox/crates/gibblox-iso9660" }
-gibblox-mbr = { path = "../../src/gibblox/crates/gibblox-mbr" }
-gibblox-pipeline = { path = "../../src/gibblox/crates/gibblox-pipeline" }
-gibblox-web-file = { path = "../../src/gibblox/crates/gibblox-web-file" }
-gibblox-web-worker = { path = "../../src/gibblox/crates/gibblox-web-worker" }
-gibblox-xz = { path = "../../src/gibblox/crates/gibblox-xz" }
-gibblox-zip = { path = "../../src/gibblox/crates/gibblox-zip" }

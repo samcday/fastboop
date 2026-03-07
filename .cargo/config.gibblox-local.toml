@@ -1,0 +1,23 @@
+[patch.crates-io]
+gobblytes-core = { path = "../gibblox/crates/gobblytes-core" }
+gobblytes-erofs = { path = "../gibblox/crates/gobblytes-erofs" }
+gobblytes-fat = { path = "../gibblox/crates/gobblytes-fat" }
+gibblox-android-sparse = { path = "../gibblox/crates/gibblox-android-sparse" }
+gibblox-blockreader-messageport = { path = "../gibblox/crates/gibblox-blockreader-messageport" }
+gibblox-cache = { path = "../gibblox/crates/gibblox-cache" }
+gibblox-cache-store-opfs = { path = "../gibblox/crates/gibblox-cache-store-opfs" }
+gibblox-cache-store-std = { path = "../gibblox/crates/gibblox-cache-store-std" }
+gibblox-casync = { path = "../gibblox/crates/gibblox-casync" }
+gibblox-casync-std = { path = "../gibblox/crates/gibblox-casync-std" }
+gibblox-casync-web = { path = "../gibblox/crates/gibblox-casync-web" }
+gibblox-core = { path = "../gibblox/crates/gibblox-core" }
+gibblox-ext4 = { path = "../gibblox/crates/gibblox-ext4" }
+gibblox-file = { path = "../gibblox/crates/gibblox-file" }
+gibblox-http = { path = "../gibblox/crates/gibblox-http" }
+gibblox-iso9660 = { path = "../gibblox/crates/gibblox-iso9660" }
+gibblox-mbr = { path = "../gibblox/crates/gibblox-mbr" }
+gibblox-pipeline = { path = "../gibblox/crates/gibblox-pipeline" }
+gibblox-web-file = { path = "../gibblox/crates/gibblox-web-file" }
+gibblox-web-worker = { path = "../gibblox/crates/gibblox-web-worker" }
+gibblox-xz = { path = "../gibblox/crates/gibblox-xz" }
+gibblox-zip = { path = "../gibblox/crates/gibblox-zip" }

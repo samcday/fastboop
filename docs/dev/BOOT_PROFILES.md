@@ -84,6 +84,9 @@ extra_cmdline: console=ttyMSM0,115200n8
 # compile manifest -> binary
 cargo run -p fastboop-cli -- bootprofile create ./profile.yaml -o /tmp/profile.fbp
 
+# compile + materialize android sparse index hints
+cargo run -p fastboop-cli -- bootprofile create ./profile.yaml --optimize-pipeline-hints -o /tmp/profile.fbp
+
 # inspect binary -> yaml
 cargo run -p fastboop-cli -- bootprofile show /tmp/profile.fbp
 

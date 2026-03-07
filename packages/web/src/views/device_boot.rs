@@ -12,7 +12,9 @@ use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs}
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
 #[cfg(target_arch = "wasm32")]
-use gibblox_android_sparse::AndroidSparseBlockReader;
+use gibblox_android_sparse::{
+    AndroidSparseBlockReader, AndroidSparseChunkIndex, AndroidSparseImageIndex,
+};
 #[cfg(target_arch = "wasm32")]
 use gibblox_core::AlignedByteReader;
 use gibblox_core::{block_identity_string, BlockByteReader, BlockReader};
@@ -738,10 +740,44 @@ fn open_boot_profile_artifact_source<'a>(
             }
             BootProfileArtifactSource::AndroidSparseImg(source) => {
                 let upstream =
-                    open_boot_profile_artifact_source(source.android_sparseimg.as_ref()).await?;
-                let reader = AndroidSparseBlockReader::new(upstream)
-                    .await
-                    .map_err(|err| anyhow::anyhow!("open android sparse reader: {err}"))?;
+                    open_boot_profile_artifact_source(source.android_sparseimg.source.as_ref())
+                        .await?;
+                let reader = if let Some(index) = source.android_sparseimg.index.as_ref() {
+                    let sparse_index = AndroidSparseImageIndex {
+                        file_hdr_sz: index.file_hdr_sz,
+                        chunk_hdr_sz: index.chunk_hdr_sz,
+                        blk_sz: index.blk_sz,
+                        total_blks: index.total_blks,
+                        total_chunks: index.total_chunks,
+                        image_checksum: index.image_checksum,
+                        chunks: index
+                            .chunks
+                            .iter()
+                            .map(|chunk| AndroidSparseChunkIndex {
+                                chunk_index: chunk.chunk_index,
+                                chunk_type: chunk.chunk_type,
+                                chunk_sz: chunk.chunk_sz,
+                                total_sz: chunk.total_sz,
+                                chunk_offset: chunk.chunk_offset,
+                                payload_offset: chunk.payload_offset,
+                                payload_size: chunk.payload_size,
+                                output_start: chunk.output_start,
+                                output_end: chunk.output_end,
+                                fill_pattern: chunk.fill_pattern,
+                                crc32: chunk.crc32,
+                            })
+                            .collect(),
+                    };
+                    AndroidSparseBlockReader::new_with_index(upstream, sparse_index)
+                        .await
+                        .map_err(|err| {
+                            anyhow::anyhow!("open android sparse reader from index: {err}")
+                        })?
+                } else {
+                    AndroidSparseBlockReader::new(upstream)
+                        .await
+                        .map_err(|err| anyhow::anyhow!("open android sparse reader: {err}"))?
+                };
                 let reader: Arc<dyn BlockReader> = Arc::new(reader);
                 Ok(reader)
             }
