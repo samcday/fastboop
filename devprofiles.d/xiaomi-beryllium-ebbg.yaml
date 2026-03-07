@@ -1,0 +1,42 @@
+id: xiaomi-beryllium-ebbg
+display_name: Xiaomi POCO F1 (ebbg panel)
+devicetree_name: qcom/sdm845-xiaomi-beryllium-ebbg
+
+match:
+  - fastboot:
+      vid: 0x18d1
+      pid: 0xd00d
+
+probe:
+  - fastboot.getvar: product
+    equals: beryllium
+
+boot:
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 4096
+      kernel_offset: 0x00008000
+
+      kernel:
+        encoding: image.gz
+
+stage0:
+  inject_mac:
+    bluetooth: qcom,wcn3990-bt
+    wifi: qcom,wcn3990-wifi
+  kernel_modules:
+    # This is the core set for a working UDC.
+    - dwc3
+    - dwc3-qcom
+    - dwc3-qcom-legacy
+    - phy-qcom-qusb2
+    - nvmem_qfprom
+    - i2c-qcom-geni
+    - pinctrl-sdm845
+    - gcc-sdm845
+    - qnoc-sdm845
+
+    # This isn't required for UDC, but needs to load
+    # early to avoid deferred-probe timeouts on arm-smmu.
+    - gpucc-sdm845
