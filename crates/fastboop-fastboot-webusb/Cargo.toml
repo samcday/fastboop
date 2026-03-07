@@ -7,7 +7,7 @@ repository.workspace = true
 description = "WebUSB transport adapter for fastboop fastboot sessions."
 
 [dependencies]
-fastboop-core = { path = "../fastboop-core", version = "=0.0.1-rc.5" }
+fastboop-core = { path = "../fastboop-core", version = "=0.0.1-rc.6" }
 futures-channel = { workspace = true }
 futures-core = { workspace = true }
 tracing = "0.1.41"

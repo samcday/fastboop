@@ -26,9 +26,9 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
-fastboop-core = { path = "../crates/fastboop-core", version = "=0.0.1-rc.5" }
-fastboop-stage0-generator = { path = "../crates/fastboop-stage0-generator", version = "=0.0.1-rc.5" }
-fastboop-fastboot-rusb = { path = "../crates/fastboop-fastboot-rusb", version = "=0.0.1-rc.5" }
+fastboop-core = { path = "../crates/fastboop-core", version = "=0.0.1-rc.6" }
+fastboop-stage0-generator = { path = "../crates/fastboop-stage0-generator", version = "=0.0.1-rc.6" }
+fastboop-fastboot-rusb = { path = "../crates/fastboop-fastboot-rusb", version = "=0.0.1-rc.6" }
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.132"
 serde_yaml = { workspace = true }

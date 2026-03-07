@@ -8,7 +8,7 @@ description = "Builds fastboop stage0 payloads from upstream rootfs artifacts."
 
 [dependencies]
 dtoolkit = { version = "0.1.1", features = ["write"] }
-fastboop-core = { path = "../fastboop-core", version = "=0.0.1-rc.5" }
+fastboop-core = { path = "../fastboop-core", version = "=0.0.1-rc.6" }
 gobblytes-core = { version = "=0.0.1-rc.12" }
 futures-util = { workspace = true, features = ["alloc"] }
 miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
