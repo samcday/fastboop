@@ -12,6 +12,7 @@ pub enum BootPhase {
     Booting,
     WaitingForSmoo,
     Serving,
+    #[cfg(feature = "tui")]
     Finished,
     Failed,
 }
@@ -28,6 +29,7 @@ impl BootPhase {
             Self::Booting => "fastboot-boot",
             Self::WaitingForSmoo => "waiting-for-smoo",
             Self::Serving => "serving",
+            #[cfg(feature = "tui")]
             Self::Finished => "finished",
             Self::Failed => "failed",
         }
