@@ -59,6 +59,18 @@ bump version:
     rpm_apk_version="$version"
     debian_version="$version"
 
+    old_cargo_version="$(python - <<'PY'
+    from pathlib import Path
+    import re
+
+    text = Path("Cargo.toml").read_text(encoding="utf-8")
+    match = re.search(r'^version = "([^"]+)"$', text, flags=re.MULTILINE)
+    if match is None:
+        raise SystemExit("unable to parse workspace version from Cargo.toml")
+    print(match.group(1))
+    PY
+    )"
+
     if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)$ ]]; then
       base="${BASH_REMATCH[1]}"
       rc="${BASH_REMATCH[2]}"
@@ -81,6 +93,34 @@ bump version:
 
     # Debian changelog (add new entry)
     sed -i "1s/.*/fastboop (${debian_version}) UNRELEASED; urgency=medium/" debian/changelog
+
+    # Local publishable crates pin each in-workspace path dependency to exact version.
+    # Keep those in sync with the workspace version before touching the lockfile.
+    python - "$old_cargo_version" "$cargo_version" <<'PY'
+    import pathlib
+    import sys
+
+    old_version, new_version = sys.argv[1], sys.argv[2]
+    needle = f'version = "={old_version}"'
+    replacement = f'version = "={new_version}"'
+
+    for manifest in pathlib.Path(".").rglob("Cargo.toml"):
+        if "target" in manifest.parts:
+            continue
+
+        text = manifest.read_text(encoding="utf-8")
+        updated_lines = []
+        changed = False
+
+        for line in text.splitlines(keepends=True):
+            if "path =" in line and needle in line:
+                line = line.replace(needle, replacement)
+                changed = True
+            updated_lines.append(line)
+
+        if changed:
+            manifest.write_text("".join(updated_lines), encoding="utf-8")
+    PY
 
     # Update lockfile without drifting transitive dependencies
     cargo update -p fastboop-cli --precise "$cargo_version"
