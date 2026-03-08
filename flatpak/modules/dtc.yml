@@ -1,0 +1,16 @@
+name: dtc
+buildsystem: simple
+sources:
+  - type: archive
+    url: https://mirrors.edge.kernel.org/pub/software/utils/dtc/dtc-1.7.2.tar.xz
+    sha256: 92d8ca769805ae1f176204230438fe52808f4e1c7944053c9eec0e649b237539
+    x-checker-data:
+      type: anitya
+      project-id: 16911
+      stable-only: true
+      url-template: https://mirrors.edge.kernel.org/pub/software/utils/dtc/dtc-$version.tar.xz
+build-commands:
+  - make NO_PYTHON=1
+  - install -Dm755 dtc /app/bin/dtc
+cleanup:
+  - '*'

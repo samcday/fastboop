@@ -1,0 +1,66 @@
+app-id: win.fastboop.fastboop
+runtime-version: '49'
+runtime: org.gnome.Platform
+sdk: org.gnome.Sdk
+# gnome runtime/sdk required for webkitgtk
+command: fastboop
+finish-args:
+  - --share=network
+  - --device=all
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+cleanup:
+  - /usr/lib/aarch64-linux-gnu
+  - /lib/ld-linux-aarch64.so.1
+  - /crossbuild
+  - /libexec/stage0
+  # in current stetup, stage0 binary is embedded into the fastboop binary
+  # after embedding it's being cleaned up from disk
+  # TODO: stop embedding it and keep it as a separte file
+add-build-extensions:
+  org.freedesktop.Sdk.Extension.rust-stable:
+    # required by both fastboop and stage0
+    directory: lib/sdk/rust-stable
+    version: '25.08'
+    remove-after-build: true
+  org.freedesktop.Sdk.Extension.llvm21:
+    # required by both fastboop and stage0
+    directory: lib/sdk/llvm21
+    version: '25.08'
+    remove-after-build: true
+  org.freedesktop.Sdk.Compat.aarch64:
+    # required by stage0
+    directory: lib/aarch64-linux-gnu
+    version: '24.08'
+    remove-after-build: true
+modules:
+  - modules/xdotool.yml
+  - modules/dtc.yml
+  - modules/crossbuild.yml
+  - modules/stage0.yml
+  - name: fastboop
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+        # network shared only for development builds
+        # should not be shared when manifest submitted to flathub
+      prepend-path: /app/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/fastboop/cargo
+        FASTBOOP_STAGE0_EMBED_PATH: /app/libexec/stage0
+        RUSTFLAGS: -L/app/lib
+    sources:
+      - type: dir
+        path: ..
+    build-commands:
+      - cargo build --locked --release -p fastboop-cli -p fastboop-desktop
+      - install -Dm755 target/release/fastboop /app/bin/fastboop
+      - install -Dm755 target/release/fastboop-desktop /app/bin/fastboop-desktop
+      - install -Dm644 packages/desktop/assets/main.css /app/bin/assets/main.css
+      - install -Dm644 packages/ui/assets/styling/hero.css /app/bin/assets/styling/hero.css
+      - install -Dm644 packages/ui/assets/styling/smoo_stats.css /app/bin/assets/styling/smoo_stats.css
+      - install -Dm644 assets/win.fastboop.fastboop.desktop /app/share/applications/win.fastboop.fastboop.desktop
+      - install -Dm644 assets/win.fastboop.fastboop.metainfo.xml /app/share/metainfo/win.fastboop.fastboop.metainfo.xml
+      - install -Dm644 assets/win.fastboop.fastboop.svg /app/share/icons/hicolor/scalable/apps/win.fastboop.fastboop.svg
