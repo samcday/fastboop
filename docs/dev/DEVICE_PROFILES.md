@@ -105,6 +105,20 @@ Treat this as a hardware contract, not distro policy:
 - Keep values factual to observed device behavior.
 - Avoid adding logic that belongs in Boot Profiles or stage0 generation.
 
+## Persona Modeling
+
+Use Device Profiles to model the **device persona currently in front of fastboop** (for example
+vendor fastboot persona vs aftermarket fastboot persona), even when both personas belong to the
+same physical handset.
+
+Guidelines:
+
+- Keep each DevPro factual: VID/PID, probe identity, and boot constraints for that persona only.
+- Add separate DevPros when a chained flow moves to a different bootloader persona with different
+  USB identity, probing signals, or bootimg requirements.
+- Keep chain policy out of DevPros. Which persona comes next is expressed in Boot Profiles
+  (`chain.next_device_profile` and `chain.next_boot_profile`), not here.
+
 ## Stage0 Hints
 
 `stage0.kernel_modules` lists module requirements needed for reliable gadget/runtime bring-up.

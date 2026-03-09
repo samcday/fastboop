@@ -5,7 +5,7 @@ use fastboop_core::{
     BootProfileArtifactSourceCasyncSource, BootProfileArtifactSourceFileSource,
     BootProfileArtifactSourceGpt, BootProfileArtifactSourceGptSource,
     BootProfileArtifactSourceHttpSource, BootProfileArtifactSourceMbr,
-    BootProfileArtifactSourceMbrSource, BootProfileCodecError, BootProfileDevice,
+    BootProfileArtifactSourceMbrSource, BootProfileChain, BootProfileCodecError, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
     BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileRootfsFilesystemSource,
     BootProfileRootfsOstreeSource, BootProfileStage0, BootProfileValidationError,
@@ -39,13 +39,14 @@ fn boot_profile_ext4_roundtrip_binary_codec() {
     let profile = BootProfile {
         id: "ext4-roundtrip".to_string(),
         display_name: Some("Ext4 Roundtrip".to_string()),
-        rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+        rootfs: Some(BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
             ext4: BootProfileArtifactSource::Http(BootProfileArtifactSourceHttpSource {
                 http: "https://example.invalid/rootfs.ext4".to_string(),
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
         stage0: BootProfileStage0::default(),
@@ -83,16 +84,17 @@ fn rejects_casync_archive_indexes() {
     let profile = BootProfile {
         id: "bad".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
+        rootfs: Some(BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
             erofs: BootProfileArtifactSource::Casync(BootProfileArtifactSourceCasyncSource {
                 casync: BootProfileArtifactSourceCasync {
                     index: "https://example.invalid/image.caidx".to_string(),
                     chunk_store: None,
                 },
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
         stage0: BootProfileStage0::default(),
@@ -106,7 +108,7 @@ fn accepts_casync_blob_indexes() {
     let profile = BootProfile {
         id: "good".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+        rootfs: Some(BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
             ext4: BootProfileArtifactSource::Casync(BootProfileArtifactSourceCasyncSource {
                 casync: BootProfileArtifactSourceCasync {
                     index: "https://bleeding.fastboop.win/live-pocket-fedora/casync/indexes/compose-22240659617-1-bf887e869003.caibx"
@@ -114,9 +116,10 @@ fn accepts_casync_blob_indexes() {
                     chunk_store: None,
                 },
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
         stage0: BootProfileStage0::default(),
@@ -130,7 +133,7 @@ fn accepts_gpt_over_casync_pipeline() {
     let profile = BootProfile {
         id: "good-gpt-casync".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+        rootfs: Some(BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
             ext4: BootProfileArtifactSource::Gpt(BootProfileArtifactSourceGptSource {
                 gpt: BootProfileArtifactSourceGpt {
                     partlabel: Some("rootfs".to_string()),
@@ -150,9 +153,10 @@ fn accepts_gpt_over_casync_pipeline() {
                     )),
                 },
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
         stage0: BootProfileStage0::default(),
@@ -166,7 +170,7 @@ fn accepts_ostree_over_erofs_rootfs() {
     let profile = BootProfile {
         id: "ostree-erofs".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Ostree(BootProfileRootfsOstreeSource {
+        rootfs: Some(BootProfileRootfs::Ostree(BootProfileRootfsOstreeSource {
             ostree: BootProfileRootfsFilesystemSource::Erofs(BootProfileRootfsErofsSource {
                 erofs: BootProfileArtifactSource::Casync(BootProfileArtifactSourceCasyncSource {
                     casync: BootProfileArtifactSourceCasync {
@@ -175,9 +179,10 @@ fn accepts_ostree_over_erofs_rootfs() {
                     },
                 }),
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
         stage0: BootProfileStage0::default(),
@@ -195,15 +200,16 @@ fn rejects_ostree_over_fat_rootfs_for_stage0_switchroot() {
     let profile = BootProfile {
         id: "ostree-fat-rootfs".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Ostree(BootProfileRootfsOstreeSource {
+        rootfs: Some(BootProfileRootfs::Ostree(BootProfileRootfsOstreeSource {
             ostree: BootProfileRootfsFilesystemSource::Fat(BootProfileRootfsFatSource {
                 fat: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
                     file: "./rootfs.fat".to_string(),
                 }),
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
         stage0: BootProfileStage0::default(),
@@ -221,7 +227,7 @@ fn rejects_gpt_step_without_selector() {
     let profile = BootProfile {
         id: "bad-gpt".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
+        rootfs: Some(BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
             erofs: BootProfileArtifactSource::Gpt(BootProfileArtifactSourceGptSource {
                 gpt: BootProfileArtifactSourceGpt {
                     partlabel: None,
@@ -234,9 +240,10 @@ fn rejects_gpt_step_without_selector() {
                     )),
                 },
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
         stage0: BootProfileStage0::default(),
@@ -256,7 +263,7 @@ fn rejects_mbr_step_without_selector() {
     let profile = BootProfile {
         id: "bad-mbr".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
+        rootfs: Some(BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
             erofs: BootProfileArtifactSource::Mbr(BootProfileArtifactSourceMbrSource {
                 mbr: BootProfileArtifactSourceMbr {
                     partuuid: None,
@@ -268,9 +275,10 @@ fn rejects_mbr_step_without_selector() {
                     )),
                 },
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
         stage0: BootProfileStage0::default(),
@@ -290,13 +298,14 @@ fn accepts_file_artifact_source() {
     let profile = BootProfile {
         id: "file-source".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
+        rootfs: Some(BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
             erofs: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
                 file: "./rootfs.ero".to_string(),
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
         stage0: BootProfileStage0::default(),
@@ -310,13 +319,14 @@ fn accepts_ext4_rootfs_source() {
     let profile = BootProfile {
         id: "ext4-source".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+        rootfs: Some(BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
             ext4: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
                 file: "./rootfs.img".to_string(),
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
         stage0: BootProfileStage0::default(),
@@ -330,13 +340,14 @@ fn rejects_fat_rootfs_for_stage0_switchroot() {
     let profile = BootProfile {
         id: "fat-rootfs".to_string(),
         display_name: None,
-        rootfs: BootProfileRootfs::Fat(BootProfileRootfsFatSource {
+        rootfs: Some(BootProfileRootfs::Fat(BootProfileRootfsFatSource {
             fat: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
                 file: "./rootfs.fat".to_string(),
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
         stage0: BootProfileStage0::default(),
@@ -365,6 +376,103 @@ fn rejects_empty_kernel_path() {
     assert_eq!(err, BootProfileValidationError::EmptyKernelPath);
 }
 
+#[test]
+fn accepts_chain_profile() {
+    let profile = BootProfile {
+        id: "vendor-hop".to_string(),
+        display_name: None,
+        rootfs: None,
+        kernel: None,
+        dtbs: None,
+        chain: Some(BootProfileChain {
+            payload: BootProfileArtifactSource::Http(BootProfileArtifactSourceHttpSource {
+                http: "https://example.invalid/u-boot.bin".to_string(),
+            }),
+            next_device_profile: "google-sargo-uboot".to_string(),
+            next_boot_profile: "sargo-live".to_string(),
+        }),
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    validate_boot_profile(&profile).expect("chain profile should validate");
+}
+
+#[test]
+fn rejects_chain_profile_with_terminal_rootfs() {
+    let profile = BootProfile {
+        id: "bad-chain".to_string(),
+        display_name: None,
+        rootfs: Some(BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
+            erofs: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
+                file: "./rootfs.ero".to_string(),
+            }),
+        })),
+        kernel: None,
+        dtbs: None,
+        chain: Some(BootProfileChain {
+            payload: BootProfileArtifactSource::Http(BootProfileArtifactSourceHttpSource {
+                http: "https://example.invalid/u-boot.bin".to_string(),
+            }),
+            next_device_profile: "google-sargo-uboot".to_string(),
+            next_boot_profile: "sargo-live".to_string(),
+        }),
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    let err = validate_boot_profile(&profile).expect_err("chain/rootfs conflict should fail");
+    assert_eq!(
+        err,
+        BootProfileValidationError::ChainConflictsWithTerminalFields
+    );
+}
+
+#[test]
+fn rejects_chain_profile_without_next_boot_profile() {
+    let profile = BootProfile {
+        id: "bad-chain-target".to_string(),
+        display_name: None,
+        rootfs: None,
+        kernel: None,
+        dtbs: None,
+        chain: Some(BootProfileChain {
+            payload: BootProfileArtifactSource::Http(BootProfileArtifactSourceHttpSource {
+                http: "https://example.invalid/u-boot.bin".to_string(),
+            }),
+            next_device_profile: "google-sargo-uboot".to_string(),
+            next_boot_profile: "   ".to_string(),
+        }),
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    let err =
+        validate_boot_profile(&profile).expect_err("empty chain next_boot_profile should fail");
+    assert_eq!(err, BootProfileValidationError::EmptyChainNextBootProfile);
+}
+
+#[test]
+fn rejects_profile_without_rootfs_or_chain() {
+    let profile = BootProfile {
+        id: "missing-mode".to_string(),
+        display_name: None,
+        rootfs: None,
+        kernel: None,
+        dtbs: None,
+        chain: None,
+        dt_overlays: Vec::new(),
+        extra_cmdline: None,
+        stage0: BootProfileStage0::default(),
+    };
+
+    let err = validate_boot_profile(&profile).expect_err("profile without mode should fail");
+    assert_eq!(err, BootProfileValidationError::MissingRootfs);
+}
+
 fn sample_profile() -> BootProfile {
     let mut devices = BTreeMap::new();
     devices.insert(
@@ -381,16 +489,17 @@ fn sample_profile() -> BootProfile {
     BootProfile {
         id: "live-pocket-fedora".to_string(),
         display_name: Some("Live Pocket Fedora".to_string()),
-        rootfs: BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
+        rootfs: Some(BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
             erofs: BootProfileArtifactSource::Casync(BootProfileArtifactSourceCasyncSource {
                 casync: BootProfileArtifactSourceCasync {
                     index: "https://example.invalid/image.caibx".to_string(),
                     chunk_store: Some("https://example.invalid/chunks/".to_string()),
                 },
             }),
-        }),
+        })),
         kernel: None,
         dtbs: None,
+        chain: None,
         dt_overlays: vec![vec![0xAA]],
         extra_cmdline: Some("selinux=0".to_string()),
         stage0: BootProfileStage0 {

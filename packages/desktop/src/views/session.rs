@@ -65,6 +65,10 @@ pub enum SessionPhase {
     Booting {
         step: String,
     },
+    WaitingForChainedDevice {
+        expected_device_profile_id: String,
+        next_boot_profile_id: String,
+    },
     Active {
         runtime: BootRuntime,
         host_started: bool,
@@ -80,6 +84,7 @@ pub struct DeviceSession {
     pub device: ProbedDevice,
     pub channel_intake: SessionChannelIntake,
     pub boot_config: BootConfig,
+    pub chain_depth: u8,
     pub phase: SessionPhase,
 }
 
@@ -95,6 +100,16 @@ pub fn next_session_id() -> String {
 pub fn update_session_phase(store: &mut SessionStore, session_id: &str, phase: SessionPhase) {
     if let Some(session) = store.write().iter_mut().find(|s| s.id == session_id) {
         session.phase = phase;
+    }
+}
+
+pub fn update_session(
+    store: &mut SessionStore,
+    session_id: &str,
+    update: impl FnOnce(&mut DeviceSession),
+) {
+    if let Some(session) = store.write().iter_mut().find(|s| s.id == session_id) {
+        update(session);
     }
 }
 

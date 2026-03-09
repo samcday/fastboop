@@ -96,6 +96,15 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
             )
             .await?;
 
+        if let Some(boot_profile) = input.boot_profile.as_ref()
+            && boot_profile.is_chain()
+        {
+            bail!(
+                "boot profile '{}' uses chain mode and cannot be used with stage0",
+                boot_profile.id
+            );
+        }
+
         if input.warning_count > 0 {
             eprintln!(
                 "channel stream has {} warning(s) while reading profile head; using {} bytes of leading records",

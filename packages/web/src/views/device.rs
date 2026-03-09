@@ -16,7 +16,9 @@ use wasm_bindgen::JsValue;
 
 #[cfg(target_arch = "wasm32")]
 use super::device_boot::run_web_host_daemon;
-use super::device_boot::{boot_selected_device, spawn_detached};
+use super::device_boot::{
+    boot_selected_device, pair_chained_device, spawn_detached, BootTransition,
+};
 use super::serial_logs::SerialLogPanel;
 use super::session::{
     update_session_boot_config, update_session_phase, SessionPhase, SessionStore,
@@ -53,6 +55,12 @@ pub fn DevicePage(session_id: String, channel: Option<String>) -> Element {
     match session.phase {
         SessionPhase::Configuring => rsx! { BootConfigDevice { session_id } },
         SessionPhase::Booting { step } => rsx! { BootingDevice { session_id, step } },
+        SessionPhase::WaitingForChainedDevice {
+            expected_device_profile_id,
+            next_boot_profile_id,
+        } => {
+            rsx! { ChainedDeviceWait { session_id, expected_device_profile_id, next_boot_profile_id } }
+        }
         SessionPhase::Active { .. } => rsx! { BootedDevice { session_id } },
         SessionPhase::Error { summary } => rsx! { BootError { summary } },
     }
@@ -186,13 +194,24 @@ fn BootingDevice(session_id: String, step: String) -> Element {
         let session_id = session_id.clone();
         spawn_detached(async move {
             match boot_selected_device(&mut sessions, &session_id).await {
-                Ok(runtime) => update_session_phase(
+                Ok(BootTransition::Active(runtime)) => update_session_phase(
                     &mut sessions,
                     &session_id,
                     SessionPhase::Active {
                         runtime,
                         host_started: false,
                         host_connected: false,
+                    },
+                ),
+                Ok(BootTransition::WaitingForChainedDevice {
+                    expected_device_profile_id,
+                    next_boot_profile_id,
+                }) => update_session_phase(
+                    &mut sessions,
+                    &session_id,
+                    SessionPhase::WaitingForChainedDevice {
+                        expected_device_profile_id,
+                        next_boot_profile_id,
                     },
                 ),
                 Err(err) => {
@@ -215,6 +234,67 @@ fn BootingDevice(session_id: String, step: String) -> Element {
                 p { class: "landing__eyebrow", "Booting" }
                 h1 { "Working on it..." }
                 p { class: "landing__lede", "{step}" }
+            }
+        }
+    }
+}
+
+#[component]
+fn ChainedDeviceWait(
+    session_id: String,
+    expected_device_profile_id: String,
+    next_boot_profile_id: String,
+) -> Element {
+    let sessions = use_context::<SessionStore>();
+    let mut pending = use_signal(|| false);
+    let expected_for_click = expected_device_profile_id.clone();
+    let next_profile_for_click = next_boot_profile_id.clone();
+    let on_pair_next = move |_| {
+        if pending() {
+            return;
+        }
+        pending.set(true);
+        let mut sessions = sessions;
+        let session_id = session_id.clone();
+        let expected_device_profile_id = expected_for_click.clone();
+        let next_boot_profile_id = next_profile_for_click.clone();
+        spawn_detached(async move {
+            update_session_phase(
+                &mut sessions,
+                &session_id,
+                SessionPhase::WaitingForChainedDevice {
+                    expected_device_profile_id: expected_device_profile_id.clone(),
+                    next_boot_profile_id: next_boot_profile_id.clone(),
+                },
+            );
+            match pair_chained_device(&mut sessions, &session_id).await {
+                Ok(()) => {}
+                Err(err) => {
+                    update_session_phase(
+                        &mut sessions,
+                        &session_id,
+                        SessionPhase::Error {
+                            summary: format!("{err:#}"),
+                        },
+                    );
+                }
+            }
+        });
+    };
+
+    rsx! {
+        section { id: "landing",
+            div { class: "landing__panel",
+                p { class: "landing__eyebrow", "Chained boot" }
+                h1 { "Pair next device" }
+                p { class: "landing__lede", "Chain hop completed. Pair the next fastboot persona for profile '{expected_device_profile_id}' to continue." }
+                p { class: "landing__note", "Next boot profile: {next_boot_profile_id}" }
+                button {
+                    class: "cta__button",
+                    disabled: pending(),
+                    onclick: on_pair_next,
+                    if pending() { "Pairing..." } else { "Pair next device" }
+                }
             }
         }
     }

@@ -450,6 +450,7 @@ pub fn Home(channel: Option<String>) -> Element {
                     "",
                     DEFAULT_ENABLE_SERIAL,
                 ),
+                chain_depth: 0,
                 phase: SessionPhase::Configuring,
             });
             navigator.push(Route::DevicePage {

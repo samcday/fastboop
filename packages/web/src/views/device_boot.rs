@@ -2,8 +2,14 @@
 use anyhow::Context;
 use dioxus::prelude::*;
 use fastboop_core::bootimg::build_android_bootimg;
+#[cfg(target_arch = "wasm32")]
+use fastboop_core::builtin::builtin_profiles;
+#[cfg(target_arch = "wasm32")]
+use fastboop_core::device::profile_filters;
 use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
+#[cfg(target_arch = "wasm32")]
+use fastboop_core::fastboot::{profile_matches_vid_pid, FastbootSession};
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::BootProfileArtifactSource;
 use fastboop_core::Personalization;
@@ -65,12 +71,16 @@ use wasm_bindgen::JsValue;
 use super::session::update_session_active_host_state;
 #[cfg(target_arch = "wasm32")]
 use super::session::LocalReaderBridge;
+#[cfg(target_arch = "wasm32")]
+use super::session::ProbedDevice;
 use super::session::{
-    update_session_phase, BootConfig, BootRuntime, DeviceSession, SessionChannelIntake,
-    SessionPhase, SessionStore,
+    update_session, update_session_phase, BootConfig, BootRuntime, DeviceSession,
+    SessionChannelIntake, SessionPhase, SessionStore,
 };
 #[cfg(target_arch = "wasm32")]
 use crate::gibblox_worker::spawn_gibblox_worker;
+#[cfg(target_arch = "wasm32")]
+use fastboop_fastboot_webusb::request_device;
 
 #[cfg(target_arch = "wasm32")]
 const STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(200);
@@ -80,10 +90,18 @@ const STATUS_RETRY_ATTEMPTS: usize = 5;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const SMOO_MAX_IO_BYTES_KARG: &str = "smoo.max_io_bytes=1048576";
 
+pub enum BootTransition {
+    Active(Rc<BootRuntime>),
+    WaitingForChainedDevice {
+        expected_device_profile_id: String,
+        next_boot_profile_id: String,
+    },
+}
+
 pub async fn boot_selected_device(
     sessions: &mut SessionStore,
     session_id: &str,
-) -> anyhow::Result<Rc<BootRuntime>> {
+) -> anyhow::Result<BootTransition> {
     let session = sessions
         .read()
         .iter()
@@ -104,6 +122,78 @@ pub async fn boot_selected_device(
     })?;
 
     let selected_boot_profile = select_boot_profile_for_session(&session)?;
+    if let Some(boot_profile) = selected_boot_profile.as_ref() {
+        if let Some(chain) = boot_profile.chain.as_ref() {
+            if session.chain_depth >= 1 {
+                anyhow::bail!(
+                "selected boot profile '{}' requires another chain step, but max chain depth is 1",
+                boot_profile.id
+            );
+            }
+
+            update_session_phase(
+                sessions,
+                session_id,
+                SessionPhase::Booting {
+                    step: format!("Resolving chain payload for profile '{}'", boot_profile.id),
+                },
+            );
+            let chain_payload =
+                read_boot_profile_artifact_source_bytes(&chain.payload, &boot_profile.id).await?;
+            let chain_bootimg = build_chain_bootimg(&session.device.profile, &chain_payload)?;
+
+            update_session_phase(
+                sessions,
+                session_id,
+                SessionPhase::Booting {
+                    step: "Opening fastboot transport".to_string(),
+                },
+            );
+            let mut fastboot = session
+                .device
+                .handle
+                .open_fastboot()
+                .await
+                .map_err(|err| anyhow::anyhow!("open fastboot failed: {err}"))?;
+
+            update_session_phase(
+                sessions,
+                session_id,
+                SessionPhase::Booting {
+                    step: "Downloading chain boot image".to_string(),
+                },
+            );
+            download(&mut fastboot, &chain_bootimg)
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!("fastboot download failed during chain step: {err}")
+                })?;
+
+            update_session_phase(
+                sessions,
+                session_id,
+                SessionPhase::Booting {
+                    step: "Issuing fastboot boot for chain step".to_string(),
+                },
+            );
+            boot(&mut fastboot)
+                .await
+                .map_err(|err| anyhow::anyhow!("fastboot boot failed during chain step: {err}"))?;
+            let _ = fastboot.shutdown().await;
+
+            update_session(sessions, session_id, |session| {
+                session.boot_config.selected_boot_profile_id =
+                    Some(chain.next_boot_profile.clone());
+                session.chain_depth = 1;
+            });
+
+            return Ok(BootTransition::WaitingForChainedDevice {
+                expected_device_profile_id: chain.next_device_profile.clone(),
+                next_boot_profile_id: chain.next_boot_profile.clone(),
+            });
+        }
+    }
+
     let profile_stage0 = selected_boot_profile
         .as_ref()
         .map(|boot_profile| {
@@ -264,7 +354,7 @@ pub async fn boot_selected_device(
         .map_err(|err| anyhow::anyhow!("fastboot boot failed: {err}"))?;
     let _ = fastboot.shutdown().await;
 
-    Ok(Rc::new(BootRuntime {
+    Ok(BootTransition::Active(Rc::new(BootRuntime {
         size_bytes: runtime.size_bytes,
         identity: runtime.identity,
         channel: runtime.channel,
@@ -273,7 +363,184 @@ pub async fn boot_selected_device(
         local_reader_bridge: runtime.local_reader_bridge,
         #[cfg(target_arch = "wasm32")]
         smoo_stats: runtime.smoo_stats,
-    }))
+    })))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn pair_chained_device(
+    sessions: &mut SessionStore,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    let session = sessions
+        .read()
+        .iter()
+        .find(|s| s.id == session_id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("session not found"))?;
+
+    let (expected_device_profile_id, next_boot_profile_id) = match &session.phase {
+        SessionPhase::WaitingForChainedDevice {
+            expected_device_profile_id,
+            next_boot_profile_id,
+        } => (
+            expected_device_profile_id.clone(),
+            next_boot_profile_id.clone(),
+        ),
+        _ => anyhow::bail!("session is not waiting for a chained device"),
+    };
+
+    if !session.channel_intake.accepted_dev_profiles.is_empty()
+        && !session
+            .channel_intake
+            .accepted_dev_profiles
+            .iter()
+            .any(|profile| profile.id == expected_device_profile_id)
+    {
+        let allowed: Vec<_> = session
+            .channel_intake
+            .accepted_dev_profiles
+            .iter()
+            .map(|profile| profile.id.as_str())
+            .collect();
+        anyhow::bail!(
+            "chained next device profile '{}' is not accepted by this channel [{}]",
+            expected_device_profile_id,
+            allowed.join(", "),
+        );
+    }
+
+    let builtins =
+        builtin_profiles().map_err(|err| anyhow::anyhow!("load builtin profiles: {err}"))?;
+    let expected_profile = builtins
+        .into_iter()
+        .find(|profile| profile.id == expected_device_profile_id)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "next device profile '{}' is not available",
+                expected_device_profile_id
+            )
+        })?;
+
+    let filters = profile_filters(core::slice::from_ref(&expected_profile));
+    let device = request_device(&filters)
+        .await
+        .map_err(|err| anyhow::anyhow!("pair next chained device: {err}"))?;
+    let vid = device.vid();
+    let pid = device.pid();
+    if !profile_matches_vid_pid(&expected_profile, vid, pid) {
+        anyhow::bail!(
+            "paired device {:04x}:{:04x} does not match expected profile '{}'",
+            vid,
+            pid,
+            expected_profile.id
+        );
+    }
+
+    let mut fastboot = device
+        .open_fastboot()
+        .await
+        .map_err(|err| anyhow::anyhow!("open fastboot for chained device: {err}"))?;
+    let mut probe = FastbootSession::new(&mut fastboot);
+    probe
+        .probe_profile(&expected_profile)
+        .await
+        .map_err(|err| anyhow::anyhow!("probe chained device profile: {err:?}"))?;
+    let _ = fastboot.shutdown().await;
+
+    update_session(sessions, session_id, |session| {
+        session.device = ProbedDevice {
+            handle: device,
+            profile: expected_profile.clone(),
+            name: expected_profile
+                .display_name
+                .clone()
+                .unwrap_or_else(|| expected_profile.id.clone()),
+            vid,
+            pid,
+        };
+        session.boot_config.selected_boot_profile_id = Some(next_boot_profile_id.clone());
+        session.phase = SessionPhase::Booting {
+            step: "Queued".to_string(),
+        };
+    });
+
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn pair_chained_device(
+    _sessions: &mut SessionStore,
+    _session_id: &str,
+) -> anyhow::Result<()> {
+    anyhow::bail!("pair_chained_device is only available on wasm32")
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_boot_profile_artifact_source_bytes(
+    source: &fastboop_core::BootProfileArtifactSource,
+    profile_id: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let reader = open_boot_profile_artifact_source(source).await?;
+    let size_bytes = reader_size_bytes(reader.as_ref()).await?;
+    let len: usize = size_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("chain payload size {size_bytes} exceeds host memory"))?;
+    if len == 0 {
+        anyhow::bail!("boot profile '{}' chain payload is empty", profile_id);
+    }
+
+    let mut out = vec![0u8; len];
+    let byte_reader = AlignedByteReader::new(reader)
+        .await
+        .map_err(|err| anyhow::anyhow!("open aligned byte reader for chain payload: {err}"))?;
+    byte_reader
+        .read_exact_at(0, &mut out, gibblox_core::ReadContext::FOREGROUND)
+        .await
+        .map_err(|err| anyhow::anyhow!("read chain payload bytes: {err}"))?;
+    Ok(out)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn read_boot_profile_artifact_source_bytes(
+    _source: &fastboop_core::BootProfileArtifactSource,
+    _profile_id: &str,
+) -> anyhow::Result<Vec<u8>> {
+    anyhow::bail!("chain payload resolution is only available on wasm32")
+}
+
+fn build_chain_bootimg(
+    profile: &fastboop_core::DeviceProfile,
+    payload: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    if payload.is_empty() {
+        anyhow::bail!("chain payload is empty")
+    }
+
+    let mut profile = profile.clone();
+    if profile
+        .boot
+        .fastboot_boot
+        .android_bootimg
+        .kernel
+        .encoding
+        .append_dtb()
+    {
+        let header_version = profile.boot.fastboot_boot.android_bootimg.header_version;
+        if header_version >= 2 {
+            profile.boot.fastboot_boot.android_bootimg.header_version = 0;
+        }
+    }
+
+    let cmdline = profile
+        .boot
+        .fastboot_boot
+        .android_bootimg
+        .cmdline_append
+        .as_deref()
+        .unwrap_or_default();
+
+    build_android_bootimg(&profile, payload, &[], Some(&[]), cmdline)
+        .map_err(|err| anyhow::anyhow!("chain bootimg build failed: {err}"))
 }
 
 async fn build_stage0_artifacts(
@@ -412,7 +679,12 @@ async fn build_stage0_artifacts(
                 let selected_ostree = if using_boot_profile_rootfs
                     && selected_boot_profile
                         .as_ref()
-                        .is_some_and(|boot_profile| boot_profile.rootfs.is_ostree())
+                        .is_some_and(|boot_profile| {
+                            boot_profile
+                                .rootfs
+                                .as_ref()
+                                .is_some_and(|rootfs| rootfs.is_ostree())
+                        })
                 {
                     let detected = auto_detect_ostree_deployment_path(&provider).await?;
                     tracing::debug!(ostree = %detected, "auto-detected ostree deployment path");
@@ -672,7 +944,13 @@ async fn open_web_file_channel_payload_reader(
 async fn open_boot_profile_rootfs_reader(
     boot_profile: &BootProfile,
 ) -> anyhow::Result<Arc<dyn BlockReader>> {
-    open_boot_profile_artifact_source(boot_profile.rootfs.source()).await
+    let rootfs = boot_profile.rootfs.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "boot profile '{}' is chain-only and does not define rootfs",
+            boot_profile.id
+        )
+    })?;
+    open_boot_profile_artifact_source(rootfs.source()).await
 }
 
 #[cfg(target_arch = "wasm32")]

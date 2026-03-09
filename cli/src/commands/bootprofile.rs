@@ -107,12 +107,23 @@ async fn optimize_profile_pipeline_hints(
     };
     let mut report = OptimizePipelineReport::default();
 
-    add_optimize_report(
-        &mut report,
-        optimize_pipeline(profile_rootfs_source_mut(&mut profile.rootfs), &opts)
-            .await
-            .context("optimizing boot profile rootfs pipeline hints")?,
-    );
+    if let Some(rootfs) = profile.rootfs.as_mut() {
+        add_optimize_report(
+            &mut report,
+            optimize_pipeline(profile_rootfs_source_mut(rootfs), &opts)
+                .await
+                .context("optimizing boot profile rootfs pipeline hints")?,
+        );
+    }
+
+    if let Some(chain) = profile.chain.as_mut() {
+        add_optimize_report(
+            &mut report,
+            optimize_pipeline(&mut chain.payload, &opts)
+                .await
+                .context("optimizing boot profile chain payload pipeline hints")?,
+        );
+    }
 
     if let Some(kernel) = profile.kernel.as_mut() {
         add_optimize_report(
@@ -301,8 +312,8 @@ rootfs:
         )
         .expect("parse manifest");
 
-        match manifest.rootfs {
-            BootProfileRootfs::Fat(_) => {}
+        match manifest.rootfs.as_ref() {
+            Some(BootProfileRootfs::Fat(_)) => {}
             other => panic!("expected fat rootfs, got {other:?}"),
         }
     }
@@ -319,7 +330,7 @@ rootfs:
         )
         .expect("parse manifest");
 
-        let source = manifest.rootfs.source();
+        let source = manifest.rootfs.as_ref().expect("rootfs source").source();
         match source {
             BootProfileArtifactSource::File(source) => {
                 assert_eq!(source.file, "./images/rootfs.ero")
@@ -340,12 +351,12 @@ rootfs:
         )
         .expect("parse manifest");
 
-        match manifest.rootfs {
-            BootProfileRootfs::Ext4(_) => {}
+        match manifest.rootfs.as_ref() {
+            Some(BootProfileRootfs::Ext4(_)) => {}
             other => panic!("expected ext4 rootfs, got {other:?}"),
         }
 
-        let source = manifest.rootfs.source();
+        let source = manifest.rootfs.as_ref().expect("rootfs source").source();
         match source {
             BootProfileArtifactSource::File(source) => {
                 assert_eq!(source.file, "./images/rootfs.img")
@@ -408,9 +419,9 @@ rootfs:
         )
         .expect("parse manifest");
 
-        match manifest.rootfs {
-            BootProfileRootfs::Fat(_) => {
-                let source = manifest.rootfs.source();
+        match manifest.rootfs.as_ref() {
+            Some(BootProfileRootfs::Fat(_)) => {
+                let source = manifest.rootfs.as_ref().expect("rootfs source").source();
                 match source {
                     BootProfileArtifactSource::Mbr(source) => {
                         assert_eq!(source.mbr.index, Some(1));
@@ -483,7 +494,7 @@ rootfs:
         )
         .expect("parse manifest");
 
-        let source = manifest.rootfs.source();
+        let source = manifest.rootfs.as_ref().expect("rootfs source").source();
         match source {
             BootProfileArtifactSource::Casync(source) => {
                 assert!(source.casync.index.ends_with(".caibx"));
@@ -507,15 +518,15 @@ rootfs:
         )
         .expect("parse manifest");
 
-        match &manifest.rootfs {
-            BootProfileRootfs::Ostree(source) => match &source.ostree {
+        match manifest.rootfs.as_ref() {
+            Some(BootProfileRootfs::Ostree(source)) => match &source.ostree {
                 BootProfileRootfsFilesystemSource::Erofs(_) => {}
                 other => panic!("expected ostree erofs source, got {other:?}"),
             },
             other => panic!("expected ostree rootfs, got {other:?}"),
         }
 
-        let source = manifest.rootfs.source();
+        let source = manifest.rootfs.as_ref().expect("rootfs source").source();
         match source {
             BootProfileArtifactSource::Casync(source) => {
                 assert!(source.casync.index.ends_with(".caibx"));
@@ -554,7 +565,7 @@ rootfs:
         assert_eq!(report.android_sparse_indexes_updated, 0);
         assert_eq!(report.android_sparse_indexes_skipped, 0);
 
-        let source = profile.rootfs.source();
+        let source = profile.rootfs.as_ref().expect("rootfs source").source();
         let BootProfileArtifactSource::AndroidSparseImg(source) = source else {
             panic!("expected android sparse source, got {source:?}")
         };

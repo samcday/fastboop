@@ -212,6 +212,7 @@ pub fn Home() -> Element {
                     "",
                     DEFAULT_ENABLE_SERIAL,
                 ),
+                chain_depth: 0,
                 phase: SessionPhase::Configuring,
             });
             navigator.push(Route::DevicePage { session_id });
