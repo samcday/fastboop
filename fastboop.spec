@@ -52,7 +52,7 @@ if [ -n "$stage0_embed_path" ]; then
   fi
   export FASTBOOP_STAGE0_EMBED_PATH="$stage0_embed_path"
 fi
-%cargo_build
+%cargo_build -- --manifest-path cli/Cargo.toml --bin fastboop
 %cargo_vendor_manifest
 %{cargo_license_summary}
 %{cargo_license} > LICENSE.dependencies
@@ -63,7 +63,7 @@ install -Dpm0755 target/rpm/fastboop \
 
 %if %{with check}
 %check
-%cargo_test
+%cargo_test -- --manifest-path cli/Cargo.toml --bin fastboop
 %endif
 
 %files
