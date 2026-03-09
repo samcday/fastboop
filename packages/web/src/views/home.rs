@@ -442,6 +442,7 @@ pub fn Home(channel: Option<String>) -> Element {
                     warning_count: intake.stream_head.warning_count,
                     has_artifact_payload: intake.has_artifact_payload(),
                     accepted_dev_profiles: intake.stream_head.dev_profiles.clone(),
+                    boot_profiles: intake.stream_head.boot_profiles.clone(),
                     compatible_boot_profiles,
                 },
                 boot_config: BootConfig::new(

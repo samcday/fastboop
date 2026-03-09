@@ -60,6 +60,7 @@ pub struct SessionChannelIntake {
     pub warning_count: usize,
     pub has_artifact_payload: bool,
     pub accepted_dev_profiles: Vec<DeviceProfile>,
+    pub boot_profiles: Vec<BootProfile>,
     pub compatible_boot_profiles: Vec<BootProfile>,
 }
 

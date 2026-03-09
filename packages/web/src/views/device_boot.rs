@@ -448,6 +448,18 @@ pub async fn pair_chained_device(
     let _ = fastboot.shutdown().await;
 
     update_session(sessions, session_id, |session| {
+        let compatible_boot_profiles = session
+            .channel_intake
+            .boot_profiles
+            .iter()
+            .filter(|boot_profile| {
+                fastboop_core::boot_profile_matches_device(
+                    boot_profile,
+                    expected_profile.id.as_str(),
+                )
+            })
+            .cloned()
+            .collect();
         session.device = ProbedDevice {
             handle: device,
             profile: expected_profile.clone(),
@@ -458,6 +470,7 @@ pub async fn pair_chained_device(
             vid,
             pid,
         };
+        session.channel_intake.compatible_boot_profiles = compatible_boot_profiles;
         session.boot_config.selected_boot_profile_id = Some(next_boot_profile_id.clone());
         session.phase = SessionPhase::Booting {
             step: "Queued".to_string(),

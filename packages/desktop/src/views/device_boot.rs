@@ -370,7 +370,20 @@ pub async fn continue_chained_boot(
 
     let next_device = wait_for_chained_device(&expected_profile).await?;
     update_session(sessions, session_id, |session| {
+        let compatible_boot_profiles = session
+            .channel_intake
+            .boot_profiles
+            .iter()
+            .filter(|boot_profile| {
+                fastboop_core::boot_profile_matches_device(
+                    boot_profile,
+                    expected_profile.id.as_str(),
+                )
+            })
+            .cloned()
+            .collect();
         session.device = next_device;
+        session.channel_intake.compatible_boot_profiles = compatible_boot_profiles;
         session.boot_config.selected_boot_profile_id = Some(next_boot_profile_id.to_string());
         session.phase = SessionPhase::Booting {
             step: "Queued".to_string(),
