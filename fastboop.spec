@@ -74,6 +74,27 @@ install -Dpm0755 target/rpm/fastboop \
 
 %if %{with check}
 %check
+stage0_embed_path="%{?fastboop_stage0_embed_path}"
+if [ -z "$stage0_embed_path" ] && [ -f "%{stage0_embed_default}" ]; then
+  stage0_embed_path="%{stage0_embed_default}"
+fi
+if [ -z "$stage0_embed_path" ] && [ -f "${PWD}/%{stage0_embed_asset}" ]; then
+  stage0_embed_path="${PWD}/%{stage0_embed_asset}"
+fi
+if [ -z "$stage0_embed_path" ]; then
+  stage0_release_tag="$(printf '%s' '%{version}' | sed -E 's/^v//; s/_/-/g; s/([0-9])[.-]?rc[.-]?([0-9]+)/\1-rc.\2/')"
+  stage0_embed_url="%{url}/releases/download/v${stage0_release_tag}/%{stage0_embed_asset}"
+  stage0_embed_path="${PWD}/%{stage0_embed_asset}"
+  rm -f "$stage0_embed_path"
+  curl --fail --location --retry 3 --retry-delay 2 \
+      --output "$stage0_embed_path" \
+      "$stage0_embed_url"
+fi
+if [ ! -f "$stage0_embed_path" ]; then
+  echo "FASTBOOP stage0 embed artifact not found: $stage0_embed_path" >&2
+  exit 1
+fi
+export FASTBOOP_STAGE0_EMBED_PATH="$stage0_embed_path"
 %cargo_test -- --manifest-path cli/Cargo.toml --bin fastboop
 %endif
 
