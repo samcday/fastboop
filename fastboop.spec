@@ -20,9 +20,9 @@ BuildRequires:  curl
 
 # Optional prebuilt stage0 artifact path (release asset flow):
 #   rpmbuild --define 'fastboop_stage0_embed_path /path/to/fastboop-stage0-aarch64-unknown-linux-musl' ...
-# If the define is omitted, %{_sourcedir}/fastboop-stage0-aarch64-unknown-linux-musl
+# If the define is omitted, %%{_sourcedir}/fastboop-stage0-aarch64-unknown-linux-musl
 # is used when present. If neither is present, %build downloads the release asset
-# matching %{version} (rc normalization: 0.0.1_rc7 -> 0.0.1-rc.7).
+# matching %%{version} (normalization: v0.0.1.rc.7 -> 0.0.1-rc.7).
 %global stage0_embed_asset fastboop-stage0-aarch64-unknown-linux-musl
 %global stage0_embed_default %{_sourcedir}/%{stage0_embed_asset}
 
@@ -48,7 +48,7 @@ if [ -z "$stage0_embed_path" ] && [ -f "%{stage0_embed_default}" ]; then
   stage0_embed_path="%{stage0_embed_default}"
 fi
 if [ -z "$stage0_embed_path" ]; then
-  stage0_release_tag="$(printf '%s' '%{version}' | sed -E 's/_/-/g; s/rc([0-9]+)/rc.\1/')"
+  stage0_release_tag="$(printf '%s' '%{version}' | sed -E 's/^v//; s/_/-/g; s/([0-9])[.-]?rc[.-]?([0-9]+)/\1-rc.\2/')"
   stage0_embed_url="%{url}/releases/download/v${stage0_release_tag}/%{stage0_embed_asset}"
   stage0_embed_path="${PWD}/%{stage0_embed_asset}"
   rm -f "$stage0_embed_path"
