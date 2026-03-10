@@ -1,11 +1,16 @@
+#[cfg(feature = "tui")]
 use std::io::Write;
+#[cfg(feature = "tui")]
 use std::sync::mpsc::Sender;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
+#[cfg(feature = "tui")]
 use tracing_subscriber::fmt::MakeWriter;
+#[cfg(feature = "tui")]
 use tracing_subscriber::layer::SubscriberExt;
+#[cfg(feature = "tui")]
 use tracing_subscriber::util::SubscriberInitExt;
 
 mod boot_ui;
@@ -13,8 +18,10 @@ mod commands;
 mod devpros;
 mod personalization;
 mod smoo_host;
+#[cfg(feature = "tui")]
 mod tui;
 
+#[cfg(feature = "tui")]
 use boot_ui::BootEvent;
 use commands::{
     BootArgs, BootProfileArgs, DetectArgs, DevProfileArgs, Stage0Args, run_boot, run_bootprofile,
@@ -65,6 +72,7 @@ pub(crate) fn setup_default_tracing() {
     let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
+#[cfg(feature = "tui")]
 pub(crate) fn setup_tui_tracing(tx: Sender<BootEvent>) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let writer = TuiWriter { tx };
@@ -78,11 +86,13 @@ pub(crate) fn setup_tui_tracing(tx: Sender<BootEvent>) {
         .try_init();
 }
 
+#[cfg(feature = "tui")]
 #[derive(Clone)]
 struct TuiWriter {
     tx: Sender<BootEvent>,
 }
 
+#[cfg(feature = "tui")]
 impl<'a> MakeWriter<'a> for TuiWriter {
     type Writer = TuiWriterInner;
 
@@ -94,11 +104,13 @@ impl<'a> MakeWriter<'a> for TuiWriter {
     }
 }
 
+#[cfg(feature = "tui")]
 struct TuiWriterInner {
     tx: Sender<BootEvent>,
     buffer: Vec<u8>,
 }
 
+#[cfg(feature = "tui")]
 impl std::io::Write for TuiWriterInner {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.buffer.extend_from_slice(buf);
@@ -117,6 +129,7 @@ impl std::io::Write for TuiWriterInner {
     }
 }
 
+#[cfg(feature = "tui")]
 impl Drop for TuiWriterInner {
     fn drop(&mut self) {
         let _ = self.flush();

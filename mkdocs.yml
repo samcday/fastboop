@@ -27,7 +27,6 @@ nav:
       - FAQ: user/faq.md
   - Developer docs:
       - Overview: dev/index.md
-      - Contributors intro: dev/CONTRIBUTORS_INTRODUCTION.md
       - Device profiles: dev/DEVICE_PROFILES.md
       - Boot profiles: dev/BOOT_PROFILES.md
       - Stage0 contract: dev/STAGE0.md

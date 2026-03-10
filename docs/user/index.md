@@ -1,4 +1,4 @@
-# fastboop user docs
+# fastboop
 
 fastboop makes it simple to live boot your favourite (supported) mainline Linux distro on your favourite (supported) pocket computer, **without modifying the device**.
 
@@ -6,7 +6,13 @@ fastboop makes it simple to live boot your favourite (supported) mainline Linux 
 
 fastboop is available as a web app, a desktop app, and a CLI tool.
 
-The quickest way to get started is to visit https://www.fastboop.win.
+### Web app
+
+The quickest way to get started is to visit [www.fastboop.win][].
+
+### Desktop app
+
+A desktop app <del>is</del> [will be](https://github.com/samcday/fastboop/issues/41) available.
 
 ### CLI
 
@@ -31,3 +37,4 @@ There's also [prebuilt binaries][latest-release] made available as part of each 
 
 [cargo-binstall]: https://github.com/cargo-bins/cargo-binstall
 [latest-release]: https://github.com/samcday/fastboop/releases/latest
+[www.fastboop.win]: https://www.fastboop.win

@@ -9,7 +9,6 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
 - Then read only the docs relevant to the task from the index below.
 
 ## Read-on-demand index
-- `docs/dev/CONTRIBUTORS_INTRODUCTION.md`: contributor starting point and workflow.
 - `docs/dev/DEVICE_PROFILES.md`: DevPro schema, matching/probing semantics, boot constraints.
 - `docs/dev/BOOT_PROFILES.md`: BootProfile schema, compile/show flow, validation constraints.
 - `docs/dev/STAGE0.md`: stage0 contract, PID1 flow, handoff behavior.

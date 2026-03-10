@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "tui")]
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::task::Poll;
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{io::IsTerminal, thread};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
@@ -23,6 +25,7 @@ use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
 use crate::devpros::{dedup_profiles, load_device_profiles, resolve_devpro_dirs};
 use crate::personalization::personalization_from_host;
 use crate::smoo_host::run_host_daemon;
+#[cfg(feature = "tui")]
 use crate::tui::{TuiOutcome, run_boot_tui};
 
 use super::{
@@ -96,26 +99,34 @@ pub struct BootArgs {
     /// Wait up to N seconds for a matching device (0 = infinite).
     #[arg(long, default_value_t = 0)]
     pub wait: u64,
+    #[cfg(feature = "tui")]
     /// Use plain line-oriented logs (disable TUI view).
     #[arg(long, default_value_t = false)]
     pub plain: bool,
 }
 
 pub async fn run_boot(args: BootArgs) -> Result<()> {
+    #[cfg(feature = "tui")]
     let use_tui = !args.plain && std::io::stdout().is_terminal() && std::io::stderr().is_terminal();
+
     let (tx, rx) = std::sync::mpsc::channel::<BootEvent>();
     let shutdown = CancellationToken::new();
     let runtime = tokio::runtime::Handle::current();
 
+    #[cfg(feature = "tui")]
     if use_tui {
         crate::setup_tui_tracing(tx.clone());
     } else {
         crate::setup_default_tracing();
     }
 
+    #[cfg(not(feature = "tui"))]
+    crate::setup_default_tracing();
+
     let worker_shutdown = shutdown.clone();
     let worker = thread::spawn(move || run_boot_worker(args, tx, worker_shutdown, runtime));
 
+    #[cfg(feature = "tui")]
     if use_tui {
         match run_boot_tui(&rx)? {
             TuiOutcome::Completed => {}
@@ -127,6 +138,9 @@ pub async fn run_boot(args: BootArgs) -> Result<()> {
     } else {
         run_plain_event_loop(&rx);
     }
+
+    #[cfg(not(feature = "tui"))]
+    run_plain_event_loop(&rx);
 
     worker
         .join()

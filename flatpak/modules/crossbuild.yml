@@ -1,0 +1,44 @@
+# cross build toolchain required for building aarch64 stage0 binary on x86_64 hosts
+#
+# there was an extension: org.freedesktop.Sdk.Extension.toolchain-aarch64
+# it was x86_64 only and 'only-arches' property does not works for extensions
+# including that extension in the manifest breaks build for aarch64
+#
+# since 25.05 both following extension was removed for unclear reasons:
+# - org.freedesktop.Sdk.Compat.aarch64 and
+# - org.freedesktop.Sdk.Extension.toolchain-aarch64
+#
+# https://gitlab.com/freedesktop-sdk/freedesktop-sdk/-/commit/1437fab
+# https://gitlab.com/freedesktop-sdk/freedesktop-sdk/-/commit/4c0ef13
+
+name: crossbuild
+only-arches:
+  - x86_64
+buildsystem: simple
+sources:
+  - type: archive
+    url: https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/os/Packages/b/binutils-aarch64-linux-gnu-2.45-1.fc43.x86_64.rpm
+    sha256: ada6dfaf5169aeee6afd80d138169f2f53293b6104d4d132e438cef55ca01589
+    dest: binutils-aarch64-linux-gnu
+  - type: archive
+    url: https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/os/Packages/g/gcc-aarch64-linux-gnu-15.2.1-1.fc43.x86_64.rpm
+    sha256: 6496695ab47fb166e07b15c4d200edd6a735d1c93d7b24bfdd3d6c5ce3ecac87
+    dest: gcc-aarch64-linux-gnu
+  - type: archive
+    url: https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/os/Packages/c/cross-gcc-common-15.2.1-1.fc43.noarch.rpm
+    sha256: 83285f13f9a391ba661fa31875e05f6d42382fada1d564ba43d804390c6350b1
+    dest: cross-gcc-common
+  - type: archive
+    url: https://static.rust-lang.org/dist/rust-std-1.94.0-aarch64-unknown-linux-gnu.tar.xz
+    sha256: c781b3ef4fefa5508fbe05820eddc95e46351d905a30921cc020febd9c596a2e
+    dest: rust
+build-commands:
+  - mkdir -p /app/crossbuild/rust
+  - mkdir -p /app/usr/lib/
+  - cp -a */bin/ /app/crossbuild/
+  - cp -a */lib/ /app/crossbuild/
+  - cp -a */libexec/ /app/crossbuild/
+  - ln -sfn /app/lib/aarch64-linux-gnu /app/usr/lib/aarch64-linux-gnu
+  - ln -sfn /app/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 /app/lib/ld-linux-aarch64.so.1
+  - cp -a /app/lib/sdk/rust-stable/. /app/crossbuild/rust/
+  - sh rust/install.sh --prefix=/app/crossbuild/rust/ --disable-ldconfig

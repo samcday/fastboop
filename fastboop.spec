@@ -16,11 +16,13 @@ Source:         %{url}/archive/v%{version}/%{name}-v%{version}.tar.gz
 BuildRequires:  cargo-rpm-macros >= 24
 BuildRequires:  clang-devel
 BuildRequires:  pkgconfig(libusb-1.0)
+BuildRequires:  curl
 
 # Optional prebuilt stage0 artifact path (release asset flow):
 #   rpmbuild --define 'fastboop_stage0_embed_path /path/to/fastboop-stage0-aarch64-unknown-linux-musl' ...
-# If the define is omitted, %{_sourcedir}/fastboop-stage0-aarch64-unknown-linux-musl
-# is used when present.
+# If the define is omitted, %%{_sourcedir}/fastboop-stage0-aarch64-unknown-linux-musl
+# is used when present. If neither is present, %build downloads the release asset
+# matching %%{version} (normalization: v0.0.1.rc.7 -> 0.0.1-rc.7).
 %global stage0_embed_asset fastboop-stage0-aarch64-unknown-linux-musl
 %global stage0_embed_default %{_sourcedir}/%{stage0_embed_asset}
 
@@ -45,6 +47,15 @@ stage0_embed_path="%{?fastboop_stage0_embed_path}"
 if [ -z "$stage0_embed_path" ] && [ -f "%{stage0_embed_default}" ]; then
   stage0_embed_path="%{stage0_embed_default}"
 fi
+if [ -z "$stage0_embed_path" ]; then
+  stage0_release_tag="$(printf '%s' '%{version}' | sed -E 's/^v//; s/_/-/g; s/([0-9])[.-]?rc[.-]?([0-9]+)/\1-rc.\2/')"
+  stage0_embed_url="%{url}/releases/download/v${stage0_release_tag}/%{stage0_embed_asset}"
+  stage0_embed_path="${PWD}/%{stage0_embed_asset}"
+  rm -f "$stage0_embed_path"
+  curl --fail --location --retry 3 --retry-delay 2 \
+      --output "$stage0_embed_path" \
+      "$stage0_embed_url"
+fi
 if [ -n "$stage0_embed_path" ]; then
   if [ ! -f "$stage0_embed_path" ]; then
     echo "FASTBOOP stage0 embed artifact not found: $stage0_embed_path" >&2
@@ -52,7 +63,7 @@ if [ -n "$stage0_embed_path" ]; then
   fi
   export FASTBOOP_STAGE0_EMBED_PATH="$stage0_embed_path"
 fi
-%cargo_build
+%cargo_build -- --manifest-path cli/Cargo.toml --bin fastboop
 %cargo_vendor_manifest
 %{cargo_license_summary}
 %{cargo_license} > LICENSE.dependencies
@@ -63,7 +74,7 @@ install -Dpm0755 target/rpm/fastboop \
 
 %if %{with check}
 %check
-%cargo_test
+%cargo_test -- --manifest-path cli/Cargo.toml --bin fastboop
 %endif
 
 %files

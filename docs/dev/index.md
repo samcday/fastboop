@@ -1,10 +1,15 @@
-# fastboop developer docs
+# fastboop hax0ring
 
-This section collects contributor-facing architecture and implementation references.
+You want to bang on fastboop to do something it can't already do? Great!
+
+Crash course:
+
+- Device Profile (DevPro): "what is this device and how can it be booted?"
+- Boot Profile: "where do rootfs artifacts come from and what stage0 tweaks are needed?"
+- Stage0: tiny PID1 initrd that launches smoo and gets out of the way.
 
 ## Core docs
 
-- [Contributors Introduction](CONTRIBUTORS_INTRODUCTION.md)
 - [Device Profiles](DEVICE_PROFILES.md)
 - [Boot Profiles](BOOT_PROFILES.md)
 - [Stage0](STAGE0.md)

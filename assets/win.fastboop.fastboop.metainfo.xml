@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>com.samcday.fastboop</id>
+  <id>win.fastboop.fastboop</id>
   <name>fastboop</name>
   <summary>Ephemeral Linux boot over USB bootloaders</summary>
   <metadata_license>CC0-1.0</metadata_license>
@@ -12,7 +12,7 @@
       tiny stage0 initrd, and hands off to smoo for live boot.
     </p>
   </description>
-  <launchable type="desktop-id">com.samcday.fastboop.desktop</launchable>
+  <launchable type="desktop-id">win.fastboop.fastboop.desktop</launchable>
   <categories>
     <category>Utility</category>
     <category>System</category>

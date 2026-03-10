@@ -1,6 +1,6 @@
-id: oneplus-fajita
-display_name: OnePlus 6T
-devicetree_name: qcom/sdm845-oneplus-fajita
+id: xiaomi-beryllium-tianma
+display_name: Xiaomi POCO F1 (tianma panel)
+devicetree_name: qcom/sdm845-xiaomi-beryllium-tianma
 
 match:
   - fastboot:
@@ -9,9 +9,7 @@ match:
 
 probe:
   - fastboot.getvar: product
-    equals: sdm845
-  - fastboot.getvar: partition-type:op2
-    equals: raw
+    equals: beryllium
 
 boot:
   fastboot_boot:
@@ -30,8 +28,15 @@ stage0:
   kernel_modules:
     # This is the core set for a working UDC.
     - dwc3
+    - dwc3-qcom
     - dwc3-qcom-legacy
     - phy-qcom-qusb2
     - nvmem_qfprom
+    - i2c-qcom-geni
+    - pinctrl-sdm845
     - gcc-sdm845
     - qnoc-sdm845
+
+    # This isn't required for UDC, but needs to load
+    # early to avoid deferred-probe timeouts on arm-smmu.
+    - gpucc-sdm845
