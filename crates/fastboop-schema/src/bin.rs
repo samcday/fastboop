@@ -7,15 +7,15 @@ use gibblox_pipeline::bin::PipelineSourceBin;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Boot, BootProfile, BootProfileArtifactPathSource, BootProfileArtifactSource, BootProfileDevice,
-    BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
+    Boot, BootProfile, BootProfileArtifactPathSource, BootProfileArtifactSource, BootProfileChain,
+    BootProfileDevice, BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
     BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileRootfsFilesystemSource,
     BootProfileRootfsOstreeSource, BootProfileStage0, DeviceProfile, ExistsFlag, FastbootGetvarEq,
     FastbootGetvarExists, FastbootGetvarNotEq, FastbootGetvarNotExists, InjectMac, MatchRule,
     NotExistsFlag, ProbeStep, Stage0,
 };
 
-pub const BOOT_PROFILE_BIN_FORMAT_VERSION: u16 = 2;
+pub const BOOT_PROFILE_BIN_FORMAT_VERSION: u16 = 3;
 pub const BOOT_PROFILE_BIN_MAGIC: [u8; 8] = *b"FBOOPROF";
 pub const BOOT_PROFILE_BIN_HEADER_LEN: usize = 10;
 
@@ -27,12 +27,20 @@ pub const DEV_PROFILE_BIN_HEADER_LEN: usize = 10;
 pub struct BootProfileBin {
     pub id: String,
     pub display_name: Option<String>,
-    pub rootfs: BootProfileRootfsBin,
+    pub rootfs: Option<BootProfileRootfsBin>,
     pub kernel: Option<BootProfileArtifactPathSourceBin>,
     pub dtbs: Option<BootProfileArtifactPathSourceBin>,
+    pub chain: Option<BootProfileChainBin>,
     pub dt_overlays: Vec<Vec<u8>>,
     pub extra_cmdline: Option<String>,
     pub stage0: BootProfileStage0Bin,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BootProfileChainBin {
+    pub payload: PipelineSourceBin,
+    pub next_device_profile: String,
+    pub next_boot_profile: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -226,9 +234,10 @@ impl From<BootProfile> for BootProfileBin {
         Self {
             id: profile.id,
             display_name: profile.display_name,
-            rootfs: BootProfileRootfsBin::from(profile.rootfs),
+            rootfs: profile.rootfs.map(BootProfileRootfsBin::from),
             kernel: profile.kernel.map(BootProfileArtifactPathSourceBin::from),
             dtbs: profile.dtbs.map(BootProfileArtifactPathSourceBin::from),
+            chain: profile.chain.map(BootProfileChainBin::from),
             dt_overlays: profile.dt_overlays,
             extra_cmdline: profile.extra_cmdline,
             stage0: BootProfileStage0Bin::from(profile.stage0),
@@ -241,12 +250,33 @@ impl From<BootProfileBin> for BootProfile {
         Self {
             id: profile.id,
             display_name: profile.display_name,
-            rootfs: BootProfileRootfs::from(profile.rootfs),
+            rootfs: profile.rootfs.map(BootProfileRootfs::from),
             kernel: profile.kernel.map(BootProfileArtifactPathSource::from),
             dtbs: profile.dtbs.map(BootProfileArtifactPathSource::from),
+            chain: profile.chain.map(BootProfileChain::from),
             dt_overlays: profile.dt_overlays,
             extra_cmdline: profile.extra_cmdline,
             stage0: BootProfileStage0::from(profile.stage0),
+        }
+    }
+}
+
+impl From<BootProfileChain> for BootProfileChainBin {
+    fn from(chain: BootProfileChain) -> Self {
+        Self {
+            payload: PipelineSourceBin::from(chain.payload),
+            next_device_profile: chain.next_device_profile,
+            next_boot_profile: chain.next_boot_profile,
+        }
+    }
+}
+
+impl From<BootProfileChainBin> for BootProfileChain {
+    fn from(chain: BootProfileChainBin) -> Self {
+        Self {
+            payload: BootProfileArtifactSource::from(chain.payload),
+            next_device_profile: chain.next_device_profile,
+            next_boot_profile: chain.next_boot_profile,
         }
     }
 }

@@ -10,6 +10,7 @@ pub enum BootPhase {
     BuildingBootImage,
     Downloading,
     Booting,
+    WaitingForChainedDevice,
     WaitingForSmoo,
     Serving,
     #[cfg(feature = "tui")]
@@ -27,6 +28,7 @@ impl BootPhase {
             Self::BuildingBootImage => "building-bootimg",
             Self::Downloading => "fastboot-download",
             Self::Booting => "fastboot-boot",
+            Self::WaitingForChainedDevice => "waiting-for-chained-device",
             Self::WaitingForSmoo => "waiting-for-smoo",
             Self::Serving => "serving",
             #[cfg(feature = "tui")]

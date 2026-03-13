@@ -535,8 +535,13 @@ impl ArtifactReaderResolver {
             let trailing: Arc<dyn BlockReader> = Arc::new(trailing);
             unwrap_channel_reader(trailing, Some(channel)).await?
         } else {
-            self.open_artifact_source(boot_profile.rootfs.source())
-                .await?
+            let rootfs = boot_profile.rootfs.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "selected boot profile '{}' is chain-only and does not define rootfs",
+                    boot_profile.id
+                )
+            })?;
+            self.open_artifact_source(rootfs.source()).await?
         };
 
         let stage0_readers = derive_stage0_readers(reader.clone()).await?;
@@ -701,6 +706,30 @@ impl ArtifactReaderResolver {
             self.cache.insert(cache_key, reader.clone());
             Ok(reader)
         })
+    }
+
+    pub(crate) async fn read_artifact_source_bytes(
+        &mut self,
+        source: &BootProfileArtifactSource,
+    ) -> Result<Vec<u8>> {
+        let reader = self.open_artifact_source(source).await?;
+        let total_bytes = total_reader_bytes(reader.as_ref()).await?;
+        let total_len: usize = total_bytes
+            .try_into()
+            .map_err(|_| anyhow!("artifact size {total_bytes} exceeds host addressable memory"))?;
+        if total_len == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut out = vec![0u8; total_len];
+        let byte_reader = AlignedByteReader::new(reader)
+            .await
+            .map_err(|err| anyhow!("open aligned byte reader for artifact source: {err}"))?;
+        byte_reader
+            .read_exact_at(0, &mut out, ReadContext::FOREGROUND)
+            .await
+            .map_err(|err| anyhow!("read artifact source bytes: {err}"))?;
+        Ok(out)
     }
 }
 
@@ -1469,7 +1498,12 @@ pub(crate) fn resolve_effective_ostree_arg(
     boot_profile: Option<&BootProfile>,
 ) -> OstreeArg {
     if matches!(cli_arg, OstreeArg::Disabled)
-        && boot_profile.is_some_and(|profile| profile.rootfs.is_ostree())
+        && boot_profile.is_some_and(|profile| {
+            profile
+                .rootfs
+                .as_ref()
+                .is_some_and(BootProfileRootfs::is_ostree)
+        })
     {
         OstreeArg::AutoDetect
     } else {

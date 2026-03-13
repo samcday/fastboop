@@ -13,7 +13,9 @@ use fastboop_core::bootimg::build_android_bootimg;
 use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, profile_filters};
 use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
-use fastboop_core::{DeviceProfile, resolve_effective_boot_profile_stage0};
+use fastboop_core::{
+    DeviceProfile, resolve_effective_boot_profile_stage0, select_boot_profile_for_device,
+};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gibblox_core::{BlockReader, block_identity_string};
@@ -266,58 +268,7 @@ async fn run_boot_inner(
             "--device-profile is required when using --output; profile auto-detection needs a connected device"
         );
     }
-
-    let mut detected_device = if args.output.is_none() {
-        let wait = Duration::from_secs(args.wait);
-        if let Some(selected_profile) = profile.as_ref() {
-            emit(
-                &events,
-                BootEvent::Phase {
-                    phase: BootPhase::WaitingForDevice,
-                    detail: format!("profile={}", selected_profile.id),
-                },
-            );
-            Some(wait_for_fastboot_device(selected_profile, wait, &events).await?)
-        } else {
-            emit(
-                &events,
-                BootEvent::Phase {
-                    phase: BootPhase::WaitingForDevice,
-                    detail: "profile=auto".to_string(),
-                },
-            );
-            let resolved =
-                wait_for_fastboot_device_auto(&constrained_profiles, wait, &events).await?;
-            profile = Some(resolved.profile);
-            Some(resolved.device)
-        }
-    } else {
-        None
-    };
-
-    let profile = profile.expect("profile resolved before build");
-
-    if let Some(device) = &detected_device {
-        let profile_detail = format!("profile={}", profile.id);
-        emit(
-            &events,
-            BootEvent::Phase {
-                phase: BootPhase::DeviceDetected,
-                detail: format!(
-                    "{:04x}:{:04x} {} {}",
-                    device.vid,
-                    device.pid,
-                    device
-                        .serial
-                        .as_deref()
-                        .map(|s| format!("serial={s}"))
-                        .unwrap_or_else(|| "serial=unknown".to_string()),
-                    profile_detail,
-                ),
-            },
-        );
-    }
-
+    let wait = Duration::from_secs(args.wait);
     let cli_dtb_override = match &args.stage0.dtb {
         Some(path) => {
             Some(std::fs::read(path).with_context(|| format!("reading dtb {}", path.display()))?)
@@ -345,139 +296,415 @@ async fn run_boot_inner(
         None
     };
 
-    emit(
-        &events,
-        BootEvent::Phase {
-            phase: BootPhase::BuildingStage0,
-            detail: "building stage0 payload".to_string(),
-        },
-    );
+    let mut requested_boot_profile_id = args.stage0.boot_profile.clone();
+    let mut chain_depth = 0usize;
 
-    let (block_reader, image_size_bytes, image_identity, build) = {
-        let input = artifact_resolver
-            .open_channel_input(
-                &args.stage0.channel,
-                &profile.id,
-                args.stage0.boot_profile.as_deref(),
-            )
-            .await?;
-        let profile_source_overrides = resolve_boot_profile_source_overrides(
-            input.boot_profile.as_ref(),
-            &profile,
-            &mut artifact_resolver,
-        )
-        .await?;
-        let profile_stage0 = input
-            .boot_profile
-            .as_ref()
-            .map(|boot_profile| resolve_effective_boot_profile_stage0(boot_profile, &profile.id))
-            .unwrap_or_default();
-        let reader = input.reader;
-        let stage0_readers = input.stage0_readers;
-
-        let total_blocks = reader.total_blocks().await?;
-        let image_size_bytes = total_blocks * reader.block_size() as u64;
-        let image_identity = block_identity_string(reader.as_ref());
-        let provider = Stage0CoalescingFilesystem::open(stage0_readers).await?;
-
-        let mut extra_modules = profile_stage0.extra_modules;
-        extra_modules.extend(cli_extra_modules.iter().cloned());
-
-        let mut dtbo_overlays = profile_stage0.dt_overlays;
-        dtbo_overlays.extend(cli_dtbo_overlays.iter().cloned());
-
-        let merged_profile_cmdline = join_cmdline(
-            profile_stage0.extra_cmdline.as_deref(),
-            cli_cmdline_append.as_deref(),
-        );
-
-        let opts = Stage0Options {
-            switchroot_fs: provider.switchroot_fs(),
-            extra_modules,
-            kernel_override: profile_source_overrides.kernel_override,
-            dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
-            dtbo_overlays,
-            enable_serial: serial_enabled,
-            mimic_fastboot: false,
-            smoo_vendor: detected_device.as_ref().map(|device| device.vid),
-            smoo_product: detected_device.as_ref().map(|device| device.pid),
-            smoo_serial: detected_device
-                .as_ref()
-                .and_then(|device| device.serial.clone()),
-            personalization,
-        };
-
-        let effective_ostree_arg =
-            resolve_effective_ostree_arg(&ostree_arg, input.boot_profile.as_ref());
-        let selected_ostree = match &effective_ostree_arg {
-            OstreeArg::Disabled => None,
-            OstreeArg::AutoDetect => {
-                let detected = auto_detect_ostree_deployment_path(&provider).await?;
-                debug!(ostree = %detected, "auto-detected ostree deployment path");
-                Some(detected)
+    loop {
+        let mut detected_device = if args.output.is_none() {
+            if let Some(selected_profile) = profile.as_ref() {
+                emit(
+                    &events,
+                    BootEvent::Phase {
+                        phase: BootPhase::WaitingForDevice,
+                        detail: format!("profile={}", selected_profile.id),
+                    },
+                );
+                Some(wait_for_fastboot_device(selected_profile, wait, &events).await?)
+            } else {
+                emit(
+                    &events,
+                    BootEvent::Phase {
+                        phase: BootPhase::WaitingForDevice,
+                        detail: "profile=auto".to_string(),
+                    },
+                );
+                let resolved =
+                    wait_for_fastboot_device_auto(&constrained_profiles, wait, &events).await?;
+                profile = Some(resolved.profile);
+                Some(resolved.device)
             }
-            OstreeArg::Explicit(path) => Some(path.clone()),
+        } else {
+            None
         };
 
-        let mut extra_parts = Vec::new();
-        if let Some(ostree) = selected_ostree.as_deref() {
-            extra_parts.push(format!("ostree=/{ostree}"));
+        let device_profile = profile.clone().expect("profile resolved before build");
+
+        if let Some(device) = &detected_device {
+            let profile_detail = format!("profile={}", device_profile.id);
+            emit(
+                &events,
+                BootEvent::Phase {
+                    phase: BootPhase::DeviceDetected,
+                    detail: format!(
+                        "{:04x}:{:04x} {} {}",
+                        device.vid,
+                        device.pid,
+                        device
+                            .serial
+                            .as_deref()
+                            .map(|s| format!("serial={s}"))
+                            .unwrap_or_else(|| "serial=unknown".to_string()),
+                        profile_detail,
+                    ),
+                },
+            );
         }
-        if !merged_profile_cmdline.is_empty() {
-            extra_parts.push(merged_profile_cmdline);
-        }
-        if let Some(system_time) = system_time_part.as_deref() {
-            extra_parts.push(system_time.to_string());
-        }
-        extra_parts.push(SMOO_MAX_IO_BYTES_KARG.to_string());
-        let extra_cmdline = if extra_parts.is_empty() {
+
+        let selected_boot_profile = if channel_head.boot_profiles.is_empty() {
+            if let Some(requested) = requested_boot_profile_id.as_deref() {
+                bail!(
+                    "boot profile '{}' was requested, but channel does not start with a boot profile stream",
+                    requested
+                );
+            }
             None
         } else {
-            Some(extra_parts.join(" "))
+            Some(
+                select_boot_profile_for_device(
+                    channel_head.boot_profiles.as_slice(),
+                    device_profile.id.as_str(),
+                    requested_boot_profile_id.as_deref(),
+                )
+                .map_err(|err| anyhow!("{err}"))?,
+            )
         };
 
-        let build = if let Some(ostree) = selected_ostree.as_deref() {
-            let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree)
+        if let Some(boot_profile) = selected_boot_profile.as_ref()
+            && let Some(chain) = boot_profile.chain.as_ref()
+        {
+            if args.output.is_some() {
+                bail!(
+                    "--output is not supported when boot profile '{}' uses chain mode",
+                    boot_profile.id
+                );
+            }
+            if chain_depth >= 1 {
+                bail!(
+                    "chained boot depth exceeded while selecting '{}'; max chain depth is 1",
+                    boot_profile.id
+                );
+            }
+
+            emit(
+                &events,
+                BootEvent::Phase {
+                    phase: BootPhase::BuildingBootImage,
+                    detail: format!("building chain boot image for profile {}", boot_profile.id),
+                },
+            );
+
+            let chain_payload = artifact_resolver
+                .read_artifact_source_bytes(&chain.payload)
                 .await
-                .map_err(|err| anyhow!("resolve ostree deployment path {ostree}: {err}"))?;
-            debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
-            let provider = OstreeRootfs::new(provider, &resolved_ostree)
-                .map_err(|err| anyhow!("initialize ostree filesystem view: {err}"))?;
-            build_stage0(
-                &profile,
-                &provider,
-                &opts,
-                extra_cmdline.as_deref(),
-                existing.as_deref(),
-            )
-            .await
-        } else {
-            build_stage0(
-                &profile,
-                &provider,
-                &opts,
-                extra_cmdline.as_deref(),
-                existing.as_deref(),
-            )
-            .await
-        };
-        anyhow::Ok((reader, image_size_bytes, image_identity, build))
-    }?;
+                .with_context(|| {
+                    format!(
+                        "reading chain payload for boot profile '{}'",
+                        boot_profile.id
+                    )
+                })?;
+            let chain_bootimg =
+                build_chain_bootimg(&device_profile, &chain_payload).with_context(|| {
+                    format!(
+                        "building chain boot image for boot profile '{}'",
+                        boot_profile.id
+                    )
+                })?;
 
-    let build = build.map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
+            emit(
+                &events,
+                BootEvent::Phase {
+                    phase: BootPhase::Downloading,
+                    detail: format!("sending {} bytes", chain_bootimg.len()),
+                },
+            );
 
-    let cmdline = join_cmdline(
-        profile
+            let mut fastboot = detected_device
+                .take()
+                .expect("fastboot device present for chain hop");
+            download(&mut fastboot.fastboot, &chain_bootimg)
+                .await
+                .map_err(|e| anyhow!("fastboot download failed during chain hop: {e}"))?;
+
+            emit(
+                &events,
+                BootEvent::Phase {
+                    phase: BootPhase::Booting,
+                    detail: "issuing fastboot boot for chain hop".to_string(),
+                },
+            );
+
+            boot(&mut fastboot.fastboot)
+                .await
+                .map_err(|e| anyhow!("fastboot boot failed during chain hop: {e}"))?;
+
+            emit(
+                &events,
+                BootEvent::Phase {
+                    phase: BootPhase::WaitingForChainedDevice,
+                    detail: format!(
+                        "expected_profile={} next_boot_profile={}",
+                        chain.next_device_profile, chain.next_boot_profile
+                    ),
+                },
+            );
+
+            let next_profile =
+                resolve_profile_by_id(&profiles, &devpro_dirs, chain.next_device_profile.as_str())?;
+
+            if !accepted_profile_ids.is_empty()
+                && !accepted_profile_ids.contains(next_profile.id.as_str())
+            {
+                let mut available: Vec<_> = channel_head
+                    .dev_profiles
+                    .iter()
+                    .map(|profile| profile.id.as_str())
+                    .collect();
+                available.sort_unstable();
+                bail!(
+                    "chained next device profile '{}' is not accepted by channel profile constraints [{}]",
+                    next_profile.id,
+                    available.join(", ")
+                );
+            }
+
+            requested_boot_profile_id = Some(chain.next_boot_profile.clone());
+            profile = Some(next_profile);
+            chain_depth += 1;
+            continue;
+        }
+
+        emit(
+            &events,
+            BootEvent::Phase {
+                phase: BootPhase::BuildingStage0,
+                detail: "building stage0 payload".to_string(),
+            },
+        );
+
+        let (block_reader, image_size_bytes, image_identity, build) = {
+            let input = artifact_resolver
+                .open_channel_input(
+                    &args.stage0.channel,
+                    &device_profile.id,
+                    requested_boot_profile_id.as_deref(),
+                )
+                .await?;
+            let profile_source_overrides = resolve_boot_profile_source_overrides(
+                input.boot_profile.as_ref(),
+                &device_profile,
+                &mut artifact_resolver,
+            )
+            .await?;
+            let profile_stage0 = input
+                .boot_profile
+                .as_ref()
+                .map(|boot_profile| {
+                    resolve_effective_boot_profile_stage0(boot_profile, &device_profile.id)
+                })
+                .unwrap_or_default();
+            let reader = input.reader;
+            let stage0_readers = input.stage0_readers;
+
+            let total_blocks = reader.total_blocks().await?;
+            let image_size_bytes = total_blocks * reader.block_size() as u64;
+            let image_identity = block_identity_string(reader.as_ref());
+            let provider = Stage0CoalescingFilesystem::open(stage0_readers).await?;
+
+            let mut extra_modules = profile_stage0.extra_modules;
+            extra_modules.extend(cli_extra_modules.iter().cloned());
+
+            let mut dtbo_overlays = profile_stage0.dt_overlays;
+            dtbo_overlays.extend(cli_dtbo_overlays.iter().cloned());
+
+            let merged_profile_cmdline = join_cmdline(
+                profile_stage0.extra_cmdline.as_deref(),
+                cli_cmdline_append.as_deref(),
+            );
+
+            let opts = Stage0Options {
+                switchroot_fs: provider.switchroot_fs(),
+                extra_modules,
+                kernel_override: profile_source_overrides.kernel_override,
+                dtb_override: cli_dtb_override
+                    .clone()
+                    .or(profile_source_overrides.dtb_override),
+                dtbo_overlays,
+                enable_serial: serial_enabled,
+                mimic_fastboot: false,
+                smoo_vendor: detected_device.as_ref().map(|device| device.vid),
+                smoo_product: detected_device.as_ref().map(|device| device.pid),
+                smoo_serial: detected_device
+                    .as_ref()
+                    .and_then(|device| device.serial.clone()),
+                personalization: personalization.clone(),
+            };
+
+            let effective_ostree_arg =
+                resolve_effective_ostree_arg(&ostree_arg, input.boot_profile.as_ref());
+            let selected_ostree = match &effective_ostree_arg {
+                OstreeArg::Disabled => None,
+                OstreeArg::AutoDetect => {
+                    let detected = auto_detect_ostree_deployment_path(&provider).await?;
+                    debug!(ostree = %detected, "auto-detected ostree deployment path");
+                    Some(detected)
+                }
+                OstreeArg::Explicit(path) => Some(path.clone()),
+            };
+
+            let mut extra_parts = Vec::new();
+            if let Some(ostree) = selected_ostree.as_deref() {
+                extra_parts.push(format!("ostree=/{ostree}"));
+            }
+            if !merged_profile_cmdline.is_empty() {
+                extra_parts.push(merged_profile_cmdline);
+            }
+            if let Some(system_time) = system_time_part.as_deref() {
+                extra_parts.push(system_time.to_string());
+            }
+            extra_parts.push(SMOO_MAX_IO_BYTES_KARG.to_string());
+            let extra_cmdline = if extra_parts.is_empty() {
+                None
+            } else {
+                Some(extra_parts.join(" "))
+            };
+
+            let build = if let Some(ostree) = selected_ostree.as_deref() {
+                let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree)
+                    .await
+                    .map_err(|err| anyhow!("resolve ostree deployment path {ostree}: {err}"))?;
+                debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
+                let provider = OstreeRootfs::new(provider, &resolved_ostree)
+                    .map_err(|err| anyhow!("initialize ostree filesystem view: {err}"))?;
+                build_stage0(
+                    &device_profile,
+                    &provider,
+                    &opts,
+                    extra_cmdline.as_deref(),
+                    existing.as_deref(),
+                )
+                .await
+            } else {
+                build_stage0(
+                    &device_profile,
+                    &provider,
+                    &opts,
+                    extra_cmdline.as_deref(),
+                    existing.as_deref(),
+                )
+                .await
+            };
+            anyhow::Ok((reader, image_size_bytes, image_identity, build))
+        }?;
+
+        let build = build.map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
+
+        let cmdline = join_cmdline(
+            device_profile
+                .boot
+                .fastboot_boot
+                .android_bootimg
+                .cmdline_append
+                .as_deref(),
+            Some(build.kernel_cmdline_append.as_str()),
+        );
+
+        let mut kernel_image = build.kernel_image;
+        let mut profile = device_profile;
+        if profile
             .boot
             .fastboot_boot
             .android_bootimg
-            .cmdline_append
-            .as_deref(),
-        Some(build.kernel_cmdline_append.as_str()),
-    );
+            .kernel
+            .encoding
+            .append_dtb()
+        {
+            kernel_image.extend_from_slice(&build.dtb);
+            let header_version = profile.boot.fastboot_boot.android_bootimg.header_version;
+            if header_version >= 2 {
+                debug!(
+                    from = header_version,
+                    to = 0,
+                    "downgrading android boot header for appended dtb"
+                );
+                profile.boot.fastboot_boot.android_bootimg.header_version = 0;
+            }
+        }
 
-    let mut kernel_image = build.kernel_image;
-    let mut profile = profile;
+        let bootimg = build_android_bootimg(
+            &profile,
+            &kernel_image,
+            &build.initrd,
+            Some(&build.dtb),
+            &cmdline,
+        )
+        .map_err(|e| anyhow::anyhow!("bootimg build failed: {e}"))?;
+
+        emit(
+            &events,
+            BootEvent::Phase {
+                phase: BootPhase::BuildingBootImage,
+                detail: format!("boot image built ({} bytes)", bootimg.len()),
+            },
+        );
+
+        if let Some(path) = args.output.as_ref() {
+            std::fs::write(path, &bootimg)
+                .with_context(|| format!("writing bootimg to {}", path.display()))?;
+            emit(
+                &events,
+                BootEvent::Log(format!("Wrote boot image to {}", path.display())),
+            );
+            return Ok(());
+        }
+
+        let mut fastboot = detected_device
+            .take()
+            .expect("fastboot device probed when no --output");
+
+        emit(
+            &events,
+            BootEvent::Phase {
+                phase: BootPhase::Downloading,
+                detail: format!("sending {} bytes", bootimg.len()),
+            },
+        );
+
+        download(&mut fastboot.fastboot, &bootimg)
+            .await
+            .map_err(|e| anyhow::anyhow!("fastboot download failed: {e}"))?;
+
+        emit(
+            &events,
+            BootEvent::Phase {
+                phase: BootPhase::Booting,
+                detail: "issuing fastboot boot".to_string(),
+            },
+        );
+
+        boot(&mut fastboot.fastboot)
+            .await
+            .map_err(|e| anyhow::anyhow!("fastboot boot failed: {e}"))?;
+
+        run_host_daemon(
+            block_reader,
+            image_size_bytes,
+            image_identity,
+            events,
+            shutdown,
+        )
+        .await
+        .context("running smoo host daemon after boot")?;
+        return Ok(());
+    }
+}
+
+fn build_chain_bootimg(profile: &DeviceProfile, payload: &[u8]) -> Result<Vec<u8>> {
+    if payload.is_empty() {
+        bail!("chain payload is empty")
+    }
+
+    let kernel_image = payload.to_vec();
+    let mut profile = profile.clone();
     if profile
         .boot
         .fastboot_boot
@@ -486,83 +713,27 @@ async fn run_boot_inner(
         .encoding
         .append_dtb()
     {
-        kernel_image.extend_from_slice(&build.dtb);
         let header_version = profile.boot.fastboot_boot.android_bootimg.header_version;
         if header_version >= 2 {
             debug!(
                 from = header_version,
                 to = 0,
-                "downgrading android boot header for appended dtb"
+                "downgrading android boot header for chain payload"
             );
             profile.boot.fastboot_boot.android_bootimg.header_version = 0;
         }
     }
 
-    let bootimg = build_android_bootimg(
-        &profile,
-        &kernel_image,
-        &build.initrd,
-        Some(&build.dtb),
-        &cmdline,
-    )
-    .map_err(|e| anyhow::anyhow!("bootimg build failed: {e}"))?;
+    let cmdline = profile
+        .boot
+        .fastboot_boot
+        .android_bootimg
+        .cmdline_append
+        .as_deref()
+        .unwrap_or_default();
 
-    emit(
-        &events,
-        BootEvent::Phase {
-            phase: BootPhase::BuildingBootImage,
-            detail: format!("boot image built ({} bytes)", bootimg.len()),
-        },
-    );
-
-    if let Some(path) = args.output {
-        std::fs::write(&path, &bootimg)
-            .with_context(|| format!("writing bootimg to {}", path.display()))?;
-        emit(
-            &events,
-            BootEvent::Log(format!("Wrote boot image to {}", path.display())),
-        );
-        return Ok(());
-    }
-
-    let mut fastboot = detected_device
-        .take()
-        .expect("fastboot device probed when no --output");
-
-    emit(
-        &events,
-        BootEvent::Phase {
-            phase: BootPhase::Downloading,
-            detail: format!("sending {} bytes", bootimg.len()),
-        },
-    );
-
-    download(&mut fastboot.fastboot, &bootimg)
-        .await
-        .map_err(|e| anyhow::anyhow!("fastboot download failed: {e}"))?;
-
-    emit(
-        &events,
-        BootEvent::Phase {
-            phase: BootPhase::Booting,
-            detail: "issuing fastboot boot".to_string(),
-        },
-    );
-
-    boot(&mut fastboot.fastboot)
-        .await
-        .map_err(|e| anyhow::anyhow!("fastboot boot failed: {e}"))?;
-
-    run_host_daemon(
-        block_reader,
-        image_size_bytes,
-        image_identity,
-        events,
-        shutdown,
-    )
-    .await
-    .context("running smoo host daemon after boot")?;
-    Ok(())
+    build_android_bootimg(&profile, &kernel_image, &[], Some(&[]), cmdline)
+        .map_err(|err| anyhow!("chain bootimg build failed: {err}"))
 }
 
 async fn wait_for_fastboot_device(

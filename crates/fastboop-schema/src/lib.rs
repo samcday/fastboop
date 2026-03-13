@@ -242,11 +242,14 @@ pub struct BootProfileManifest {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    pub rootfs: BootProfileRootfs,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rootfs: Option<BootProfileRootfs>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel: Option<BootProfileArtifactPathSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dtbs: Option<BootProfileArtifactPathSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<BootProfileChain>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dt_overlays: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -289,6 +292,7 @@ impl BootProfileManifest {
             rootfs: self.rootfs.clone(),
             kernel: self.kernel.clone(),
             dtbs: self.dtbs.clone(),
+            chain: self.chain.clone(),
             dt_overlays,
             extra_cmdline: self.extra_cmdline.clone(),
             stage0: BootProfileStage0 {
@@ -352,11 +356,14 @@ pub struct BootProfile {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    pub rootfs: BootProfileRootfs,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rootfs: Option<BootProfileRootfs>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel: Option<BootProfileArtifactPathSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dtbs: Option<BootProfileArtifactPathSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<BootProfileChain>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dt_overlays: Vec<Vec<u8>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -366,6 +373,10 @@ pub struct BootProfile {
 }
 
 impl BootProfile {
+    pub fn is_chain(&self) -> bool {
+        self.chain.is_some()
+    }
+
     pub fn decompile_dt_overlays<E, F>(&self, mut decompile: F) -> Result<BootProfileManifest, E>
     where
         F: FnMut(&[u8]) -> Result<String, E>,
@@ -399,6 +410,7 @@ impl BootProfile {
             rootfs: self.rootfs.clone(),
             kernel: self.kernel.clone(),
             dtbs: self.dtbs.clone(),
+            chain: self.chain.clone(),
             dt_overlays,
             extra_cmdline: self.extra_cmdline.clone(),
             stage0: BootProfileManifestStage0 {
@@ -407,6 +419,15 @@ impl BootProfile {
             },
         })
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BootProfileChain {
+    pub payload: BootProfileArtifactSource,
+    pub next_device_profile: String,
+    pub next_boot_profile: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

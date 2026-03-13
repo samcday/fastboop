@@ -6,7 +6,7 @@ use fastboop_schema::bin::{
     BootProfileBin,
 };
 use fastboop_schema::{
-    BootProfile, BootProfileArtifactPathSource, BootProfileRootfs,
+    BootProfile, BootProfileArtifactPathSource, BootProfileChain, BootProfileRootfs,
     BootProfileRootfsFilesystemSource,
 };
 use gibblox_pipeline::{PipelineValidationError, validate_pipeline};
@@ -132,6 +132,10 @@ pub fn resolve_effective_boot_profile_stage0(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootProfileValidationError {
+    MissingRootfs,
+    ChainConflictsWithTerminalFields,
+    EmptyChainNextDeviceProfile,
+    EmptyChainNextBootProfile,
     UnsupportedRootfsFilesystem { filesystem: &'static str },
     Pipeline(PipelineValidationError),
     EmptyKernelPath,
@@ -141,6 +145,22 @@ pub enum BootProfileValidationError {
 impl core::fmt::Display for BootProfileValidationError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::MissingRootfs => {
+                write!(f, "boot profile must define either rootfs or chain")
+            }
+            Self::ChainConflictsWithTerminalFields => write!(
+                f,
+                "boot profile chain mode requires rootfs, kernel, and dtbs to be absent"
+            ),
+            Self::EmptyChainNextDeviceProfile => {
+                write!(
+                    f,
+                    "boot profile chain.next_device_profile must not be empty"
+                )
+            }
+            Self::EmptyChainNextBootProfile => {
+                write!(f, "boot profile chain.next_boot_profile must not be empty")
+            }
             Self::UnsupportedRootfsFilesystem { filesystem } => write!(
                 f,
                 "boot profile rootfs filesystem '{filesystem}' is not supported for stage0 switchroot (supported: erofs, ext4)"
@@ -157,10 +177,19 @@ impl core::fmt::Display for BootProfileValidationError {
 }
 
 pub fn validate_boot_profile(profile: &BootProfile) -> Result<(), BootProfileValidationError> {
-    if !rootfs_supports_stage0_switchroot(&profile.rootfs) {
+    if let Some(chain) = profile.chain.as_ref() {
+        return validate_chain_profile(profile, chain);
+    }
+
+    let rootfs = profile
+        .rootfs
+        .as_ref()
+        .ok_or(BootProfileValidationError::MissingRootfs)?;
+
+    if !rootfs_supports_stage0_switchroot(rootfs) {
         return Err(BootProfileValidationError::UnsupportedRootfsFilesystem { filesystem: "fat" });
     }
-    validate_pipeline(profile.rootfs.source()).map_err(BootProfileValidationError::Pipeline)?;
+    validate_pipeline(rootfs.source()).map_err(BootProfileValidationError::Pipeline)?;
     if let Some(kernel) = profile.kernel.as_ref() {
         validate_profile_artifact_path_source(kernel, BootProfileValidationError::EmptyKernelPath)?;
     }
@@ -168,6 +197,22 @@ pub fn validate_boot_profile(profile: &BootProfile) -> Result<(), BootProfileVal
         validate_profile_artifact_path_source(dtbs, BootProfileValidationError::EmptyDtbsPath)?;
     }
     Ok(())
+}
+
+fn validate_chain_profile(
+    profile: &BootProfile,
+    chain: &BootProfileChain,
+) -> Result<(), BootProfileValidationError> {
+    if profile.rootfs.is_some() || profile.kernel.is_some() || profile.dtbs.is_some() {
+        return Err(BootProfileValidationError::ChainConflictsWithTerminalFields);
+    }
+    if chain.next_device_profile.trim().is_empty() {
+        return Err(BootProfileValidationError::EmptyChainNextDeviceProfile);
+    }
+    if chain.next_boot_profile.trim().is_empty() {
+        return Err(BootProfileValidationError::EmptyChainNextBootProfile);
+    }
+    validate_pipeline(&chain.payload).map_err(BootProfileValidationError::Pipeline)
 }
 
 fn rootfs_supports_stage0_switchroot(rootfs: &BootProfileRootfs) -> bool {
