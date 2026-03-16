@@ -9,7 +9,10 @@ use fastboop_core::{
     BootProfileRootfs, BootProfileRootfsFilesystemSource, decode_boot_profile, encode_boot_profile,
     validate_boot_profile,
 };
-use gibblox_pipeline::{OptimizePipelineOptions, OptimizePipelineReport, optimize_pipeline};
+use gibblox_pipeline::{
+    OptimizePipelineOptions, OptimizePipelineReport, OptimizePipelineSession,
+    optimize_pipeline_with_session,
+};
 use tracing::{debug, info};
 
 #[derive(Args)]
@@ -155,23 +158,32 @@ async fn optimize_profile_pipeline_hints(
         force,
         ..OptimizePipelineOptions::default()
     };
+    let mut session = OptimizePipelineSession::new();
     let mut report = OptimizePipelineReport::default();
 
     debug!(profile_id = %profile.id, "optimizing boot profile rootfs pipeline hints");
     add_optimize_report(
         &mut report,
-        optimize_pipeline(profile_rootfs_source_mut(&mut profile.rootfs), &opts)
-            .await
-            .context("optimizing boot profile rootfs pipeline hints")?,
+        optimize_pipeline_with_session(
+            profile_rootfs_source_mut(&mut profile.rootfs),
+            &opts,
+            &mut session,
+        )
+        .await
+        .context("optimizing boot profile rootfs pipeline hints")?,
     );
 
     if let Some(kernel) = profile.kernel.as_mut() {
         debug!(profile_id = %profile.id, "optimizing boot profile kernel pipeline hints");
         add_optimize_report(
             &mut report,
-            optimize_pipeline(profile_artifact_path_source_mut(kernel), &opts)
-                .await
-                .context("optimizing boot profile kernel pipeline hints")?,
+            optimize_pipeline_with_session(
+                profile_artifact_path_source_mut(kernel),
+                &opts,
+                &mut session,
+            )
+            .await
+            .context("optimizing boot profile kernel pipeline hints")?,
         );
     }
 
@@ -179,9 +191,13 @@ async fn optimize_profile_pipeline_hints(
         debug!(profile_id = %profile.id, "optimizing boot profile dtbs pipeline hints");
         add_optimize_report(
             &mut report,
-            optimize_pipeline(profile_artifact_path_source_mut(dtbs), &opts)
-                .await
-                .context("optimizing boot profile dtbs pipeline hints")?,
+            optimize_pipeline_with_session(
+                profile_artifact_path_source_mut(dtbs),
+                &opts,
+                &mut session,
+            )
+            .await
+            .context("optimizing boot profile dtbs pipeline hints")?,
         );
     }
 
