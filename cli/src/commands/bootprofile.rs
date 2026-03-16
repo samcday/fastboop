@@ -10,6 +10,7 @@ use fastboop_core::{
     validate_boot_profile,
 };
 use gibblox_pipeline::{OptimizePipelineOptions, OptimizePipelineReport, optimize_pipeline};
+use tracing::{debug, info};
 
 #[derive(Args)]
 pub struct BootProfileArgs {
@@ -59,33 +60,76 @@ pub async fn run_bootprofile(args: BootProfileArgs) -> Result<()> {
 }
 
 async fn run_create(args: BootProfileCreateArgs) -> Result<()> {
+    debug!(
+        input = %io_label(&args.input),
+        output = %io_label(&args.output),
+        optimize_pipeline_hints = args.optimize_pipeline_hints,
+        optimize_pipeline_hints_force = args.optimize_pipeline_hints_force,
+        "bootprofile create started"
+    );
+
     let input = read_input_bytes(&args.input)?;
+    debug!(
+        bytes = input.len(),
+        "bootprofile create read manifest bytes"
+    );
+
     let manifest: BootProfileManifest = serde_yaml::from_slice(&input)
         .with_context(|| format!("parsing boot profile document {}", io_label(&args.input)))?;
+    debug!(profile_id = %manifest.id, "bootprofile create parsed manifest");
 
     let mut compiled = manifest
         .compile_dt_overlays(compile_dt_overlay)
         .context("compiling dt_overlays with dtc")?;
 
     if args.optimize_pipeline_hints {
-        optimize_profile_pipeline_hints(&mut compiled, args.optimize_pipeline_hints_force).await?;
+        let report =
+            optimize_profile_pipeline_hints(&mut compiled, args.optimize_pipeline_hints_force)
+                .await?;
+        info!(
+            profile_id = %compiled.id,
+            android_sparse_stages_visited = report.android_sparse_stages_visited,
+            android_sparse_indexes_added = report.android_sparse_indexes_added,
+            android_sparse_indexes_updated = report.android_sparse_indexes_updated,
+            android_sparse_indexes_skipped = report.android_sparse_indexes_skipped,
+            "bootprofile create optimized pipeline hints"
+        );
     }
 
     validate_boot_profile(&compiled).map_err(|err| anyhow!("{err}"))?;
 
     let bytes = encode_boot_profile(&compiled).context("encoding boot profile binary")?;
+    debug!(
+        profile_id = %compiled.id,
+        bytes = bytes.len(),
+        "bootprofile create encoded boot profile"
+    );
 
     validate_binary_output(
         &args.output,
         "bootprofile create",
         std::io::stdout().is_terminal(),
     )?;
-    write_output_bytes(&args.output, &bytes)
+    write_output_bytes(&args.output, &bytes)?;
+    debug!(
+        output = %io_label(&args.output),
+        "bootprofile create finished"
+    );
+    Ok(())
 }
 
 fn run_show(args: BootProfileShowArgs) -> Result<()> {
+    debug!(
+        input = %io_label(&args.input),
+        output = %io_label(&args.output),
+        "bootprofile show started"
+    );
+
     let input = read_input_bytes(&args.input)?;
+    debug!(bytes = input.len(), "bootprofile show read binary bytes");
+
     let compiled = decode_boot_profile(&input).map_err(|err| anyhow!("{err}"))?;
+    debug!(profile_id = %compiled.id, "bootprofile show decoded boot profile");
 
     validate_boot_profile(&compiled).map_err(|err| anyhow!("{err}"))?;
 
@@ -94,7 +138,13 @@ fn run_show(args: BootProfileShowArgs) -> Result<()> {
         .context("decompiling dt_overlays with dtc")?;
 
     let yaml = serde_yaml::to_string(&manifest).context("serializing boot profile YAML")?;
-    write_output_bytes(&args.output, yaml.as_bytes())
+    write_output_bytes(&args.output, yaml.as_bytes())?;
+    debug!(
+        profile_id = %manifest.id,
+        yaml_bytes = yaml.len(),
+        "bootprofile show finished"
+    );
+    Ok(())
 }
 
 async fn optimize_profile_pipeline_hints(
@@ -107,6 +157,7 @@ async fn optimize_profile_pipeline_hints(
     };
     let mut report = OptimizePipelineReport::default();
 
+    debug!(profile_id = %profile.id, "optimizing boot profile rootfs pipeline hints");
     add_optimize_report(
         &mut report,
         optimize_pipeline(profile_rootfs_source_mut(&mut profile.rootfs), &opts)
@@ -115,6 +166,7 @@ async fn optimize_profile_pipeline_hints(
     );
 
     if let Some(kernel) = profile.kernel.as_mut() {
+        debug!(profile_id = %profile.id, "optimizing boot profile kernel pipeline hints");
         add_optimize_report(
             &mut report,
             optimize_pipeline(profile_artifact_path_source_mut(kernel), &opts)
@@ -124,6 +176,7 @@ async fn optimize_profile_pipeline_hints(
     }
 
     if let Some(dtbs) = profile.dtbs.as_mut() {
+        debug!(profile_id = %profile.id, "optimizing boot profile dtbs pipeline hints");
         add_optimize_report(
             &mut report,
             optimize_pipeline(profile_artifact_path_source_mut(dtbs), &opts)
