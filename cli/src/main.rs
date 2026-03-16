@@ -52,24 +52,25 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if !matches!(&cli.command, Commands::Boot(_)) {
+        setup_default_tracing();
+    }
+
     match cli.command {
         Commands::Boot(args) => run_boot(args).await,
         Commands::Bootprofile(args) => run_bootprofile(args).await,
         Commands::Devprofile(args) => run_devprofile(args).await,
-        Commands::Detect(args) => {
-            setup_default_tracing();
-            run_detect(args).await
-        }
-        Commands::Stage0(args) => {
-            setup_default_tracing();
-            run_stage0(args).await
-        }
+        Commands::Detect(args) => run_detect(args).await,
+        Commands::Stage0(args) => run_stage0(args).await,
     }
 }
 
 pub(crate) fn setup_default_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 #[cfg(feature = "tui")]
