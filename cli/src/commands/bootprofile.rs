@@ -67,7 +67,7 @@ async fn run_create(args: BootProfileCreateArgs) -> Result<()> {
         .with_context(|| format!("parsing boot profile document {}", io_label(&args.input)))?;
     debug!(profile_id = %manifest.id, "bootprofile create parsed manifest");
 
-    let mut compiled = manifest
+    let compiled = manifest
         .compile_dt_overlays(compile_dt_overlay)
         .context("compiling dt_overlays with dtc")?;
 

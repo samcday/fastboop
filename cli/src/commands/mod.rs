@@ -16,7 +16,9 @@ use fastboop_core::{
     select_boot_profile_for_device,
 };
 use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
-use gibblox_android_sparse::{AndroidSparseBlockReader, AndroidSparseImageIndex};
+use gibblox_android_sparse::{
+    AndroidSparseBlockReader, AndroidSparseChunkIndex, AndroidSparseImageIndex,
+};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
 use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};

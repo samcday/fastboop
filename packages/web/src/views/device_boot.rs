@@ -12,7 +12,9 @@ use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs}
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
 #[cfg(target_arch = "wasm32")]
-use gibblox_android_sparse::{AndroidSparseBlockReader, AndroidSparseImageIndex};
+use gibblox_android_sparse::{
+    AndroidSparseBlockReader, AndroidSparseChunkIndex, AndroidSparseImageIndex,
+};
 #[cfg(target_arch = "wasm32")]
 use gibblox_core::AlignedByteReader;
 use gibblox_core::{block_identity_string, BlockByteReader, BlockReader};
