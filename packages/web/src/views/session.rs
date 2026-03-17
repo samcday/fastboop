@@ -14,6 +14,7 @@ use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 use gibblox_blockreader_messageport::{MessagePortBlockReaderClient, MessagePortBlockReaderServer};
 #[cfg(target_arch = "wasm32")]
 use gibblox_core::BlockReader;
+use gibblox_pipeline::PipelineHints;
 #[cfg(target_arch = "wasm32")]
 use ui::SmooStatsHandle;
 #[cfg(target_arch = "wasm32")]
@@ -61,6 +62,7 @@ pub struct SessionChannelIntake {
     pub has_artifact_payload: bool,
     pub accepted_dev_profiles: Vec<DeviceProfile>,
     pub compatible_boot_profiles: Vec<BootProfile>,
+    pub pipeline_hints: PipelineHints,
 }
 
 #[cfg(target_arch = "wasm32")]

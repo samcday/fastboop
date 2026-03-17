@@ -1,6 +1,11 @@
+use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+
+use gibblox_pipeline::{
+    PipelineHints, decode_pipeline_hints_prefix, pipeline_hints_bin_header_version,
+};
 
 use crate::{
     BootProfile, DeviceProfile, boot_profile_bin_header_version, decode_boot_profile_prefix,
@@ -49,6 +54,7 @@ impl core::fmt::Display for BootProfileStreamHeadError {
 pub struct ChannelStreamHead {
     pub boot_profiles: Vec<BootProfile>,
     pub dev_profiles: Vec<DeviceProfile>,
+    pub pipeline_hints: PipelineHints,
     pub consumed_bytes: u64,
     pub warning_count: usize,
 }
@@ -70,6 +76,9 @@ pub enum ChannelStreamHeadError {
     },
     MaxRecordCountExceeded {
         max_records: usize,
+    },
+    DuplicatePipelineHintIdentity {
+        pipeline_identity: String,
     },
     CursorOverflow,
 }
@@ -99,6 +108,11 @@ impl core::fmt::Display for ChannelStreamHeadError {
                     "channel profile stream exceeds max record count {max_records}"
                 )
             }
+            Self::DuplicatePipelineHintIdentity { pipeline_identity } => write!(
+                f,
+                "duplicate pipeline hint identity '{}' is not allowed in channel stream",
+                pipeline_identity
+            ),
             Self::CursorOverflow => write!(f, "channel profile stream cursor overflow"),
         }
     }
@@ -186,13 +200,11 @@ pub fn read_channel_stream_head(
 
     let mut out = ChannelStreamHead::default();
     let mut cursor = 0usize;
+    let mut pipeline_hint_identities = BTreeSet::new();
+    let mut records_consumed = 0usize;
 
     while cursor < scan_len {
-        let consumed = out
-            .boot_profiles
-            .len()
-            .saturating_add(out.dev_profiles.len());
-        if consumed >= CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS {
+        if records_consumed >= CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS {
             return Err(ChannelStreamHeadError::MaxRecordCountExceeded {
                 max_records: CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS,
             });
@@ -224,6 +236,7 @@ pub fn read_channel_stream_head(
                     cursor = cursor
                         .checked_add(consumed)
                         .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+                    records_consumed = records_consumed.saturating_add(1);
                     continue;
                 }
                 Err(err) => {
@@ -263,6 +276,7 @@ pub fn read_channel_stream_head(
                     cursor = cursor
                         .checked_add(consumed)
                         .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+                    records_consumed = records_consumed.saturating_add(1);
                     continue;
                 }
                 Err(err) => {
@@ -289,7 +303,63 @@ pub fn read_channel_stream_head(
             }
         }
 
-        if !out.boot_profiles.is_empty() || !out.dev_profiles.is_empty() {
+        if pipeline_hints_bin_header_version(remaining).is_some() {
+            match decode_pipeline_hints_prefix(remaining) {
+                Ok((hints, consumed)) => {
+                    if consumed == 0 {
+                        return Err(ChannelStreamHeadError::EmptyRecord {
+                            offset: cursor as u64,
+                        });
+                    }
+
+                    for entry in hints.entries {
+                        if !pipeline_hint_identities.insert(entry.pipeline_identity.clone()) {
+                            return Err(ChannelStreamHeadError::DuplicatePipelineHintIdentity {
+                                pipeline_identity: entry.pipeline_identity,
+                            });
+                        }
+                        out.pipeline_hints.entries.push(entry);
+                    }
+
+                    cursor = cursor
+                        .checked_add(consumed)
+                        .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+                    records_consumed = records_consumed.saturating_add(1);
+                    continue;
+                }
+                Err(err) => {
+                    if out.boot_profiles.is_empty()
+                        && out.dev_profiles.is_empty()
+                        && out.pipeline_hints.entries.is_empty()
+                    {
+                        if (scan_cap as u64) < exact_total_bytes {
+                            return Err(ChannelStreamHeadError::DecodeHeadTruncated {
+                                record_type: "pipeline hints",
+                                offset: cursor as u64,
+                                cause: format!(
+                                    "decode pipeline hints stream at offset {cursor}: {err}; stream head exceeds {CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES} bytes"
+                                ),
+                            });
+                        }
+                        return Err(ChannelStreamHeadError::DecodeFailure {
+                            record_type: "pipeline hints",
+                            offset: cursor as u64,
+                            cause: format!(
+                                "decode pipeline hints stream at offset {cursor}: {err}"
+                            ),
+                        });
+                    }
+
+                    out.warning_count += 1;
+                    break;
+                }
+            }
+        }
+
+        if !out.boot_profiles.is_empty()
+            || !out.dev_profiles.is_empty()
+            || !out.pipeline_hints.entries.is_empty()
+        {
             out.warning_count += 1;
         }
 
