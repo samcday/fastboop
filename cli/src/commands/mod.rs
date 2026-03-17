@@ -34,6 +34,9 @@ use gibblox_ext4::{Ext4EntryType, Ext4Fs};
 use gibblox_file::FileReader;
 use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
+use gibblox_pipeline::{
+    PipelineHint, PipelineHints, pipeline_identity_string, validate_pipeline_hints,
+};
 use gibblox_xz::XzBlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_core::{Filesystem, FilesystemEntryType, normalize_ostree_deployment_path};
@@ -467,6 +470,7 @@ impl BlockReader for OffsetChannelBlockReader {
 #[derive(Default)]
 pub(crate) struct ArtifactReaderResolver {
     cache: HashMap<String, Arc<dyn BlockReader>>,
+    sparse_index_hints: HashMap<String, AndroidSparseImageIndex>,
 }
 
 type OpenArtifactFuture<'a> =
@@ -475,6 +479,50 @@ type OpenArtifactFuture<'a> =
 impl ArtifactReaderResolver {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    fn reset_pipeline_hints(&mut self, hints: &PipelineHints) -> Result<()> {
+        validate_pipeline_hints(hints).map_err(|err| anyhow!("validate pipeline hints: {err}"))?;
+        self.sparse_index_hints.clear();
+
+        for entry in &hints.entries {
+            for hint in &entry.hints {
+                match hint {
+                    PipelineHint::AndroidSparseIndex(index) => {
+                        self.sparse_index_hints.insert(
+                            entry.pipeline_identity.clone(),
+                            AndroidSparseImageIndex {
+                                file_hdr_sz: index.file_hdr_sz,
+                                chunk_hdr_sz: index.chunk_hdr_sz,
+                                blk_sz: index.blk_sz,
+                                total_blks: index.total_blks,
+                                total_chunks: index.total_chunks,
+                                image_checksum: index.image_checksum,
+                                chunks: index
+                                    .chunks
+                                    .iter()
+                                    .map(|chunk| AndroidSparseChunkIndex {
+                                        chunk_index: chunk.chunk_index,
+                                        chunk_type: chunk.chunk_type,
+                                        chunk_sz: chunk.chunk_sz,
+                                        total_sz: chunk.total_sz,
+                                        chunk_offset: chunk.chunk_offset,
+                                        payload_offset: chunk.payload_offset,
+                                        payload_size: chunk.payload_size,
+                                        output_start: chunk.output_start,
+                                        output_end: chunk.output_end,
+                                        fill_pattern: chunk.fill_pattern,
+                                        crc32: chunk.crc32,
+                                    })
+                                    .collect(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) async fn open_channel_input(
@@ -488,6 +536,7 @@ impl ArtifactReaderResolver {
         let stream_head =
             read_channel_stream_head_from_reader(source.reader.as_ref(), source_total_bytes)
                 .await?;
+        self.reset_pipeline_hints(&stream_head.pipeline_hints)?;
 
         if stream_head.boot_profiles.is_empty() {
             if let Some(requested) = requested_boot_profile_id {
@@ -622,6 +671,14 @@ impl ArtifactReaderResolver {
                     let upstream = self
                         .open_artifact_source(source.android_sparseimg.source.as_ref())
                         .await?;
+                    let sidecar_index = if source.android_sparseimg.index.is_none() {
+                        let pipeline_identity = pipeline_identity_string(
+                            &BootProfileArtifactSource::AndroidSparseImg(source.clone()),
+                        );
+                        self.sparse_index_hints.get(&pipeline_identity)
+                    } else {
+                        None
+                    };
                     let reader = if let Some(index) = source.android_sparseimg.index.as_ref() {
                         let sparse_index = AndroidSparseImageIndex {
                             file_hdr_sz: index.file_hdr_sz,
@@ -652,6 +709,12 @@ impl ArtifactReaderResolver {
                             .await
                             .map_err(|err| {
                                 anyhow!("open android sparse reader from index: {err}")
+                            })?
+                    } else if let Some(index) = sidecar_index {
+                        AndroidSparseBlockReader::new_with_index(upstream, index.clone())
+                            .await
+                            .map_err(|err| {
+                                anyhow!("open android sparse reader from sidecar index: {err}")
                             })?
                     } else {
                         AndroidSparseBlockReader::new(upstream)

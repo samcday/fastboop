@@ -443,6 +443,7 @@ pub fn Home(channel: Option<String>) -> Element {
                     has_artifact_payload: intake.has_artifact_payload(),
                     accepted_dev_profiles: intake.stream_head.dev_profiles.clone(),
                     compatible_boot_profiles,
+                    pipeline_hints: intake.stream_head.pipeline_hints.clone(),
                 },
                 boot_config: BootConfig::new(
                     startup_channel_for_boot.clone(),

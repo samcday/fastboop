@@ -26,7 +26,8 @@ use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 #[cfg(target_arch = "wasm32")]
 use gibblox_pipeline::{
-    encode_pipeline, PipelineSource, PipelineSourceCasync, PipelineSourceCasyncSource,
+    encode_pipeline, pipeline_identity_string, validate_pipeline_hints, PipelineHint,
+    PipelineHints, PipelineSource, PipelineSourceCasync, PipelineSourceCasyncSource,
     PipelineSourceHttpSource,
 };
 #[cfg(target_arch = "wasm32")]
@@ -45,6 +46,8 @@ use gobblytes_erofs::ErofsRootfs;
 use js_sys::Reflect;
 #[cfg(target_arch = "wasm32")]
 use smoo_host_web_worker::{HostWorker, HostWorkerConfig, HostWorkerEvent, HostWorkerState};
+#[cfg(target_arch = "wasm32")]
+use std::collections::HashMap;
 use std::future::Future;
 #[cfg(target_arch = "wasm32")]
 use std::pin::Pin;
@@ -357,7 +360,11 @@ async fn build_stage0_artifacts(
                             "channel has no trailing artifact payload and no compatible boot profile selected"
                         )
                     })?;
-                    let provider_reader = open_boot_profile_rootfs_reader(boot_profile).await?;
+                    let sparse_hints = android_sparse_hints_by_identity(
+                        &channel_intake.pipeline_hints,
+                    )?;
+                    let provider_reader =
+                        open_boot_profile_rootfs_reader(boot_profile, &sparse_hints).await?;
                     let size_bytes = reader_size_bytes(provider_reader.as_ref()).await?;
                     let channel_identity = block_identity_string(provider_reader.as_ref());
                     let local_reader_bridge = LocalReaderBridge::new(provider_reader.clone());
@@ -669,15 +676,65 @@ async fn open_web_file_channel_payload_reader(
 }
 
 #[cfg(target_arch = "wasm32")]
+fn android_sparse_hints_by_identity(
+    pipeline_hints: &PipelineHints,
+) -> anyhow::Result<HashMap<String, AndroidSparseImageIndex>> {
+    validate_pipeline_hints(pipeline_hints)
+        .map_err(|err| anyhow::anyhow!("validate pipeline hints: {err}"))?;
+
+    let mut out = HashMap::new();
+    for entry in &pipeline_hints.entries {
+        for hint in &entry.hints {
+            match hint {
+                PipelineHint::AndroidSparseIndex(index) => {
+                    out.insert(
+                        entry.pipeline_identity.clone(),
+                        AndroidSparseImageIndex {
+                            file_hdr_sz: index.file_hdr_sz,
+                            chunk_hdr_sz: index.chunk_hdr_sz,
+                            blk_sz: index.blk_sz,
+                            total_blks: index.total_blks,
+                            total_chunks: index.total_chunks,
+                            image_checksum: index.image_checksum,
+                            chunks: index
+                                .chunks
+                                .iter()
+                                .map(|chunk| AndroidSparseChunkIndex {
+                                    chunk_index: chunk.chunk_index,
+                                    chunk_type: chunk.chunk_type,
+                                    chunk_sz: chunk.chunk_sz,
+                                    total_sz: chunk.total_sz,
+                                    chunk_offset: chunk.chunk_offset,
+                                    payload_offset: chunk.payload_offset,
+                                    payload_size: chunk.payload_size,
+                                    output_start: chunk.output_start,
+                                    output_end: chunk.output_end,
+                                    fill_pattern: chunk.fill_pattern,
+                                    crc32: chunk.crc32,
+                                })
+                                .collect(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn open_boot_profile_rootfs_reader(
     boot_profile: &BootProfile,
+    sparse_hints: &HashMap<String, AndroidSparseImageIndex>,
 ) -> anyhow::Result<Arc<dyn BlockReader>> {
-    open_boot_profile_artifact_source(boot_profile.rootfs.source()).await
+    open_boot_profile_artifact_source(boot_profile.rootfs.source(), sparse_hints).await
 }
 
 #[cfg(target_arch = "wasm32")]
 fn open_boot_profile_artifact_source<'a>(
     source: &'a BootProfileArtifactSource,
+    sparse_hints: &'a HashMap<String, AndroidSparseImageIndex>,
 ) -> Pin<Box<dyn Future<Output = anyhow::Result<Arc<dyn BlockReader>>> + 'a>> {
     Box::pin(async move {
         match source {
@@ -725,7 +782,8 @@ fn open_boot_profile_artifact_source<'a>(
                 Ok(reader)
             }
             BootProfileArtifactSource::Xz(source) => {
-                let upstream = open_boot_profile_artifact_source(source.xz.as_ref()).await?;
+                let upstream =
+                    open_boot_profile_artifact_source(source.xz.as_ref(), sparse_hints).await?;
                 let upstream = AlignedByteReader::new(upstream).await.map_err(|err| {
                     anyhow::anyhow!("open aligned byte view for xz source: {err}")
                 })?;
@@ -739,9 +797,19 @@ fn open_boot_profile_artifact_source<'a>(
                 Ok(reader)
             }
             BootProfileArtifactSource::AndroidSparseImg(source) => {
-                let upstream =
-                    open_boot_profile_artifact_source(source.android_sparseimg.source.as_ref())
-                        .await?;
+                let upstream = open_boot_profile_artifact_source(
+                    source.android_sparseimg.source.as_ref(),
+                    sparse_hints,
+                )
+                .await?;
+                let sidecar_index = if source.android_sparseimg.index.is_none() {
+                    let identity = pipeline_identity_string(
+                        &BootProfileArtifactSource::AndroidSparseImg(source.clone()),
+                    );
+                    sparse_hints.get(&identity)
+                } else {
+                    None
+                };
                 let reader = if let Some(index) = source.android_sparseimg.index.as_ref() {
                     let sparse_index = AndroidSparseImageIndex {
                         file_hdr_sz: index.file_hdr_sz,
@@ -773,6 +841,12 @@ fn open_boot_profile_artifact_source<'a>(
                         .map_err(|err| {
                             anyhow::anyhow!("open android sparse reader from index: {err}")
                         })?
+                } else if let Some(index) = sidecar_index {
+                    AndroidSparseBlockReader::new_with_index(upstream, index.clone())
+                        .await
+                        .map_err(|err| {
+                            anyhow::anyhow!("open android sparse reader from sidecar index: {err}")
+                        })?
                 } else {
                     AndroidSparseBlockReader::new(upstream)
                         .await
@@ -791,7 +865,8 @@ fn open_boot_profile_artifact_source<'a>(
                 };
 
                 let upstream =
-                    open_boot_profile_artifact_source(source.mbr.source.as_ref()).await?;
+                    open_boot_profile_artifact_source(source.mbr.source.as_ref(), sparse_hints)
+                        .await?;
                 let reader = MbrBlockReader::new(
                     upstream,
                     selector,
@@ -814,7 +889,8 @@ fn open_boot_profile_artifact_source<'a>(
                 };
 
                 let upstream =
-                    open_boot_profile_artifact_source(source.gpt.source.as_ref()).await?;
+                    open_boot_profile_artifact_source(source.gpt.source.as_ref(), sparse_hints)
+                        .await?;
                 let reader = GptBlockReader::new(
                     upstream,
                     selector,

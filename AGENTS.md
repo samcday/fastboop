@@ -24,6 +24,9 @@ fastboop is a non-mutating live-boot pipeline for phones and pocket computers th
 - Use Conventional Commit style for all commits (`feat:`, `fix:`, `refactor:` and similar scopes).
 - End each completed turn with a conventional commit sequence (or `fixup!` commits that targets the appropriate prior commits).
 - fastboop is currently unreleased: do not add migration shims, compatibility aliases, or deprecation warnings unless explicitly requested by the user.
+- For active v0 wire formats under development (for example pipeline-hints sidecars),
+  prefer clean breaking changes over compatibility scaffolding until the format is
+  declared stable.
 - Preserve non-mutating behavior (no flash/erase/format/slot toggles/unlock paths).
 - Keep platform-agnostic logic in core crates and platform bindings in leaf crates.
 - Strict `no_std + alloc` boundary (do not introduce `std` unless user explicitly asks):
