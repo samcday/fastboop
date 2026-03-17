@@ -16,9 +16,7 @@ use fastboop_core::{
     select_boot_profile_for_device,
 };
 use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
-use gibblox_android_sparse::{
-    AndroidSparseBlockReader, AndroidSparseChunkIndex, AndroidSparseImageIndex,
-};
+use gibblox_android_sparse::{AndroidSparseBlockReader, AndroidSparseImageIndex};
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
 use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
@@ -671,46 +669,11 @@ impl ArtifactReaderResolver {
                     let upstream = self
                         .open_artifact_source(source.android_sparseimg.source.as_ref())
                         .await?;
-                    let sidecar_index = if source.android_sparseimg.index.is_none() {
-                        let pipeline_identity = pipeline_identity_string(
-                            &BootProfileArtifactSource::AndroidSparseImg(source.clone()),
-                        );
-                        self.sparse_index_hints.get(&pipeline_identity)
-                    } else {
-                        None
-                    };
-                    let reader = if let Some(index) = source.android_sparseimg.index.as_ref() {
-                        let sparse_index = AndroidSparseImageIndex {
-                            file_hdr_sz: index.file_hdr_sz,
-                            chunk_hdr_sz: index.chunk_hdr_sz,
-                            blk_sz: index.blk_sz,
-                            total_blks: index.total_blks,
-                            total_chunks: index.total_chunks,
-                            image_checksum: index.image_checksum,
-                            chunks: index
-                                .chunks
-                                .iter()
-                                .map(|chunk| AndroidSparseChunkIndex {
-                                    chunk_index: chunk.chunk_index,
-                                    chunk_type: chunk.chunk_type,
-                                    chunk_sz: chunk.chunk_sz,
-                                    total_sz: chunk.total_sz,
-                                    chunk_offset: chunk.chunk_offset,
-                                    payload_offset: chunk.payload_offset,
-                                    payload_size: chunk.payload_size,
-                                    output_start: chunk.output_start,
-                                    output_end: chunk.output_end,
-                                    fill_pattern: chunk.fill_pattern,
-                                    crc32: chunk.crc32,
-                                })
-                                .collect(),
-                        };
-                        AndroidSparseBlockReader::new_with_index(upstream, sparse_index)
-                            .await
-                            .map_err(|err| {
-                                anyhow!("open android sparse reader from index: {err}")
-                            })?
-                    } else if let Some(index) = sidecar_index {
+                    let pipeline_identity = pipeline_identity_string(
+                        &BootProfileArtifactSource::AndroidSparseImg(source.clone()),
+                    );
+                    let sidecar_index = self.sparse_index_hints.get(&pipeline_identity);
+                    let reader = if let Some(index) = sidecar_index {
                         AndroidSparseBlockReader::new_with_index(upstream, index.clone())
                             .await
                             .map_err(|err| {

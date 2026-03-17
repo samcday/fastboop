@@ -2,14 +2,14 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use fastboop_schema::bin::{
-    BootProfileBin, BOOT_PROFILE_BIN_FORMAT_V0, BOOT_PROFILE_BIN_V0_HEADER_LEN,
-    BOOT_PROFILE_BIN_V0_MAGIC,
+    BOOT_PROFILE_BIN_FORMAT_V0, BOOT_PROFILE_BIN_V0_HEADER_LEN, BOOT_PROFILE_BIN_V0_MAGIC,
+    BootProfileBin,
 };
 use fastboop_schema::{
     BootProfile, BootProfileArtifactPathSource, BootProfileRootfs,
     BootProfileRootfsFilesystemSource,
 };
-use gibblox_pipeline::{validate_pipeline, PipelineValidationError};
+use gibblox_pipeline::{PipelineValidationError, validate_pipeline};
 
 #[derive(Debug)]
 pub enum BootProfileCodecError {
