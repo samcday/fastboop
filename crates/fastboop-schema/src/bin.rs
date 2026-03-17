@@ -15,13 +15,15 @@ use crate::{
     NotExistsFlag, ProbeStep, Stage0,
 };
 
-pub const BOOT_PROFILE_BIN_FORMAT_VERSION: u16 = 2;
-pub const BOOT_PROFILE_BIN_MAGIC: [u8; 8] = *b"FBOOPROF";
-pub const BOOT_PROFILE_BIN_HEADER_LEN: usize = 10;
+// v0 wire formats are intentionally unstable while fastboop is unreleased.
+pub const BOOT_PROFILE_BIN_FORMAT_V0: u16 = 0;
+pub const BOOT_PROFILE_BIN_V0_MAGIC: [u8; 8] = *b"FBOOPROF";
+pub const BOOT_PROFILE_BIN_V0_HEADER_LEN: usize = 10;
 
-pub const DEV_PROFILE_BIN_FORMAT_VERSION: u16 = 1;
-pub const DEV_PROFILE_BIN_MAGIC: [u8; 8] = *b"FBOODEVP";
-pub const DEV_PROFILE_BIN_HEADER_LEN: usize = 10;
+// v0 wire formats are intentionally unstable while fastboop is unreleased.
+pub const DEV_PROFILE_BIN_FORMAT_V0: u16 = 0;
+pub const DEV_PROFILE_BIN_V0_MAGIC: [u8; 8] = *b"FBOODEVP";
+pub const DEV_PROFILE_BIN_V0_HEADER_LEN: usize = 10;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BootProfileBin {
