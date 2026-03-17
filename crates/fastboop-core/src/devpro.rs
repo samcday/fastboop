@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
 use fastboop_schema::bin::{
-    DeviceProfileBin, DEV_PROFILE_BIN_FORMAT_V0, DEV_PROFILE_BIN_V0_HEADER_LEN,
-    DEV_PROFILE_BIN_V0_MAGIC,
+    DEV_PROFILE_BIN_FORMAT_V0, DEV_PROFILE_BIN_V0_HEADER_LEN, DEV_PROFILE_BIN_V0_MAGIC,
+    DeviceProfileBin,
 };
 
 pub use fastboop_schema::*;
