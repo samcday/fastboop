@@ -239,12 +239,18 @@ async fn collect_profile_pipeline_hints(
     resolver: &mut ArtifactReaderResolver,
 ) -> Result<PipelineHints> {
     let mut entries = BTreeMap::new();
+    let mut digest_cache = BTreeMap::new();
 
     info!(profile_id = %profile.id, "collecting rootfs pipeline hints");
 
-    collect_pipeline_hints_from_artifact_source(profile.rootfs.source(), resolver, &mut entries)
-        .await
-        .context("materializing rootfs pipeline hints")?;
+    collect_pipeline_hints_from_artifact_source(
+        profile.rootfs.source(),
+        resolver,
+        &mut entries,
+        &mut digest_cache,
+    )
+    .await
+    .context("materializing rootfs pipeline hints")?;
 
     if let Some(kernel) = profile.kernel.as_ref() {
         info!(profile_id = %profile.id, "collecting kernel pipeline hints");
@@ -252,6 +258,7 @@ async fn collect_profile_pipeline_hints(
             kernel.artifact_source(),
             resolver,
             &mut entries,
+            &mut digest_cache,
         )
         .await
         .context("materializing kernel pipeline hints")?;
@@ -259,9 +266,14 @@ async fn collect_profile_pipeline_hints(
 
     if let Some(dtbs) = profile.dtbs.as_ref() {
         info!(profile_id = %profile.id, "collecting dtbs pipeline hints");
-        collect_pipeline_hints_from_artifact_source(dtbs.artifact_source(), resolver, &mut entries)
-            .await
-            .context("materializing dtbs pipeline hints")?;
+        collect_pipeline_hints_from_artifact_source(
+            dtbs.artifact_source(),
+            resolver,
+            &mut entries,
+            &mut digest_cache,
+        )
+        .await
+        .context("materializing dtbs pipeline hints")?;
     }
 
     Ok(PipelineHints {
@@ -273,21 +285,29 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
     source: &'a BootProfileArtifactSource,
     resolver: &'a mut ArtifactReaderResolver,
     entries: &'a mut BTreeMap<String, PipelineHintEntry>,
+    digest_cache: &'a mut BTreeMap<String, PipelineContentDigestHint>,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
     Box::pin(async move {
         match source {
             BootProfileArtifactSource::Xz(source) => {
-                collect_pipeline_hints_from_artifact_source(source.xz.as_ref(), resolver, entries)
-                    .await?;
+                collect_pipeline_hints_from_artifact_source(
+                    source.xz.as_ref(),
+                    resolver,
+                    entries,
+                    digest_cache,
+                )
+                .await?;
 
                 if source.content.is_none() {
-                    let pipeline_identity =
-                        pipeline_identity_string(&BootProfileArtifactSource::Xz(source.clone()));
-                    let reader = resolver
-                        .open_artifact_source(&BootProfileArtifactSource::Xz(source.clone()))
-                        .await?;
-                    let digest_hint =
-                        digest_reader_content(reader, pipeline_identity.as_str()).await?;
+                    let source = BootProfileArtifactSource::Xz(source.clone());
+                    let pipeline_identity = pipeline_identity_string(&source);
+                    let digest_hint = load_content_digest_hint(
+                        &source,
+                        pipeline_identity.as_str(),
+                        resolver,
+                        digest_cache,
+                    )
+                    .await?;
                     insert_pipeline_hint(
                         entries,
                         pipeline_identity,
@@ -301,15 +321,17 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                     source.android_sparseimg.source.as_ref(),
                     resolver,
                     entries,
+                    digest_cache,
                 )
                 .await?;
 
-                let pipeline_identity = pipeline_identity_string(
-                    &BootProfileArtifactSource::AndroidSparseImg(source.clone()),
-                );
+                let android_sparse_source = source.clone();
+                let source =
+                    BootProfileArtifactSource::AndroidSparseImg(android_sparse_source.clone());
+                let pipeline_identity = pipeline_identity_string(&source);
 
                 let upstream = resolver
-                    .open_artifact_source(source.android_sparseimg.source.as_ref())
+                    .open_artifact_source(android_sparse_source.android_sparseimg.source.as_ref())
                     .await?;
                 info!(
                     pipeline_identity = %pipeline_identity,
@@ -324,14 +346,22 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                     .map_err(|err| anyhow!("materialize android sparse index: {err}"))?;
                 insert_android_sparse_hint(entries, pipeline_identity.clone(), index)?;
 
-                if source.android_sparseimg.content.is_none() {
-                    let reader = resolver
-                        .open_artifact_source(&BootProfileArtifactSource::AndroidSparseImg(
-                            source.clone(),
-                        ))
-                        .await?;
-                    let digest_hint =
-                        digest_reader_content(reader, pipeline_identity.as_str()).await?;
+                if android_sparse_source.android_sparseimg.content.is_none() {
+                    let digest_hint = if let Some(cached) = digest_cache
+                        .get(&super::artifact_source_cache_key(&source)?)
+                        .cloned()
+                    {
+                        cached
+                    } else {
+                        let reader: Arc<dyn BlockReader> = Arc::new(reader);
+                        let digest_hint =
+                            digest_reader_content(reader, pipeline_identity.as_str()).await?;
+                        digest_cache.insert(
+                            super::artifact_source_cache_key(&source)?,
+                            digest_hint.clone(),
+                        );
+                        digest_hint
+                    };
                     insert_pipeline_hint(
                         entries,
                         pipeline_identity,
@@ -345,17 +375,20 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                     source.mbr.source.as_ref(),
                     resolver,
                     entries,
+                    digest_cache,
                 )
                 .await?;
 
                 if source.mbr.content.is_none() {
-                    let pipeline_identity =
-                        pipeline_identity_string(&BootProfileArtifactSource::Mbr(source.clone()));
-                    let reader = resolver
-                        .open_artifact_source(&BootProfileArtifactSource::Mbr(source.clone()))
-                        .await?;
-                    let digest_hint =
-                        digest_reader_content(reader, pipeline_identity.as_str()).await?;
+                    let source = BootProfileArtifactSource::Mbr(source.clone());
+                    let pipeline_identity = pipeline_identity_string(&source);
+                    let digest_hint = load_content_digest_hint(
+                        &source,
+                        pipeline_identity.as_str(),
+                        resolver,
+                        digest_cache,
+                    )
+                    .await?;
                     insert_pipeline_hint(
                         entries,
                         pipeline_identity,
@@ -369,17 +402,20 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                     source.gpt.source.as_ref(),
                     resolver,
                     entries,
+                    digest_cache,
                 )
                 .await?;
 
                 if source.gpt.content.is_none() {
-                    let pipeline_identity =
-                        pipeline_identity_string(&BootProfileArtifactSource::Gpt(source.clone()));
-                    let reader = resolver
-                        .open_artifact_source(&BootProfileArtifactSource::Gpt(source.clone()))
-                        .await?;
-                    let digest_hint =
-                        digest_reader_content(reader, pipeline_identity.as_str()).await?;
+                    let source = BootProfileArtifactSource::Gpt(source.clone());
+                    let pipeline_identity = pipeline_identity_string(&source);
+                    let digest_hint = load_content_digest_hint(
+                        &source,
+                        pipeline_identity.as_str(),
+                        resolver,
+                        digest_cache,
+                    )
+                    .await?;
                     insert_pipeline_hint(
                         entries,
                         pipeline_identity,
@@ -393,6 +429,24 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
             | BootProfileArtifactSource::Casync(_) => Ok(()),
         }
     })
+}
+
+async fn load_content_digest_hint(
+    source: &BootProfileArtifactSource,
+    pipeline_identity: &str,
+    resolver: &mut ArtifactReaderResolver,
+    digest_cache: &mut BTreeMap<String, PipelineContentDigestHint>,
+) -> Result<PipelineContentDigestHint> {
+    let cache_key = super::artifact_source_cache_key(source)?;
+    if let Some(hint) = digest_cache.get(&cache_key).cloned() {
+        info!(pipeline_identity, "reusing cached content digest hint");
+        return Ok(hint);
+    }
+
+    let reader = resolver.open_artifact_source(source).await?;
+    let hint = digest_reader_content(reader, pipeline_identity).await?;
+    digest_cache.insert(cache_key, hint.clone());
+    Ok(hint)
 }
 
 fn insert_android_sparse_hint(
@@ -468,23 +522,31 @@ async fn digest_reader_content(
     reader: Arc<dyn BlockReader>,
     pipeline_identity: &str,
 ) -> Result<PipelineContentDigestHint> {
+    const DIGEST_CHUNK_TARGET_BYTES: usize = 8 * 1024 * 1024;
+
     let block_size = reader.block_size() as usize;
     if block_size == 0 {
         bail!("reader block size is zero");
     }
+    let blocks_per_read = core::cmp::max(1, DIGEST_CHUNK_TARGET_BYTES / block_size);
+    let max_read_bytes = blocks_per_read * block_size;
 
     let total_blocks = reader.total_blocks().await?;
     info!(
         pipeline_identity,
-        total_blocks, block_size, "digesting pipeline content"
+        total_blocks, block_size, blocks_per_read, max_read_bytes, "digesting pipeline content"
     );
     let mut hasher = Sha512::new();
     let mut size_bytes = 0u64;
-    let mut buf = vec![0u8; block_size];
+    let mut buf = vec![0u8; max_read_bytes];
+    let mut lba = 0u64;
 
-    for lba in 0..total_blocks {
+    while lba < total_blocks {
+        let remaining_blocks = total_blocks - lba;
+        let requested_blocks = core::cmp::min(remaining_blocks, blocks_per_read as u64);
+        let requested_bytes = requested_blocks as usize * block_size;
         let read = reader
-            .read_blocks(lba, buf.as_mut_slice(), ReadContext::BACKGROUND)
+            .read_blocks(lba, &mut buf[..requested_bytes], ReadContext::BACKGROUND)
             .await?;
         if read == 0 {
             break;
@@ -493,7 +555,14 @@ async fn digest_reader_content(
         size_bytes = size_bytes
             .checked_add(read as u64)
             .ok_or_else(|| anyhow!("digest size overflow"))?;
-        if read < block_size {
+        let consumed_blocks = (read as u64).div_ceil(block_size as u64);
+        if consumed_blocks == 0 {
+            break;
+        }
+        lba = lba
+            .checked_add(consumed_blocks)
+            .ok_or_else(|| anyhow!("digest lba overflow"))?;
+        if read < requested_bytes {
             break;
         }
     }
