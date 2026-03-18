@@ -51,6 +51,9 @@ pub struct Stage0Args {
     /// Enable CDC-ACM gadget (smoo.acm=1) and include usb_f_acm.
     #[arg(long)]
     pub serial: bool,
+    /// Local artifact file to short-circuit matching pipeline stages (repeatable).
+    #[arg(long = "local-artifact", value_name = "PATH")]
+    pub local_artifact: Vec<PathBuf>,
 }
 
 pub async fn run_stage0(args: Stage0Args) -> Result<()> {
@@ -86,7 +89,8 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    let mut artifact_resolver = ArtifactReaderResolver::new();
+    let mut artifact_resolver =
+        ArtifactReaderResolver::with_local_artifacts(args.local_artifact.as_slice())?;
     let build = {
         let input = artifact_resolver
             .open_channel_input(

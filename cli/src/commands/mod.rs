@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -35,13 +35,15 @@ use gibblox_file::FileReader;
 use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 use gibblox_pipeline::{
-    PipelineHint, PipelineHints, pipeline_identity_string, validate_pipeline_hints,
+    PipelineHint, PipelineHints, PipelineSource, PipelineSourceContent, pipeline_identity_string,
+    validate_pipeline_hints,
 };
 use gibblox_xz::XzBlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_core::{Filesystem, FilesystemEntryType, normalize_ostree_deployment_path};
 use gobblytes_erofs::{DEFAULT_IMAGE_BLOCK_SIZE, ErofsRootfs};
 use gobblytes_fat::FatFs;
+use sha2::{Digest, Sha512};
 use tracing::info;
 use url::Url;
 
@@ -471,6 +473,14 @@ impl BlockReader for OffsetChannelBlockReader {
 pub(crate) struct ArtifactReaderResolver {
     cache: HashMap<String, Arc<dyn BlockReader>>,
     sparse_index_hints: HashMap<String, AndroidSparseImageIndex>,
+    content_digest_hints: HashMap<String, PipelineSourceContent>,
+    local_artifacts: HashMap<ArtifactContentKey, PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ArtifactContentKey {
+    digest: String,
+    size_bytes: u64,
 }
 
 type OpenArtifactFuture<'a> =
@@ -481,9 +491,25 @@ impl ArtifactReaderResolver {
         Self::default()
     }
 
+    pub(crate) fn with_local_artifacts(paths: &[PathBuf]) -> Result<Self> {
+        if !paths.is_empty() {
+            info!(count = paths.len(), "indexing local artifact overrides");
+        }
+        let mut resolver = Self::default();
+        resolver.local_artifacts = build_local_artifact_index(paths)?;
+        if !paths.is_empty() {
+            info!(
+                count = resolver.local_artifacts.len(),
+                "local artifact override index ready"
+            );
+        }
+        Ok(resolver)
+    }
+
     fn reset_pipeline_hints(&mut self, hints: &PipelineHints) -> Result<()> {
         validate_pipeline_hints(hints).map_err(|err| anyhow!("validate pipeline hints: {err}"))?;
         self.sparse_index_hints.clear();
+        self.content_digest_hints.clear();
 
         for entry in &hints.entries {
             for hint in &entry.hints {
@@ -515,6 +541,15 @@ impl ArtifactReaderResolver {
                                         crc32: chunk.crc32,
                                     })
                                     .collect(),
+                            },
+                        );
+                    }
+                    PipelineHint::ContentDigest(content) => {
+                        self.content_digest_hints.insert(
+                            entry.pipeline_identity.clone(),
+                            PipelineSourceContent {
+                                digest: content.digest.clone(),
+                                size_bytes: content.size_bytes,
                             },
                         );
                     }
@@ -612,6 +647,21 @@ impl ArtifactReaderResolver {
         source: &'a BootProfileArtifactSource,
     ) -> OpenArtifactFuture<'a> {
         Box::pin(async move {
+            if let Some(local_path) = self.match_local_artifact(source)? {
+                let cache_key = format!("file:{}", local_path.display());
+                if let Some(reader) = self.cache.get(&cache_key).cloned() {
+                    return Ok(reader);
+                }
+
+                let file_reader =
+                    FileReader::open(&local_path, DEFAULT_IMAGE_BLOCK_SIZE).map_err(|err| {
+                        anyhow!("open local artifact {}: {err}", local_path.display())
+                    })?;
+                let reader: Arc<dyn BlockReader> = Arc::new(file_reader);
+                self.cache.insert(cache_key, reader.clone());
+                return Ok(reader);
+            }
+
             let cache_key = artifact_source_cache_key(source)?;
             if let Some(reader) = self.cache.get(&cache_key).cloned() {
                 return Ok(reader);
@@ -730,6 +780,106 @@ impl ArtifactReaderResolver {
             Ok(reader)
         })
     }
+
+    fn match_local_artifact(&self, source: &PipelineSource) -> Result<Option<PathBuf>> {
+        let source_identity = pipeline_identity_string(source);
+        let content = artifact_source_content(source)
+            .or_else(|| self.content_digest_hints.get(&source_identity));
+        let Some(content) = content else {
+            return Ok(None);
+        };
+        let key = ArtifactContentKey {
+            digest: content.digest.clone(),
+            size_bytes: content.size_bytes,
+        };
+        let Some(path) = self.local_artifacts.get(&key) else {
+            return Ok(None);
+        };
+
+        info!(
+            source_identity = %source_identity,
+            digest = %content.digest,
+            size_bytes = content.size_bytes,
+            local_path = %path.display(),
+            "using local artifact override"
+        );
+        Ok(Some(path.clone()))
+    }
+}
+
+fn artifact_source_content(source: &PipelineSource) -> Option<&PipelineSourceContent> {
+    match source {
+        PipelineSource::Http(source) => source.content.as_ref(),
+        PipelineSource::File(source) => source.content.as_ref(),
+        PipelineSource::Casync(source) => source.casync.content.as_ref(),
+        PipelineSource::Xz(source) => source.content.as_ref(),
+        PipelineSource::AndroidSparseImg(source) => source.android_sparseimg.content.as_ref(),
+        PipelineSource::Mbr(source) => source.mbr.content.as_ref(),
+        PipelineSource::Gpt(source) => source.gpt.content.as_ref(),
+    }
+}
+
+fn build_local_artifact_index(paths: &[PathBuf]) -> Result<HashMap<ArtifactContentKey, PathBuf>> {
+    let mut out = HashMap::new();
+    for path in paths {
+        let canonical = fs::canonicalize(path)
+            .with_context(|| format!("canonicalize local artifact path {}", path.display()))?;
+        let metadata = fs::metadata(&canonical)
+            .with_context(|| format!("stat local artifact {}", canonical.display()))?;
+        if !metadata.is_file() {
+            bail!(
+                "local artifact {} is not a regular file",
+                canonical.display()
+            );
+        }
+
+        info!(
+            local_path = %canonical.display(),
+            size_bytes = metadata.len(),
+            "hashing local artifact"
+        );
+        let digest = sha512_file(canonical.as_path())?;
+        info!(
+            local_path = %canonical.display(),
+            digest = %digest,
+            size_bytes = metadata.len(),
+            "indexed local artifact"
+        );
+        let key = ArtifactContentKey {
+            digest,
+            size_bytes: metadata.len(),
+        };
+        if let Some(existing) = out.insert(key.clone(), canonical.clone()) {
+            if existing != canonical {
+                bail!(
+                    "local artifact digest+size collision between {} and {}",
+                    existing.display(),
+                    canonical.display()
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn sha512_file(path: &Path) -> Result<String> {
+    let file =
+        fs::File::open(path).with_context(|| format!("open local artifact {}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha512::new();
+    let mut buf = [0u8; 1024 * 1024];
+
+    loop {
+        let read = reader
+            .read(&mut buf)
+            .with_context(|| format!("read local artifact {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+
+    Ok(format!("sha512:{:x}", hasher.finalize()))
 }
 
 fn artifact_source_cache_key(source: &BootProfileArtifactSource) -> Result<String> {
@@ -2091,9 +2241,86 @@ rootfs:
 
     fn compile_boot_profile(yaml: &str) -> BootProfile {
         let manifest: BootProfileManifest = serde_yaml::from_str(yaml).expect("parse manifest");
-        manifest
+        let mut profile = manifest
             .compile_dt_overlays(|_| Ok::<Vec<u8>, anyhow::Error>(Vec::new()))
-            .expect("compile manifest")
+            .expect("compile manifest");
+        hydrate_test_profile_content(&mut profile);
+        profile
+    }
+
+    fn hydrate_test_profile_content(profile: &mut BootProfile) {
+        hydrate_test_rootfs_content(&mut profile.rootfs);
+        if let Some(kernel) = profile.kernel.as_mut() {
+            hydrate_test_rootfs_content(&mut kernel.source);
+        }
+        if let Some(dtbs) = profile.dtbs.as_mut() {
+            hydrate_test_rootfs_content(&mut dtbs.source);
+        }
+    }
+
+    fn hydrate_test_rootfs_content(rootfs: &mut fastboop_core::BootProfileRootfs) {
+        match rootfs {
+            fastboop_core::BootProfileRootfs::Ostree(source) => match &mut source.ostree {
+                fastboop_core::BootProfileRootfsFilesystemSource::Erofs(source) => {
+                    hydrate_test_pipeline_content(&mut source.erofs)
+                }
+                fastboop_core::BootProfileRootfsFilesystemSource::Ext4(source) => {
+                    hydrate_test_pipeline_content(&mut source.ext4)
+                }
+                fastboop_core::BootProfileRootfsFilesystemSource::Fat(source) => {
+                    hydrate_test_pipeline_content(&mut source.fat)
+                }
+            },
+            fastboop_core::BootProfileRootfs::Erofs(source) => {
+                hydrate_test_pipeline_content(&mut source.erofs)
+            }
+            fastboop_core::BootProfileRootfs::Ext4(source) => {
+                hydrate_test_pipeline_content(&mut source.ext4)
+            }
+            fastboop_core::BootProfileRootfs::Fat(source) => {
+                hydrate_test_pipeline_content(&mut source.fat)
+            }
+        }
+    }
+
+    fn hydrate_test_pipeline_content(source: &mut BootProfileArtifactSource) {
+        match source {
+            BootProfileArtifactSource::Http(source) => {
+                if source.content.is_none() {
+                    source.content = Some(test_content());
+                }
+            }
+            BootProfileArtifactSource::File(source) => {
+                if source.content.is_none() {
+                    source.content = Some(test_content());
+                }
+            }
+            BootProfileArtifactSource::Casync(source) => {
+                if source.casync.content.is_none() {
+                    source.casync.content = Some(test_content());
+                }
+            }
+            BootProfileArtifactSource::Xz(source) => {
+                hydrate_test_pipeline_content(source.xz.as_mut());
+            }
+            BootProfileArtifactSource::AndroidSparseImg(source) => {
+                hydrate_test_pipeline_content(source.android_sparseimg.source.as_mut());
+            }
+            BootProfileArtifactSource::Mbr(source) => {
+                hydrate_test_pipeline_content(source.mbr.source.as_mut());
+            }
+            BootProfileArtifactSource::Gpt(source) => {
+                hydrate_test_pipeline_content(source.gpt.source.as_mut());
+            }
+        }
+    }
+
+    fn test_content() -> PipelineSourceContent {
+        PipelineSourceContent {
+            digest: "sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+            size_bytes: 123,
+        }
     }
 
     fn compile_device_profile(yaml: &str) -> DeviceProfile {

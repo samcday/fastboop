@@ -28,6 +28,9 @@ display_name: Local EROFS image
 rootfs:
   erofs:
     file: ./artifacts/rootfs.ero
+    content:
+      digest: sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+      size_bytes: 123456789
 
 stage0:
   extra_modules:
@@ -47,6 +50,9 @@ rootfs:
       android_sparseimg:
         xz:
           http: https://downloads.example.com/images/generic-edge.img.xz
+          content:
+            digest: sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+            size_bytes: 987654321
 
 kernel:
   path: /vmlinuz
@@ -56,6 +62,9 @@ kernel:
       android_sparseimg:
         xz:
           http: https://downloads.example.com/images/generic-edge.img.xz
+          content:
+            digest: sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+            size_bytes: 987654321
 
 dtbs:
   path: /dtbs
@@ -65,6 +74,9 @@ dtbs:
       android_sparseimg:
         xz:
           http: https://downloads.example.com/images/generic-edge.img.xz
+          content:
+            digest: sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+            size_bytes: 987654321
 
 extra_cmdline: console=ttyMSM0,115200n8
 ```
@@ -74,6 +86,8 @@ extra_cmdline: console=ttyMSM0,115200n8
 - `rootfs` schema supports `erofs`, `ext4`, and `fat`.
 - Stage0 lower-root currently accepts `erofs` and `ext4`; use `fat` for kernel/dtbs source pipelines.
 - Artifact pipeline validation/limits come from `gibblox-pipeline` (`MAX_PIPELINE_DEPTH=16`).
+- Terminal stages (`http`, `casync`, `file`) must include `content` metadata (`digest`, `size_bytes`).
+- Wrapper stages (`xz`, `android_sparseimg`, `mbr`, `gpt`) may include optional `content` metadata.
 - GPT/MBR selector steps must choose exactly one selector field.
 - `kernel.path` and `dtbs.path` (if present) must be non-empty.
 - `dt_overlays` compile/decompile requires `dtc`.
@@ -84,8 +98,20 @@ extra_cmdline: console=ttyMSM0,115200n8
 # compile manifest -> binary
 cargo run -p fastboop-cli -- bootprofile create ./profile.yaml -o /tmp/profile.fbp
 
+# compile and immediately generate optimize sidecar
+cargo run -p fastboop-cli -- bootprofile create ./profile.yaml -o /tmp/profile.fbp --optimize
+
+# create+optimize using local content-matching artifact overrides
+cargo run -p fastboop-cli -- bootprofile create ./profile.yaml -o /tmp/profile.fbp --optimize --local-artifact ./artifacts/rootfs.ero
+
 # inspect binary -> yaml
 cargo run -p fastboop-cli -- bootprofile show /tmp/profile.fbp
+
+# materialize pipeline-hints sidecar from compiled profile
+cargo run -p fastboop-cli -- bootprofile optimize /tmp/profile.fbp -o /tmp/profile.fph
+
+# allow local replacement for content-matching stages while optimizing
+cargo run -p fastboop-cli -- bootprofile optimize /tmp/profile.fbp -o /tmp/profile.fph --local-artifact ./artifacts/rootfs.ero
 
 # exercise stage0 path through compiled profile
 cargo run -p fastboop-cli -- stage0 /tmp/profile.fbp --device-profile <id> > /tmp/stage0.cpio

@@ -12,6 +12,7 @@ use fastboop_core::{
     decode_boot_profile, decode_boot_profile_prefix, encode_boot_profile,
     resolve_effective_boot_profile_stage0, validate_boot_profile,
 };
+use gibblox_pipeline::PipelineSourceContent;
 use gibblox_pipeline::PipelineValidationError;
 
 #[test]
@@ -42,6 +43,7 @@ fn boot_profile_ext4_roundtrip_binary_codec() {
         rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
             ext4: BootProfileArtifactSource::Http(BootProfileArtifactSourceHttpSource {
                 http: "https://example.invalid/rootfs.ext4".to_string(),
+                content: Some(sample_content()),
             }),
         }),
         kernel: None,
@@ -88,6 +90,7 @@ fn rejects_casync_archive_indexes() {
                 casync: BootProfileArtifactSourceCasync {
                     index: "https://example.invalid/image.caidx".to_string(),
                     chunk_store: None,
+                    content: Some(sample_content()),
                 },
             }),
         }),
@@ -112,6 +115,7 @@ fn accepts_casync_blob_indexes() {
                     index: "https://bleeding.fastboop.win/live-pocket-fedora/casync/indexes/compose-22240659617-1-bf887e869003.caibx"
                         .to_string(),
                     chunk_store: None,
+                    content: Some(sample_content()),
                 },
             }),
         }),
@@ -145,9 +149,11 @@ fn accepts_gpt_over_casync_pipeline() {
                                     "https://bleeding.fastboop.win/live-pocket-fedora/casync/chunks/"
                                         .to_string(),
                                 ),
+                                content: Some(sample_content()),
                             },
                         },
                     )),
+                    content: None,
                 },
             }),
         }),
@@ -172,6 +178,7 @@ fn accepts_ostree_over_erofs_rootfs() {
                     casync: BootProfileArtifactSourceCasync {
                         index: "https://example.invalid/rootfs.caibx".to_string(),
                         chunk_store: None,
+                        content: Some(sample_content()),
                     },
                 }),
             }),
@@ -199,6 +206,7 @@ fn rejects_ostree_over_fat_rootfs_for_stage0_switchroot() {
             ostree: BootProfileRootfsFilesystemSource::Fat(BootProfileRootfsFatSource {
                 fat: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
                     file: "./rootfs.fat".to_string(),
+                    content: Some(sample_content()),
                 }),
             }),
         }),
@@ -230,8 +238,10 @@ fn rejects_gpt_step_without_selector() {
                     source: Box::new(BootProfileArtifactSource::Http(
                         BootProfileArtifactSourceHttpSource {
                             http: "https://example.invalid/rootfs.img".to_string(),
+                            content: Some(sample_content()),
                         },
                     )),
+                    content: None,
                 },
             }),
         }),
@@ -264,8 +274,10 @@ fn rejects_mbr_step_without_selector() {
                     source: Box::new(BootProfileArtifactSource::Http(
                         BootProfileArtifactSourceHttpSource {
                             http: "https://example.invalid/rootfs.img".to_string(),
+                            content: Some(sample_content()),
                         },
                     )),
+                    content: None,
                 },
             }),
         }),
@@ -293,6 +305,7 @@ fn accepts_file_artifact_source() {
         rootfs: BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
             erofs: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
                 file: "./rootfs.ero".to_string(),
+                content: Some(sample_content()),
             }),
         }),
         kernel: None,
@@ -313,6 +326,7 @@ fn accepts_ext4_rootfs_source() {
         rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
             ext4: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
                 file: "./rootfs.img".to_string(),
+                content: Some(sample_content()),
             }),
         }),
         kernel: None,
@@ -333,6 +347,7 @@ fn rejects_fat_rootfs_for_stage0_switchroot() {
         rootfs: BootProfileRootfs::Fat(BootProfileRootfsFatSource {
             fat: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
                 file: "./rootfs.fat".to_string(),
+                content: Some(sample_content()),
             }),
         }),
         kernel: None,
@@ -357,6 +372,7 @@ fn rejects_empty_kernel_path() {
         source: BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
             erofs: BootProfileArtifactSource::Http(BootProfileArtifactSourceHttpSource {
                 http: "https://example.invalid/kernel.img".to_string(),
+                content: Some(sample_content()),
             }),
         }),
     });
@@ -386,6 +402,7 @@ fn sample_profile() -> BootProfile {
                 casync: BootProfileArtifactSourceCasync {
                     index: "https://example.invalid/image.caibx".to_string(),
                     chunk_store: Some("https://example.invalid/chunks/".to_string()),
+                    content: Some(sample_content()),
                 },
             }),
         }),
@@ -397,5 +414,14 @@ fn sample_profile() -> BootProfile {
             extra_modules: vec!["erofs".to_string()],
             devices,
         },
+    }
+}
+
+fn sample_content() -> PipelineSourceContent {
+    PipelineSourceContent {
+        digest:
+            "sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+        size_bytes: 123,
     }
 }

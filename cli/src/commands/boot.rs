@@ -81,6 +81,9 @@ pub struct BootStage0Args {
     /// Enable CDC-ACM gadget (smoo.acm=1) and include usb_f_acm.
     #[arg(long)]
     pub serial: bool,
+    /// Local artifact file to short-circuit matching pipeline stages (repeatable).
+    #[arg(long = "local-artifact", value_name = "PATH")]
+    pub local_artifact: Vec<PathBuf>,
 }
 
 #[derive(Args)]
@@ -184,7 +187,8 @@ async fn run_boot_inner(
 ) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
     let profiles = load_device_profiles(&devpro_dirs)?;
-    let mut artifact_resolver = ArtifactReaderResolver::new();
+    let mut artifact_resolver =
+        ArtifactReaderResolver::with_local_artifacts(args.stage0.local_artifact.as_slice())?;
     let requested_profile_id = args.stage0.device_profile.as_deref();
     let channel_head = artifact_resolver
         .read_channel_stream_head(&args.stage0.channel)
