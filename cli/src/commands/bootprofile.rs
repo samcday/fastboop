@@ -502,10 +502,7 @@ fn insert_pipeline_hint(
         .iter()
         .any(|existing| hint_discriminant(existing) == hint_discriminant(&hint));
     if duplicate {
-        bail!(
-            "duplicate pipeline hint type for identity '{}' is not allowed",
-            pipeline_identity
-        );
+        return Ok(());
     }
     entry.hints.push(hint);
     Ok(())
@@ -991,19 +988,17 @@ rootfs:
     }
 
     #[test]
-    fn insert_android_sparse_hint_rejects_duplicate_identity() {
+    fn insert_android_sparse_hint_dedupes_duplicate_identity() {
         let mut entries = BTreeMap::new();
         let identity = String::from("android_sparseimg{source=file{path=len:7:/a.simg;}};");
 
         insert_android_sparse_hint(&mut entries, identity.clone(), sparse_index_fixture())
             .expect("insert first hint");
-        let err = insert_android_sparse_hint(&mut entries, identity, sparse_index_fixture())
-            .expect_err("duplicate identity should fail");
+        insert_android_sparse_hint(&mut entries, identity.clone(), sparse_index_fixture())
+            .expect("duplicate identity should be ignored");
 
-        assert!(
-            format!("{err}").contains("duplicate pipeline hint type"),
-            "unexpected error: {err}"
-        );
+        let entry = entries.get(&identity).expect("entry exists");
+        assert_eq!(entry.hints.len(), 1);
     }
 
     #[test]
