@@ -511,11 +511,12 @@ impl ArtifactReaderResolver {
         &mut self,
         source: &BootProfileArtifactSource,
         path: &Path,
+        block_size: u32,
     ) -> Result<()> {
         let cache_key = artifact_source_cache_key(source)?;
         let canonical = fs::canonicalize(path)
             .with_context(|| format!("canonicalize materialized path {}", path.display()))?;
-        let file_reader = FileReader::open(&canonical, DEFAULT_IMAGE_BLOCK_SIZE)
+        let file_reader = FileReader::open(&canonical, block_size)
             .map_err(|err| anyhow!("open materialized file {}: {err}", canonical.display()))?;
         let reader: Arc<dyn BlockReader> = Arc::new(file_reader);
         self.cache.insert(cache_key, reader);

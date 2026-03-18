@@ -381,7 +381,7 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                     insert_android_sparse_hint(entries, pipeline_identity.clone(), index)?;
 
                     let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                    let digest_hint = digest_and_materialize_reader_content(
+                    let materialized = digest_and_materialize_reader_content(
                         reader,
                         pipeline_identity.as_str(),
                         materialized_cache,
@@ -390,14 +390,15 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                     materialized_cache.register_materialized_source(
                         resolver,
                         &source,
-                        digest_hint.digest.as_str(),
+                        materialized.hint.digest.as_str(),
+                        materialized.block_size,
                     )?;
                     digest_cache.insert(
                         super::artifact_source_cache_key(&source)?,
-                        digest_hint.clone(),
+                        materialized.hint.clone(),
                     );
                     visited_wrappers.insert(pipeline_identity.clone());
-                    digest_hint
+                    materialized.hint
                 };
 
                 if android_sparse_source.android_sparseimg.content.is_none() {
@@ -511,12 +512,21 @@ async fn ensure_wrapper_materialized(
     }
 
     let reader = resolver.open_artifact_source(source).await?;
-    let hint = digest_and_materialize_reader_content(reader, pipeline_identity, materialized_cache)
-        .await?;
-    materialized_cache.register_materialized_source(resolver, source, hint.digest.as_str())?;
-    digest_cache.insert(super::artifact_source_cache_key(source)?, hint.clone());
+    let materialized =
+        digest_and_materialize_reader_content(reader, pipeline_identity, materialized_cache)
+            .await?;
+    materialized_cache.register_materialized_source(
+        resolver,
+        source,
+        materialized.hint.digest.as_str(),
+        materialized.block_size,
+    )?;
+    digest_cache.insert(
+        super::artifact_source_cache_key(source)?,
+        materialized.hint.clone(),
+    );
     visited_wrappers.insert(pipeline_identity.to_string());
-    Ok(hint)
+    Ok(materialized.hint)
 }
 
 fn insert_android_sparse_hint(
@@ -648,6 +658,11 @@ struct MaterializedCache {
     protected_paths: BTreeSet<PathBuf>,
 }
 
+struct MaterializedDigest {
+    hint: PipelineContentDigestHint,
+    block_size: u32,
+}
+
 impl MaterializedCache {
     fn new() -> Result<Self> {
         let cache_dir = super::default_gibblox_cache_root().join("materialized");
@@ -664,10 +679,11 @@ impl MaterializedCache {
         resolver: &mut ArtifactReaderResolver,
         source: &BootProfileArtifactSource,
         digest: &str,
+        block_size: u32,
     ) -> Result<()> {
         let path = self.path_for_digest(digest)?;
         self.protected_paths.insert(path.clone());
-        resolver.substitute_artifact_source_with_file(source, path.as_path())
+        resolver.substitute_artifact_source_with_file(source, path.as_path(), block_size)
     }
 
     fn create_temp_writer(&mut self) -> Result<(PathBuf, BufWriter<fs::File>)> {
@@ -853,7 +869,7 @@ async fn digest_and_materialize_reader_content(
     reader: Arc<dyn BlockReader>,
     pipeline_identity: &str,
     materialized_cache: &mut MaterializedCache,
-) -> Result<PipelineContentDigestHint> {
+) -> Result<MaterializedDigest> {
     const DIGEST_CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
 
     let block_size = reader.block_size() as usize;
@@ -923,7 +939,10 @@ async fn digest_and_materialize_reader_content(
         "finished digesting and materializing pipeline content"
     );
 
-    Ok(PipelineContentDigestHint { digest, size_bytes })
+    Ok(MaterializedDigest {
+        hint: PipelineContentDigestHint { digest, size_bytes },
+        block_size: block_size as u32,
+    })
 }
 
 fn compile_dt_overlay(dtso: &str) -> Result<Vec<u8>> {
