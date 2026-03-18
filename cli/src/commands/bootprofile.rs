@@ -21,6 +21,8 @@ use gibblox_pipeline::{
     pipeline_identity_string,
 };
 use sha2::{Digest, Sha512};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tracing::{debug, info};
 
 use super::ArtifactReaderResolver;
@@ -354,8 +356,12 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                         cached
                     } else {
                         let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                        let digest_hint =
-                            digest_reader_content(reader, pipeline_identity.as_str()).await?;
+                        let digest_hint = digest_reader_content(
+                            reader,
+                            pipeline_identity.as_str(),
+                            DigestStrategy::Sequential,
+                        )
+                        .await?;
                         digest_cache.insert(
                             super::artifact_source_cache_key(&source)?,
                             digest_hint.clone(),
@@ -444,9 +450,32 @@ async fn load_content_digest_hint(
     }
 
     let reader = resolver.open_artifact_source(source).await?;
-    let hint = digest_reader_content(reader, pipeline_identity).await?;
+    let hint = digest_reader_content(
+        reader,
+        pipeline_identity,
+        digest_strategy_for_source(source),
+    )
+    .await?;
     digest_cache.insert(cache_key, hint.clone());
     Ok(hint)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DigestStrategy {
+    Sequential,
+    ChunkedParallel,
+}
+
+fn digest_strategy_for_source(source: &BootProfileArtifactSource) -> DigestStrategy {
+    match source {
+        BootProfileArtifactSource::Http(_)
+        | BootProfileArtifactSource::File(_)
+        | BootProfileArtifactSource::Casync(_)
+        | BootProfileArtifactSource::Xz(_) => DigestStrategy::ChunkedParallel,
+        BootProfileArtifactSource::AndroidSparseImg(_)
+        | BootProfileArtifactSource::Mbr(_)
+        | BootProfileArtifactSource::Gpt(_) => DigestStrategy::Sequential,
+    }
 }
 
 fn insert_android_sparse_hint(
@@ -518,8 +547,10 @@ fn hint_discriminant(hint: &PipelineHint) -> &'static str {
 async fn digest_reader_content(
     reader: Arc<dyn BlockReader>,
     pipeline_identity: &str,
+    strategy: DigestStrategy,
 ) -> Result<PipelineContentDigestHint> {
-    const DIGEST_CHUNK_TARGET_BYTES: usize = 8 * 1024 * 1024;
+    const DIGEST_CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
+    const DIGEST_PARALLEL_MAX_CHUNKS: usize = 8;
 
     let block_size = reader.block_size() as usize;
     if block_size == 0 {
@@ -533,6 +564,39 @@ async fn digest_reader_content(
         pipeline_identity,
         total_blocks, block_size, blocks_per_read, max_read_bytes, "digesting pipeline content"
     );
+
+    let parallel_chunks = if strategy == DigestStrategy::ChunkedParallel {
+        core::cmp::min(
+            std::thread::available_parallelism()
+                .map(|value| value.get())
+                .unwrap_or(1),
+            DIGEST_PARALLEL_MAX_CHUNKS,
+        )
+    } else {
+        1
+    };
+
+    if parallel_chunks > 1 {
+        info!(
+            pipeline_identity,
+            parallel_chunks,
+            chunk_bytes = max_read_bytes,
+            "using chunked parallel digest reads"
+        );
+    }
+
+    if parallel_chunks > 1 {
+        return digest_reader_content_parallel(
+            reader,
+            pipeline_identity,
+            total_blocks,
+            block_size,
+            blocks_per_read,
+            parallel_chunks,
+        )
+        .await;
+    }
+
     let mut hasher = Sha512::new();
     let mut size_bytes = 0u64;
     let mut buf = vec![0u8; max_read_bytes];
@@ -562,6 +626,127 @@ async fn digest_reader_content(
         if read < requested_bytes {
             break;
         }
+    }
+
+    let digest = format!("sha512:{:x}", hasher.finalize());
+    info!(
+        pipeline_identity,
+        digest, size_bytes, "finished digesting pipeline content"
+    );
+    Ok(PipelineContentDigestHint { digest, size_bytes })
+}
+
+struct DigestChunkResult {
+    chunk_idx: u64,
+    requested_bytes: usize,
+    bytes: Vec<u8>,
+}
+
+async fn digest_reader_content_parallel(
+    reader: Arc<dyn BlockReader>,
+    pipeline_identity: &str,
+    total_blocks: u64,
+    block_size: usize,
+    blocks_per_read: usize,
+    parallel_chunks: usize,
+) -> Result<PipelineContentDigestHint> {
+    let total_chunks = total_blocks.div_ceil(blocks_per_read as u64);
+    let limiter = Arc::new(Semaphore::new(parallel_chunks));
+    let mut join_set = JoinSet::new();
+    let mut next_chunk_to_spawn = 0u64;
+    let mut next_chunk_to_hash = 0u64;
+    let mut pending = BTreeMap::<u64, DigestChunkResult>::new();
+    let mut hasher = Sha512::new();
+    let mut size_bytes = 0u64;
+    let mut saw_short_read = false;
+
+    let spawn_chunk = |join_set: &mut JoinSet<Result<DigestChunkResult>>,
+                       chunk_idx: u64,
+                       reader: Arc<dyn BlockReader>,
+                       limiter: Arc<Semaphore>| {
+        join_set.spawn(async move {
+            let _permit = limiter
+                .acquire_owned()
+                .await
+                .map_err(|_| anyhow!("digest parallel limiter closed"))?;
+
+            let start_lba = chunk_idx
+                .checked_mul(blocks_per_read as u64)
+                .ok_or_else(|| anyhow!("digest chunk start lba overflow"))?;
+            let remaining_blocks = total_blocks.saturating_sub(start_lba);
+            let chunk_blocks = core::cmp::min(remaining_blocks, blocks_per_read as u64);
+            let requested_bytes = chunk_blocks as usize * block_size;
+            let mut bytes = vec![0u8; requested_bytes];
+            let read = reader
+                .read_blocks(start_lba, &mut bytes, ReadContext::BACKGROUND)
+                .await?;
+            bytes.truncate(read);
+            Ok(DigestChunkResult {
+                chunk_idx,
+                requested_bytes,
+                bytes,
+            })
+        });
+    };
+
+    while next_chunk_to_spawn < total_chunks && join_set.len() < parallel_chunks && !saw_short_read
+    {
+        spawn_chunk(
+            &mut join_set,
+            next_chunk_to_spawn,
+            reader.clone(),
+            limiter.clone(),
+        );
+        next_chunk_to_spawn += 1;
+    }
+
+    while next_chunk_to_hash < total_chunks {
+        let joined = join_set
+            .join_next()
+            .await
+            .ok_or_else(|| anyhow!("digest parallel worker stream ended unexpectedly"))?;
+        let result = joined.map_err(|err| anyhow!("digest parallel task failed: {err}"))??;
+        pending.insert(result.chunk_idx, result);
+
+        while let Some(chunk) = pending.remove(&next_chunk_to_hash) {
+            if chunk.bytes.is_empty() {
+                saw_short_read = true;
+                next_chunk_to_hash += 1;
+                break;
+            }
+
+            hasher.update(&chunk.bytes);
+            size_bytes = size_bytes
+                .checked_add(chunk.bytes.len() as u64)
+                .ok_or_else(|| anyhow!("digest size overflow"))?;
+
+            if chunk.bytes.len() < chunk.requested_bytes {
+                saw_short_read = true;
+            }
+
+            next_chunk_to_hash += 1;
+        }
+
+        while next_chunk_to_spawn < total_chunks
+            && join_set.len() < parallel_chunks
+            && !saw_short_read
+        {
+            spawn_chunk(
+                &mut join_set,
+                next_chunk_to_spawn,
+                reader.clone(),
+                limiter.clone(),
+            );
+            next_chunk_to_spawn += 1;
+        }
+
+        if saw_short_read && pending.is_empty() {
+            break;
+        }
+    }
+
+    while let Some(joined) = join_set.join_next().await {
+        let _ = joined.map_err(|err| anyhow!("digest parallel task failed: {err}"))??;
     }
 
     let digest = format!("sha512:{:x}", hasher.finalize());
