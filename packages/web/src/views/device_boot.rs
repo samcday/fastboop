@@ -27,8 +27,7 @@ use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 #[cfg(target_arch = "wasm32")]
 use gibblox_pipeline::{
     encode_pipeline, pipeline_identity_string, validate_pipeline_hints, PipelineHint,
-    PipelineHints, PipelineSource, PipelineSourceCasync, PipelineSourceCasyncSource,
-    PipelineSourceHttpSource,
+    PipelineHints, PipelineSource,
 };
 #[cfg(target_arch = "wasm32")]
 use gibblox_web_file::WebFileReader;
@@ -44,6 +43,8 @@ use gobblytes_core::{Filesystem, FilesystemEntryType, OstreeFs as OstreeRootfs};
 use gobblytes_erofs::ErofsRootfs;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Reflect;
+#[cfg(target_arch = "wasm32")]
+use serde_json::json;
 #[cfg(target_arch = "wasm32")]
 use smoo_host_web_worker::{HostWorker, HostWorkerConfig, HostWorkerEvent, HostWorkerState};
 #[cfg(target_arch = "wasm32")]
@@ -525,21 +526,21 @@ async fn open_channel_payload_reader_via_worker(
         );
     }
 
-    let pipeline_source = if is_casync_blob_index_url(&url) {
-        PipelineSource::Casync(PipelineSourceCasyncSource {
-            casync: PipelineSourceCasync {
-                index: url.to_string(),
-                chunk_store: Some(
-                    chunk_store_url
-                        .unwrap_or(derive_casync_chunk_store_url(&url)?)
-                        .to_string(),
-                ),
-            },
-        })
+    let pipeline_source: PipelineSource = if is_casync_blob_index_url(&url) {
+        serde_json::from_value(json!({
+            "casync": {
+                "index": url.to_string(),
+                "chunk_store": chunk_store_url
+                    .unwrap_or(derive_casync_chunk_store_url(&url)?)
+                    .to_string(),
+            }
+        }))
+        .map_err(|err| anyhow::anyhow!("build casync pipeline source: {err}"))?
     } else {
-        PipelineSource::Http(PipelineSourceHttpSource {
-            http: url.to_string(),
-        })
+        serde_json::from_value(json!({
+            "http": url.to_string(),
+        }))
+        .map_err(|err| anyhow::anyhow!("build HTTP pipeline source: {err}"))?
     };
 
     let pipeline_bytes = encode_pipeline(&pipeline_source)

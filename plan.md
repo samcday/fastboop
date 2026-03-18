@@ -1,134 +1,184 @@
-# gibblox-pipeline optimization plan (fragment dedup)
+# fastboop pipeline content-digest + local-artifact plan
 
 ## Context
 
-`fastboop bootprofile create --optimize-pipeline-hints` currently optimizes rootfs/kernel/dtbs pipelines independently. If those pipelines share the same expensive upstream fragment (for example `android_sparseimg <- xz <- file`), the same sparse index materialization work is repeated.
+We want content-addressed local short-circuiting for boot/runtime paths while keeping optimize focused and deterministic.
 
-This plan focuses on fixing that in `gibblox-pipeline`, so all consumers can reuse work across multiple optimization calls in one process.
+Core design decisions:
+
+- Reintroduce content digest metadata in the main pipeline schema.
+- Keep `bootprofile optimize` focused on a single compiled boot profile input (no channel-mode optimize).
+- Require `content` metadata on terminal transport stages (`http`, `casync`, `file`).
+- Keep `content` optional on wrapper stages (`xz`, `android_sparseimg`, `mbr`, `gpt`).
+- Add `--local-artifact <PATH>` matching by `(sha512,size)` to short-circuit stage materialization.
 
 ## Goals
 
-1. Reuse expensive optimization artifacts across multiple pipelines in the same run.
-2. Keep existing behavior unchanged when callers do not opt into shared-session optimization.
-3. Preserve deterministic outputs and existing validation semantics.
-4. Improve observability (reporting cache hits/reuse).
+1. Make terminal stages self-describing and verifiable via required content metadata.
+2. Enable `--local-artifact` replacement by digest without fragile source-id conventions.
+3. Use optimize pass to hydrate missing wrapper-stage digest metadata and acceleration hints.
+4. Keep wire format v0-breaking and clean (no compatibility shims).
+5. Keep `bootprofile create` ergonomic via a simple `--optimize` delegation flow.
 
 ## Non-goals
 
-- No behavior change to runtime read path or pipeline execution semantics.
-- No global persistent cache format changes in this phase.
-- No fastboop-specific hacks in `gibblox-pipeline` internals.
+- No `etag` support in this phase.
+- No optimize-over-channel mode in this phase.
+- No migration aliases for old schema variants.
 
-## High-level design
+## Schema changes
 
-Introduce an optimizer session object that owns reusable state:
+### New content metadata object
 
-- New type: `OptimizePipelineSession`.
-- Session holds an in-memory cache keyed by fragment identity.
-- New entrypoint: `optimize_pipeline_with_session(source, opts, session)`.
-- Keep existing `optimize_pipeline(source, opts)` as a convenience wrapper that creates a throwaway session.
+Add a reusable content descriptor for pipeline stages:
 
-### Cache key strategy
+- `digest: String` (format `sha512:<hex>` for 0.0.1)
+- `size_bytes: u64`
 
-Use fragment identity at the `android_sparseimg.source` boundary (not full top-level pipeline identity):
+Validation rules:
 
-- Key should represent the exact upstream bytes feeding sparse parsing.
-- For now, use a normalized identity string produced by existing source identity machinery.
-- Include enough variant data to avoid false reuse (compression/source chain differences).
+- `digest` must use `sha512:` prefix.
+- Hex payload must be exactly 128 lowercase hex chars (or canonicalized to lowercase at encode time; pick one and enforce consistently).
+- `size_bytes` must be present.
 
-### Reuse behavior
+### Placement
 
-When optimizing a pipeline containing `android_sparseimg`:
+- Required on terminal source structs:
+  - `PipelineSourceHttp`
+  - `PipelineSourceCasync`
+  - `PipelineSourceFile`
+- Optional on wrapper structs:
+  - `PipelineSourceXz`
+  - `PipelineSourceAndroidSparseImg`
+  - `PipelineSourceMbr`
+  - `PipelineSourceGpt`
 
-1. Compute fragment key for `android_sparseimg.source`.
-2. If cache hit and not forcing refresh, reuse stored sparse index.
-3. If miss (or forced refresh), materialize index and store in session cache.
-4. Continue normal optimization traversal/reporting.
+### Validation behavior
 
-## API sketch
+- `validate_pipeline` hard-fails if any terminal stage is missing `content`.
+- Wrapper-stage `content` is optional and validated when present.
 
-```rust
-pub struct OptimizePipelineSession { /* internal caches */ }
+## DigestingReader design
 
-impl OptimizePipelineSession {
-    pub fn new() -> Self;
-}
+Introduce a `DigestingReader` wrapper (std path) that composes with existing `BlockReader` layering.
 
-pub async fn optimize_pipeline_with_session(
-    source: &mut PipelineSource,
-    opts: &OptimizePipelineOptions,
-    session: &mut OptimizePipelineSession,
-) -> Result<OptimizePipelineReport, PipelineError>;
+Responsibilities:
 
-pub async fn optimize_pipeline(
-    source: &mut PipelineSource,
-    opts: &OptimizePipelineOptions,
-) -> Result<OptimizePipelineReport, PipelineError> {
-    let mut session = OptimizePipelineSession::new();
-    optimize_pipeline_with_session(source, opts, &mut session).await
-}
-```
+- Wrap a reader and track SHA-512 over bytes returned by reads.
+- Track byte count observed.
+- Expose finalized `PipelineSourceContent` (`sha512:<hex>`, `size_bytes`) after full traversal.
 
-## Report/telemetry updates
+Design intent:
 
-Extend `OptimizePipelineReport` with reuse metrics:
+- During optimize, every pipeline stage can be wrapped.
+- A top-level full read naturally hydrates digest state for all wrapped inner stages.
 
-- `android_sparse_indexes_reused`
-- `android_sparse_index_cache_hits`
-- `android_sparse_index_cache_misses`
+## Optimize behavior
 
-Keep existing counters intact.
+`bootprofile optimize` remains bootprofile-only and computes aftermarket hints/metadata.
 
-## Implementation steps
+Flow:
 
-1. Add `OptimizePipelineSession` and new session-aware optimize entrypoint.
-2. Refactor current optimizer internals to accept shared mutable session state.
-3. Implement android sparse fragment cache lookup/store in optimizer path.
-4. Update report counters for hit/miss/reuse.
-5. Keep no-session wrapper behavior 1:1 with current behavior.
-6. Add docs/comments for cache key and force semantics.
+1. Decode + validate compiled boot profile.
+2. Traverse rootfs/kernel/dtbs pipelines.
+3. Wrap stages with `DigestingReader` and fully consume each selected pipeline output.
+4. Write back hydrated optional `content` for wrapper stages that were missing.
+5. Compute/update acceleration hints (existing sparse index hints + any new digest-oriented hints).
+6. Emit pipeline-hints sidecar output.
+
+Notes:
+
+- Terminal stage required content must still be present in source profile.
+- Optimize hydrates additional data; it is not a substitute for missing required terminal metadata.
+
+## Runtime local artifact short-circuit
+
+CLI flag:
+
+- `--local-artifact <PATH>` (repeatable).
+
+Behavior:
+
+1. Canonicalize each path.
+2. Hash full file once to `(sha512,size_bytes)`.
+3. Build resolver map keyed by digest+size.
+4. During `open_artifact_source`, if current stage has matching `content`, replace with `FileReader(local_path)`.
+
+Properties:
+
+- Works regardless of source type when stage metadata exists.
+- Can skip whole remote/decompression/subpartition subtrees when matching at a higher stage.
+
+## `bootprofile create --optimize`
+
+Reintroduce a simple optimize toggle on create:
+
+- `bootprofile create ... --optimize`
+
+Behavior:
+
+1. Run normal create and write compiled `.fbp` output.
+2. Delegate to optimize flow for the newly written profile.
+3. Produce sidecar hints alongside boot profile output (naming policy to be implemented consistently, e.g. explicit `--optimize-output` or deterministic sibling path).
+
+## Implementation phases
+
+### Phase 1: schema + validation (gibblox)
+
+1. Add `PipelineSourceContent` type and serde/bin support.
+2. Add required/optional fields to pipeline stage structs.
+3. Update `validate_pipeline` with hard-fail required terminal content checks.
+4. Add unit tests for digest format + requiredness.
+
+### Phase 2: digesting reader + optimize hydration (fastboop + gibblox as needed)
+
+1. Implement `DigestingReader` utility.
+2. Integrate in optimize traversal for rootfs/kernel/dtbs pipelines.
+3. Persist hydrated wrapper-stage content metadata during optimize pass.
+4. Keep sparse hint generation intact.
+
+### Phase 3: local artifact matching (fastboop CLI)
+
+1. Add `--local-artifact` to `boot`, `stage0`, and `bootprofile optimize`.
+2. Build local digest map at command start.
+3. Integrate stage-level digest match in `ArtifactReaderResolver::open_artifact_source`.
+4. Add tracing for short-circuit events.
+
+### Phase 4: create delegation UX
+
+1. Add `--optimize` to `bootprofile create`.
+2. Delegate to optimize after successful create write.
+3. Ensure deterministic sidecar output location/flags.
 
 ## Test plan
 
-### Unit tests
+### Schema tests
 
-1. Single pipeline optimize still works with wrapper API.
-2. Two pipelines with identical sparse fragment and shared session:
-   - first call materializes index,
-   - second call reuses index,
-   - report counters reflect hit/reuse.
-3. Distinct sparse fragments do not cross-reuse.
-4. `force=true` bypasses reuse and refreshes cached entry.
-5. Existing index in source + `force=false` keeps current skip behavior.
+1. Terminal stage missing `content` fails validation.
+2. Wrapper stage missing `content` is accepted.
+3. Invalid digest prefix/length/charset fails.
+4. Valid `sha512:<hex>` passes.
 
-### Integration/behavior tests
+### Optimize tests
 
-1. A profile-like scenario (rootfs/kernel/dtbs sharing source) shows reduced repeated work.
-2. Output pipelines are semantically equivalent to pre-change results.
+1. Optimize computes digests for wrapped outputs and hydrates optional wrapper content.
+2. Sparse hint behavior remains correct.
+3. Output hints remain deterministic and duplicate-identity-safe.
 
-## Performance validation
+### Runtime tests
 
-Capture before/after for representative large sparse+xz inputs:
+1. Matching `--local-artifact` short-circuits stage to `FileReader`.
+2. Non-match falls back to normal source handling.
+3. Multiple local artifacts and duplicate digest handling are deterministic.
 
-- wall time,
-- bytes read from upstream source,
-- number of sparse index materializations.
+## Validation commands (per touched area)
 
-Success criteria: multi-pipeline optimize time approaches one materialization cost plus small overhead, not Nx materialization cost.
+- `cargo fmt`
+- `cargo check -p gibblox-pipeline`
+- `cargo test -p gibblox-pipeline`
+- `FASTBOOP_STAGE0_CARGO="$PWD/tools/cargo-local-gibblox.sh" ./tools/cargo-local-gibblox.sh check -p fastboop-cli`
+- `FASTBOOP_STAGE0_CARGO="$PWD/tools/cargo-local-gibblox.sh" ./tools/cargo-local-gibblox.sh test -p fastboop-cli`
 
-## Risks and mitigations
+## Open implementation detail to settle during coding
 
-- **Risk:** incorrect cache key causes false reuse.
-  - **Mitigation:** include full fragment identity chain; add non-reuse regression tests.
-- **Risk:** force semantics become confusing.
-  - **Mitigation:** explicitly define and test `force` behavior with session cache.
-- **Risk:** memory growth in long sessions.
-  - **Mitigation:** start with simple bounded map policy if needed; document current behavior.
-
-## fastboop follow-up (separate change)
-
-After upstream API lands:
-
-1. Create one optimizer session per `bootprofile create` invocation.
-2. Run rootfs/kernel/dtbs optimization through that shared session.
-3. Log/report reuse counters in fastboop CLI output.
+- Sidecar naming/output policy for `bootprofile create --optimize` delegation (explicit output arg vs deterministic sibling default) should be finalized in code/docs together.
