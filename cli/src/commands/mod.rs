@@ -5,6 +5,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -838,11 +839,21 @@ fn build_local_artifact_index(paths: &[PathBuf]) -> Result<HashMap<ArtifactConte
             size_bytes = metadata.len(),
             "hashing local artifact"
         );
+        let started = Instant::now();
         let digest = sha512_file(canonical.as_path())?;
+        let elapsed = started.elapsed();
+        let elapsed_secs = elapsed.as_secs_f64();
+        let throughput_mib_per_sec = if elapsed_secs > 0.0 {
+            (metadata.len() as f64 / (1024.0 * 1024.0)) / elapsed_secs
+        } else {
+            0.0
+        };
         info!(
             local_path = %canonical.display(),
             digest = %digest,
             size_bytes = metadata.len(),
+            elapsed_ms = elapsed.as_millis() as u64,
+            throughput_mib_per_sec,
             "indexed local artifact"
         );
         let key = ArtifactContentKey {
@@ -865,7 +876,7 @@ fn build_local_artifact_index(paths: &[PathBuf]) -> Result<HashMap<ArtifactConte
 fn sha512_file(path: &Path) -> Result<String> {
     let file =
         fs::File::open(path).with_context(|| format!("open local artifact {}", path.display()))?;
-    let mut reader = BufReader::new(file);
+    let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
     let mut hasher = Sha512::new();
     let mut buf = [0u8; 1024 * 1024];
 
