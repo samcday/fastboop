@@ -27,6 +27,8 @@ use gibblox_pipeline::{
 #[cfg(target_family = "unix")]
 use rustix::fs::statvfs;
 use sha2::{Digest, Sha512};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tracing::{debug, info};
 
 use super::ArtifactReaderResolver;
@@ -385,6 +387,7 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                         reader,
                         pipeline_identity.as_str(),
                         materialized_cache,
+                        digest_strategy_for_source(&source),
                     )
                     .await?;
                     materialized_cache.register_materialized_source(
@@ -494,9 +497,32 @@ async fn load_content_digest_hint(
     }
 
     let reader = resolver.open_artifact_source(source).await?;
-    let hint = digest_reader_content(reader, pipeline_identity).await?;
+    let hint = digest_reader_content(
+        reader,
+        pipeline_identity,
+        digest_strategy_for_source(source),
+    )
+    .await?;
     digest_cache.insert(cache_key, hint.clone());
     Ok(hint)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DigestStrategy {
+    Sequential,
+    ChunkedParallel,
+}
+
+fn digest_strategy_for_source(source: &BootProfileArtifactSource) -> DigestStrategy {
+    match source {
+        BootProfileArtifactSource::Http(_)
+        | BootProfileArtifactSource::File(_)
+        | BootProfileArtifactSource::Casync(_)
+        | BootProfileArtifactSource::Xz(_) => DigestStrategy::ChunkedParallel,
+        BootProfileArtifactSource::AndroidSparseImg(_)
+        | BootProfileArtifactSource::Mbr(_)
+        | BootProfileArtifactSource::Gpt(_) => DigestStrategy::Sequential,
+    }
 }
 
 async fn ensure_wrapper_materialized(
@@ -512,9 +538,13 @@ async fn ensure_wrapper_materialized(
     }
 
     let reader = resolver.open_artifact_source(source).await?;
-    let materialized =
-        digest_and_materialize_reader_content(reader, pipeline_identity, materialized_cache)
-            .await?;
+    let materialized = digest_and_materialize_reader_content(
+        reader,
+        pipeline_identity,
+        materialized_cache,
+        digest_strategy_for_source(source),
+    )
+    .await?;
     materialized_cache.register_materialized_source(
         resolver,
         source,
@@ -598,8 +628,10 @@ fn hint_discriminant(hint: &PipelineHint) -> &'static str {
 async fn digest_reader_content(
     reader: Arc<dyn BlockReader>,
     pipeline_identity: &str,
+    strategy: DigestStrategy,
 ) -> Result<PipelineContentDigestHint> {
     const DIGEST_CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
+    const DIGEST_PARALLEL_MAX_CHUNKS: usize = 8;
 
     let block_size = reader.block_size() as usize;
     if block_size == 0 {
@@ -613,6 +645,35 @@ async fn digest_reader_content(
         pipeline_identity,
         total_blocks, block_size, blocks_per_read, max_read_bytes, "digesting pipeline content"
     );
+
+    let parallel_chunks = if strategy == DigestStrategy::ChunkedParallel {
+        core::cmp::min(
+            std::thread::available_parallelism()
+                .map(|value| value.get())
+                .unwrap_or(1),
+            DIGEST_PARALLEL_MAX_CHUNKS,
+        )
+    } else {
+        1
+    };
+
+    if parallel_chunks > 1 {
+        info!(
+            pipeline_identity,
+            parallel_chunks,
+            chunk_bytes = max_read_bytes,
+            "using chunked parallel digest reads"
+        );
+        return digest_reader_content_parallel(
+            reader,
+            pipeline_identity,
+            total_blocks,
+            block_size,
+            blocks_per_read,
+            parallel_chunks,
+        )
+        .await;
+    }
 
     let mut hasher = Sha512::new();
     let mut size_bytes = 0u64;
@@ -643,6 +704,151 @@ async fn digest_reader_content(
         if read < requested_bytes {
             break;
         }
+    }
+
+    let digest = format!("sha512:{:x}", hasher.finalize());
+    info!(
+        pipeline_identity,
+        digest, size_bytes, "finished digesting pipeline content"
+    );
+    Ok(PipelineContentDigestHint { digest, size_bytes })
+}
+
+struct DigestChunkResult {
+    chunk_idx: u64,
+    requested_bytes: usize,
+    bytes: Vec<u8>,
+}
+
+fn digest_parallel_chunks_for_strategy(strategy: DigestStrategy) -> usize {
+    const DIGEST_PARALLEL_MAX_CHUNKS: usize = 8;
+    if strategy != DigestStrategy::ChunkedParallel {
+        return 1;
+    }
+    core::cmp::min(
+        std::thread::available_parallelism()
+            .map(|value| value.get())
+            .unwrap_or(1),
+        DIGEST_PARALLEL_MAX_CHUNKS,
+    )
+}
+
+fn spawn_digest_chunk_reader(
+    join_set: &mut JoinSet<Result<DigestChunkResult>>,
+    chunk_idx: u64,
+    reader: Arc<dyn BlockReader>,
+    limiter: Arc<Semaphore>,
+    total_blocks: u64,
+    block_size: usize,
+    blocks_per_read: usize,
+) {
+    join_set.spawn(async move {
+        let _permit = limiter
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow!("digest parallel limiter closed"))?;
+
+        let start_lba = chunk_idx
+            .checked_mul(blocks_per_read as u64)
+            .ok_or_else(|| anyhow!("digest chunk start lba overflow"))?;
+        let remaining_blocks = total_blocks.saturating_sub(start_lba);
+        let chunk_blocks = core::cmp::min(remaining_blocks, blocks_per_read as u64);
+        let requested_bytes = chunk_blocks as usize * block_size;
+        let mut bytes = vec![0u8; requested_bytes];
+        let read = reader
+            .read_blocks(start_lba, &mut bytes, ReadContext::BACKGROUND)
+            .await?;
+        bytes.truncate(read);
+        Ok(DigestChunkResult {
+            chunk_idx,
+            requested_bytes,
+            bytes,
+        })
+    });
+}
+
+async fn digest_reader_content_parallel(
+    reader: Arc<dyn BlockReader>,
+    pipeline_identity: &str,
+    total_blocks: u64,
+    block_size: usize,
+    blocks_per_read: usize,
+    parallel_chunks: usize,
+) -> Result<PipelineContentDigestHint> {
+    let total_chunks = total_blocks.div_ceil(blocks_per_read as u64);
+    let limiter = Arc::new(Semaphore::new(parallel_chunks));
+    let mut join_set = JoinSet::new();
+    let mut next_chunk_to_spawn = 0u64;
+    let mut next_chunk_to_hash = 0u64;
+    let mut pending = BTreeMap::<u64, DigestChunkResult>::new();
+    let mut hasher = Sha512::new();
+    let mut size_bytes = 0u64;
+    let mut saw_short_read = false;
+
+    while next_chunk_to_spawn < total_chunks && join_set.len() < parallel_chunks && !saw_short_read
+    {
+        spawn_digest_chunk_reader(
+            &mut join_set,
+            next_chunk_to_spawn,
+            reader.clone(),
+            limiter.clone(),
+            total_blocks,
+            block_size,
+            blocks_per_read,
+        );
+        next_chunk_to_spawn += 1;
+    }
+
+    while next_chunk_to_hash < total_chunks {
+        let joined = join_set
+            .join_next()
+            .await
+            .ok_or_else(|| anyhow!("digest parallel worker stream ended unexpectedly"))?;
+        let result = joined.map_err(|err| anyhow!("digest parallel task failed: {err}"))??;
+        pending.insert(result.chunk_idx, result);
+
+        while let Some(chunk) = pending.remove(&next_chunk_to_hash) {
+            if chunk.bytes.is_empty() {
+                saw_short_read = true;
+                next_chunk_to_hash += 1;
+                break;
+            }
+
+            hasher.update(&chunk.bytes);
+            size_bytes = size_bytes
+                .checked_add(chunk.bytes.len() as u64)
+                .ok_or_else(|| anyhow!("digest size overflow"))?;
+
+            if chunk.bytes.len() < chunk.requested_bytes {
+                saw_short_read = true;
+            }
+
+            next_chunk_to_hash += 1;
+        }
+
+        while next_chunk_to_spawn < total_chunks
+            && join_set.len() < parallel_chunks
+            && !saw_short_read
+        {
+            spawn_digest_chunk_reader(
+                &mut join_set,
+                next_chunk_to_spawn,
+                reader.clone(),
+                limiter.clone(),
+                total_blocks,
+                block_size,
+                blocks_per_read,
+            );
+            next_chunk_to_spawn += 1;
+        }
+
+        if saw_short_read && pending.is_empty() {
+            break;
+        }
+    }
+
+    while let Some(joined) = join_set.join_next().await {
+        let _ = joined.map_err(|err| anyhow!("digest parallel task failed: {err}"))??;
     }
 
     let digest = format!("sha512:{:x}", hasher.finalize());
@@ -869,6 +1075,7 @@ async fn digest_and_materialize_reader_content(
     reader: Arc<dyn BlockReader>,
     pipeline_identity: &str,
     materialized_cache: &mut MaterializedCache,
+    strategy: DigestStrategy,
 ) -> Result<MaterializedDigest> {
     const DIGEST_CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
 
@@ -880,56 +1087,52 @@ async fn digest_and_materialize_reader_content(
     let max_read_bytes = blocks_per_read * block_size;
 
     let total_blocks = reader.total_blocks().await?;
+    let parallel_chunks = digest_parallel_chunks_for_strategy(strategy);
     info!(
         pipeline_identity,
         total_blocks,
         block_size,
         blocks_per_read,
         max_read_bytes,
+        parallel_chunks,
         "digesting and materializing pipeline content"
     );
 
     let (temp_path, mut writer) = materialized_cache.create_temp_writer()?;
-    let mut hasher = Sha512::new();
-    let mut size_bytes = 0u64;
-    let mut buf = vec![0u8; max_read_bytes];
-    let mut lba = 0u64;
-
-    while lba < total_blocks {
-        let remaining_blocks = total_blocks - lba;
-        let requested_blocks = core::cmp::min(remaining_blocks, blocks_per_read as u64);
-        let requested_bytes = requested_blocks as usize * block_size;
-        let read = reader
-            .read_blocks(lba, &mut buf[..requested_bytes], ReadContext::BACKGROUND)
-            .await?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buf[..read]);
-        writer
-            .write_all(&buf[..read])
-            .with_context(|| format!("write materialized bytes to {}", temp_path.display()))?;
-        size_bytes = size_bytes
-            .checked_add(read as u64)
-            .ok_or_else(|| anyhow!("digest size overflow"))?;
-        let consumed_blocks = (read as u64).div_ceil(block_size as u64);
-        if consumed_blocks == 0 {
-            break;
-        }
-        lba = lba
-            .checked_add(consumed_blocks)
-            .ok_or_else(|| anyhow!("digest lba overflow"))?;
-        if read < requested_bytes {
-            break;
-        }
-    }
+    let (digest, size_bytes) = if parallel_chunks > 1 {
+        info!(
+            pipeline_identity,
+            parallel_chunks,
+            chunk_bytes = max_read_bytes,
+            "using chunked parallel digest+materialize reads"
+        );
+        digest_and_materialize_reader_content_parallel(
+            reader,
+            total_blocks,
+            block_size,
+            blocks_per_read,
+            parallel_chunks,
+            &mut writer,
+            temp_path.as_path(),
+        )
+        .await?
+    } else {
+        digest_and_materialize_reader_content_sequential(
+            reader,
+            total_blocks,
+            block_size,
+            blocks_per_read,
+            &mut writer,
+            temp_path.as_path(),
+        )
+        .await?
+    };
 
     writer
         .flush()
         .with_context(|| format!("flush materialized bytes to {}", temp_path.display()))?;
     drop(writer);
 
-    let digest = format!("sha512:{:x}", hasher.finalize());
     let final_path = materialized_cache.finalize_temp_file(temp_path.as_path(), digest.as_str())?;
     info!(
         pipeline_identity,
@@ -943,6 +1146,144 @@ async fn digest_and_materialize_reader_content(
         hint: PipelineContentDigestHint { digest, size_bytes },
         block_size: block_size as u32,
     })
+}
+
+async fn digest_and_materialize_reader_content_sequential(
+    reader: Arc<dyn BlockReader>,
+    total_blocks: u64,
+    block_size: usize,
+    blocks_per_read: usize,
+    writer: &mut BufWriter<fs::File>,
+    temp_path: &Path,
+) -> Result<(String, u64)> {
+    let mut hasher = Sha512::new();
+    let mut size_bytes = 0u64;
+    let mut buf = vec![0u8; blocks_per_read * block_size];
+    let mut lba = 0u64;
+
+    while lba < total_blocks {
+        let remaining_blocks = total_blocks - lba;
+        let requested_blocks = core::cmp::min(remaining_blocks, blocks_per_read as u64);
+        let requested_bytes = requested_blocks as usize * block_size;
+        let read = reader
+            .read_blocks(lba, &mut buf[..requested_bytes], ReadContext::BACKGROUND)
+            .await?;
+        if read == 0 {
+            break;
+        }
+
+        hasher.update(&buf[..read]);
+        writer
+            .write_all(&buf[..read])
+            .with_context(|| format!("write materialized bytes to {}", temp_path.display()))?;
+        size_bytes = size_bytes
+            .checked_add(read as u64)
+            .ok_or_else(|| anyhow!("digest size overflow"))?;
+
+        let consumed_blocks = (read as u64).div_ceil(block_size as u64);
+        if consumed_blocks == 0 {
+            break;
+        }
+        lba = lba
+            .checked_add(consumed_blocks)
+            .ok_or_else(|| anyhow!("digest lba overflow"))?;
+        if read < requested_bytes {
+            break;
+        }
+    }
+
+    Ok((format!("sha512:{:x}", hasher.finalize()), size_bytes))
+}
+
+async fn digest_and_materialize_reader_content_parallel(
+    reader: Arc<dyn BlockReader>,
+    total_blocks: u64,
+    block_size: usize,
+    blocks_per_read: usize,
+    parallel_chunks: usize,
+    writer: &mut BufWriter<fs::File>,
+    temp_path: &Path,
+) -> Result<(String, u64)> {
+    let total_chunks = total_blocks.div_ceil(blocks_per_read as u64);
+    let limiter = Arc::new(Semaphore::new(parallel_chunks));
+    let mut join_set = JoinSet::new();
+    let mut next_chunk_to_spawn = 0u64;
+    let mut next_chunk_to_write = 0u64;
+    let mut pending = BTreeMap::<u64, DigestChunkResult>::new();
+    let mut hasher = Sha512::new();
+    let mut size_bytes = 0u64;
+    let mut saw_short_read = false;
+
+    while next_chunk_to_spawn < total_chunks && join_set.len() < parallel_chunks && !saw_short_read
+    {
+        spawn_digest_chunk_reader(
+            &mut join_set,
+            next_chunk_to_spawn,
+            reader.clone(),
+            limiter.clone(),
+            total_blocks,
+            block_size,
+            blocks_per_read,
+        );
+        next_chunk_to_spawn += 1;
+    }
+
+    while next_chunk_to_write < total_chunks {
+        let joined = join_set
+            .join_next()
+            .await
+            .ok_or_else(|| anyhow!("digest parallel worker stream ended unexpectedly"))?;
+        let result = joined.map_err(|err| anyhow!("digest parallel task failed: {err}"))??;
+        pending.insert(result.chunk_idx, result);
+
+        while let Some(chunk) = pending.remove(&next_chunk_to_write) {
+            if chunk.bytes.is_empty() {
+                saw_short_read = true;
+                next_chunk_to_write += 1;
+                break;
+            }
+
+            hasher.update(&chunk.bytes);
+            writer
+                .write_all(&chunk.bytes)
+                .with_context(|| format!("write materialized bytes to {}", temp_path.display()))?;
+
+            size_bytes = size_bytes
+                .checked_add(chunk.bytes.len() as u64)
+                .ok_or_else(|| anyhow!("digest size overflow"))?;
+            if chunk.bytes.len() < chunk.requested_bytes {
+                saw_short_read = true;
+            }
+
+            next_chunk_to_write += 1;
+        }
+
+        while next_chunk_to_spawn < total_chunks
+            && join_set.len() < parallel_chunks
+            && !saw_short_read
+        {
+            spawn_digest_chunk_reader(
+                &mut join_set,
+                next_chunk_to_spawn,
+                reader.clone(),
+                limiter.clone(),
+                total_blocks,
+                block_size,
+                blocks_per_read,
+            );
+            next_chunk_to_spawn += 1;
+        }
+
+        if saw_short_read && pending.is_empty() {
+            break;
+        }
+    }
+
+    while let Some(joined) = join_set.join_next().await {
+        let _ = joined.map_err(|err| anyhow!("digest parallel task failed: {err}"))??;
+    }
+
+    Ok((format!("sha512:{:x}", hasher.finalize()), size_bytes))
 }
 
 fn compile_dt_overlay(dtso: &str) -> Result<Vec<u8>> {
