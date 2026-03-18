@@ -1,11 +1,15 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::CString;
 use std::fs;
 use std::future::Future;
-use std::io::{IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::io::{BufWriter, IsTerminal, Read, Write};
+#[cfg(target_family = "unix")]
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Subcommand};
@@ -20,9 +24,9 @@ use gibblox_pipeline::{
     PipelineHint, PipelineHintEntry, PipelineHints, encode_pipeline_hints,
     pipeline_identity_string,
 };
+#[cfg(target_family = "unix")]
+use rustix::fs::statvfs;
 use sha2::{Digest, Sha512};
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
 use tracing::{debug, info};
 
 use super::ArtifactReaderResolver;
@@ -241,7 +245,9 @@ async fn collect_profile_pipeline_hints(
     resolver: &mut ArtifactReaderResolver,
 ) -> Result<PipelineHints> {
     let mut entries = BTreeMap::new();
+    let mut visited_wrappers = BTreeSet::new();
     let mut digest_cache = BTreeMap::new();
+    let mut materialized_cache = MaterializedCache::new()?;
 
     info!(profile_id = %profile.id, "collecting rootfs pipeline hints");
 
@@ -249,7 +255,9 @@ async fn collect_profile_pipeline_hints(
         profile.rootfs.source(),
         resolver,
         &mut entries,
+        &mut visited_wrappers,
         &mut digest_cache,
+        &mut materialized_cache,
     )
     .await
     .context("materializing rootfs pipeline hints")?;
@@ -260,7 +268,9 @@ async fn collect_profile_pipeline_hints(
             kernel.artifact_source(),
             resolver,
             &mut entries,
+            &mut visited_wrappers,
             &mut digest_cache,
+            &mut materialized_cache,
         )
         .await
         .context("materializing kernel pipeline hints")?;
@@ -272,7 +282,9 @@ async fn collect_profile_pipeline_hints(
             dtbs.artifact_source(),
             resolver,
             &mut entries,
+            &mut visited_wrappers,
             &mut digest_cache,
+            &mut materialized_cache,
         )
         .await
         .context("materializing dtbs pipeline hints")?;
@@ -287,29 +299,36 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
     source: &'a BootProfileArtifactSource,
     resolver: &'a mut ArtifactReaderResolver,
     entries: &'a mut BTreeMap<String, PipelineHintEntry>,
+    visited_wrappers: &'a mut BTreeSet<String>,
     digest_cache: &'a mut BTreeMap<String, PipelineContentDigestHint>,
+    materialized_cache: &'a mut MaterializedCache,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
     Box::pin(async move {
         match source {
             BootProfileArtifactSource::Xz(source) => {
+                let xz_source = source.clone();
                 collect_pipeline_hints_from_artifact_source(
                     source.xz.as_ref(),
                     resolver,
                     entries,
+                    visited_wrappers,
                     digest_cache,
+                    materialized_cache,
                 )
                 .await?;
 
-                if source.content.is_none() {
-                    let source = BootProfileArtifactSource::Xz(source.clone());
-                    let pipeline_identity = pipeline_identity_string(&source);
-                    let digest_hint = load_content_digest_hint(
-                        &source,
-                        pipeline_identity.as_str(),
-                        resolver,
-                        digest_cache,
-                    )
-                    .await?;
+                let source = BootProfileArtifactSource::Xz(xz_source.clone());
+                let pipeline_identity = pipeline_identity_string(&source);
+                let digest_hint = ensure_wrapper_materialized(
+                    &source,
+                    pipeline_identity.as_str(),
+                    resolver,
+                    visited_wrappers,
+                    digest_cache,
+                    materialized_cache,
+                )
+                .await?;
+                if xz_source.content.is_none() {
                     insert_pipeline_hint(
                         entries,
                         pipeline_identity,
@@ -323,7 +342,9 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                     source.android_sparseimg.source.as_ref(),
                     resolver,
                     entries,
+                    visited_wrappers,
                     digest_cache,
+                    materialized_cache,
                 )
                 .await?;
 
@@ -332,42 +353,54 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                     BootProfileArtifactSource::AndroidSparseImg(android_sparse_source.clone());
                 let pipeline_identity = pipeline_identity_string(&source);
 
-                let upstream = resolver
-                    .open_artifact_source(android_sparse_source.android_sparseimg.source.as_ref())
-                    .await?;
-                info!(
-                    pipeline_identity = %pipeline_identity,
-                    "materializing android sparse index hint"
-                );
-                let reader = AndroidSparseBlockReader::new(upstream)
-                    .await
-                    .map_err(|err| anyhow!("open android sparse reader: {err}"))?;
-                let index = reader
-                    .materialize_index()
-                    .await
-                    .map_err(|err| anyhow!("materialize android sparse index: {err}"))?;
-                insert_android_sparse_hint(entries, pipeline_identity.clone(), index)?;
-
-                if android_sparse_source.android_sparseimg.content.is_none() {
-                    let digest_hint = if let Some(cached) = digest_cache
-                        .get(&super::artifact_source_cache_key(&source)?)
-                        .cloned()
-                    {
-                        cached
-                    } else {
-                        let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                        let digest_hint = digest_reader_content(
-                            reader,
-                            pipeline_identity.as_str(),
-                            DigestStrategy::Sequential,
+                let digest_hint = if visited_wrappers.contains(&pipeline_identity) {
+                    load_content_digest_hint(
+                        &source,
+                        pipeline_identity.as_str(),
+                        resolver,
+                        digest_cache,
+                    )
+                    .await?
+                } else {
+                    let upstream = resolver
+                        .open_artifact_source(
+                            android_sparse_source.android_sparseimg.source.as_ref(),
                         )
                         .await?;
-                        digest_cache.insert(
-                            super::artifact_source_cache_key(&source)?,
-                            digest_hint.clone(),
-                        );
-                        digest_hint
-                    };
+                    info!(
+                        pipeline_identity = %pipeline_identity,
+                        "materializing android sparse index hint"
+                    );
+                    let reader = AndroidSparseBlockReader::new(upstream)
+                        .await
+                        .map_err(|err| anyhow!("open android sparse reader: {err}"))?;
+                    let index = reader
+                        .materialize_index()
+                        .await
+                        .map_err(|err| anyhow!("materialize android sparse index: {err}"))?;
+                    insert_android_sparse_hint(entries, pipeline_identity.clone(), index)?;
+
+                    let reader: Arc<dyn BlockReader> = Arc::new(reader);
+                    let digest_hint = digest_and_materialize_reader_content(
+                        reader,
+                        pipeline_identity.as_str(),
+                        materialized_cache,
+                    )
+                    .await?;
+                    materialized_cache.register_materialized_source(
+                        resolver,
+                        &source,
+                        digest_hint.digest.as_str(),
+                    )?;
+                    digest_cache.insert(
+                        super::artifact_source_cache_key(&source)?,
+                        digest_hint.clone(),
+                    );
+                    visited_wrappers.insert(pipeline_identity.clone());
+                    digest_hint
+                };
+
+                if android_sparse_source.android_sparseimg.content.is_none() {
                     insert_pipeline_hint(
                         entries,
                         pipeline_identity,
@@ -377,24 +410,29 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                 Ok(())
             }
             BootProfileArtifactSource::Mbr(source) => {
+                let mbr_source = source.clone();
                 collect_pipeline_hints_from_artifact_source(
                     source.mbr.source.as_ref(),
                     resolver,
                     entries,
+                    visited_wrappers,
                     digest_cache,
+                    materialized_cache,
                 )
                 .await?;
 
-                if source.mbr.content.is_none() {
-                    let source = BootProfileArtifactSource::Mbr(source.clone());
-                    let pipeline_identity = pipeline_identity_string(&source);
-                    let digest_hint = load_content_digest_hint(
-                        &source,
-                        pipeline_identity.as_str(),
-                        resolver,
-                        digest_cache,
-                    )
-                    .await?;
+                let source = BootProfileArtifactSource::Mbr(mbr_source.clone());
+                let pipeline_identity = pipeline_identity_string(&source);
+                let digest_hint = ensure_wrapper_materialized(
+                    &source,
+                    pipeline_identity.as_str(),
+                    resolver,
+                    visited_wrappers,
+                    digest_cache,
+                    materialized_cache,
+                )
+                .await?;
+                if mbr_source.mbr.content.is_none() {
                     insert_pipeline_hint(
                         entries,
                         pipeline_identity,
@@ -404,24 +442,29 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                 Ok(())
             }
             BootProfileArtifactSource::Gpt(source) => {
+                let gpt_source = source.clone();
                 collect_pipeline_hints_from_artifact_source(
                     source.gpt.source.as_ref(),
                     resolver,
                     entries,
+                    visited_wrappers,
                     digest_cache,
+                    materialized_cache,
                 )
                 .await?;
 
-                if source.gpt.content.is_none() {
-                    let source = BootProfileArtifactSource::Gpt(source.clone());
-                    let pipeline_identity = pipeline_identity_string(&source);
-                    let digest_hint = load_content_digest_hint(
-                        &source,
-                        pipeline_identity.as_str(),
-                        resolver,
-                        digest_cache,
-                    )
-                    .await?;
+                let source = BootProfileArtifactSource::Gpt(gpt_source.clone());
+                let pipeline_identity = pipeline_identity_string(&source);
+                let digest_hint = ensure_wrapper_materialized(
+                    &source,
+                    pipeline_identity.as_str(),
+                    resolver,
+                    visited_wrappers,
+                    digest_cache,
+                    materialized_cache,
+                )
+                .await?;
+                if gpt_source.gpt.content.is_none() {
                     insert_pipeline_hint(
                         entries,
                         pipeline_identity,
@@ -450,32 +493,30 @@ async fn load_content_digest_hint(
     }
 
     let reader = resolver.open_artifact_source(source).await?;
-    let hint = digest_reader_content(
-        reader,
-        pipeline_identity,
-        digest_strategy_for_source(source),
-    )
-    .await?;
+    let hint = digest_reader_content(reader, pipeline_identity).await?;
     digest_cache.insert(cache_key, hint.clone());
     Ok(hint)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DigestStrategy {
-    Sequential,
-    ChunkedParallel,
-}
-
-fn digest_strategy_for_source(source: &BootProfileArtifactSource) -> DigestStrategy {
-    match source {
-        BootProfileArtifactSource::Http(_)
-        | BootProfileArtifactSource::File(_)
-        | BootProfileArtifactSource::Casync(_)
-        | BootProfileArtifactSource::Xz(_) => DigestStrategy::ChunkedParallel,
-        BootProfileArtifactSource::AndroidSparseImg(_)
-        | BootProfileArtifactSource::Mbr(_)
-        | BootProfileArtifactSource::Gpt(_) => DigestStrategy::Sequential,
+async fn ensure_wrapper_materialized(
+    source: &BootProfileArtifactSource,
+    pipeline_identity: &str,
+    resolver: &mut ArtifactReaderResolver,
+    visited_wrappers: &mut BTreeSet<String>,
+    digest_cache: &mut BTreeMap<String, PipelineContentDigestHint>,
+    materialized_cache: &mut MaterializedCache,
+) -> Result<PipelineContentDigestHint> {
+    if visited_wrappers.contains(pipeline_identity) {
+        return load_content_digest_hint(source, pipeline_identity, resolver, digest_cache).await;
     }
+
+    let reader = resolver.open_artifact_source(source).await?;
+    let hint = digest_and_materialize_reader_content(reader, pipeline_identity, materialized_cache)
+        .await?;
+    materialized_cache.register_materialized_source(resolver, source, hint.digest.as_str())?;
+    digest_cache.insert(super::artifact_source_cache_key(source)?, hint.clone());
+    visited_wrappers.insert(pipeline_identity.to_string());
+    Ok(hint)
 }
 
 fn insert_android_sparse_hint(
@@ -547,10 +588,8 @@ fn hint_discriminant(hint: &PipelineHint) -> &'static str {
 async fn digest_reader_content(
     reader: Arc<dyn BlockReader>,
     pipeline_identity: &str,
-    strategy: DigestStrategy,
 ) -> Result<PipelineContentDigestHint> {
     const DIGEST_CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
-    const DIGEST_PARALLEL_MAX_CHUNKS: usize = 8;
 
     let block_size = reader.block_size() as usize;
     if block_size == 0 {
@@ -564,38 +603,6 @@ async fn digest_reader_content(
         pipeline_identity,
         total_blocks, block_size, blocks_per_read, max_read_bytes, "digesting pipeline content"
     );
-
-    let parallel_chunks = if strategy == DigestStrategy::ChunkedParallel {
-        core::cmp::min(
-            std::thread::available_parallelism()
-                .map(|value| value.get())
-                .unwrap_or(1),
-            DIGEST_PARALLEL_MAX_CHUNKS,
-        )
-    } else {
-        1
-    };
-
-    if parallel_chunks > 1 {
-        info!(
-            pipeline_identity,
-            parallel_chunks,
-            chunk_bytes = max_read_bytes,
-            "using chunked parallel digest reads"
-        );
-    }
-
-    if parallel_chunks > 1 {
-        return digest_reader_content_parallel(
-            reader,
-            pipeline_identity,
-            total_blocks,
-            block_size,
-            blocks_per_read,
-            parallel_chunks,
-        )
-        .await;
-    }
 
     let mut hasher = Sha512::new();
     let mut size_bytes = 0u64;
@@ -636,124 +643,286 @@ async fn digest_reader_content(
     Ok(PipelineContentDigestHint { digest, size_bytes })
 }
 
-struct DigestChunkResult {
-    chunk_idx: u64,
-    requested_bytes: usize,
-    bytes: Vec<u8>,
+struct MaterializedCache {
+    cache_dir: PathBuf,
+    protected_paths: BTreeSet<PathBuf>,
 }
 
-async fn digest_reader_content_parallel(
-    reader: Arc<dyn BlockReader>,
-    pipeline_identity: &str,
-    total_blocks: u64,
-    block_size: usize,
-    blocks_per_read: usize,
-    parallel_chunks: usize,
-) -> Result<PipelineContentDigestHint> {
-    let total_chunks = total_blocks.div_ceil(blocks_per_read as u64);
-    let limiter = Arc::new(Semaphore::new(parallel_chunks));
-    let mut join_set = JoinSet::new();
-    let mut next_chunk_to_spawn = 0u64;
-    let mut next_chunk_to_hash = 0u64;
-    let mut pending = BTreeMap::<u64, DigestChunkResult>::new();
-    let mut hasher = Sha512::new();
-    let mut size_bytes = 0u64;
-    let mut saw_short_read = false;
-
-    let spawn_chunk = |join_set: &mut JoinSet<Result<DigestChunkResult>>,
-                       chunk_idx: u64,
-                       reader: Arc<dyn BlockReader>,
-                       limiter: Arc<Semaphore>| {
-        join_set.spawn(async move {
-            let _permit = limiter
-                .acquire_owned()
-                .await
-                .map_err(|_| anyhow!("digest parallel limiter closed"))?;
-
-            let start_lba = chunk_idx
-                .checked_mul(blocks_per_read as u64)
-                .ok_or_else(|| anyhow!("digest chunk start lba overflow"))?;
-            let remaining_blocks = total_blocks.saturating_sub(start_lba);
-            let chunk_blocks = core::cmp::min(remaining_blocks, blocks_per_read as u64);
-            let requested_bytes = chunk_blocks as usize * block_size;
-            let mut bytes = vec![0u8; requested_bytes];
-            let read = reader
-                .read_blocks(start_lba, &mut bytes, ReadContext::BACKGROUND)
-                .await?;
-            bytes.truncate(read);
-            Ok(DigestChunkResult {
-                chunk_idx,
-                requested_bytes,
-                bytes,
-            })
-        });
-    };
-
-    while next_chunk_to_spawn < total_chunks && join_set.len() < parallel_chunks && !saw_short_read
-    {
-        spawn_chunk(
-            &mut join_set,
-            next_chunk_to_spawn,
-            reader.clone(),
-            limiter.clone(),
-        );
-        next_chunk_to_spawn += 1;
+impl MaterializedCache {
+    fn new() -> Result<Self> {
+        let cache_dir = super::default_gibblox_cache_root().join("materialized");
+        fs::create_dir_all(&cache_dir)
+            .with_context(|| format!("create materialized cache dir {}", cache_dir.display()))?;
+        Ok(Self {
+            cache_dir,
+            protected_paths: BTreeSet::new(),
+        })
     }
 
-    while next_chunk_to_hash < total_chunks {
-        let joined = join_set
-            .join_next()
-            .await
-            .ok_or_else(|| anyhow!("digest parallel worker stream ended unexpectedly"))?;
-        let result = joined.map_err(|err| anyhow!("digest parallel task failed: {err}"))??;
-        pending.insert(result.chunk_idx, result);
+    fn register_materialized_source(
+        &mut self,
+        resolver: &mut ArtifactReaderResolver,
+        source: &BootProfileArtifactSource,
+        digest: &str,
+    ) -> Result<()> {
+        let path = self.path_for_digest(digest)?;
+        self.protected_paths.insert(path.clone());
+        resolver.substitute_artifact_source_with_file(source, path.as_path())
+    }
 
-        while let Some(chunk) = pending.remove(&next_chunk_to_hash) {
-            if chunk.bytes.is_empty() {
-                saw_short_read = true;
-                next_chunk_to_hash += 1;
+    fn create_temp_writer(&mut self) -> Result<(PathBuf, BufWriter<fs::File>)> {
+        self.prune_before_write_best_effort()?;
+        fs::create_dir_all(&self.cache_dir).with_context(|| {
+            format!(
+                "create materialized cache dir {} before write",
+                self.cache_dir.display()
+            )
+        })?;
+
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|err| anyhow!("materialized cache clock before unix epoch: {err}"))?
+            .as_nanos();
+        let temp_path = self
+            .cache_dir
+            .join(format!(".tmp-{}-{nonce}.part", std::process::id()));
+        let file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .with_context(|| format!("create materialized temp file {}", temp_path.display()))?;
+        Ok((temp_path, BufWriter::new(file)))
+    }
+
+    fn finalize_temp_file(&mut self, temp_path: &Path, digest: &str) -> Result<PathBuf> {
+        let final_path = self.path_for_digest(digest)?;
+        if final_path.exists() {
+            let _ = fs::remove_file(temp_path);
+            return Ok(final_path);
+        }
+
+        fs::rename(temp_path, &final_path).with_context(|| {
+            format!(
+                "move materialized cache file {} -> {}",
+                temp_path.display(),
+                final_path.display()
+            )
+        })?;
+        Ok(final_path)
+    }
+
+    fn path_for_digest(&self, digest: &str) -> Result<PathBuf> {
+        Ok(self.cache_dir.join(digest_to_cache_filename(digest)?))
+    }
+
+    fn prune_before_write_best_effort(&self) -> Result<()> {
+        const MIN_FREE_RATIO: f64 = 0.10;
+
+        let mut free_ratio = match disk_free_ratio(self.cache_dir.as_path())? {
+            Some(value) => value,
+            None => return Ok(()),
+        };
+        if free_ratio >= MIN_FREE_RATIO {
+            return Ok(());
+        }
+
+        let mut candidates =
+            list_materialized_prune_candidates(self.cache_dir.as_path(), &self.protected_paths)?;
+        if candidates.is_empty() {
+            return Ok(());
+        }
+
+        candidates.sort_unstable_by_key(|entry| entry.modified_at);
+        let mut pruned_files = 0u64;
+        let mut reclaimed_bytes = 0u64;
+
+        for candidate in candidates {
+            if free_ratio >= MIN_FREE_RATIO {
                 break;
             }
-
-            hasher.update(&chunk.bytes);
-            size_bytes = size_bytes
-                .checked_add(chunk.bytes.len() as u64)
-                .ok_or_else(|| anyhow!("digest size overflow"))?;
-
-            if chunk.bytes.len() < chunk.requested_bytes {
-                saw_short_read = true;
+            match fs::remove_file(&candidate.path) {
+                Ok(()) => {
+                    pruned_files += 1;
+                    reclaimed_bytes = reclaimed_bytes.saturating_add(candidate.size_bytes);
+                    if let Some(next_ratio) = disk_free_ratio(self.cache_dir.as_path())? {
+                        free_ratio = next_ratio;
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    info!(
+                        path = %candidate.path.display(),
+                        error = %err,
+                        "failed to remove materialized cache entry during prune"
+                    );
+                }
             }
-
-            next_chunk_to_hash += 1;
         }
 
-        while next_chunk_to_spawn < total_chunks
-            && join_set.len() < parallel_chunks
-            && !saw_short_read
-        {
-            spawn_chunk(
-                &mut join_set,
-                next_chunk_to_spawn,
-                reader.clone(),
-                limiter.clone(),
-            );
-            next_chunk_to_spawn += 1;
+        info!(
+            cache_dir = %self.cache_dir.display(),
+            free_ratio,
+            pruned_files,
+            reclaimed_bytes,
+            "materialized cache prune completed"
+        );
+        Ok(())
+    }
+}
+
+struct MaterializedEntry {
+    path: PathBuf,
+    modified_at: SystemTime,
+    size_bytes: u64,
+}
+
+fn list_materialized_prune_candidates(
+    cache_dir: &Path,
+    protected_paths: &BTreeSet<PathBuf>,
+) -> Result<Vec<MaterializedEntry>> {
+    let mut entries = Vec::new();
+    let read_dir = match fs::read_dir(cache_dir) {
+        Ok(read_dir) => read_dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(entries),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("read materialized cache dir {}", cache_dir.display()));
+        }
+    };
+
+    for entry in read_dir {
+        let entry = entry
+            .with_context(|| format!("read materialized cache entry in {}", cache_dir.display()))?;
+        let path = entry.path();
+        if protected_paths.contains(&path) {
+            continue;
         }
 
-        if saw_short_read && pending.is_empty() {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("read file type for {}", path.display()))?;
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let metadata = entry
+            .metadata()
+            .with_context(|| format!("read metadata for {}", path.display()))?;
+        let modified_at = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        entries.push(MaterializedEntry {
+            path,
+            modified_at,
+            size_bytes: metadata.len(),
+        });
+    }
+
+    Ok(entries)
+}
+
+fn digest_to_cache_filename(digest: &str) -> Result<String> {
+    let hex = digest
+        .strip_prefix("sha512:")
+        .ok_or_else(|| anyhow!("expected sha512 digest, got {digest}"))?;
+    if hex.len() != 128 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("invalid sha512 digest {digest}");
+    }
+    Ok(hex.to_ascii_lowercase())
+}
+
+#[cfg(target_family = "unix")]
+fn disk_free_ratio(path: &Path) -> Result<Option<f64>> {
+    let path_cstr = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| anyhow!("path contains interior NUL bytes: {}", path.display()))?;
+    let stats = statvfs(path_cstr.as_c_str())
+        .map_err(|err| anyhow!("statvfs {}: {err}", path.display()))?;
+    let blocks_total = stats.f_blocks;
+    if blocks_total == 0 {
+        return Ok(None);
+    }
+
+    let blocks_available = stats.f_bavail;
+    Ok(Some(blocks_available as f64 / blocks_total as f64))
+}
+
+#[cfg(not(target_family = "unix"))]
+fn disk_free_ratio(_path: &Path) -> Result<Option<f64>> {
+    Ok(None)
+}
+
+async fn digest_and_materialize_reader_content(
+    reader: Arc<dyn BlockReader>,
+    pipeline_identity: &str,
+    materialized_cache: &mut MaterializedCache,
+) -> Result<PipelineContentDigestHint> {
+    const DIGEST_CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
+
+    let block_size = reader.block_size() as usize;
+    if block_size == 0 {
+        bail!("reader block size is zero");
+    }
+    let blocks_per_read = core::cmp::max(1, DIGEST_CHUNK_TARGET_BYTES / block_size);
+    let max_read_bytes = blocks_per_read * block_size;
+
+    let total_blocks = reader.total_blocks().await?;
+    info!(
+        pipeline_identity,
+        total_blocks,
+        block_size,
+        blocks_per_read,
+        max_read_bytes,
+        "digesting and materializing pipeline content"
+    );
+
+    let (temp_path, mut writer) = materialized_cache.create_temp_writer()?;
+    let mut hasher = Sha512::new();
+    let mut size_bytes = 0u64;
+    let mut buf = vec![0u8; max_read_bytes];
+    let mut lba = 0u64;
+
+    while lba < total_blocks {
+        let remaining_blocks = total_blocks - lba;
+        let requested_blocks = core::cmp::min(remaining_blocks, blocks_per_read as u64);
+        let requested_bytes = requested_blocks as usize * block_size;
+        let read = reader
+            .read_blocks(lba, &mut buf[..requested_bytes], ReadContext::BACKGROUND)
+            .await?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+        writer
+            .write_all(&buf[..read])
+            .with_context(|| format!("write materialized bytes to {}", temp_path.display()))?;
+        size_bytes = size_bytes
+            .checked_add(read as u64)
+            .ok_or_else(|| anyhow!("digest size overflow"))?;
+        let consumed_blocks = (read as u64).div_ceil(block_size as u64);
+        if consumed_blocks == 0 {
+            break;
+        }
+        lba = lba
+            .checked_add(consumed_blocks)
+            .ok_or_else(|| anyhow!("digest lba overflow"))?;
+        if read < requested_bytes {
             break;
         }
     }
 
-    while let Some(joined) = join_set.join_next().await {
-        let _ = joined.map_err(|err| anyhow!("digest parallel task failed: {err}"))??;
-    }
+    writer
+        .flush()
+        .with_context(|| format!("flush materialized bytes to {}", temp_path.display()))?;
+    drop(writer);
 
     let digest = format!("sha512:{:x}", hasher.finalize());
+    let final_path = materialized_cache.finalize_temp_file(temp_path.as_path(), digest.as_str())?;
     info!(
         pipeline_identity,
-        digest, size_bytes, "finished digesting pipeline content"
+        digest,
+        size_bytes,
+        cache_path = %final_path.display(),
+        "finished digesting and materializing pipeline content"
     );
+
     Ok(PipelineContentDigestHint { digest, size_bytes })
 }
 
@@ -893,6 +1062,7 @@ mod tests {
         BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
     };
     use std::{
+        collections::BTreeSet,
         fs,
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
@@ -1173,6 +1343,43 @@ rootfs:
     }
 
     #[test]
+    fn digest_filename_uses_sha512_hex() {
+        let digest = format!("sha512:{}", "a".repeat(128));
+        let filename = digest_to_cache_filename(&digest).expect("derive digest filename");
+        assert_eq!(filename, "a".repeat(128));
+    }
+
+    #[test]
+    fn digest_filename_rejects_non_sha512() {
+        let err = digest_to_cache_filename("sha256:abcd").expect_err("reject non-sha512");
+        let message = format!("{err}");
+        assert!(message.contains("expected sha512 digest"));
+    }
+
+    #[test]
+    fn materialized_prune_candidates_skip_protected_files() {
+        let cache_dir = temp_path("materialized-cache");
+        fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let protected = cache_dir.join("protected.bin");
+        let prunable = cache_dir.join("prunable.bin");
+        fs::write(&protected, b"abc").expect("write protected file");
+        fs::write(&prunable, b"xyz").expect("write prunable file");
+
+        let mut protected_paths = BTreeSet::new();
+        protected_paths.insert(protected.clone());
+        let candidates = list_materialized_prune_candidates(&cache_dir, &protected_paths)
+            .expect("list prune candidates");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, prunable);
+
+        let _ = fs::remove_file(protected);
+        let _ = fs::remove_file(cache_dir.join("prunable.bin"));
+        let _ = fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
     fn insert_android_sparse_hint_dedupes_duplicate_identity() {
         let mut entries = BTreeMap::new();
         let identity = String::from("android_sparseimg{source=file{path=len:7:/a.simg;}};");
@@ -1313,6 +1520,16 @@ rootfs:
             "fastboop-bootprofile-optimize-{label}-{nonce}.simg"
         ));
         fs::write(&path, sparse_image_fixture()).expect("write sparse fixture");
+        path
+    }
+
+    fn temp_path(label: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        path.push(format!("fastboop-{label}-{nonce}"));
         path
     }
 

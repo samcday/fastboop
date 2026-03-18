@@ -507,6 +507,21 @@ impl ArtifactReaderResolver {
         Ok(resolver)
     }
 
+    pub(crate) fn substitute_artifact_source_with_file(
+        &mut self,
+        source: &BootProfileArtifactSource,
+        path: &Path,
+    ) -> Result<()> {
+        let cache_key = artifact_source_cache_key(source)?;
+        let canonical = fs::canonicalize(path)
+            .with_context(|| format!("canonicalize materialized path {}", path.display()))?;
+        let file_reader = FileReader::open(&canonical, DEFAULT_IMAGE_BLOCK_SIZE)
+            .map_err(|err| anyhow!("open materialized file {}: {err}", canonical.display()))?;
+        let reader: Arc<dyn BlockReader> = Arc::new(file_reader);
+        self.cache.insert(cache_key, reader);
+        Ok(())
+    }
+
     fn reset_pipeline_hints(&mut self, hints: &PipelineHints) -> Result<()> {
         validate_pipeline_hints(hints).map_err(|err| anyhow!("validate pipeline hints: {err}"))?;
         self.sparse_index_hints.clear();
@@ -1414,10 +1429,10 @@ fn derive_casync_chunk_store_url(index_url: &Url) -> Result<Url> {
         .with_context(|| format!("derive casync chunk store URL from {index_url}"))
 }
 
-fn default_casync_cache_dir() -> PathBuf {
+pub(crate) fn default_gibblox_cache_root() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
         if !path.is_empty() {
-            return PathBuf::from(path).join("gibblox").join("casync");
+            return PathBuf::from(path).join("gibblox");
         }
     }
 
@@ -1425,21 +1440,22 @@ fn default_casync_cache_dir() -> PathBuf {
     {
         if let Some(path) = std::env::var_os("LOCALAPPDATA") {
             if !path.is_empty() {
-                return PathBuf::from(path).join("gibblox").join("casync");
+                return PathBuf::from(path).join("gibblox");
             }
         }
     }
 
     if let Some(path) = std::env::var_os("HOME") {
         if !path.is_empty() {
-            return PathBuf::from(path)
-                .join(".cache")
-                .join("gibblox")
-                .join("casync");
+            return PathBuf::from(path).join(".cache").join("gibblox");
         }
     }
 
-    std::env::temp_dir().join("gibblox").join("casync")
+    std::env::temp_dir().join("gibblox")
+}
+
+fn default_casync_cache_dir() -> PathBuf {
+    default_gibblox_cache_root().join("casync")
 }
 
 #[derive(Default)]
