@@ -26,8 +26,6 @@ spec:
           ports:
             - name: http
               containerPort: 80
-            - name: https
-              containerPort: 443
             - name: admin
               containerPort: 8080
           readinessProbe:
@@ -50,13 +48,7 @@ spec:
               mountPath: /etc/caddy/Caddyfile
               subPath: Caddyfile
               readOnly: true
-            - name: certs
-              mountPath: /certs
-              readOnly: true
       volumes:
         - name: config
           configMap:
             name: frontdoor-caddy
-        - name: certs
-          secret:
-            secretName: frontdoor-tls

@@ -1,7 +1,9 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: frontdoor
+namespace: fastboop
 resources:
+  - gateway.yaml
+  - httproute.yaml
   - caddy-config.yaml
   - certificate.yaml
   - deployment.yaml

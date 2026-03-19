@@ -10,5 +10,4 @@ spec:
   dnsNames:
     - fastboop.win
     - www.fastboop.win
-    - flux.fastboop.win
     - matrix.fastboop.win

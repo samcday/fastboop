@@ -6,7 +6,6 @@ data:
   Caddyfile: |-
     {
       admin off
-      auto_https off
     }
 
     :8080 {
@@ -14,21 +13,15 @@ data:
       respond "not found" 404
     }
 
-    http://fastboop.win, http://www.fastboop.win, http://flux.fastboop.win, http://matrix.fastboop.win {
-      redir https://{host}{uri} 308
-    }
-
-    https://fastboop.win {
-      tls /certs/tls.crt /certs/tls.key
-
+    http://fastboop.win {
       @gha path /gha /gha/*
       handle @gha {
-        reverse_proxy gha-proxy.gha-proxy.svc.cluster.local:80
+        reverse_proxy gha-proxy.fastboop.svc.cluster.local:80
       }
 
       @matrix_well_known path /.well-known/matrix /.well-known/matrix/*
       handle @matrix_well_known {
-        reverse_proxy matrix-well-known.conduit.svc.cluster.local:80
+        reverse_proxy matrix-well-known.fastboop.svc.cluster.local:80
       }
 
       @device_permissions path /device-permissions /device-permissions/*
@@ -41,20 +34,10 @@ data:
       }
     }
 
-    https://www.fastboop.win {
-      tls /certs/tls.crt /certs/tls.key
-
-      reverse_proxy fastboop-web.fastboop-web.svc.cluster.local:80
+    http://www.fastboop.win {
+      reverse_proxy fastboop-web.fastboop.svc.cluster.local:80
     }
 
-    https://flux.fastboop.win {
-      tls /certs/tls.crt /certs/tls.key
-
-      reverse_proxy webhook-receiver.flux-system.svc.cluster.local:80
-    }
-
-    https://matrix.fastboop.win {
-      tls /certs/tls.crt /certs/tls.key
-
-      reverse_proxy conduit-generic.conduit.svc.cluster.local:80
+    http://matrix.fastboop.win {
+      reverse_proxy conduit-generic.fastboop.svc.cluster.local:80
     }
