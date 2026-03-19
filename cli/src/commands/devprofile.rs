@@ -4,10 +4,12 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 use crate::devpros::{load_local_device_profiles, resolve_devpro_dirs};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use fastboop_core::builtin::builtin_profiles;
-use fastboop_core::{DeviceProfile, decode_dev_profile, encode_dev_profile};
+#[cfg(test)]
+use fastboop_core::decode_dev_profile;
+use fastboop_core::{DeviceProfile, encode_dev_profile};
 
 use super::ArtifactReaderResolver;
 
@@ -21,7 +23,7 @@ pub struct DevProfileArgs {
 pub enum DevProfileCommand {
     /// Compile a YAML/JSON device profile into binary form.
     Create(DevProfileCreateArgs),
-    /// Render a compiled device profile binary as YAML.
+    /// Alias of top-level `show` for channel-ish inputs.
     Show(DevProfileShowArgs),
     /// List available device profiles.
     List(DevProfileListArgs),
@@ -39,10 +41,10 @@ pub struct DevProfileCreateArgs {
 
 #[derive(Args)]
 pub struct DevProfileShowArgs {
-    /// Input compiled device profile path ("-" for stdin).
+    /// Input channel/profile path or URL ("-" for stdin bytes).
     #[arg(value_name = "INPUT")]
     pub input: String,
-    /// Output YAML path ("-" for stdout).
+    /// Output report path ("-" for stdout).
     #[arg(short, long, value_name = "OUTPUT", default_value = "-")]
     pub output: String,
 }
@@ -57,7 +59,13 @@ pub struct DevProfileListArgs {
 pub async fn run_devprofile(args: DevProfileArgs) -> Result<()> {
     match args.command {
         DevProfileCommand::Create(args) => run_create(args),
-        DevProfileCommand::Show(args) => run_show(args),
+        DevProfileCommand::Show(args) => {
+            super::run_show(super::ShowArgs {
+                input: args.input,
+                output: args.output,
+            })
+            .await
+        }
         DevProfileCommand::List(args) => run_list(args).await,
     }
 }
@@ -75,14 +83,6 @@ fn run_create(args: DevProfileCreateArgs) -> Result<()> {
         std::io::stdout().is_terminal(),
     )?;
     write_output_bytes(&args.output, &bytes)
-}
-
-fn run_show(args: DevProfileShowArgs) -> Result<()> {
-    let input = read_input_bytes(&args.input)?;
-    let profile = decode_dev_profile(&input).map_err(|err| anyhow!("{err}"))?;
-
-    let yaml = serde_yaml::to_string(&profile).context("serializing device profile YAML")?;
-    write_output_bytes(&args.output, yaml.as_bytes())
 }
 
 #[derive(Default)]

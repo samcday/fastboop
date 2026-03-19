@@ -24,8 +24,8 @@ mod tui;
 #[cfg(feature = "tui")]
 use boot_ui::BootEvent;
 use commands::{
-    BootArgs, BootProfileArgs, DetectArgs, DevProfileArgs, Stage0Args, run_boot, run_bootprofile,
-    run_detect, run_devprofile, run_stage0,
+    BootArgs, BootProfileArgs, DetectArgs, DevProfileArgs, ShowArgs, Stage0Args, run_boot,
+    run_bootprofile, run_detect, run_devprofile, run_show, run_stage0,
 };
 
 #[derive(Parser)]
@@ -40,11 +40,15 @@ enum Commands {
     /// Boot a device by synthesizing stage0 and issuing fastboot download+boot.
     Boot(BootArgs),
     /// Compile or inspect boot profile binaries.
+    #[command(alias = "bootpro")]
     Bootprofile(BootProfileArgs),
     /// Compile, inspect, or list device profiles.
+    #[command(alias = "devpro")]
     Devprofile(DevProfileArgs),
     /// Detect connected fastboot devices that match a DevPro.
     Detect(DetectArgs),
+    /// Inspect channel/profile inputs and render all recognized resources.
+    Show(ShowArgs),
     /// Synthesize a stage0 initrd from a channel artifact and device profile; writes cpio to stdout.
     Stage0(Stage0Args),
 }
@@ -61,6 +65,7 @@ async fn main() -> Result<()> {
         Commands::Bootprofile(args) => run_bootprofile(args).await,
         Commands::Devprofile(args) => run_devprofile(args).await,
         Commands::Detect(args) => run_detect(args).await,
+        Commands::Show(args) => run_show(args).await,
         Commands::Stage0(args) => run_stage0(args).await,
     }
 }
