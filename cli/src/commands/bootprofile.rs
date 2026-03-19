@@ -43,7 +43,7 @@ pub struct BootProfileArgs {
 pub enum BootProfileCommand {
     /// Compile a YAML/JSON boot profile into binary form.
     Create(BootProfileCreateArgs),
-    /// Render a compiled boot profile binary as YAML.
+    /// Alias of top-level `show` for channel-ish inputs.
     Show(BootProfileShowArgs),
     /// Materialize pipeline hints sidecar from a compiled boot profile.
     Optimize(BootProfileOptimizeArgs),
@@ -70,10 +70,10 @@ pub struct BootProfileCreateArgs {
 
 #[derive(Args)]
 pub struct BootProfileShowArgs {
-    /// Input compiled boot profile path ("-" for stdin).
+    /// Input channel/profile path or URL ("-" for stdin bytes).
     #[arg(value_name = "INPUT")]
     pub input: String,
-    /// Output YAML path ("-" for stdout).
+    /// Output report path ("-" for stdout).
     #[arg(short, long, value_name = "OUTPUT", default_value = "-")]
     pub output: String,
 }
@@ -94,7 +94,13 @@ pub struct BootProfileOptimizeArgs {
 pub async fn run_bootprofile(args: BootProfileArgs) -> Result<()> {
     match args.command {
         BootProfileCommand::Create(args) => run_create(args).await,
-        BootProfileCommand::Show(args) => run_show(args),
+        BootProfileCommand::Show(args) => {
+            super::run_show(super::ShowArgs {
+                input: args.input,
+                output: args.output,
+            })
+            .await
+        }
         BootProfileCommand::Optimize(args) => run_optimize(args).await,
     }
 }
@@ -168,33 +174,12 @@ async fn run_create(args: BootProfileCreateArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_show(args: BootProfileShowArgs) -> Result<()> {
-    debug!(
-        input = %io_label(&args.input),
-        output = %io_label(&args.output),
-        "bootprofile show started"
-    );
-
-    let input = read_input_bytes(&args.input)?;
-    debug!(bytes = input.len(), "bootprofile show read binary bytes");
-
-    let compiled = decode_boot_profile(&input).map_err(|err| anyhow!("{err}"))?;
-    debug!(profile_id = %compiled.id, "bootprofile show decoded boot profile");
-
-    validate_boot_profile(&compiled).map_err(|err| anyhow!("{err}"))?;
-
+pub(super) fn render_boot_profile_yaml(compiled: &BootProfile) -> Result<String> {
+    validate_boot_profile(compiled).map_err(|err| anyhow!("{err}"))?;
     let manifest = compiled
         .decompile_dt_overlays(decompile_dt_overlay)
         .context("decompiling dt_overlays with dtc")?;
-
-    let yaml = serde_yaml::to_string(&manifest).context("serializing boot profile YAML")?;
-    write_output_bytes(&args.output, yaml.as_bytes())?;
-    debug!(
-        profile_id = %manifest.id,
-        yaml_bytes = yaml.len(),
-        "bootprofile show finished"
-    );
-    Ok(())
+    serde_yaml::to_string(&manifest).context("serializing boot profile YAML")
 }
 
 async fn run_optimize(args: BootProfileOptimizeArgs) -> Result<()> {
