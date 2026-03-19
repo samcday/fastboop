@@ -48,4 +48,4 @@ gibblox-xz = { path = "${link_root}/crates/gibblox-xz" }
 gibblox-zip = { path = "${link_root}/crates/gibblox-zip" }
 EOF
 
-exec cargo --config "${config_path}" "$@"
+cargo --config "${config_path}" "$@"
