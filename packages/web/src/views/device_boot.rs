@@ -717,6 +717,7 @@ fn android_sparse_hints_by_identity(
                         },
                     );
                 }
+                PipelineHint::ContentDigest(_) => {}
             }
         }
     }
