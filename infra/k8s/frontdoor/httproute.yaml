@@ -10,7 +10,10 @@ spec:
     - www.fastboop.win
     - matrix.fastboop.win
   parentRefs:
-    - name: public
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: shared
+      namespace: kube-system
   rules:
     - matches:
         - path:
