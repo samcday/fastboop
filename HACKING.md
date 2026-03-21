@@ -56,8 +56,10 @@ See `docs/dev/DEVICE_PROFILES.md` for schema and semantics.
 
 For local gibblox integration work, clone/worktree gibblox into `./gibblox` and run
 `./tools/cargo-local-gibblox.sh ...` (or pass `--config .cargo/config.gibblox-local.toml`
-to cargo commands directly). That applies a local `[patch.crates-io]` overlay without
-mutating workspace manifests.
+to cargo commands directly). For Dioxus commands that shell out to cargo, use
+`./tools/dx-local-gibblox.sh ...` so `dx` receives a local gibblox overlay for
+the web HTTP reader path (`gibblox-http`).
+That applies a local `[patch.crates-io]` overlay without mutating workspace manifests.
 
 ## Contributor workflow
 

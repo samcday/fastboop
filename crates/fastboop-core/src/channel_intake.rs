@@ -366,6 +366,9 @@ pub fn read_channel_stream_head(
         break;
     }
 
+    out.pipeline_hints
+        .entries
+        .sort_unstable_by(|left, right| left.pipeline_identity.cmp(&right.pipeline_identity));
     out.consumed_bytes = cursor as u64;
     Ok(out)
 }
@@ -491,4 +494,100 @@ fn profile_ids(profiles: &[BootProfile]) -> Vec<String> {
         .iter()
         .map(|profile| profile.id.clone())
         .collect::<Vec<_>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use gibblox_pipeline::{
+        PipelineContentDigestHint, PipelineHint, PipelineHintEntry, PipelineHints,
+        encode_pipeline_hints,
+    };
+
+    use super::{ChannelStreamHeadError, read_channel_stream_head};
+
+    #[test]
+    fn merges_pipeline_hint_records_in_sorted_identity_order() {
+        let first = encode_pipeline_hints(&PipelineHints {
+            entries: vec![pipeline_hint_entry(
+                "xz{source=http{url=len:22:https://example.com/a;}}",
+                "sha512:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+            )],
+        })
+        .expect("encode first pipeline hints");
+        let second = encode_pipeline_hints(&PipelineHints {
+            entries: vec![pipeline_hint_entry(
+                "android_sparseimg{source=xz{source=http{url=len:22:https://example.com/a;}}}",
+                "sha512:22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222",
+            )],
+        })
+        .expect("encode second pipeline hints");
+
+        let mut stream = first;
+        stream.extend(second);
+
+        let stream_head = read_channel_stream_head(&stream, stream.len() as u64)
+            .expect("read channel stream with merged pipeline hints");
+
+        let identities: Vec<&str> = stream_head
+            .pipeline_hints
+            .entries
+            .iter()
+            .map(|entry| entry.pipeline_identity.as_str())
+            .collect();
+        assert_eq!(
+            identities,
+            vec![
+                "android_sparseimg{source=xz{source=http{url=len:22:https://example.com/a;}}}",
+                "xz{source=http{url=len:22:https://example.com/a;}}",
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_pipeline_hint_identity_across_records() {
+        let first = encode_pipeline_hints(&PipelineHints {
+            entries: vec![pipeline_hint_entry(
+                "xz{source=http{url=len:22:https://example.com/a;}}",
+                "sha512:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+        })
+        .expect("encode first pipeline hints");
+        let second = encode_pipeline_hints(&PipelineHints {
+            entries: vec![pipeline_hint_entry(
+                "xz{source=http{url=len:22:https://example.com/a;}}",
+                "sha512:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            )],
+        })
+        .expect("encode second pipeline hints");
+
+        let mut stream = first;
+        stream.extend(second);
+
+        let err = read_channel_stream_head(&stream, stream.len() as u64)
+            .expect_err("duplicate pipeline identity should fail");
+
+        match err {
+            ChannelStreamHeadError::DuplicatePipelineHintIdentity { pipeline_identity } => {
+                assert_eq!(
+                    pipeline_identity,
+                    "xz{source=http{url=len:22:https://example.com/a;}}"
+                );
+            }
+            other => panic!("expected duplicate pipeline identity error, got {other:?}"),
+        }
+    }
+
+    fn pipeline_hint_entry(identity: &str, digest: &str) -> PipelineHintEntry {
+        PipelineHintEntry {
+            pipeline_identity: String::from(identity),
+            hints: vec![PipelineHint::ContentDigest(PipelineContentDigestHint {
+                digest: String::from(digest),
+                size_bytes: 1,
+            })],
+        }
+    }
 }

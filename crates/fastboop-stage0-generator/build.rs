@@ -19,6 +19,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FASTBOOP_STAGE0_EMBED_PATH");
     println!("cargo:rerun-if-env-changed=FASTBOOP_STAGE0_CARGO");
     println!("cargo:rerun-if-env-changed=FASTBOOP_STAGE0_TARGET");
+    println!("cargo:rerun-if-env-changed=FASTBOOP_STAGE0_NO_LOCKED");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
@@ -112,8 +113,11 @@ fn build_stage0_nested(
         .arg("--target")
         .arg(stage0_target)
         .arg("--target-dir")
-        .arg(&target_dir)
-        .arg("--locked");
+        .arg(&target_dir);
+
+    if env::var_os("FASTBOOP_STAGE0_NO_LOCKED").is_none() {
+        cmd.arg("--locked");
+    }
 
     if stage0_target == "aarch64-unknown-linux-musl" {
         cmd.env(&stage0_linker_env, "rust-lld");

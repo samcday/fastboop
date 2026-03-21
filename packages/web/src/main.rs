@@ -1,10 +1,15 @@
 use dioxus::prelude::*;
 use fastboop_core::{read_channel_stream_head, CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES};
-use gibblox_core::{BlockByteReader, BlockReader, ReadContext};
+#[cfg(not(target_arch = "wasm32"))]
+use gibblox_core::BlockByteReader;
+use gibblox_core::{BlockReader, ReadContext};
+#[cfg(not(target_arch = "wasm32"))]
 use gibblox_http::HttpReader;
 #[cfg(target_arch = "wasm32")]
 use gibblox_web_file::WebFileReader;
 use js_sys::Reflect;
+#[cfg(target_arch = "wasm32")]
+use js_sys::Uint8Array;
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
@@ -17,7 +22,13 @@ use tracing_subscriber::filter::Targets;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tracing_wasm::{WASMLayer, WASMLayerConfigBuilder};
 use url::Url;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
+#[cfg(target_arch = "wasm32")]
+use web_sys::{Headers, Request, RequestInit, RequestMode, Response, WorkerGlobalScope};
 
 use views::{DevicePage, Home, SessionStore};
 
@@ -32,6 +43,13 @@ const WEB_FILE_CHANNEL_PREFIX: &str = "web-file://";
 static STARTUP_CHANNEL: OnceLock<Result<String, StartupChannelError>> = OnceLock::new();
 #[cfg(target_arch = "wasm32")]
 static WEB_FILE_CHANNEL_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HttpPreflightMode {
+    PriorityAndRange,
+    RangeOnly,
+}
 
 #[cfg(target_arch = "wasm32")]
 thread_local! {
@@ -71,6 +89,9 @@ const FAVICON: Asset = asset!("/assets/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 
 fn main() {
+    #[cfg(target_arch = "wasm32")]
+    console_error_panic_hook::set_once();
+
     init_tracing();
 
     #[cfg(target_arch = "wasm32")]
@@ -126,18 +147,72 @@ pub(crate) async fn load_startup_channel_intake(
     let url =
         Url::parse(channel).map_err(|err| invalid_web_channel_error(channel, &err.to_string()))?;
 
-    let reader = HttpReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-        .await
-        .map_err(|err| {
-            invalid_web_channel_error(channel, &format!("open HTTP reader for {url}: {err}"))
-        })?;
-    let exact_total_bytes = reader.size_bytes();
-    let reader =
-        BlockByteReader::new(reader, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE).map_err(|err| {
-            invalid_web_channel_error(channel, &format!("open HTTP block view for {url}: {err}"))
-        })?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        return load_wasm_http_startup_channel_intake(channel, &url).await;
+    }
 
-    read_startup_channel_intake(channel, &reader, exact_total_bytes).await
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let reader = HttpReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+            .await
+            .map_err(|err| {
+                invalid_web_channel_error(channel, &format!("open HTTP reader for {url}: {err}"))
+            })?;
+        let exact_total_bytes = reader.size_bytes();
+        let reader = BlockByteReader::new(reader, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+            .map_err(|err| {
+                invalid_web_channel_error(
+                    channel,
+                    &format!("open HTTP block view for {url}: {err}"),
+                )
+            })?;
+
+        read_startup_channel_intake(channel, &reader, exact_total_bytes).await
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn load_wasm_http_startup_channel_intake(
+    channel: &str,
+    url: &Url,
+) -> Result<StartupChannelIntake, StartupChannelError> {
+    let (mode, exact_total_bytes) = preflight_wasm_http_channel(url)
+        .await
+        .map_err(|reason| invalid_web_channel_error(channel, &reason))?;
+
+    if exact_total_bytes == 0 {
+        return Err(invalid_web_channel_error(
+            channel,
+            "channel stream is empty",
+        ));
+    }
+
+    let scan_cap = core::cmp::min(
+        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
+        exact_total_bytes,
+    ) as usize;
+    let prefix = read_wasm_http_channel_prefix(url, scan_cap, exact_total_bytes, mode)
+        .await
+        .map_err(|reason| invalid_web_channel_error(channel, &reason))?;
+    let stream_head = read_channel_stream_head(prefix.as_slice(), exact_total_bytes)
+        .map_err(|err| invalid_web_channel_error(channel, &err.to_string()))?;
+
+    let intake = StartupChannelIntake {
+        exact_total_bytes,
+        stream_head,
+    };
+
+    if intake.stream_head.warning_count > 0 {
+        tracing::warn!(
+            warning_count = intake.stream_head.warning_count,
+            consumed_bytes = intake.stream_head.consumed_bytes,
+            channel,
+            "channel stream stopped after valid records due trailing bytes"
+        );
+    }
+
+    Ok(intake)
 }
 
 async fn read_startup_channel_intake<R>(
@@ -180,6 +255,168 @@ where
     }
 
     Ok(intake)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn preflight_wasm_http_channel(url: &Url) -> Result<(HttpPreflightMode, u64), String> {
+    match probe_wasm_http_channel_size(url, HttpPreflightMode::PriorityAndRange).await {
+        Ok(size_bytes) => Ok((HttpPreflightMode::PriorityAndRange, size_bytes)),
+        Err(priority_err) => {
+            tracing::warn!(
+                %url,
+                error = %priority_err,
+                "HTTP startup preflight with Priority+Range failed, retrying with Range-only"
+            );
+            let size_bytes = probe_wasm_http_channel_size(url, HttpPreflightMode::RangeOnly)
+                .await
+                .map_err(|range_err| {
+                    format!(
+                        "HTTP startup preflight failed for both Priority+Range and Range-only requests (priority+range: {priority_err}; range-only: {range_err})"
+                    )
+                })?;
+            tracing::warn!(
+                %url,
+                "HTTP startup preflight downgraded to Range-only mode because Priority header is not accepted"
+            );
+            Ok((HttpPreflightMode::RangeOnly, size_bytes))
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn probe_wasm_http_channel_size(url: &Url, mode: HttpPreflightMode) -> Result<u64, String> {
+    let response = send_wasm_http_range_request(url, 0, 0, mode)
+        .await
+        .map_err(|err| format!("probe request failed: {err}"))?;
+    let status = response.status();
+    if status != 206 {
+        return Err(format!(
+            "probe response status {status} (expected 206 Partial Content)"
+        ));
+    }
+    let headers = response.headers();
+    let content_range = read_header_value(&headers, "Content-Range")?
+        .ok_or_else(|| "probe response missing Content-Range header".to_string())?;
+    let total = parse_content_range_total(&content_range)
+        .ok_or_else(|| format!("invalid Content-Range header '{content_range}'"))?;
+    Ok(total)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_wasm_http_channel_prefix(
+    url: &Url,
+    scan_cap: usize,
+    exact_total_bytes: u64,
+    mode: HttpPreflightMode,
+) -> Result<Vec<u8>, String> {
+    let prefix_len = core::cmp::min(scan_cap as u64, exact_total_bytes) as usize;
+    if prefix_len == 0 {
+        return Ok(Vec::new());
+    }
+    let end = (prefix_len - 1) as u64;
+    let response = send_wasm_http_range_request(url, 0, end, mode).await?;
+    let status = response.status();
+    if status != 206 {
+        return Err(format!(
+            "prefix response status {status} (expected 206 Partial Content)"
+        ));
+    }
+    let content_range = read_header_value(&response.headers(), "Content-Range")?
+        .ok_or_else(|| "prefix response missing Content-Range header".to_string())?;
+    let (start, response_end, _) = parse_content_range(&content_range)
+        .ok_or_else(|| format!("invalid Content-Range header '{content_range}'"))?;
+    if start != 0 || response_end != end {
+        return Err(format!(
+            "prefix content-range mismatch: got bytes {start}-{response_end}, expected bytes 0-{end}"
+        ));
+    }
+
+    let body = response_bytes(response)
+        .await
+        .map_err(|err| format!("read prefix response body: {err}"))?;
+    if body.len() != prefix_len {
+        return Err(format!(
+            "prefix body length mismatch: got {}, expected {prefix_len}",
+            body.len()
+        ));
+    }
+    Ok(body)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn send_wasm_http_range_request(
+    url: &Url,
+    start: u64,
+    end: u64,
+    mode: HttpPreflightMode,
+) -> Result<Response, String> {
+    let init = RequestInit::new();
+    init.set_method("GET");
+    init.set_mode(RequestMode::Cors);
+    let headers = Headers::new().map_err(js_value_to_string)?;
+    headers
+        .append("Range", &format!("bytes={start}-{end}"))
+        .map_err(js_value_to_string)?;
+    if mode == HttpPreflightMode::PriorityAndRange {
+        headers
+            .append("Priority", "u=0, i")
+            .map_err(js_value_to_string)?;
+    }
+    init.set_headers(&headers);
+    let request =
+        Request::new_with_str_and_init(url.as_str(), &init).map_err(js_value_to_string)?;
+    let promise = if let Some(window) = web_sys::window() {
+        window.fetch_with_request(&request)
+    } else if let Ok(worker) = js_sys::global().dyn_into::<WorkerGlobalScope>() {
+        worker.fetch_with_request(&request)
+    } else {
+        return Err("no fetch-capable web global scope".to_string());
+    };
+    let js_response = JsFuture::from(promise).await.map_err(js_value_to_string)?;
+    js_response
+        .dyn_into::<Response>()
+        .map_err(js_value_to_string)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn response_bytes(response: Response) -> Result<Vec<u8>, String> {
+    let promise = response.array_buffer().map_err(js_value_to_string)?;
+    let array_buffer = JsFuture::from(promise).await.map_err(js_value_to_string)?;
+    let array = Uint8Array::new(&array_buffer);
+    Ok(array.to_vec())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_header_value(headers: &Headers, name: &str) -> Result<Option<String>, String> {
+    headers.get(name).map_err(js_value_to_string)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_content_range_total(hdr: &str) -> Option<u64> {
+    parse_content_range(hdr).and_then(|(_, _, total)| total)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_content_range(hdr: &str) -> Option<(u64, u64, Option<u64>)> {
+    let hdr = hdr.trim().strip_prefix("bytes ")?;
+    let (span, total) = hdr.split_once('/')?;
+    let (start, end) = span.split_once('-')?;
+    let start = start.parse::<u64>().ok()?;
+    let end = end.parse::<u64>().ok()?;
+    let total = if total == "*" {
+        None
+    } else {
+        Some(total.parse::<u64>().ok()?)
+    };
+    Some((start, end, total))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_value_to_string(value: JsValue) -> String {
+    js_sys::JSON::stringify(&value)
+        .ok()
+        .and_then(|s| s.as_string())
+        .unwrap_or_else(|| format!("{value:?}"))
 }
 
 #[cfg(target_arch = "wasm32")]

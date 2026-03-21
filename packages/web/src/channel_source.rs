@@ -25,7 +25,7 @@ mod wasm {
             channel,
             channel_offset_bytes,
             channel_chunk_store_url,
-            true,
+            false,
         )
         .await
     }
