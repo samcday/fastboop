@@ -20,8 +20,6 @@ use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
 use gibblox_android_sparse::{
     AndroidSparseBlockReader, AndroidSparseChunkIndex, AndroidSparseImageIndex,
 };
-use gibblox_cache::CachedBlockReader;
-use gibblox_cache_store_std::StdCacheOps;
 use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
 use gibblox_casync_std::{
     StdCasyncChunkStore, StdCasyncChunkStoreConfig, StdCasyncChunkStoreLocator,
@@ -690,7 +688,7 @@ impl ArtifactReaderResolver {
                 BootProfileArtifactSource::Http(source) => {
                     let url = Url::parse(source.http.as_str())
                         .with_context(|| format!("parse HTTP artifact URL {}", source.http))?;
-                    open_cached_http_reader(url).await?.reader
+                    open_uncached_http_reader(url).await?.reader
                 }
                 BootProfileArtifactSource::File(source) => {
                     let path = Path::new(source.file.as_str());
@@ -1237,25 +1235,6 @@ async fn detect_rootfs_kind<R: BlockReader + ?Sized>(reader: &R) -> Result<Optio
     Ok(None)
 }
 
-async fn open_cached_http_reader(url: Url) -> Result<ChannelSourceReader> {
-    let http_reader = HttpReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
-        .await
-        .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
-    let exact_size_bytes = http_reader.size_bytes();
-    let block_reader = BlockByteReader::new(http_reader, DEFAULT_IMAGE_BLOCK_SIZE)
-        .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
-    let cache = StdCacheOps::open_default_for_reader(&block_reader)
-        .await
-        .map_err(|err| anyhow!("open std cache: {err}"))?;
-    let cached = CachedBlockReader::new(block_reader, cache)
-        .await
-        .map_err(|err| anyhow!("initialize std cache: {err}"))?;
-    Ok(ChannelSourceReader {
-        reader: Arc::new(cached),
-        exact_size_bytes,
-    })
-}
-
 async fn open_uncached_http_reader(url: Url) -> Result<ChannelSourceReader> {
     let http_reader = HttpReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
         .await
@@ -1289,8 +1268,7 @@ async fn open_casync_reader(
 
     let chunk_locator = StdCasyncChunkStoreLocator::url_prefix(chunk_store_url.clone())
         .map_err(|err| anyhow!("configure casync chunk store URL {chunk_store_url}: {err}"))?;
-    let mut chunk_store_config = StdCasyncChunkStoreConfig::new(chunk_locator);
-    chunk_store_config.cache_dir = Some(default_casync_cache_dir());
+    let chunk_store_config = StdCasyncChunkStoreConfig::new(chunk_locator);
     let chunk_store = StdCasyncChunkStore::new(chunk_store_config)
         .map_err(|err| anyhow!("build casync chunk store: {err}"))?;
 
@@ -1455,10 +1433,6 @@ pub(crate) fn default_gibblox_cache_root() -> PathBuf {
     }
 
     std::env::temp_dir().join("gibblox")
-}
-
-fn default_casync_cache_dir() -> PathBuf {
-    default_gibblox_cache_root().join("casync")
 }
 
 #[derive(Default)]

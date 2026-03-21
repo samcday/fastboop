@@ -15,8 +15,6 @@ use fastboop_core::{
     BootProfileArtifactSource,
 };
 use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
-use gibblox_cache::CachedBlockReader;
-use gibblox_cache_store_std::StdCacheOps;
 use gibblox_core::{
     block_identity_string, AlignedByteReader, BlockByteReader, BlockReader, GibbloxError,
     GibbloxErrorKind, GibbloxResult, ReadContext,
@@ -321,7 +319,8 @@ async fn build_stage0_artifacts(
                         let rootfs_url = Url::parse(&rootfs_channel).map_err(|err| {
                             anyhow!("parse boot profile rootfs URL {rootfs_channel}: {err}")
                         })?;
-                        let (reader, _exact_size_bytes) = open_cached_http_reader(&rootfs_url).await?;
+                        let (reader, _exact_size_bytes) =
+                            open_uncached_http_reader(&rootfs_url).await?;
                         if let Some(entry_name) = zip_entry_name_from_url(&rootfs_url)? {
                             let zip_reader = ZipEntryBlockReader::new(&entry_name, reader.clone())
                                 .await
@@ -442,22 +441,6 @@ fn boot_profile_http_source_url(boot_profile: &BootProfile) -> Result<String> {
             boot_profile.id
         ),
     }
-}
-
-async fn open_cached_http_reader(url: &Url) -> Result<(Arc<dyn BlockReader>, u64)> {
-    let http_reader = HttpReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-        .await
-        .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
-    let exact_size_bytes = http_reader.size_bytes();
-    let block_reader = BlockByteReader::new(http_reader, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-        .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
-    let cache = StdCacheOps::open_default_for_reader(&block_reader)
-        .await
-        .map_err(|err| anyhow!("open std cache for HTTP source: {err}"))?;
-    let cached = CachedBlockReader::new(block_reader, cache)
-        .await
-        .map_err(|err| anyhow!("initialize std cache for HTTP source: {err}"))?;
-    Ok((Arc::new(cached), exact_size_bytes))
 }
 
 async fn open_uncached_http_reader(url: &Url) -> Result<(Arc<dyn BlockReader>, u64)> {

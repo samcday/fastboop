@@ -1,8 +1,6 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use anyhow::{anyhow, Result};
-    use gibblox_cache::CachedBlockReader;
-    use gibblox_cache_store_opfs::OpfsCacheOps;
     use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
     use gibblox_casync_web::{
         WebCasyncChunkStore, WebCasyncChunkStoreConfig, WebCasyncIndexSource,
@@ -21,20 +19,14 @@ mod wasm {
         channel_offset_bytes: u64,
         channel_chunk_store_url: Option<&str>,
     ) -> Result<Arc<dyn BlockReader>> {
-        build_channel_reader_pipeline_impl(
-            channel,
-            channel_offset_bytes,
-            channel_chunk_store_url,
-            false,
-        )
-        .await
+        build_channel_reader_pipeline_impl(channel, channel_offset_bytes, channel_chunk_store_url)
+            .await
     }
 
     async fn build_channel_reader_pipeline_impl(
         channel: &str,
         channel_offset_bytes: u64,
         channel_chunk_store_url: Option<&str>,
-        cache_http: bool,
     ) -> Result<Arc<dyn BlockReader>> {
         let channel = channel.trim();
         if channel.is_empty() {
@@ -67,17 +59,7 @@ mod wasm {
             .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
         let block_reader = BlockByteReader::new(http_reader, DEFAULT_IMAGE_BLOCK_SIZE)
             .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
-        let reader: Arc<dyn BlockReader> = if cache_http {
-            let cache = OpfsCacheOps::open_for_reader(&block_reader)
-                .await
-                .map_err(|err| anyhow!("open OPFS cache: {err}"))?;
-            let cached = CachedBlockReader::new(block_reader, cache)
-                .await
-                .map_err(|err| anyhow!("initialize OPFS cache: {err}"))?;
-            Arc::new(cached)
-        } else {
-            Arc::new(block_reader)
-        };
+        let reader: Arc<dyn BlockReader> = Arc::new(block_reader);
         let reader = super::maybe_offset_reader(reader, channel_offset_bytes).await?;
         let reader: Arc<dyn BlockReader> = match zip_entry_name_from_url(&url)? {
             Some(entry_name) => {

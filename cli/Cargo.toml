@@ -43,8 +43,6 @@ gibblox-ext4 = { version = "=0.0.1-rc.13" }
 gibblox-mbr = { version = "=0.0.1-rc.13", features = ["std"] }
 gibblox-casync = { version = "=0.0.1-rc.13", features = ["std"] }
 gibblox-casync-std = { version = "=0.0.1-rc.13" }
-gibblox-cache = { version = "=0.0.1-rc.13", features = ["std"] }
-gibblox-cache-store-std = { version = "=0.0.1-rc.13" }
 gibblox-file = { version = "=0.0.1-rc.13" }
 gibblox-http = { version = "=0.0.1-rc.13", default-features = false, features = ["native-client"] }
 gibblox-pipeline = { version = "=0.0.1-rc.13", features = ["std"] }
