@@ -7,6 +7,10 @@ use fastboop_core::fastboot::{boot, download};
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::BootProfileArtifactSource;
 use fastboop_core::Personalization;
+#[cfg(target_arch = "wasm32")]
+use fastboop_core::{
+    boot_profile_pipeline_identities, read_channel_pipeline_hints_for_identities, ChannelStreamHead,
+};
 use fastboop_core::{resolve_effective_boot_profile_stage0, BootProfile};
 use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 #[cfg(target_arch = "wasm32")]
@@ -361,9 +365,12 @@ async fn build_stage0_artifacts(
                             "channel has no trailing artifact payload and no compatible boot profile selected"
                         )
                     })?;
-                    let sparse_hints = android_sparse_hints_by_identity(
-                        &channel_intake.pipeline_hints,
-                    )?;
+                    let sparse_hints = load_android_sparse_hints_for_boot_profile(
+                        channel.as_str(),
+                        &channel_intake,
+                        boot_profile,
+                    )
+                    .await?;
                     let provider_reader =
                         open_boot_profile_rootfs_reader(boot_profile, &sparse_hints).await?;
                     let size_bytes = reader_size_bytes(provider_reader.as_ref()).await?;
@@ -674,6 +681,45 @@ async fn open_web_file_channel_payload_reader(
         }
         None => Ok(reader),
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn load_android_sparse_hints_for_boot_profile(
+    channel: &str,
+    channel_intake: &SessionChannelIntake,
+    boot_profile: &BootProfile,
+) -> anyhow::Result<HashMap<String, AndroidSparseImageIndex>> {
+    if channel_intake.pipeline_hint_records.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let required_identities = boot_profile_pipeline_identities(boot_profile);
+    if required_identities.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let reader: Arc<dyn BlockReader> =
+        if let Some(web_file) = crate::resolve_web_file_channel(channel) {
+            open_web_file_channel_payload_reader(web_file, 0).await?
+        } else {
+            crate::channel_source::build_channel_reader_pipeline(channel, 0, None)
+                .await
+                .map_err(|err| anyhow::anyhow!("open channel reader for pipeline hints: {err}"))?
+        };
+
+    let stream_head = ChannelStreamHead {
+        pipeline_hint_records: channel_intake.pipeline_hint_records.clone(),
+        ..ChannelStreamHead::default()
+    };
+    let pipeline_hints = read_channel_pipeline_hints_for_identities(
+        reader.as_ref(),
+        &stream_head,
+        &required_identities,
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("read channel pipeline hints: {err}"))?;
+
+    android_sparse_hints_by_identity(&pipeline_hints)
 }
 
 #[cfg(target_arch = "wasm32")]

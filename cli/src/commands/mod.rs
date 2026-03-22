@@ -12,8 +12,9 @@ use async_trait::async_trait;
 use fastboop_core::fastboot::{FastbootProtocolError, ProbeError};
 use fastboop_core::{
     BootProfile, BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
-    CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES, CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamHead,
-    ChannelStreamKind, DeviceProfile, classify_channel_prefix, read_channel_stream_head,
+    CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamHead, ChannelStreamKind, DeviceProfile,
+    classify_channel_prefix, read_channel_pipeline_hints_for_boot_profile,
+    read_channel_stream_head_from_reader as read_channel_stream_head_from_reader_core,
     select_boot_profile_for_device,
 };
 use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
@@ -588,9 +589,10 @@ impl ArtifactReaderResolver {
         let stream_head =
             read_channel_stream_head_from_reader(source.reader.as_ref(), source_total_bytes)
                 .await?;
-        self.reset_pipeline_hints(&stream_head.pipeline_hints)?;
 
         if stream_head.boot_profiles.is_empty() {
+            self.reset_pipeline_hints(&PipelineHints::default())?;
+
             if let Some(requested) = requested_boot_profile_id {
                 bail!(
                     "boot profile '{}' was requested, but channel does not start with a boot profile stream",
@@ -626,6 +628,15 @@ impl ArtifactReaderResolver {
             requested_boot_profile_id,
         )
         .map_err(|err| anyhow!("{err}"))?;
+
+        let pipeline_hints = read_channel_pipeline_hints_for_boot_profile(
+            source.reader.as_ref(),
+            &stream_head,
+            &boot_profile,
+        )
+        .await
+        .map_err(|err| anyhow!("read channel pipeline hints: {err}"))?;
+        self.reset_pipeline_hints(&pipeline_hints)?;
 
         let reader = if stream_head.consumed_bytes < source_total_bytes {
             let trailing = OffsetChannelBlockReader::new(
@@ -970,12 +981,8 @@ async fn read_channel_stream_head_from_reader<R: BlockReader + ?Sized>(
     reader: &R,
     exact_total_bytes: u64,
 ) -> Result<ChannelStreamHead> {
-    let scan_cap = core::cmp::min(
-        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
-        exact_total_bytes,
-    ) as usize;
-    let prefix = read_channel_prefix(reader, scan_cap).await?;
-    read_channel_stream_head(prefix.as_slice(), exact_total_bytes)
+    read_channel_stream_head_from_reader_core(reader, exact_total_bytes)
+        .await
         .map_err(|err| anyhow!("read channel stream head: {err}"))
 }
 

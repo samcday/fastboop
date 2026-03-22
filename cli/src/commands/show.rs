@@ -60,7 +60,7 @@ fn render_show_report(
 
     if stream.boot_profiles.is_empty()
         && stream.dev_profiles.is_empty()
-        && stream.pipeline_hints.entries.is_empty()
+        && stream.pipeline_hint_entry_count() == 0
     {
         match kind {
             ChannelStreamKind::Unknown => {
@@ -93,7 +93,7 @@ fn render_show_report(
     out.push_str(
         format!(
             "pipeline_hint_entries: {}\n",
-            stream.pipeline_hints.entries.len()
+            stream.pipeline_hint_entry_count()
         )
         .as_str(),
     );
@@ -127,6 +127,10 @@ fn render_show_report(
         if !yaml.ends_with('\n') {
             out.push('\n');
         }
+    } else if !stream.pipeline_hint_records.is_empty() {
+        out.push_str("== Pipeline Hints ==\n");
+        out.push_str("details: deferred (indexed during channel intake)\n");
+        out.push_str(format!("records: {}\n", stream.pipeline_hint_records.len()).as_str());
     }
 
     Ok(out)

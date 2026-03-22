@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
-use fastboop_core::{read_channel_stream_head, CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES};
-use gibblox_core::{BlockByteReader, BlockReader, ReadContext};
+use fastboop_core::read_channel_stream_head_from_reader;
+use gibblox_core::{BlockByteReader, BlockReader};
 use gibblox_http::HttpReader;
 use std::env;
 use std::sync::OnceLock;
@@ -109,14 +109,8 @@ where
         ));
     }
 
-    let scan_cap = core::cmp::min(
-        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
-        exact_total_bytes,
-    ) as usize;
-    let prefix = read_channel_prefix(reader, scan_cap, exact_total_bytes)
+    let stream_head = read_channel_stream_head_from_reader(reader, exact_total_bytes)
         .await
-        .map_err(|err| invalid_desktop_channel_error(channel, &err))?;
-    let stream_head = read_channel_stream_head(prefix.as_slice(), exact_total_bytes)
         .map_err(|err| invalid_desktop_channel_error(channel, &err.to_string()))?;
 
     let intake = StartupChannelIntake {
@@ -176,36 +170,6 @@ fn parse_channel_from_args() -> Result<String, StartupChannelError> {
 fn validate_desktop_channel_url(channel: &str) -> Result<String, StartupChannelError> {
     Url::parse(channel).map_err(|err| invalid_desktop_channel_error(channel, &err.to_string()))?;
     Ok(channel.to_string())
-}
-
-async fn read_channel_prefix<R>(
-    reader: &R,
-    scan_cap: usize,
-    exact_total_bytes: u64,
-) -> Result<Vec<u8>, String>
-where
-    R: BlockReader + ?Sized,
-{
-    let block_size = usize::try_from(reader.block_size())
-        .map_err(|_| format!("channel block size {} is invalid", reader.block_size()))?;
-    if block_size == 0 {
-        return Err("channel block size is zero".to_string());
-    }
-
-    let prefix_len = core::cmp::min(scan_cap as u64, exact_total_bytes) as usize;
-    if prefix_len == 0 {
-        return Ok(Vec::new());
-    }
-
-    let blocks_to_read = prefix_len.div_ceil(block_size);
-    let mut scratch = vec![0u8; blocks_to_read * block_size];
-    let mut read = reader
-        .read_blocks(0, &mut scratch, ReadContext::FOREGROUND)
-        .await
-        .map_err(|err| format!("read channel prefix: {err}"))?;
-    read = core::cmp::min(read, prefix_len);
-    scratch.truncate(read);
-    Ok(scratch)
 }
 
 fn missing_desktop_channel_error(details: &str) -> StartupChannelError {

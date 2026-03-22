@@ -15,14 +15,13 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Subcommand};
 use fastboop_core::{
     BootProfile, BootProfileArtifactSource, BootProfileManifest, decode_boot_profile,
-    encode_boot_profile, validate_boot_profile,
+    encode_boot_profile, encode_channel_pipeline_hints_record, validate_boot_profile,
 };
 use gibblox_android_sparse::{AndroidSparseBlockReader, AndroidSparseImageIndex};
 use gibblox_core::{BlockReader, ReadContext};
 use gibblox_pipeline::{
     PipelineAndroidSparseChunkIndexHint, PipelineAndroidSparseIndexHint, PipelineContentDigestHint,
-    PipelineHint, PipelineHintEntry, PipelineHints, encode_pipeline_hints,
-    pipeline_identity_string,
+    PipelineHint, PipelineHintEntry, PipelineHints, pipeline_identity_string,
 };
 #[cfg(target_family = "unix")]
 use rustix::fs::statvfs;
@@ -148,7 +147,8 @@ async fn run_create(args: BootProfileCreateArgs) -> Result<()> {
         let mut resolver =
             ArtifactReaderResolver::with_local_artifacts(args.local_artifact.as_slice())?;
         let hints = collect_profile_pipeline_hints(&compiled, &mut resolver).await?;
-        let hint_bytes = encode_pipeline_hints(&hints).map_err(|err| anyhow!("{err}"))?;
+        let hint_bytes =
+            encode_channel_pipeline_hints_record(&hints).map_err(|err| anyhow!("{err}"))?;
         validate_binary_output(
             optimize_output.as_str(),
             "bootprofile optimize",
@@ -206,7 +206,7 @@ async fn run_optimize(args: BootProfileOptimizeArgs) -> Result<()> {
         "bootprofile optimize collecting pipeline hints"
     );
     let hints = collect_profile_pipeline_hints(&compiled, &mut resolver).await?;
-    let bytes = encode_pipeline_hints(&hints).map_err(|err| anyhow!("{err}"))?;
+    let bytes = encode_channel_pipeline_hints_record(&hints).map_err(|err| anyhow!("{err}"))?;
     info!(
         profile_id = %compiled.id,
         hint_entries = hints.entries.len(),
