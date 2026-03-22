@@ -42,29 +42,31 @@ topology:
       Owns app, networking, and routing manifests for fastboop public endpoints.
 
 ingress_dns_tls:
+  prerequisites:
+    - external-dns is installed and reconciles Service/HTTPRoute annotations cluster-wide.
+    - cert-manager is installed with a ClusterIssuer named letsencrypt.
   frontdoor:
     component: infra/k8s/frontdoor
-    deployment: frontdoor/frontdoor
-    service: frontdoor/frontdoor
+    deployment: fastboop/frontdoor
+    service: fastboop/frontdoor
     proxy: caddy
     listeners:
-      - HTTP :80 (redirect to HTTPS)
-      - HTTPS :443 (TLS terminate)
+      - HTTP :80 (served behind shared Gateway)
   dns:
-    managed_by: external-dns
-    source: Service annotations on frontdoor/frontdoor
+    managed_by: foundational external-dns
+    source: HTTPRoute annotations on fastboop/public
     current_hostnames:
       - fastboop.win
       - www.fastboop.win
       - flux.fastboop.win
       - matrix.fastboop.win
   tls:
-    certificate: frontdoor/frontdoor-tls
-    issuer: ClusterIssuer/letsencrypt
+    managed_by: foundational cert-manager
+    issuer: ClusterIssuer/letsencrypt (pre-existing)
   web_release_app:
     component: infra/k8s/fastboop-web
-    deployment: fastboop-web/fastboop-web
-    service: fastboop-web/fastboop-web
+    deployment: fastboop/fastboop-web
+    service: fastboop/fastboop-web
     host: www.fastboop.win
     route_contract:
       - / serves the configured live release version.
@@ -77,7 +79,7 @@ ingress_dns_tls:
       live_version_source: .github/workflows/ci.yml release event pushes this pin to main
 
 gha_proxy:
-  namespace: gha-proxy
+  namespace: fastboop
   route:
     hostname: fastboop.win
     path: /gha/<org>/<repo>/<runid>
@@ -101,9 +103,11 @@ fastboop_apex_redirects:
 layout_and_conventions:
   - Put each deployable in infra/k8s/<component>/ with its own kustomization.yaml.
   - Add new component directories to infra/k8s/kustomization.yaml resources.
-  - Add required namespaces to infra/k8s/namespaces.yaml.
+  - Assume namespace provisioning is handled by parent-cluster reconciliation.
+  - Keep deployables in the fastboop namespace; treat cert-manager and external-dns as external prerequisites.
+  - Do not place flux-system-scoped resources under infra/k8s.
   - Store secrets in infra/k8s as SOPS-encrypted manifests.
-  - Keep external DNS behavior explicit via annotations on Service resources.
+  - Keep external DNS behavior explicit via annotations on routed entry resources (HTTPRoute/Service).
   - Keep frontdoor Caddyfile as the single source of public host/path routing.
   - Keep fastboop-web live version pin in infra/k8s/fastboop-web/live-version.txt.
 
