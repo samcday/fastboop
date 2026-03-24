@@ -32,9 +32,9 @@ gibblox-blockreader-messageport = { version = "=0.0.1-rc.16" }
 gibblox-web-worker = { version = "=0.0.1-rc.16" }
 url = { workspace = true }
 serde_json = "1.0.145"
-smoo-host-core = { version = "=0.0.1-rc.1" }
-smoo-host-session = { version = "=0.0.1-rc.1" }
-smoo-host-blocksource-gibblox = { version = "=0.0.1-rc.1" }
+smoo-host-core = { version = "=0.0.1-rc.4" }
+smoo-host-session = { version = "=0.0.1-rc.4" }
+smoo-host-blocksource-gibblox = { version = "=0.0.1-rc.4" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "registry", "std"] }
 tracing-wasm = "0.2.1"
@@ -52,5 +52,4 @@ default = ["web"]
 web = ["dioxus/web"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-smoo-host-web-worker = { version = "=0.0.1-rc.1" }
-smoo-host-webusb = { version = "=0.0.1-rc.1" }
+smoo-host-web-worker = { version = "=0.0.1-rc.4" }
