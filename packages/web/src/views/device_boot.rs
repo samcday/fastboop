@@ -868,16 +868,15 @@ async fn load_android_sparse_hints_for_boot_profile(
         return Ok(HashMap::new());
     }
 
-    let reader: Arc<dyn BlockReader> =
-        if let Some(web_file) = crate::resolve_web_file_channel(channel) {
-            open_web_file_channel_payload_reader(web_file, 0).await?
-        } else {
-            crate::channel_source::build_channel_reader_pipeline(
-                channel, 0, None, None, false, false,
-            )
-                .await
-                .map_err(|err| anyhow::anyhow!("open channel reader for pipeline hints: {err}"))?
-        };
+    let reader: Arc<dyn BlockReader> = if let Some(web_file) =
+        crate::resolve_web_file_channel(channel)
+    {
+        open_web_file_channel_payload_reader(web_file, 0).await?
+    } else {
+        crate::channel_source::build_channel_reader_pipeline(channel, 0, None, None, false, false)
+            .await
+            .map_err(|err| anyhow::anyhow!("open channel reader for pipeline hints: {err}"))?
+    };
 
     let stream_head = ChannelStreamHead {
         pipeline_hint_records: channel_intake.pipeline_hint_records.clone(),
@@ -971,8 +970,8 @@ fn open_boot_profile_artifact_source<'a>(
                     source.cors_safelisted_mode,
                     true,
                 )
-                    .await
-                    .map_err(|err| anyhow::anyhow!("open HTTP artifact source {channel}: {err}"))
+                .await
+                .map_err(|err| anyhow::anyhow!("open HTTP artifact source {channel}: {err}"))
             }
             BootProfileArtifactSource::Casync(source) => {
                 let index = source.casync.index.trim();
@@ -989,12 +988,16 @@ fn open_boot_profile_artifact_source<'a>(
                     index,
                     0,
                     chunk_store,
-                    source.casync.content.as_ref().map(|content| content.size_bytes),
+                    source
+                        .casync
+                        .content
+                        .as_ref()
+                        .map(|content| content.size_bytes),
                     false,
                     true,
                 )
-                    .await
-                    .map_err(|err| anyhow::anyhow!("open casync artifact source {index}: {err}"))
+                .await
+                .map_err(|err| anyhow::anyhow!("open casync artifact source {index}: {err}"))
             }
             BootProfileArtifactSource::File(source) => {
                 let path = source.file.trim();
