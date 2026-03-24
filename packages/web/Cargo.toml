@@ -13,8 +13,8 @@ ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
-gobblytes-erofs = { version = "=0.0.1-rc.12" }
-gobblytes-core = { version = "=0.0.1-rc.12" }
+gobblytes-erofs = { version = "=0.0.1-rc.16" }
+gobblytes-core = { version = "=0.0.1-rc.16" }
 gibblox-core = { version = "=0.0.1-rc.16" }
 gibblox-casync = { version = "=0.0.1-rc.16" }
 gibblox-casync-web = { version = "=0.0.1-rc.16" }
