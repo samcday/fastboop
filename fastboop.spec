@@ -6,7 +6,7 @@
 %endif
 
 Name:           fastboop
-Version:        0.0.1_rc10
+Version:        0.0.1_rc11
 Release:        %autorelease
 Summary:        Ephemeral Linux boot tool for USB-enabled pocket computers
 License:        GPL-3.0-only
