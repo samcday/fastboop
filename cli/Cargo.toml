@@ -38,17 +38,17 @@ serde_json = "1.0.132"
 serde_yaml = { workspace = true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-gibblox-core = { version = "=0.0.1-rc.13", features = ["std"] }
-gibblox-ext4 = { version = "=0.0.1-rc.13" }
-gibblox-mbr = { version = "=0.0.1-rc.13", features = ["std"] }
-gibblox-casync = { version = "=0.0.1-rc.13", features = ["std"] }
-gibblox-casync-std = { version = "=0.0.1-rc.13" }
-gibblox-file = { version = "=0.0.1-rc.13" }
-gibblox-http = { version = "=0.0.1-rc.13", default-features = false, features = ["native-client"] }
-gibblox-pipeline = { version = "=0.0.1-rc.13", features = ["std"] }
-gibblox-android-sparse = { version = "=0.0.1-rc.13", features = ["std"] }
-gibblox-xz = { version = "=0.0.1-rc.13", features = ["std"] }
-gibblox-zip = { version = "=0.0.1-rc.13", features = ["std"] }
+gibblox-core = { version = "=0.0.1-rc.16", features = ["std"] }
+gibblox-ext4 = { version = "=0.0.1-rc.16" }
+gibblox-mbr = { version = "=0.0.1-rc.16", features = ["std"] }
+gibblox-casync = { version = "=0.0.1-rc.16", features = ["std"] }
+gibblox-casync-std = { version = "=0.0.1-rc.16" }
+gibblox-file = { version = "=0.0.1-rc.16" }
+gibblox-http = { version = "=0.0.1-rc.16", default-features = false, features = ["native-client"] }
+gibblox-pipeline = { version = "=0.0.1-rc.16", features = ["std"] }
+gibblox-android-sparse = { version = "=0.0.1-rc.16", features = ["std"] }
+gibblox-xz = { version = "=0.0.1-rc.16", features = ["std"] }
+gibblox-zip = { version = "=0.0.1-rc.16", features = ["std"] }
 gobblytes-core = { version = "=0.0.1-rc.12" }
 gobblytes-erofs = { version = "=0.0.1-rc.12" }
 gobblytes-fat = { version = "=0.0.1-rc.12" }
