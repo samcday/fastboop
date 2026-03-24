@@ -54,10 +54,10 @@ gibblox-zip = { version = "=0.0.1-rc.16", features = ["std"] }
 gobblytes-core = { version = "=0.0.1-rc.16" }
 gobblytes-erofs = { version = "=0.0.1-rc.16" }
 gobblytes-fat = { version = "=0.0.1-rc.16" }
-smoo-host-core = { version = "=0.0.1-rc.1" }
-smoo-host-session = { version = "=0.0.1-rc.1" }
-smoo-host-transport-rusb = { version = "=0.0.1-rc.1" }
-smoo-host-blocksource-gibblox = { version = "=0.0.1-rc.1" }
+smoo-host-core = { version = "=0.0.1-rc.4" }
+smoo-host-session = { version = "=0.0.1-rc.4" }
+smoo-host-transport-rusb = { version = "=0.0.1-rc.4" }
+smoo-host-blocksource-gibblox = { version = "=0.0.1-rc.4" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-util = { workspace = true }
 url = { workspace = true }
