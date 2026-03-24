@@ -45,6 +45,8 @@ gibblox-casync = { version = "=0.0.1-rc.16", features = ["std"] }
 gibblox-casync-std = { version = "=0.0.1-rc.16" }
 gibblox-file = { version = "=0.0.1-rc.16" }
 gibblox-http = { version = "=0.0.1-rc.16", default-features = false, features = ["native-client"] }
+gibblox-cache = { version = "=0.0.1-rc.16" }
+gibblox-cache-store-std = { version = "=0.0.1-rc.16" }
 gibblox-pipeline = { version = "=0.0.1-rc.16", features = ["std"] }
 gibblox-android-sparse = { version = "=0.0.1-rc.16", features = ["std"] }
 gibblox-xz = { version = "=0.0.1-rc.16", features = ["std"] }
