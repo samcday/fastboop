@@ -18,12 +18,14 @@ mod wasm {
         channel: &str,
         channel_offset_bytes: u64,
         channel_chunk_store_url: Option<&str>,
+        known_size_bytes: Option<u64>,
         cors_safelisted_mode: bool,
     ) -> Result<Arc<dyn BlockReader>> {
         build_channel_reader_pipeline_impl(
             channel,
             channel_offset_bytes,
             channel_chunk_store_url,
+            known_size_bytes,
             cors_safelisted_mode,
         )
         .await
@@ -33,12 +35,18 @@ mod wasm {
         channel: &str,
         channel_offset_bytes: u64,
         channel_chunk_store_url: Option<&str>,
+        known_size_bytes: Option<u64>,
         cors_safelisted_mode: bool,
     ) -> Result<Arc<dyn BlockReader>> {
         let channel = channel.trim();
         if channel.is_empty() {
             return Err(anyhow!(
                 "missing required channel URL for gibblox worker pipeline"
+            ));
+        }
+        if cors_safelisted_mode && known_size_bytes.is_none() {
+            return Err(anyhow!(
+                "cors_safelisted_mode requires known content size"
             ));
         }
         let url =
@@ -61,7 +69,11 @@ mod wasm {
             ));
         }
 
-        let config = HttpReaderConfig::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
+        let config = if let Some(size_bytes) = known_size_bytes {
+            HttpReaderConfig::with_size(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE, size_bytes)
+        } else {
+            HttpReaderConfig::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
+        }
             .with_cors_safelisted_mode(cors_safelisted_mode);
         let http_reader = HttpReader::open(config)
             .await
@@ -314,6 +326,7 @@ pub fn build_channel_reader_pipeline(
     _channel: &str,
     _channel_offset_bytes: u64,
     _channel_chunk_store_url: Option<&str>,
+    _known_size_bytes: Option<u64>,
     _cors_safelisted_mode: bool,
 ) -> anyhow::Result<std::sync::Arc<dyn gibblox_core::BlockReader>> {
     anyhow::bail!("channel reader pipeline is only available on wasm32 targets")
