@@ -3008,6 +3008,8 @@ dependencies = [
  "futures-util",
  "gibblox-android-sparse",
  "gibblox-blockreader-messageport",
+ "gibblox-cache",
+ "gibblox-cache-store-opfs",
  "gibblox-casync",
  "gibblox-casync-web",
  "gibblox-core",

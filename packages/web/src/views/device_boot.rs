@@ -30,13 +30,13 @@ use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 #[cfg(target_arch = "wasm32")]
 use gibblox_pipeline::{
-    encode_pipeline, pipeline_identity_string, validate_pipeline_hints, PipelineHint,
-    PipelineHints, PipelineSource,
+    encode_pipeline, pipeline_identity_string, validate_pipeline_hints, PipelineCachePolicy,
+    PipelineHint, PipelineHints, PipelineSource,
 };
 #[cfg(target_arch = "wasm32")]
 use gibblox_web_file::WebFileReader;
 #[cfg(target_arch = "wasm32")]
-use gibblox_web_worker::GibbloxWebWorker;
+use gibblox_web_worker::{GibbloxWebWorker, OpenPipelineRequestOptions};
 #[cfg(target_arch = "wasm32")]
 use gibblox_xz::XzBlockReader;
 use gibblox_zip::ZipEntryBlockReader;
@@ -552,8 +552,12 @@ async fn open_channel_payload_reader_via_worker(
 
     let pipeline_bytes = encode_pipeline(&pipeline_source)
         .map_err(|err| anyhow::anyhow!("encode channel pipeline source: {err}"))?;
+    let open_options = OpenPipelineRequestOptions {
+        image_block_size: None,
+        cache_policy: Some(PipelineCachePolicy::None),
+    };
     let opened = worker
-        .open_pipeline(&pipeline_bytes)
+        .open_pipeline_with_options(&pipeline_bytes, &open_options)
         .await
         .map_err(|err| anyhow::anyhow!("open gibblox worker pipeline: {err}"))?;
 
@@ -702,7 +706,9 @@ async fn load_android_sparse_hints_for_boot_profile(
         if let Some(web_file) = crate::resolve_web_file_channel(channel) {
             open_web_file_channel_payload_reader(web_file, 0).await?
         } else {
-            crate::channel_source::build_channel_reader_pipeline(channel, 0, None, None, false)
+            crate::channel_source::build_channel_reader_pipeline(
+                channel, 0, None, None, false, false,
+            )
                 .await
                 .map_err(|err| anyhow::anyhow!("open channel reader for pipeline hints: {err}"))?
         };
@@ -797,6 +803,7 @@ fn open_boot_profile_artifact_source<'a>(
                     None,
                     source.content.as_ref().map(|content| content.size_bytes),
                     source.cors_safelisted_mode,
+                    true,
                 )
                     .await
                     .map_err(|err| anyhow::anyhow!("open HTTP artifact source {channel}: {err}"))
@@ -818,6 +825,7 @@ fn open_boot_profile_artifact_source<'a>(
                     chunk_store,
                     source.casync.content.as_ref().map(|content| content.size_bytes),
                     false,
+                    true,
                 )
                     .await
                     .map_err(|err| anyhow::anyhow!("open casync artifact source {index}: {err}"))
