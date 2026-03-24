@@ -12,6 +12,8 @@ use fastboop_core::{
     boot_profile_pipeline_identities, read_channel_pipeline_hints_for_identities, ChannelStreamHead,
 };
 use fastboop_core::{resolve_effective_boot_profile_stage0, BootProfile};
+#[cfg(target_arch = "wasm32")]
+use fastboop_core::{BootProfileRootfs, BootProfileRootfsFilesystemSource};
 use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
@@ -24,6 +26,8 @@ use gibblox_core::AlignedByteReader;
 use gibblox_core::{block_identity_string, BlockByteReader, BlockReader};
 #[cfg(target_arch = "wasm32")]
 use gibblox_core::{GptBlockReader, GptPartitionSelector};
+#[cfg(target_arch = "wasm32")]
+use gibblox_ext4::{Ext4EntryType, Ext4Fs};
 #[cfg(not(target_arch = "wasm32"))]
 use gibblox_http::HttpReader;
 #[cfg(target_arch = "wasm32")]
@@ -87,6 +91,158 @@ const STATUS_RETRY_ATTEMPTS: usize = 5;
 #[cfg(target_arch = "wasm32")]
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const SMOO_MAX_IO_BYTES_KARG: &str = "smoo.max_io_bytes=1048576";
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Stage0RootfsKind {
+    Erofs,
+    Ext4,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+struct Ext4Rootfs {
+    fs: Ext4Fs,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Ext4Rootfs {
+    async fn open(reader: Arc<dyn BlockReader>) -> anyhow::Result<Self> {
+        let fs = Ext4Fs::open(reader)
+            .await
+            .map_err(|err| anyhow::anyhow!("open ext4 rootfs: {err}"))?;
+        Ok(Self { fs })
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Filesystem for Ext4Rootfs {
+    type Error = anyhow::Error;
+
+    async fn read_all(&self, path: &str) -> anyhow::Result<Vec<u8>> {
+        self.fs
+            .read_all(path)
+            .await
+            .map_err(|err| anyhow::anyhow!("read ext4 path {path}: {err}"))
+    }
+
+    async fn read_range(&self, path: &str, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {
+        self.fs
+            .read_range(path, offset, len)
+            .await
+            .map_err(|err| anyhow::anyhow!("read ext4 path range {path}@{offset}+{len}: {err}"))
+    }
+
+    async fn read_dir(&self, path: &str) -> anyhow::Result<Vec<String>> {
+        self.fs
+            .read_dir(path)
+            .await
+            .map_err(|err| anyhow::anyhow!("read ext4 directory {path}: {err}"))
+    }
+
+    async fn entry_type(&self, path: &str) -> anyhow::Result<Option<FilesystemEntryType>> {
+        let ty = self
+            .fs
+            .entry_type(path)
+            .await
+            .map_err(|err| anyhow::anyhow!("read ext4 entry type {path}: {err}"))?;
+        Ok(ty.map(|entry| match entry {
+            Ext4EntryType::File => FilesystemEntryType::File,
+            Ext4EntryType::Directory => FilesystemEntryType::Directory,
+            Ext4EntryType::Symlink => FilesystemEntryType::Symlink,
+            Ext4EntryType::Other => FilesystemEntryType::Other,
+        }))
+    }
+
+    async fn read_link(&self, path: &str) -> anyhow::Result<String> {
+        self.fs
+            .read_link(path)
+            .await
+            .map_err(|err| anyhow::anyhow!("read ext4 symlink target {path}: {err}"))
+    }
+
+    async fn exists(&self, path: &str) -> anyhow::Result<bool> {
+        self.fs
+            .exists(path)
+            .await
+            .map_err(|err| anyhow::anyhow!("check ext4 path {path}: {err}"))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+enum Stage0RootfsProvider {
+    Erofs(ErofsRootfs),
+    Ext4(Ext4Rootfs),
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Stage0RootfsProvider {
+    async fn open(
+        kind: Stage0RootfsKind,
+        reader: Arc<dyn BlockReader>,
+        size_bytes: u64,
+    ) -> anyhow::Result<Self> {
+        match kind {
+            Stage0RootfsKind::Erofs => {
+                let rootfs = ErofsRootfs::new(reader, size_bytes)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open erofs image: {err}"))?;
+                Ok(Self::Erofs(rootfs))
+            }
+            Stage0RootfsKind::Ext4 => {
+                let rootfs = Ext4Rootfs::open(reader).await?;
+                Ok(Self::Ext4(rootfs))
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Filesystem for Stage0RootfsProvider {
+    type Error = anyhow::Error;
+
+    async fn read_all(&self, path: &str) -> anyhow::Result<Vec<u8>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_all(path).await,
+            Self::Ext4(rootfs) => rootfs.read_all(path).await,
+        }
+    }
+
+    async fn read_range(&self, path: &str, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_range(path, offset, len).await,
+            Self::Ext4(rootfs) => rootfs.read_range(path, offset, len).await,
+        }
+    }
+
+    async fn read_dir(&self, path: &str) -> anyhow::Result<Vec<String>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_dir(path).await,
+            Self::Ext4(rootfs) => rootfs.read_dir(path).await,
+        }
+    }
+
+    async fn entry_type(&self, path: &str) -> anyhow::Result<Option<FilesystemEntryType>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.entry_type(path).await,
+            Self::Ext4(rootfs) => rootfs.entry_type(path).await,
+        }
+    }
+
+    async fn read_link(&self, path: &str) -> anyhow::Result<String> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_link(path).await,
+            Self::Ext4(rootfs) => rootfs.read_link(path).await,
+        }
+    }
+
+    async fn exists(&self, path: &str) -> anyhow::Result<bool> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.exists(path).await,
+            Self::Ext4(rootfs) => rootfs.exists(path).await,
+        }
+    }
+}
 
 pub async fn boot_selected_device(
     sessions: &mut SessionStore,
@@ -423,7 +579,17 @@ async fn build_stage0_artifacts(
 
             #[cfg(target_arch = "wasm32")]
             let build = {
-                let provider = ErofsRootfs::new(provider_reader.clone(), size_bytes).await?;
+                let rootfs_kind = if using_boot_profile_rootfs {
+                    let boot_profile = selected_boot_profile.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("selected boot profile is missing for web rootfs build")
+                    })?;
+                    rootfs_kind_for_web_boot(boot_profile)?
+                } else {
+                    Stage0RootfsKind::Erofs
+                };
+                let provider =
+                    Stage0RootfsProvider::open(rootfs_kind, provider_reader.clone(), size_bytes)
+                        .await?;
                 let selected_ostree = if using_boot_profile_rootfs
                     && selected_boot_profile
                         .as_ref()
@@ -1164,6 +1330,24 @@ fn nonempty(value: &str) -> Option<&str> {
         None
     } else {
         Some(trimmed)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn rootfs_kind_for_web_boot(boot_profile: &BootProfile) -> anyhow::Result<Stage0RootfsKind> {
+    match &boot_profile.rootfs {
+        BootProfileRootfs::Erofs(_) => Ok(Stage0RootfsKind::Erofs),
+        BootProfileRootfs::Ext4(_) => Ok(Stage0RootfsKind::Ext4),
+        BootProfileRootfs::Fat(_) => {
+            anyhow::bail!("web stage0 build does not support FAT rootfs providers")
+        }
+        BootProfileRootfs::Ostree(source) => match &source.ostree {
+            BootProfileRootfsFilesystemSource::Erofs(_) => Ok(Stage0RootfsKind::Erofs),
+            BootProfileRootfsFilesystemSource::Ext4(_) => Ok(Stage0RootfsKind::Ext4),
+            BootProfileRootfsFilesystemSource::Fat(_) => {
+                anyhow::bail!("web stage0 build does not support OSTree on FAT rootfs")
+            }
+        },
     }
 }
 

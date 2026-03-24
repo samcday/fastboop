@@ -20,6 +20,7 @@ gibblox-casync = { version = "=0.0.1-rc.16" }
 gibblox-casync-web = { version = "=0.0.1-rc.16" }
 gibblox-android-sparse = { version = "=0.0.1-rc.16" }
 gibblox-http = { version = "=0.0.1-rc.16", default-features = false, features = ["wasm-client"] }
+gibblox-ext4 = { version = "=0.0.1-rc.16" }
 gibblox-cache = { version = "=0.0.1-rc.16" }
 gibblox-cache-store-opfs = { version = "=0.0.1-rc.16" }
 gibblox-mbr = { version = "=0.0.1-rc.16" }
