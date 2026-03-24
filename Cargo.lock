@@ -3973,15 +3973,11 @@ dependencies = [
 
 [[package]]
 name = "gobblytes-core"
-version = "0.0.1-rc.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e31dd7ea8632086269ce2e2f9789650151f040b6c4a4fff290daba0c29bfffe5"
+version = "0.0.1-rc.16"
 
 [[package]]
 name = "gobblytes-erofs"
-version = "0.0.1-rc.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c7202d252f8db11c11ac21eae0d7c773f5605fc42c477f92d45b05060165a66"
+version = "0.0.1-rc.16"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3993,8 +3989,6 @@ dependencies = [
 [[package]]
 name = "gobblytes-erofs-rs"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1257e4a733e0a752b8f0a5d687551e40aa465e38ef97e148e1b56fc80f8bb5ee"
 dependencies = [
  "async-trait",
  "bitflags 2.11.0",
@@ -4015,9 +4009,7 @@ dependencies = [
 
 [[package]]
 name = "gobblytes-fat"
-version = "0.0.1-rc.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "549e3868308bc103ce068764d80024f6602aa34708f349307e0407fe08cdc01c"
+version = "0.0.1-rc.16"
 dependencies = [
  "gibblox-core",
  "gobblytes-core",
@@ -11410,16 +11402,4 @@ dependencies = [
 
 [[patch.unused]]
 name = "gibblox-iso9660"
-version = "0.0.1-rc.16"
-
-[[patch.unused]]
-name = "gobblytes-core"
-version = "0.0.1-rc.16"
-
-[[patch.unused]]
-name = "gobblytes-erofs"
-version = "0.0.1-rc.16"
-
-[[patch.unused]]
-name = "gobblytes-fat"
 version = "0.0.1-rc.16"
