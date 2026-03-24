@@ -1,6 +1,8 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use anyhow::{anyhow, Result};
+    use gibblox_cache::CachedBlockReader;
+    use gibblox_cache_store_opfs::OpfsCacheOps;
     use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
     use gibblox_casync_web::{
         WebCasyncChunkStore, WebCasyncChunkStoreConfig, WebCasyncIndexSource,
@@ -9,7 +11,7 @@ mod wasm {
     use gibblox_http::{HttpReader, HttpReaderConfig};
     use gibblox_zip::ZipEntryBlockReader;
     use std::sync::Arc;
-    use tracing::info;
+    use tracing::{info, warn};
     use url::Url;
 
     const DEFAULT_IMAGE_BLOCK_SIZE: u32 = 512;
@@ -20,6 +22,7 @@ mod wasm {
         channel_chunk_store_url: Option<&str>,
         known_size_bytes: Option<u64>,
         cors_safelisted_mode: bool,
+        cache_remote_sources: bool,
     ) -> Result<Arc<dyn BlockReader>> {
         build_channel_reader_pipeline_impl(
             channel,
@@ -27,6 +30,7 @@ mod wasm {
             channel_chunk_store_url,
             known_size_bytes,
             cors_safelisted_mode,
+            cache_remote_sources,
         )
         .await
     }
@@ -37,6 +41,7 @@ mod wasm {
         channel_chunk_store_url: Option<&str>,
         known_size_bytes: Option<u64>,
         cors_safelisted_mode: bool,
+        cache_remote_sources: bool,
     ) -> Result<Arc<dyn BlockReader>> {
         let channel = channel.trim();
         if channel.is_empty() {
@@ -60,7 +65,7 @@ mod wasm {
 
         let chunk_store_url = parse_optional_chunk_store_url(channel_chunk_store_url)?;
         if is_casync_blob_index_url(&url) {
-            let reader = open_casync_reader(url, chunk_store_url).await?;
+            let reader = open_casync_reader(url, chunk_store_url, cache_remote_sources).await?;
             return super::maybe_offset_reader(reader, channel_offset_bytes).await;
         }
         if chunk_store_url.is_some() {
@@ -81,6 +86,7 @@ mod wasm {
         let block_reader = BlockByteReader::new(http_reader, DEFAULT_IMAGE_BLOCK_SIZE)
             .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
         let reader: Arc<dyn BlockReader> = Arc::new(block_reader);
+        let reader = maybe_cache_remote_reader(reader, cache_remote_sources, "http").await;
         let reader = super::maybe_offset_reader(reader, channel_offset_bytes).await?;
         let reader: Arc<dyn BlockReader> = match zip_entry_name_from_url(&url)? {
             Some(entry_name) => {
@@ -97,6 +103,7 @@ mod wasm {
     async fn open_casync_reader(
         index_url: Url,
         chunk_store_url: Option<Url>,
+        cache_remote_sources: bool,
     ) -> Result<Arc<dyn BlockReader>> {
         let chunk_store_url = match chunk_store_url {
             Some(chunk_store_url) => chunk_store_url,
@@ -125,7 +132,42 @@ mod wasm {
         )
         .await
         .map_err(|err| anyhow!("open casync reader {index_url}: {err}"))?;
-        Ok(Arc::new(reader))
+        let reader: Arc<dyn BlockReader> = Arc::new(reader);
+        Ok(maybe_cache_remote_reader(reader, cache_remote_sources, "casync").await)
+    }
+
+    async fn maybe_cache_remote_reader(
+        reader: Arc<dyn BlockReader>,
+        cache_remote_sources: bool,
+        source_kind: &str,
+    ) -> Arc<dyn BlockReader> {
+        if !cache_remote_sources {
+            return reader;
+        }
+
+        let cache = match OpfsCacheOps::open_for_reader(&reader).await {
+            Ok(cache) => cache,
+            Err(err) => {
+                warn!(
+                    source_kind,
+                    error = %err,
+                    "failed to open OPFS cache for remote source; using uncached reader"
+                );
+                return reader;
+            }
+        };
+
+        match CachedBlockReader::new(Arc::clone(&reader), cache).await {
+            Ok(cached) => Arc::new(cached),
+            Err(err) => {
+                warn!(
+                    source_kind,
+                    error = %err,
+                    "failed to initialize cached remote source; using uncached reader"
+                );
+                reader
+            }
+        }
     }
 
     fn parse_optional_chunk_store_url(value: Option<&str>) -> Result<Option<Url>> {
@@ -328,6 +370,10 @@ pub fn build_channel_reader_pipeline(
     _channel_chunk_store_url: Option<&str>,
     _known_size_bytes: Option<u64>,
     _cors_safelisted_mode: bool,
+    _cache_remote_sources: bool,
+    _known_size_bytes: Option<u64>,
+    _cors_safelisted_mode: bool,
+    _cache_remote_sources: bool,
 ) -> anyhow::Result<std::sync::Arc<dyn gibblox_core::BlockReader>> {
     anyhow::bail!("channel reader pipeline is only available on wasm32 targets")
 }
