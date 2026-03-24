@@ -21,6 +21,8 @@ use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
 use gibblox_android_sparse::{
     AndroidSparseBlockReader, AndroidSparseChunkIndex, AndroidSparseImageIndex,
 };
+use gibblox_cache::CachedBlockReader;
+use gibblox_cache_store_std::StdCacheOps;
 use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
 use gibblox_casync_std::{
     StdCasyncChunkStore, StdCasyncChunkStoreConfig, StdCasyncChunkStoreLocator,
@@ -699,7 +701,7 @@ impl ArtifactReaderResolver {
                 BootProfileArtifactSource::Http(source) => {
                     let url = Url::parse(source.http.as_str())
                         .with_context(|| format!("parse HTTP artifact URL {}", source.http))?;
-                    open_uncached_http_reader(url).await?.reader
+                    cache_artifact_reader(open_uncached_http_reader(url).await?.reader).await?
                 }
                 BootProfileArtifactSource::File(source) => {
                     let path = Path::new(source.file.as_str());
@@ -729,9 +731,8 @@ impl ArtifactReaderResolver {
                                 source.casync.chunk_store.as_deref().unwrap_or_default()
                             )
                         })?;
-                    open_casync_reader(index_url, chunk_store, false)
-                        .await?
-                        .reader
+                    let reader = open_casync_reader(index_url, chunk_store, false).await?;
+                    cache_artifact_reader(reader.reader).await?
                 }
                 BootProfileArtifactSource::Xz(source) => {
                     let upstream = self.open_artifact_source(source.xz.as_ref()).await?;
@@ -1253,6 +1254,17 @@ async fn open_uncached_http_reader(url: Url) -> Result<ChannelSourceReader> {
         exact_size_bytes,
         reader: Arc::new(block_reader),
     })
+}
+
+async fn cache_artifact_reader(reader: Arc<dyn BlockReader>) -> Result<Arc<dyn BlockReader>> {
+    let cache_root = default_gibblox_cache_root().join("pipelines");
+    let cache_ops = StdCacheOps::open_in_for_reader(cache_root.as_path(), reader.as_ref())
+        .await
+        .map_err(|err| anyhow!("open pipeline cache file {}: {err}", cache_root.display()))?;
+    let cached = CachedBlockReader::new(reader, cache_ops)
+        .await
+        .map_err(|err| anyhow!("open pipeline cached reader: {err}"))?;
+    Ok(Arc::new(cached))
 }
 
 async fn open_casync_reader(
