@@ -702,7 +702,7 @@ async fn load_android_sparse_hints_for_boot_profile(
         if let Some(web_file) = crate::resolve_web_file_channel(channel) {
             open_web_file_channel_payload_reader(web_file, 0).await?
         } else {
-            crate::channel_source::build_channel_reader_pipeline(channel, 0, None)
+            crate::channel_source::build_channel_reader_pipeline(channel, 0, None, false)
                 .await
                 .map_err(|err| anyhow::anyhow!("open channel reader for pipeline hints: {err}"))?
         };
@@ -791,7 +791,12 @@ fn open_boot_profile_artifact_source<'a>(
                 if channel.is_empty() {
                     anyhow::bail!("boot profile rootfs.http source is empty");
                 }
-                crate::channel_source::build_channel_reader_pipeline(channel, 0, None)
+                crate::channel_source::build_channel_reader_pipeline(
+                    channel,
+                    0,
+                    None,
+                    source.cors_safelisted_mode,
+                )
                     .await
                     .map_err(|err| anyhow::anyhow!("open HTTP artifact source {channel}: {err}"))
             }
@@ -806,7 +811,7 @@ fn open_boot_profile_artifact_source<'a>(
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty());
-                crate::channel_source::build_channel_reader_pipeline(index, 0, chunk_store)
+                crate::channel_source::build_channel_reader_pipeline(index, 0, chunk_store, false)
                     .await
                     .map_err(|err| anyhow::anyhow!("open casync artifact source {index}: {err}"))
             }

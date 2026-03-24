@@ -6,7 +6,7 @@ mod wasm {
         WebCasyncChunkStore, WebCasyncChunkStoreConfig, WebCasyncIndexSource,
     };
     use gibblox_core::{BlockByteReader, BlockReader};
-    use gibblox_http::HttpReader;
+    use gibblox_http::{HttpReader, HttpReaderConfig};
     use gibblox_zip::ZipEntryBlockReader;
     use std::sync::Arc;
     use tracing::info;
@@ -18,15 +18,22 @@ mod wasm {
         channel: &str,
         channel_offset_bytes: u64,
         channel_chunk_store_url: Option<&str>,
+        cors_safelisted_mode: bool,
     ) -> Result<Arc<dyn BlockReader>> {
-        build_channel_reader_pipeline_impl(channel, channel_offset_bytes, channel_chunk_store_url)
-            .await
+        build_channel_reader_pipeline_impl(
+            channel,
+            channel_offset_bytes,
+            channel_chunk_store_url,
+            cors_safelisted_mode,
+        )
+        .await
     }
 
     async fn build_channel_reader_pipeline_impl(
         channel: &str,
         channel_offset_bytes: u64,
         channel_chunk_store_url: Option<&str>,
+        cors_safelisted_mode: bool,
     ) -> Result<Arc<dyn BlockReader>> {
         let channel = channel.trim();
         if channel.is_empty() {
@@ -54,7 +61,9 @@ mod wasm {
             ));
         }
 
-        let http_reader = HttpReader::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
+        let config = HttpReaderConfig::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
+            .with_cors_safelisted_mode(cors_safelisted_mode);
+        let http_reader = HttpReader::open(config)
             .await
             .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
         let block_reader = BlockByteReader::new(http_reader, DEFAULT_IMAGE_BLOCK_SIZE)
@@ -305,6 +314,7 @@ pub fn build_channel_reader_pipeline(
     _channel: &str,
     _channel_offset_bytes: u64,
     _channel_chunk_store_url: Option<&str>,
+    _cors_safelisted_mode: bool,
 ) -> anyhow::Result<std::sync::Arc<dyn gibblox_core::BlockReader>> {
     anyhow::bail!("channel reader pipeline is only available on wasm32 targets")
 }
