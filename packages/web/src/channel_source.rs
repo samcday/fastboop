@@ -50,9 +50,7 @@ mod wasm {
             ));
         }
         if cors_safelisted_mode && known_size_bytes.is_none() {
-            return Err(anyhow!(
-                "cors_safelisted_mode requires known content size"
-            ));
+            return Err(anyhow!("cors_safelisted_mode requires known content size"));
         }
         let url =
             Url::parse(channel).map_err(|err| anyhow!("parse channel URL {channel}: {err}"))?;
@@ -79,7 +77,7 @@ mod wasm {
         } else {
             HttpReaderConfig::new(url.clone(), DEFAULT_IMAGE_BLOCK_SIZE)
         }
-            .with_cors_safelisted_mode(cors_safelisted_mode);
+        .with_cors_safelisted_mode(cors_safelisted_mode);
         let http_reader = HttpReader::open(config)
             .await
             .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
