@@ -49,9 +49,6 @@ mod wasm {
                 "missing required channel URL for gibblox worker pipeline"
             ));
         }
-        if cors_safelisted_mode && known_size_bytes.is_none() {
-            return Err(anyhow!("cors_safelisted_mode requires known content size"));
-        }
         let url =
             Url::parse(channel).map_err(|err| anyhow!("parse channel URL {channel}: {err}"))?;
 
