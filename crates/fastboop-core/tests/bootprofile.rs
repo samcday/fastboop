@@ -43,6 +43,7 @@ fn boot_profile_ext4_roundtrip_binary_codec() {
         rootfs: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
             ext4: BootProfileArtifactSource::Http(BootProfileArtifactSourceHttpSource {
                 http: "https://example.invalid/rootfs.ext4".to_string(),
+                cors_safelisted_mode: false,
                 content: Some(sample_content()),
             }),
         }),
@@ -238,6 +239,7 @@ fn rejects_gpt_step_without_selector() {
                     source: Box::new(BootProfileArtifactSource::Http(
                         BootProfileArtifactSourceHttpSource {
                             http: "https://example.invalid/rootfs.img".to_string(),
+                            cors_safelisted_mode: false,
                             content: Some(sample_content()),
                         },
                     )),
@@ -274,6 +276,7 @@ fn rejects_mbr_step_without_selector() {
                     source: Box::new(BootProfileArtifactSource::Http(
                         BootProfileArtifactSourceHttpSource {
                             http: "https://example.invalid/rootfs.img".to_string(),
+                            cors_safelisted_mode: false,
                             content: Some(sample_content()),
                         },
                     )),
@@ -372,6 +375,7 @@ fn rejects_empty_kernel_path() {
         source: BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
             erofs: BootProfileArtifactSource::Http(BootProfileArtifactSourceHttpSource {
                 http: "https://example.invalid/kernel.img".to_string(),
+                cors_safelisted_mode: false,
                 content: Some(sample_content()),
             }),
         }),
