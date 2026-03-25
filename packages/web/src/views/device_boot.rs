@@ -766,49 +766,9 @@ async fn open_channel_payload_reader_via_worker(
 #[cfg(target_arch = "wasm32")]
 async fn open_artifact_source_via_worker(
     worker: &GibbloxWebWorker,
-    source: &str,
-    chunk_store_url: Option<&str>,
-    cors_safelisted_mode: bool,
+    source: &PipelineSource,
 ) -> anyhow::Result<Arc<dyn BlockReader>> {
-    let source = source.trim();
-    if source.is_empty() {
-        anyhow::bail!("artifact source is empty");
-    }
-
-    let url = Url::parse(source)
-        .map_err(|err| anyhow::anyhow!("parse artifact source URL {source}: {err}"))?;
-    if is_casync_archive_index_url(&url) {
-        anyhow::bail!(
-            "casync archive indexes (.caidx) are not supported for artifact block reads; provide a casync blob index (.caibx)"
-        );
-    }
-
-    let chunk_store_url = parse_optional_chunk_store_url(chunk_store_url)?;
-    if !is_casync_blob_index_url(&url) && chunk_store_url.is_some() {
-        anyhow::bail!(
-            "artifact chunk store override is only supported with casync blob-index sources (.caibx)"
-        );
-    }
-
-    let pipeline_source: PipelineSource = if is_casync_blob_index_url(&url) {
-        serde_json::from_value(json!({
-            "casync": {
-                "index": url.to_string(),
-                "chunk_store": chunk_store_url
-                    .unwrap_or(derive_casync_chunk_store_url(&url)?)
-                    .to_string(),
-            }
-        }))
-        .map_err(|err| anyhow::anyhow!("build casync artifact pipeline source: {err}"))?
-    } else {
-        serde_json::from_value(json!({
-            "http": url.to_string(),
-            "cors_safelisted_mode": cors_safelisted_mode,
-        }))
-        .map_err(|err| anyhow::anyhow!("build HTTP artifact pipeline source: {err}"))?
-    };
-
-    let pipeline_bytes = encode_pipeline(&pipeline_source)
+    let pipeline_bytes = encode_pipeline(source)
         .map_err(|err| anyhow::anyhow!("encode artifact pipeline source: {err}"))?;
     let open_options = OpenPipelineRequestOptions {
         image_block_size: None,
@@ -1240,12 +1200,8 @@ fn open_boot_profile_artifact_source<'a>(
                     anyhow::bail!("boot profile rootfs.http source is empty");
                 }
                 if let Some(gibblox_worker) = gibblox_worker {
-                    return open_artifact_source_via_worker(
-                        gibblox_worker,
-                        channel,
-                        None,
-                        source.cors_safelisted_mode,
-                    )
+                    let pipeline_source = PipelineSource::Http(source.clone());
+                    return open_artifact_source_via_worker(gibblox_worker, &pipeline_source)
                     .await
                     .map_err(|err| anyhow::anyhow!("open HTTP artifact source {channel}: {err}"));
                 }
@@ -1272,12 +1228,8 @@ fn open_boot_profile_artifact_source<'a>(
                     .map(str::trim)
                     .filter(|value| !value.is_empty());
                 if let Some(gibblox_worker) = gibblox_worker {
-                    return open_artifact_source_via_worker(
-                        gibblox_worker,
-                        index,
-                        chunk_store,
-                        false,
-                    )
+                    let pipeline_source = PipelineSource::Casync(source.clone());
+                    return open_artifact_source_via_worker(gibblox_worker, &pipeline_source)
                     .await
                     .map_err(|err| anyhow::anyhow!("open casync artifact source {index}: {err}"));
                 }
