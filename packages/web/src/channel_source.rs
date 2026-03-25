@@ -366,9 +366,6 @@ pub fn build_channel_reader_pipeline(
     _known_size_bytes: Option<u64>,
     _cors_safelisted_mode: bool,
     _cache_remote_sources: bool,
-    _known_size_bytes: Option<u64>,
-    _cors_safelisted_mode: bool,
-    _cache_remote_sources: bool,
 ) -> anyhow::Result<std::sync::Arc<dyn gibblox_core::BlockReader>> {
     anyhow::bail!("channel reader pipeline is only available on wasm32 targets")
 }
