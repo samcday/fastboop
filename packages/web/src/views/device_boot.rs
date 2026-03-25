@@ -14,9 +14,7 @@ use fastboop_core::{
 use fastboop_core::{resolve_effective_boot_profile_stage0, BootProfile};
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::{BootProfileRootfs, BootProfileRootfsFilesystemSource};
-use fastboop_stage0_generator::{
-    build_stage0, Stage0KernelOverride, Stage0Options, Stage0SwitchrootFs,
-};
+use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
 #[cfg(target_arch = "wasm32")]

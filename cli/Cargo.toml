@@ -38,26 +38,26 @@ serde_json = "1.0.132"
 serde_yaml = { workspace = true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-gibblox-core = { version = "=0.0.1-rc.16", features = ["std"] }
-gibblox-ext4 = { version = "=0.0.1-rc.16" }
-gibblox-mbr = { version = "=0.0.1-rc.16", features = ["std"] }
-gibblox-casync = { version = "=0.0.1-rc.16", features = ["std"] }
-gibblox-casync-std = { version = "=0.0.1-rc.16" }
-gibblox-file = { version = "=0.0.1-rc.16" }
-gibblox-http = { version = "=0.0.1-rc.16", default-features = false, features = ["native-client"] }
-gibblox-cache = { version = "=0.0.1-rc.16" }
-gibblox-cache-store-std = { version = "=0.0.1-rc.16" }
-gibblox-pipeline = { version = "=0.0.1-rc.16", features = ["std"] }
-gibblox-android-sparse = { version = "=0.0.1-rc.16", features = ["std"] }
-gibblox-xz = { version = "=0.0.1-rc.16", features = ["std"] }
-gibblox-zip = { version = "=0.0.1-rc.16", features = ["std"] }
-gobblytes-core = { version = "=0.0.1-rc.16" }
-gobblytes-erofs = { version = "=0.0.1-rc.16" }
-gobblytes-fat = { version = "=0.0.1-rc.16" }
-smoo-host-core = { version = "=0.0.1-rc.4" }
-smoo-host-session = { version = "=0.0.1-rc.4" }
-smoo-host-transport-rusb = { version = "=0.0.1-rc.4" }
-smoo-host-blocksource-gibblox = { version = "=0.0.1-rc.4" }
+gibblox-core = { version = "=0.0.1-rc.17", features = ["std"] }
+gibblox-ext4 = { version = "=0.0.1-rc.17" }
+gibblox-mbr = { version = "=0.0.1-rc.17", features = ["std"] }
+gibblox-casync = { version = "=0.0.1-rc.17", features = ["std"] }
+gibblox-casync-std = { version = "=0.0.1-rc.17" }
+gibblox-file = { version = "=0.0.1-rc.17" }
+gibblox-http = { version = "=0.0.1-rc.17", default-features = false, features = ["native-client"] }
+gibblox-cache = { version = "=0.0.1-rc.17" }
+gibblox-cache-store-std = { version = "=0.0.1-rc.17" }
+gibblox-pipeline = { version = "=0.0.1-rc.17", features = ["std"] }
+gibblox-android-sparse = { version = "=0.0.1-rc.17", features = ["std"] }
+gibblox-xz = { version = "=0.0.1-rc.17", features = ["std"] }
+gibblox-zip = { version = "=0.0.1-rc.17", features = ["std"] }
+gobblytes-core = { version = "=0.0.1-rc.17" }
+gobblytes-erofs = { version = "=0.0.1-rc.17" }
+gobblytes-fat = { version = "=0.0.1-rc.17" }
+smoo-host-core = { version = "=0.0.1-rc.5" }
+smoo-host-session = { version = "=0.0.1-rc.5" }
+smoo-host-transport-rusb = { version = "=0.0.1-rc.5" }
+smoo-host-blocksource-gibblox = { version = "=0.0.1-rc.5" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-util = { workspace = true }
 url = { workspace = true }
