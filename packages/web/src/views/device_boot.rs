@@ -199,6 +199,13 @@ impl Stage0RootfsProvider {
             }
         }
     }
+
+    fn switchroot_fs(&self) -> Stage0SwitchrootFs {
+        match self {
+            Self::Erofs(_) => Stage0SwitchrootFs::Erofs,
+            Self::Ext4(_) => Stage0SwitchrootFs::Ext4,
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -612,6 +619,7 @@ async fn build_stage0_artifacts(
                 let provider =
                     Stage0RootfsProvider::open(rootfs_kind, provider_reader.clone(), size_bytes)
                         .await?;
+                stage0_opts.switchroot_fs = provider.switchroot_fs();
                 let selected_ostree = if using_boot_profile_rootfs
                     && selected_boot_profile
                         .as_ref()
