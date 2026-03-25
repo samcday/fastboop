@@ -14,7 +14,9 @@ use fastboop_core::{
 use fastboop_core::{resolve_effective_boot_profile_stage0, BootProfile};
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::{BootProfileRootfs, BootProfileRootfsFilesystemSource};
-use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
+use fastboop_stage0_generator::{
+    build_stage0, Stage0KernelOverride, Stage0Options, Stage0SwitchrootFs,
+};
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
 #[cfg(target_arch = "wasm32")]
@@ -49,6 +51,8 @@ use gloo_timers::future::sleep;
 #[cfg(target_arch = "wasm32")]
 use gobblytes_core::{Filesystem, FilesystemEntryType, OstreeFs as OstreeRootfs};
 use gobblytes_erofs::ErofsRootfs;
+#[cfg(target_arch = "wasm32")]
+use gobblytes_fat::FatFs;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Reflect;
 #[cfg(target_arch = "wasm32")]
@@ -464,6 +468,8 @@ async fn build_stage0_artifacts(
     let (tx, rx) = oneshot::channel();
     wasm_bindgen_futures::spawn_local(async move {
         let result: anyhow::Result<_> = async {
+            #[cfg(target_arch = "wasm32")]
+            let mut stage0_opts = stage0_opts;
             tracing::info!(profile = %profile.id, channel = %channel, "opening channel for web boot");
             #[cfg(target_arch = "wasm32")]
             let (
@@ -521,14 +527,30 @@ async fn build_stage0_artifacts(
                             "channel has no trailing artifact payload and no compatible boot profile selected"
                         )
                     })?;
+                    let gibblox_worker = spawn_gibblox_worker(channel.clone(), 0, None)
+                        .await
+                        .map_err(|err| anyhow::anyhow!("spawn gibblox worker failed: {err}"))?;
                     let sparse_hints = load_android_sparse_hints_for_boot_profile(
                         channel.as_str(),
                         &channel_intake,
                         boot_profile,
                     )
                     .await?;
-                    let provider_reader =
-                        open_boot_profile_rootfs_reader(boot_profile, &sparse_hints).await?;
+                    let provider_reader = open_boot_profile_rootfs_reader(
+                        boot_profile,
+                        &sparse_hints,
+                        Some(&gibblox_worker),
+                    )
+                    .await?;
+                    let (kernel_override, dtb_override) = resolve_boot_profile_source_overrides_web(
+                        boot_profile,
+                        &profile,
+                        &sparse_hints,
+                        Some(&gibblox_worker),
+                    )
+                    .await?;
+                    stage0_opts.kernel_override = kernel_override;
+                    stage0_opts.dtb_override = dtb_override;
                     let size_bytes = reader_size_bytes(provider_reader.as_ref()).await?;
                     let channel_identity = block_identity_string(provider_reader.as_ref());
                     let local_reader_bridge = LocalReaderBridge::new(provider_reader.clone());
@@ -742,6 +764,64 @@ async fn open_channel_payload_reader_via_worker(
 }
 
 #[cfg(target_arch = "wasm32")]
+async fn open_artifact_source_via_worker(
+    worker: &GibbloxWebWorker,
+    source: &str,
+    chunk_store_url: Option<&str>,
+    cors_safelisted_mode: bool,
+) -> anyhow::Result<Arc<dyn BlockReader>> {
+    let source = source.trim();
+    if source.is_empty() {
+        anyhow::bail!("artifact source is empty");
+    }
+
+    let url = Url::parse(source)
+        .map_err(|err| anyhow::anyhow!("parse artifact source URL {source}: {err}"))?;
+    if is_casync_archive_index_url(&url) {
+        anyhow::bail!(
+            "casync archive indexes (.caidx) are not supported for artifact block reads; provide a casync blob index (.caibx)"
+        );
+    }
+
+    let chunk_store_url = parse_optional_chunk_store_url(chunk_store_url)?;
+    if !is_casync_blob_index_url(&url) && chunk_store_url.is_some() {
+        anyhow::bail!(
+            "artifact chunk store override is only supported with casync blob-index sources (.caibx)"
+        );
+    }
+
+    let pipeline_source: PipelineSource = if is_casync_blob_index_url(&url) {
+        serde_json::from_value(json!({
+            "casync": {
+                "index": url.to_string(),
+                "chunk_store": chunk_store_url
+                    .unwrap_or(derive_casync_chunk_store_url(&url)?)
+                    .to_string(),
+            }
+        }))
+        .map_err(|err| anyhow::anyhow!("build casync artifact pipeline source: {err}"))?
+    } else {
+        serde_json::from_value(json!({
+            "http": url.to_string(),
+            "cors_safelisted_mode": cors_safelisted_mode,
+        }))
+        .map_err(|err| anyhow::anyhow!("build HTTP artifact pipeline source: {err}"))?
+    };
+
+    let pipeline_bytes = encode_pipeline(&pipeline_source)
+        .map_err(|err| anyhow::anyhow!("encode artifact pipeline source: {err}"))?;
+    let open_options = OpenPipelineRequestOptions {
+        image_block_size: None,
+        cache_policy: Some(PipelineCachePolicy::Head),
+    };
+    let opened = worker
+        .open_pipeline_with_options(&pipeline_bytes, &open_options)
+        .await
+        .map_err(|err| anyhow::anyhow!("open gibblox worker artifact pipeline: {err}"))?;
+    Ok(Arc::new(opened.reader))
+}
+
+#[cfg(target_arch = "wasm32")]
 fn parse_optional_chunk_store_url(value: Option<&str>) -> anyhow::Result<Option<Url>> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
@@ -946,14 +1026,211 @@ fn android_sparse_hints_by_identity(
 async fn open_boot_profile_rootfs_reader(
     boot_profile: &BootProfile,
     sparse_hints: &HashMap<String, AndroidSparseImageIndex>,
+    gibblox_worker: Option<&GibbloxWebWorker>,
 ) -> anyhow::Result<Arc<dyn BlockReader>> {
-    open_boot_profile_artifact_source(boot_profile.rootfs.source(), sparse_hints).await
+    open_boot_profile_artifact_source(boot_profile.rootfs.source(), sparse_hints, gibblox_worker)
+        .await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn resolve_boot_profile_source_overrides_web(
+    boot_profile: &BootProfile,
+    device_profile: &fastboop_core::DeviceProfile,
+    sparse_hints: &HashMap<String, AndroidSparseImageIndex>,
+    gibblox_worker: Option<&GibbloxWebWorker>,
+) -> anyhow::Result<(Option<Stage0KernelOverride>, Option<Vec<u8>>)> {
+    let kernel_override = if let Some(kernel_source) = boot_profile.kernel.as_ref() {
+        let kernel_path = non_empty_profile_path(kernel_source.path.as_str(), "kernel.path")?;
+        let source_reader = open_boot_profile_artifact_source(
+            kernel_source.artifact_source(),
+            sparse_hints,
+            gibblox_worker,
+        )
+        .await?;
+        let source_rootfs = ProfileSourceRootfs::open(&kernel_source.source, source_reader).await?;
+        let kernel_image = source_rootfs.read_all(kernel_path).await?;
+        Some(Stage0KernelOverride {
+            path: kernel_path.to_string(),
+            image: kernel_image,
+        })
+    } else {
+        None
+    };
+
+    let dtb_override = if let Some(dtbs_source) = boot_profile.dtbs.as_ref() {
+        let dtbs_base = non_empty_profile_path(dtbs_source.path.as_str(), "dtbs.path")?;
+        let source_reader = open_boot_profile_artifact_source(
+            dtbs_source.artifact_source(),
+            sparse_hints,
+            gibblox_worker,
+        )
+        .await?;
+        let source_rootfs = ProfileSourceRootfs::open(&dtbs_source.source, source_reader).await?;
+        let dtb_path = resolve_dtb_path_candidate_web(
+            &source_rootfs,
+            dtbs_base,
+            device_profile.devicetree_name.as_str(),
+        )
+        .await?;
+        Some(source_rootfs.read_all(dtb_path.as_str()).await?)
+    } else {
+        None
+    };
+
+    Ok((kernel_override, dtb_override))
+}
+
+#[cfg(target_arch = "wasm32")]
+enum ProfileSourceRootfs {
+    Erofs(ErofsRootfs),
+    Ext4(Ext4Rootfs),
+    Fat(FatFs),
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ProfileSourceRootfs {
+    async fn open(
+        source: &BootProfileRootfs,
+        reader: Arc<dyn BlockReader>,
+    ) -> anyhow::Result<Self> {
+        match source {
+            BootProfileRootfs::Ostree(source) => match &source.ostree {
+                BootProfileRootfsFilesystemSource::Erofs(_) => {
+                    let total_blocks = reader.total_blocks().await?;
+                    let image_size_bytes = total_blocks
+                        .checked_mul(reader.block_size() as u64)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("boot profile source image size overflow")
+                        })?;
+                    let rootfs = ErofsRootfs::new(reader, image_size_bytes)
+                        .await
+                        .map_err(|err| anyhow::anyhow!("open boot profile erofs source: {err}"))?;
+                    Ok(Self::Erofs(rootfs))
+                }
+                BootProfileRootfsFilesystemSource::Ext4(_) => {
+                    let rootfs = Ext4Rootfs::open(reader).await?;
+                    Ok(Self::Ext4(rootfs))
+                }
+                BootProfileRootfsFilesystemSource::Fat(_) => {
+                    let rootfs = FatFs::open(reader)
+                        .await
+                        .map_err(|err| anyhow::anyhow!("open boot profile fat source: {err}"))?;
+                    Ok(Self::Fat(rootfs))
+                }
+            },
+            BootProfileRootfs::Erofs(_) => {
+                let total_blocks = reader.total_blocks().await?;
+                let image_size_bytes = total_blocks
+                    .checked_mul(reader.block_size() as u64)
+                    .ok_or_else(|| anyhow::anyhow!("boot profile source image size overflow"))?;
+                let rootfs = ErofsRootfs::new(reader, image_size_bytes)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open boot profile erofs source: {err}"))?;
+                Ok(Self::Erofs(rootfs))
+            }
+            BootProfileRootfs::Ext4(_) => {
+                let rootfs = Ext4Rootfs::open(reader).await?;
+                Ok(Self::Ext4(rootfs))
+            }
+            BootProfileRootfs::Fat(_) => {
+                let rootfs = FatFs::open(reader)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open boot profile fat source: {err}"))?;
+                Ok(Self::Fat(rootfs))
+            }
+        }
+    }
+
+    async fn read_all(&self, path: &str) -> anyhow::Result<Vec<u8>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs
+                .read_all(path)
+                .await
+                .map_err(|err| anyhow::anyhow!("read boot profile erofs path {path}: {err}")),
+            Self::Ext4(rootfs) => rootfs
+                .read_all(path)
+                .await
+                .map_err(|err| anyhow::anyhow!("read boot profile ext4 path {path}: {err}")),
+            Self::Fat(rootfs) => rootfs
+                .read_all(path)
+                .await
+                .map_err(|err| anyhow::anyhow!("read boot profile fat path {path}: {err}")),
+        }
+    }
+
+    async fn exists(&self, path: &str) -> anyhow::Result<bool> {
+        match self {
+            Self::Erofs(rootfs) => rootfs
+                .exists(path)
+                .await
+                .map_err(|err| anyhow::anyhow!("check boot profile erofs path {path}: {err}")),
+            Self::Ext4(rootfs) => rootfs
+                .exists(path)
+                .await
+                .map_err(|err| anyhow::anyhow!("check boot profile ext4 path {path}: {err}")),
+            Self::Fat(rootfs) => rootfs
+                .exists(path)
+                .await
+                .map_err(|err| anyhow::anyhow!("check boot profile fat path {path}: {err}")),
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn non_empty_profile_path<'a>(path: &'a str, field: &str) -> anyhow::Result<&'a str> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("boot profile {field} must not be empty");
+    }
+    Ok(trimmed)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn resolve_dtb_path_candidate_web(
+    source_rootfs: &ProfileSourceRootfs,
+    dtbs_base: &str,
+    devicetree_name: &str,
+) -> anyhow::Result<String> {
+    let devicetree_name = devicetree_name.trim().trim_start_matches('/');
+    if devicetree_name.is_empty() {
+        anyhow::bail!("device profile devicetree_name is empty");
+    }
+
+    let mut candidates = Vec::new();
+    if dtbs_base.ends_with(".dtb") {
+        candidates.push(dtbs_base.to_string());
+    } else {
+        let dtb_file = format!("{devicetree_name}.dtb");
+        candidates.push(join_profile_path(dtbs_base, dtb_file.as_str()));
+        candidates.push(join_profile_path(dtbs_base, devicetree_name));
+        candidates.push(dtbs_base.to_string());
+    }
+
+    for candidate in candidates {
+        if source_rootfs.exists(candidate.as_str()).await? {
+            return Ok(candidate);
+        }
+    }
+
+    anyhow::bail!("boot profile dtbs path {dtbs_base} does not contain dtb for {devicetree_name}")
+}
+
+#[cfg(target_arch = "wasm32")]
+fn join_profile_path(base: &str, suffix: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let suffix = suffix.trim_start_matches('/');
+    if base.is_empty() {
+        format!("/{suffix}")
+    } else {
+        format!("{base}/{suffix}")
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 fn open_boot_profile_artifact_source<'a>(
     source: &'a BootProfileArtifactSource,
     sparse_hints: &'a HashMap<String, AndroidSparseImageIndex>,
+    gibblox_worker: Option<&'a GibbloxWebWorker>,
 ) -> Pin<Box<dyn Future<Output = anyhow::Result<Arc<dyn BlockReader>>> + 'a>> {
     Box::pin(async move {
         match source {
@@ -961,6 +1238,16 @@ fn open_boot_profile_artifact_source<'a>(
                 let channel = source.http.trim();
                 if channel.is_empty() {
                     anyhow::bail!("boot profile rootfs.http source is empty");
+                }
+                if let Some(gibblox_worker) = gibblox_worker {
+                    return open_artifact_source_via_worker(
+                        gibblox_worker,
+                        channel,
+                        None,
+                        source.cors_safelisted_mode,
+                    )
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open HTTP artifact source {channel}: {err}"));
                 }
                 crate::channel_source::build_channel_reader_pipeline(
                     channel,
@@ -984,6 +1271,16 @@ fn open_boot_profile_artifact_source<'a>(
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty());
+                if let Some(gibblox_worker) = gibblox_worker {
+                    return open_artifact_source_via_worker(
+                        gibblox_worker,
+                        index,
+                        chunk_store,
+                        false,
+                    )
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open casync artifact source {index}: {err}"));
+                }
                 crate::channel_source::build_channel_reader_pipeline(
                     index,
                     0,
@@ -1019,8 +1316,12 @@ fn open_boot_profile_artifact_source<'a>(
                 Ok(reader)
             }
             BootProfileArtifactSource::Xz(source) => {
-                let upstream =
-                    open_boot_profile_artifact_source(source.xz.as_ref(), sparse_hints).await?;
+                let upstream = open_boot_profile_artifact_source(
+                    source.xz.as_ref(),
+                    sparse_hints,
+                    gibblox_worker,
+                )
+                .await?;
                 let upstream = AlignedByteReader::new(upstream).await.map_err(|err| {
                     anyhow::anyhow!("open aligned byte view for xz source: {err}")
                 })?;
@@ -1037,6 +1338,7 @@ fn open_boot_profile_artifact_source<'a>(
                 let upstream = open_boot_profile_artifact_source(
                     source.android_sparseimg.source.as_ref(),
                     sparse_hints,
+                    gibblox_worker,
                 )
                 .await?;
                 let identity = pipeline_identity_string(
@@ -1066,9 +1368,12 @@ fn open_boot_profile_artifact_source<'a>(
                     anyhow::bail!("boot profile MBR source missing selector")
                 };
 
-                let upstream =
-                    open_boot_profile_artifact_source(source.mbr.source.as_ref(), sparse_hints)
-                        .await?;
+                let upstream = open_boot_profile_artifact_source(
+                    source.mbr.source.as_ref(),
+                    sparse_hints,
+                    gibblox_worker,
+                )
+                .await?;
                 let reader = MbrBlockReader::new(
                     upstream,
                     selector,
@@ -1090,9 +1395,12 @@ fn open_boot_profile_artifact_source<'a>(
                     anyhow::bail!("boot profile GPT source missing selector")
                 };
 
-                let upstream =
-                    open_boot_profile_artifact_source(source.gpt.source.as_ref(), sparse_hints)
-                        .await?;
+                let upstream = open_boot_profile_artifact_source(
+                    source.gpt.source.as_ref(),
+                    sparse_hints,
+                    gibblox_worker,
+                )
+                .await?;
                 let reader = GptBlockReader::new(
                     upstream,
                     selector,
