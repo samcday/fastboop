@@ -1208,8 +1208,10 @@ fn open_boot_profile_artifact_source<'a>(
                 if let Some(gibblox_worker) = gibblox_worker {
                     let pipeline_source = PipelineSource::Http(source.clone());
                     return open_artifact_source_via_worker(gibblox_worker, &pipeline_source)
-                    .await
-                    .map_err(|err| anyhow::anyhow!("open HTTP artifact source {channel}: {err}"));
+                        .await
+                        .map_err(|err| {
+                            anyhow::anyhow!("open HTTP artifact source {channel}: {err}")
+                        });
                 }
                 crate::channel_source::build_channel_reader_pipeline(
                     channel,
@@ -1236,8 +1238,10 @@ fn open_boot_profile_artifact_source<'a>(
                 if let Some(gibblox_worker) = gibblox_worker {
                     let pipeline_source = PipelineSource::Casync(source.clone());
                     return open_artifact_source_via_worker(gibblox_worker, &pipeline_source)
-                    .await
-                    .map_err(|err| anyhow::anyhow!("open casync artifact source {index}: {err}"));
+                        .await
+                        .map_err(|err| {
+                            anyhow::anyhow!("open casync artifact source {index}: {err}")
+                        });
                 }
                 crate::channel_source::build_channel_reader_pipeline(
                     index,
