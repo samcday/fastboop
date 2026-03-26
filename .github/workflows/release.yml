@@ -247,6 +247,11 @@ jobs:
           name: packages-aarch64
           path: release-artifacts/packages-aarch64
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: fastboop-web
+          path: release-artifacts/fastboop-web
+
       - name: Prepare release assets
         run: |
           set -euo pipefail
@@ -264,6 +269,8 @@ jobs:
           cp release-artifacts/APKBUILD/APKBUILD release-assets/APKBUILD
           cp release-artifacts/packages-x86_64/*.apk release-assets/
           cp release-artifacts/packages-aarch64/*.apk release-assets/
+
+          tar -C release-artifacts/fastboop-web -czf "release-assets/fastboop-web-${{ needs.gate.outputs.tag }}.tar.gz" .
 
           (
             cd release-assets
@@ -283,6 +290,7 @@ jobs:
 
           compgen -G 'release-assets/*.deb' >/dev/null
           compgen -G 'release-assets/*.apk' >/dev/null
+          compgen -G 'release-assets/fastboop-web-*.tar.gz' >/dev/null
 
       - if: needs.gate.outputs.mode == 'tag'
         name: Require release automation token
@@ -309,11 +317,12 @@ jobs:
             release-assets/*.deb
             release-assets/APKBUILD
             release-assets/*.apk
+            release-assets/fastboop-web-*.tar.gz
             release-assets/SHA256SUMS
 
   pass:
     name: "✅ Pass"
-    needs: [gate, release, ci, stage0-preflight, debian, alpine, publish-assets, publish-release, publish-crates]
+    needs: [gate, release, ci, stage0-preflight, debian, alpine, publish-assets, publish-release, publish-crates, bump-web-version]
     runs-on: ubuntu-latest
     if: always() && needs.gate.outputs.enabled == 'true'
     steps:
@@ -351,3 +360,47 @@ jobs:
         name: Skip release publication in PR mode
         run: |
           echo "release/v* PR mode: skipping draft publication"
+
+  bump-web-version:
+    needs: [gate, publish-release]
+    if: needs.gate.outputs.enabled == 'true' && needs.gate.outputs.mode == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+
+      - name: Bump fastboop-web live version pin
+        env:
+          WEB_TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          target_file="infra/k8s/fastboop-web/live-version.txt"
+
+          for attempt in 1 2 3; do
+            echo "attempt $attempt: setting $target_file -> $WEB_TAG"
+            git fetch origin main
+            git checkout -B main origin/main
+
+            printf '%s\n' "$WEB_TAG" > "$target_file"
+            if git diff --quiet -- "$target_file"; then
+              echo "live version already set to $WEB_TAG"
+              exit 0
+            fi
+
+            git add "$target_file"
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "chore(infra): set www live version to $WEB_TAG"
+
+            if git push origin HEAD:main; then
+              echo "pushed live version bump to main"
+              exit 0
+            fi
+
+            echo "push failed, retrying"
+            sleep "$attempt"
+          done
+
+          echo "failed to push live version bump after retries" >&2
+          exit 1
