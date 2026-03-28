@@ -11,6 +11,7 @@ members = [
     "packages/mobile",
     "packages/ui",
     "packages/web",
+    "xtask",
 ]
 resolver = "2"
 
