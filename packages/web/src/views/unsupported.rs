@@ -16,7 +16,7 @@ pub fn WebUnsupported(channel: String) -> Element {
                 p {
                     class: "unsupported__copy",
                     a {
-                        href: "http://docs.fastboop.win/user/quick-start/",
+                        href: "http://docs.fastboop.win/user/#quickstart",
                         target: "_blank",
                         rel: "noopener noreferrer",
                         "Use the CLI"
