@@ -3,3 +3,6 @@ name = "xtask"
 version = "0.0.0"
 edition = "2021"
 publish = false
+
+[dependencies]
+notify = { version = "8", features = ["macos_fsevent"] }
