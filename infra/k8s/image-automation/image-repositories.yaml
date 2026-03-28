@@ -1,0 +1,7 @@
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: frontdoor-edge
+spec:
+  image: ghcr.io/samcday/fastboop-frontdoor-edge
+  interval: 5m

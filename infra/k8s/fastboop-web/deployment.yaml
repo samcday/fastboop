@@ -4,7 +4,7 @@ metadata:
   name: fastboop-web
   annotations:
     reloader.stakater.com/auto: "true"
-    configmap.reloader.stakater.com/reload: fastboop-web-config,fastboop-web-live,fastboop-web-app
+    configmap.reloader.stakater.com/reload: fastboop-web-config,live-version,fastboop-web-app
 spec:
   replicas: 2
   selector:
@@ -27,7 +27,7 @@ spec:
             - configMapRef:
                 name: fastboop-web-config
             - configMapRef:
-                name: fastboop-web-live
+                name: live-version
           ports:
             - name: http
               containerPort: 8080
