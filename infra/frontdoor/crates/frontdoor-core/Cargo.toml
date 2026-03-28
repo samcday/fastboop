@@ -1,0 +1,11 @@
+[package]
+name = "frontdoor-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sha2 = { version = "0.10", default-features = false }
+
+[features]
+default = []
+std = []
