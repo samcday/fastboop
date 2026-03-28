@@ -329,6 +329,7 @@ jobs:
       - uses: re-actors/alls-green@release/v1
         with:
           jobs: ${{ toJSON(needs) }}
+          allowed-skips: bump-web-version
 
   publish-release:
     needs: [gate, release, publish-assets]
