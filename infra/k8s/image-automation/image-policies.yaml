@@ -1,0 +1,13 @@
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: frontdoor-edge
+spec:
+  imageRepositoryRef:
+    name: frontdoor-edge
+  filterTags:
+    pattern: '^(?P<ts>[0-9]+)$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
