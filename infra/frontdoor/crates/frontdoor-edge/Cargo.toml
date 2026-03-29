@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 frontdoor-core = { path = "../frontdoor-core", default-features = false }
 wstd = "0.6"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "env-filter"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tar = { version = "0.4", default-features = false }
 serde_json = "1"
