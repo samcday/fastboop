@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -9,7 +9,7 @@ use flate2::read::GzDecoder;
 use frontdoor_core::content_type::{cache_control_for_ext, content_type_for_ext};
 use tar::EntryType;
 use tracing::{debug, error, info, trace, warn};
-use wstd::http::{Body, Client, Request, Response, StatusCode};
+use wstd::http::{Body, BodyExt, Client, Request, Response, StatusCode};
 
 static TRACING_INIT: Once = Once::new();
 static CONFIG: OnceLock<Config> = OnceLock::new();
@@ -23,6 +23,7 @@ struct Config {
     github_repo: String,
     asset_name_template: String,
     max_cache_bytes: u64,
+    max_download_bytes: u64,
     matrix_server_name: String,
     matrix_client_base_url: String,
 }
@@ -56,6 +57,7 @@ impl Config {
             github_repo: env_or("GITHUB_REPO", "fastboop"),
             asset_name_template: env_or("ASSET_NAME_TEMPLATE", "fastboop-web-{version}.tar.gz"),
             max_cache_bytes: env_u64("MAX_CACHE_BYTES", 0),
+            max_download_bytes: env_u64("MAX_DOWNLOAD_BYTES", 100_000_000),
             matrix_server_name: env_or("MATRIX_SERVER_NAME", "matrix.fastboop.win:443"),
             matrix_client_base_url: env_or("MATRIX_CLIENT_BASE_URL", "https://matrix.fastboop.win"),
         }
@@ -88,6 +90,7 @@ fn config() -> &'static Config {
             github_repo = %cfg.github_repo,
             cache_dir = %cfg.cache_dir,
             max_cache_bytes = cfg.max_cache_bytes,
+            max_download_bytes = cfg.max_download_bytes,
             "config loaded"
         );
         cfg
@@ -110,6 +113,7 @@ fn ensure_tracing() {
         tracing_subscriber::fmt()
             .with_ansi(false)
             .with_target(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .init();
     });
 }
@@ -178,6 +182,19 @@ async fn main(request: Request<Body>) -> Result<Response<Body>, wstd::http::Erro
                 serve_versioned(cfg, version, relative).await
             }
             None => {
+                // Bare version path without trailing slash (e.g. /v0.0.1-rc.13)
+                // -> redirect to add the slash so parse_version_path matches next time
+                let bare = path.strip_prefix('/').unwrap_or(path);
+                if frontdoor_core::version::is_valid_version(bare) {
+                    debug!(handler = "version_redirect", path = %path, "route matched");
+                    return Ok(Response::builder()
+                        .status(StatusCode::TEMPORARY_REDIRECT)
+                        .header("location", format!("{path}/"))
+                        .header("cache-control", "no-store")
+                        .header("content-length", "0")
+                        .body(Body::empty())
+                        .expect("version redirect response should build"));
+                }
                 debug!(handler = "not_found", path = %path, "route matched");
                 Ok(text_response(StatusCode::NOT_FOUND, "not found\n"))
             }
@@ -205,7 +222,15 @@ async fn serve_versioned(
         return Ok(text_response(StatusCode::NOT_FOUND, "not found\n"));
     }
 
-    let decoded = percent_decode_path(&normalized);
+    let decoded = match percent_decode_path(&normalized) {
+        Ok(decoded) => decoded,
+        Err(()) => {
+            return Ok(text_response(
+                StatusCode::BAD_REQUEST,
+                "invalid path encoding\n",
+            ));
+        }
+    };
     if !is_safe_relative_path(&decoded) {
         return Ok(text_response(StatusCode::NOT_FOUND, "not found\n"));
     }
@@ -295,8 +320,8 @@ async fn materialize_version(cfg: &Config, version: &str) -> Result<(), EdgeErro
     let result: Result<(), EdgeError> = async {
         fs::create_dir_all(&extract_root).map_err(io_500)?;
 
-        let body = download_release_tarball(cfg, version).await?;
-        fs::write(&tarball_path, body).map_err(io_500)?;
+        let bytes_downloaded = download_release_tarball(cfg, version, &tarball_path).await?;
+        info!(version = %version, bytes = bytes_downloaded, "download completed");
 
         let extracted_entries = match extract_release_tarball(&tarball_path, &extract_root) {
             Ok(count) => count,
@@ -353,13 +378,21 @@ async fn materialize_version(cfg: &Config, version: &str) -> Result<(), EdgeErro
     Ok(())
 }
 
-async fn download_release_tarball(cfg: &Config, version: &str) -> Result<Vec<u8>, EdgeError> {
+async fn download_release_tarball(
+    cfg: &Config,
+    version: &str,
+    dest: &Path,
+) -> Result<u64, EdgeError> {
     let asset_name = release_asset_name(&cfg.asset_name_template, version)?;
     let start_url = format!(
         "https://github.com/{}/{}/releases/download/{}/{}",
         cfg.github_owner, cfg.github_repo, version, asset_name
     );
     debug!(version = %version, url = %start_url, "constructed github download url");
+
+    let mut temp_path = dest.as_os_str().to_owned();
+    temp_path.push(".downloading");
+    let temp_path = PathBuf::from(temp_path);
 
     let mut url = start_url;
     let mut redirects = 0_usize;
@@ -372,7 +405,7 @@ async fn download_release_tarball(cfg: &Config, version: &str) -> Result<Vec<u8>
             .body(Body::empty())
             .expect("request should build");
 
-        let mut response = client.send(request).await.map_err(|err| {
+        let response = client.send(request).await.map_err(|err| {
             error!(
                 version = %version,
                 status = %"request_error",
@@ -435,26 +468,87 @@ async fn download_release_tarball(cfg: &Config, version: &str) -> Result<Vec<u8>
             ));
         }
 
-        let bytes = response
-            .body_mut()
-            .contents()
-            .await
-            .map_err(|err| {
-                error!(
-                    version = %version,
-                    status = %status,
-                    url = %url,
-                    error = %err,
-                    "download failed"
-                );
-                EdgeError::new(
-                    StatusCode::BAD_GATEWAY,
-                    format!("failed to read release response body for {version}: {err}"),
-                )
-            })?
-            .to_vec();
-        info!(version = %version, bytes = bytes.len(), "download completed");
-        return Ok(bytes);
+        if let Some(len) = response
+            .headers()
+            .get("content-length")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            && cfg.max_download_bytes > 0
+            && len > cfg.max_download_bytes
+        {
+            error!(
+                version = %version,
+                status = %status,
+                url = %url,
+                content_length = len,
+                max_download_bytes = cfg.max_download_bytes,
+                "download rejected by size limit"
+            );
+            let _ = fs::remove_file(&temp_path);
+            return Err(EdgeError::new(
+                StatusCode::BAD_GATEWAY,
+                format!("release asset for {version} exceeds max download size ({len} bytes)"),
+            ));
+        }
+
+        let mut file = fs::File::create(&temp_path).map_err(io_500)?;
+        let mut total_bytes = 0_u64;
+        let mut body = response.into_body().into_boxed_body();
+
+        loop {
+            match BodyExt::frame(&mut body).await {
+                Some(Ok(frame)) => {
+                    if let Some(data) = frame.data_ref() {
+                        total_bytes = total_bytes.saturating_add(data.len() as u64);
+                        if cfg.max_download_bytes > 0 && total_bytes > cfg.max_download_bytes {
+                            error!(
+                                version = %version,
+                                status = %status,
+                                url = %url,
+                                bytes = total_bytes,
+                                max_download_bytes = cfg.max_download_bytes,
+                                "download rejected by size limit"
+                            );
+                            let _ = fs::remove_file(&temp_path);
+                            return Err(EdgeError::new(
+                                StatusCode::BAD_GATEWAY,
+                                format!("release asset for {version} exceeds max download size"),
+                            ));
+                        }
+                        if let Err(err) = file.write_all(data) {
+                            let _ = fs::remove_file(&temp_path);
+                            return Err(io_500(err));
+                        }
+                    }
+                }
+                Some(Err(err)) => {
+                    error!(
+                        version = %version,
+                        status = %status,
+                        url = %url,
+                        error = %err,
+                        "download failed"
+                    );
+                    let _ = fs::remove_file(&temp_path);
+                    return Err(EdgeError::new(
+                        StatusCode::BAD_GATEWAY,
+                        format!("failed to read release response body for {version}: {err}"),
+                    ));
+                }
+                None => break,
+            }
+        }
+
+        if let Err(err) = file.flush() {
+            let _ = fs::remove_file(&temp_path);
+            return Err(io_500(err));
+        }
+        if let Err(err) = fs::rename(&temp_path, dest) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(io_500(err));
+        }
+        debug!(from = ?temp_path, to = ?dest, "promoted downloaded tarball");
+        return Ok(total_bytes);
     }
 }
 
@@ -526,7 +620,10 @@ fn extract_release_tarball(tarball: &Path, extract_root: &Path) -> Result<usize,
             }
             Ok(Err(err)) => {
                 // unpack() writes content first, then sets metadata (permissions,
-                // mtime). On WASI these metadata ops fail but the content is fine.
+                // mtime). On WASI these metadata ops always fail but the file content
+                // is already on disk. If a genuine write error ever surfaces through
+                // this path, the subsequent extraction steps will catch it (missing
+                // index.html, corrupt files, etc).
                 warn!(path = ?out_path, error = %err, "entry.unpack metadata failed (content written)");
                 extracted_entries += 1;
                 continue;
@@ -957,7 +1054,7 @@ fn is_redirect_status(status: StatusCode) -> bool {
         || status == StatusCode::PERMANENT_REDIRECT
 }
 
-fn percent_decode_path(path: &str) -> String {
+fn percent_decode_path(path: &str) -> Result<String, ()> {
     let mut out = Vec::with_capacity(path.len());
     let bytes = path.as_bytes();
     let mut i = 0usize;
@@ -977,7 +1074,7 @@ fn percent_decode_path(path: &str) -> String {
         i += 1;
     }
 
-    String::from_utf8(out).unwrap_or_else(|_| path.to_string())
+    String::from_utf8(out).map_err(|_| ())
 }
 
 fn hex_value(c: u8) -> Option<u8> {

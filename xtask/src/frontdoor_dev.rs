@@ -121,6 +121,8 @@ fn serve(live_version: &str, cache_dir: &str, wasm_path: &str, addr: &str) -> Ch
             "--addr",
             addr,
             "--env",
+            &format!("RUST_LOG={}", std::env::var("RUST_LOG").as_deref().unwrap_or("info")),
+            "--env",
             &format!("LIVE_VERSION={live_version}"),
             "--env",
             "GITHUB_OWNER=samcday",
