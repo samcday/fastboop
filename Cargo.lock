@@ -2861,7 +2861,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-cli"
-version = "0.0.1-rc.13"
+version = "0.0.1-rc.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2905,7 +2905,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-core"
-version = "0.0.1-rc.13"
+version = "0.0.1-rc.14"
 dependencies = [
  "fastboop-schema",
  "gibblox-core",
@@ -2918,7 +2918,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-desktop"
-version = "0.0.1-rc.13"
+version = "0.0.1-rc.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2944,7 +2944,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-fastboot-rusb"
-version = "0.0.1-rc.13"
+version = "0.0.1-rc.14"
 dependencies = [
  "fastboop-core",
  "futures-channel",
@@ -2955,7 +2955,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-fastboot-webusb"
-version = "0.0.1-rc.13"
+version = "0.0.1-rc.14"
 dependencies = [
  "fastboop-core",
  "futures-channel",
@@ -2969,7 +2969,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-mobile"
-version = "0.0.1-rc.13"
+version = "0.0.1-rc.14"
 dependencies = [
  "dioxus",
  "tracing",
@@ -2979,7 +2979,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-schema"
-version = "0.0.1-rc.13"
+version = "0.0.1-rc.14"
 dependencies = [
  "gibblox-pipeline",
  "schemars",
@@ -2988,7 +2988,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-stage0"
-version = "0.0.1-rc.13"
+version = "0.0.1-rc.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -3003,7 +3003,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-stage0-generator"
-version = "0.0.1-rc.13"
+version = "0.0.1-rc.14"
 dependencies = [
  "dtoolkit",
  "fastboop-core",
@@ -3018,7 +3018,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-web"
-version = "0.0.1-rc.13"
+version = "0.0.1-rc.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9485,7 +9485,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "0.0.1-rc.13"
+version = "0.0.1-rc.14"
 dependencies = [
  "dioxus",
  "fastboop-core",
