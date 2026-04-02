@@ -34,14 +34,6 @@ jobs:
         run: |
           cargo build --release --target wasm32-wasip2 -p frontdoor-edge
 
-      - name: Login to GHCR for wash
-        if: github.event_name != 'pull_request'
-        working-directory: infra/frontdoor
-        env:
-          WASH_REG_USER: ${{ github.actor }}
-          WASH_REG_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: wash reg login ghcr.io
-
       - name: Push wasm component to GHCR
         if: github.event_name != 'pull_request'
         env:
