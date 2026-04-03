@@ -11,6 +11,13 @@ spec:
       components:
         - name: frontdoor-edge
           image: ghcr.io/samcday/fastboop-frontdoor-edge:23927456205 # {"$imagepolicy": "fastboop:frontdoor-edge"}
+          localResources:
+            environment:
+              configFrom:
+                - name: live-version
+            allowedHosts:
+              - github.com
+              - objects.githubusercontent.com
       hostInterfaces:
         - namespace: wasi
           package: http
