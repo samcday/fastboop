@@ -18,6 +18,12 @@ spec:
             allowedHosts:
               - github.com
               - objects.githubusercontent.com
+            volumeMounts:
+              - name: cache
+                mountPath: /cache
+      volumes:
+        - name: cache
+          ephemeral: {}
       hostInterfaces:
         - namespace: wasi
           package: http
