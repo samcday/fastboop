@@ -41,5 +41,4 @@ jobs:
           WASH_REG_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         working-directory: infra/frontdoor
         run: |
-          wash push ghcr.io/${{ github.repository_owner }}/fastboop-frontdoor-edge:${{ github.run_id }} target/wasm32-wasip2/release/frontdoor_edge.wasm
-          wash push ghcr.io/${{ github.repository_owner }}/fastboop-frontdoor-edge:latest target/wasm32-wasip2/release/frontdoor_edge.wasm
+          wash push ghcr.io/${{ github.repository_owner }}/fastboop-frontdoor-edge:$(date +%s) target/wasm32-wasip2/release/frontdoor_edge.wasm

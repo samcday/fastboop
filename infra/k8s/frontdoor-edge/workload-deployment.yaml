@@ -10,7 +10,7 @@ spec:
         hostgroup: default
       components:
         - name: frontdoor-edge
-          image: ghcr.io/samcday/fastboop-frontdoor-edge:latest # {"$imagepolicy": "fastboop:frontdoor-edge"}
+          image: ghcr.io/samcday/fastboop-frontdoor-edge:23927456205 # {"$imagepolicy": "fastboop:frontdoor-edge"}
       hostInterfaces:
         - namespace: wasi
           package: http
