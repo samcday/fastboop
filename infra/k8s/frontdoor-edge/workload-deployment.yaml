@@ -18,6 +18,7 @@ spec:
             allowedHosts:
               - github.com
               - objects.githubusercontent.com
+              - release-assets.githubusercontent.com
             volumeMounts:
               - name: cache
                 mountPath: /cache
