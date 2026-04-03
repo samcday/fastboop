@@ -45,7 +45,7 @@ impl EdgeError {
 
 impl Config {
     fn from_env() -> Self {
-        let live_version = std::env::var("LIVE_VERSION").expect("LIVE_VERSION env var must be set");
+        let live_version = std::env::var("LIVE_VERSION").expect("LIVE_VERSION env var must be set").trim().to_string();
         if !frontdoor_core::version::is_valid_version(&live_version) {
             panic!("LIVE_VERSION must match vX.Y.Z or vX.Y.Z-rc.N");
         }
