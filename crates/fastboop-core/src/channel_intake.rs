@@ -4,9 +4,15 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use futures_util::stream::{self, StreamExt, TryStreamExt};
 use gibblox_core::{BlockReader, ReadContext};
 use gibblox_pipeline::{PipelineHints, pipeline_identity_string};
 
+use crate::channel_index::{
+    CHANNEL_INDEX_RECORD_FIXED_HEADER_LEN, ChannelIndexEntryV0,
+    channel_index_record_header_version, decode_channel_index_payload,
+    decode_channel_index_record_fixed_header, validate_channel_index,
+};
 use crate::channel_pipeline_hints::{
     CHANNEL_PIPELINE_HINTS_RECORD_FIXED_HEADER_LEN, ChannelPipelineHintsRecordHead,
     channel_pipeline_hints_record_header_version, decode_channel_pipeline_hints_record,
@@ -24,6 +30,8 @@ pub const CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS: usize = 128;
 
 const CHANNEL_STREAM_RECORD_PROBE_BYTES: usize = 64;
 const CHANNEL_STREAM_RECORD_INITIAL_READ_BYTES: usize = 4 * 1024;
+const CHANNEL_INDEX_DISPATCH_PROBE_BYTES: usize = 64;
+const CHANNEL_INDEX_PARALLEL_FETCH_LIMIT: usize = 16;
 
 #[derive(Clone, Debug, Default)]
 pub struct BootProfileStreamHead {
@@ -275,6 +283,16 @@ pub fn read_channel_stream_head(
     bytes: &[u8],
     exact_total_bytes: u64,
 ) -> Result<ChannelStreamHead, ChannelStreamHeadError> {
+    if channel_index_record_header_version(bytes).is_some() {
+        return read_indexed_channel_stream_head(bytes, exact_total_bytes);
+    }
+    read_sequential_channel_stream_head(bytes, exact_total_bytes)
+}
+
+fn read_sequential_channel_stream_head(
+    bytes: &[u8],
+    exact_total_bytes: u64,
+) -> Result<ChannelStreamHead, ChannelStreamHeadError> {
     let scan_cap = core::cmp::min(
         CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
         exact_total_bytes,
@@ -496,6 +514,28 @@ pub async fn read_channel_stream_head_from_reader<R: BlockReader + ?Sized>(
 ) -> Result<ChannelStreamHead, ChannelStreamHeadReadError> {
     let block_size = channel_reader_block_size(reader)?;
 
+    if exact_total_bytes >= CHANNEL_INDEX_RECORD_FIXED_HEADER_LEN as u64 {
+        let probe_len =
+            core::cmp::min(CHANNEL_INDEX_DISPATCH_PROBE_BYTES as u64, exact_total_bytes) as usize;
+        let probe = read_channel_reader_bytes(reader, block_size, 0, probe_len).await?;
+        if channel_index_record_header_version(probe.as_slice()).is_some() {
+            return read_indexed_channel_stream_head_from_reader(
+                reader,
+                block_size,
+                exact_total_bytes,
+            )
+            .await;
+        }
+    }
+
+    read_sequential_channel_stream_head_from_reader(reader, block_size, exact_total_bytes).await
+}
+
+async fn read_sequential_channel_stream_head_from_reader<R: BlockReader + ?Sized>(
+    reader: &R,
+    block_size: usize,
+    exact_total_bytes: u64,
+) -> Result<ChannelStreamHead, ChannelStreamHeadReadError> {
     let mut out = ChannelStreamHead::default();
     let mut cursor = 0u64;
     let mut records_consumed = 0usize;
@@ -658,6 +698,446 @@ pub async fn read_channel_stream_head_from_reader<R: BlockReader + ?Sized>(
 
     out.consumed_bytes = cursor;
     Ok(out)
+}
+
+fn read_indexed_channel_stream_head(
+    bytes: &[u8],
+    exact_total_bytes: u64,
+) -> Result<ChannelStreamHead, ChannelStreamHeadError> {
+    let fixed = decode_channel_index_record_fixed_header(bytes).map_err(|err| {
+        ChannelStreamHeadError::DecodeFailure {
+            record_type: "channel index",
+            offset: 0,
+            cause: format!("decode channel index header at offset 0: {err}"),
+        }
+    })?;
+    let payload_size = fixed.payload_size_bytes as usize;
+    let payload_start = CHANNEL_INDEX_RECORD_FIXED_HEADER_LEN;
+    let payload_end = payload_start
+        .checked_add(payload_size)
+        .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+    if bytes.len() < payload_end || (exact_total_bytes as usize) < payload_end {
+        return Err(ChannelStreamHeadError::DecodeFailure {
+            record_type: "channel index",
+            offset: 0,
+            cause: format!(
+                "channel index payload truncated (required {payload_end} bytes, got {})",
+                bytes.len()
+            ),
+        });
+    }
+    let payload_bytes = &bytes[payload_start..payload_end];
+    let index = decode_channel_index_payload(payload_bytes).map_err(|err| {
+        ChannelStreamHeadError::DecodeFailure {
+            record_type: "channel index",
+            offset: 0,
+            cause: format!("decode channel index payload at offset 0: {err}"),
+        }
+    })?;
+
+    let base_offset = payload_end as u64;
+    let records_region_size = exact_total_bytes
+        .checked_sub(base_offset)
+        .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+    validate_channel_index(
+        &index,
+        records_region_size,
+        CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS,
+    )
+    .map_err(|err| ChannelStreamHeadError::DecodeFailure {
+        record_type: "channel index",
+        offset: 0,
+        cause: format!("validate channel index at offset 0: {err}"),
+    })?;
+
+    let mut out = ChannelStreamHead::default();
+    let mut last_end: u64 = 0;
+
+    for (idx, entry) in index.entries.iter().enumerate() {
+        match entry {
+            ChannelIndexEntryV0::BootProfile { offset, size, id } => {
+                let absolute = base_offset
+                    .checked_add(*offset)
+                    .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+                let end = absolute
+                    .checked_add(*size)
+                    .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+                let record_bytes =
+                    record_slice(bytes, absolute, end, "boot profile", idx, *offset)?;
+                if boot_profile_bin_header_version(record_bytes).is_none() {
+                    return Err(ChannelStreamHeadError::DecodeFailure {
+                        record_type: "boot profile",
+                        offset: absolute,
+                        cause: format!(
+                            "channel index entry {idx} claims boot profile but record has wrong magic"
+                        ),
+                    });
+                }
+                let (profile, _) = decode_boot_profile_prefix(record_bytes).map_err(|err| {
+                    ChannelStreamHeadError::DecodeFailure {
+                        record_type: "boot profile",
+                        offset: absolute,
+                        cause: format!("decode boot profile stream at offset {absolute}: {err}"),
+                    }
+                })?;
+                if profile.id != *id {
+                    return Err(ChannelStreamHeadError::DecodeFailure {
+                        record_type: "boot profile",
+                        offset: absolute,
+                        cause: format!(
+                            "channel index entry {idx} id '{id}' does not match decoded profile id '{}'",
+                            profile.id
+                        ),
+                    });
+                }
+                validate_boot_profile(&profile).map_err(|err| {
+                    ChannelStreamHeadError::DecodeFailure {
+                        record_type: "boot profile",
+                        offset: absolute,
+                        cause: format!(
+                            "validate boot profile '{}' at stream offset {absolute}: {err}",
+                            profile.id
+                        ),
+                    }
+                })?;
+                out.boot_profiles.push(profile);
+                last_end = end;
+            }
+            ChannelIndexEntryV0::DeviceProfile { offset, size, id } => {
+                let absolute = base_offset
+                    .checked_add(*offset)
+                    .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+                let end = absolute
+                    .checked_add(*size)
+                    .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+                let record_bytes = record_slice(bytes, absolute, end, "dev profile", idx, *offset)?;
+                if dev_profile_bin_header_version(record_bytes).is_none() {
+                    return Err(ChannelStreamHeadError::DecodeFailure {
+                        record_type: "dev profile",
+                        offset: absolute,
+                        cause: format!(
+                            "channel index entry {idx} claims dev profile but record has wrong magic"
+                        ),
+                    });
+                }
+                let (profile, _) = decode_dev_profile_prefix(record_bytes).map_err(|err| {
+                    ChannelStreamHeadError::DecodeFailure {
+                        record_type: "dev profile",
+                        offset: absolute,
+                        cause: format!("decode dev profile stream at offset {absolute}: {err}"),
+                    }
+                })?;
+                if profile.id != *id {
+                    return Err(ChannelStreamHeadError::DecodeFailure {
+                        record_type: "dev profile",
+                        offset: absolute,
+                        cause: format!(
+                            "channel index entry {idx} id '{id}' does not match decoded profile id '{}'",
+                            profile.id
+                        ),
+                    });
+                }
+                out.dev_profiles.push(profile);
+                last_end = end;
+            }
+            ChannelIndexEntryV0::PipelineHints {
+                offset,
+                size,
+                payload_offset,
+                payload_size,
+                pipeline_identities,
+            } => {
+                let record_offset = base_offset
+                    .checked_add(*offset)
+                    .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+                let record_end = record_offset
+                    .checked_add(*size)
+                    .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+                let payload_abs_offset = base_offset
+                    .checked_add(*payload_offset)
+                    .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+                out.pipeline_hint_records.push(ChannelPipelineHintsRecord {
+                    record_offset_bytes: record_offset,
+                    payload_offset_bytes: payload_abs_offset,
+                    payload_size_bytes: *payload_size,
+                    pipeline_identities: pipeline_identities.clone(),
+                });
+                last_end = record_end;
+            }
+        }
+    }
+
+    out.consumed_bytes = last_end;
+    Ok(out)
+}
+
+fn record_slice<'a>(
+    bytes: &'a [u8],
+    absolute: u64,
+    end: u64,
+    record_type: &'static str,
+    idx: usize,
+    _relative_offset: u64,
+) -> Result<&'a [u8], ChannelStreamHeadError> {
+    let start = usize::try_from(absolute).map_err(|_| ChannelStreamHeadError::CursorOverflow)?;
+    let stop = usize::try_from(end).map_err(|_| ChannelStreamHeadError::CursorOverflow)?;
+    if bytes.len() < stop {
+        return Err(ChannelStreamHeadError::DecodeFailure {
+            record_type,
+            offset: absolute,
+            cause: format!(
+                "channel index entry {idx} extends beyond the input byte slice (required {stop} bytes, got {})",
+                bytes.len()
+            ),
+        });
+    }
+    Ok(&bytes[start..stop])
+}
+
+enum DecodedIndexEntry {
+    Boot {
+        profile: BootProfile,
+        end: u64,
+    },
+    Dev {
+        profile: DeviceProfile,
+        end: u64,
+    },
+    Hints {
+        record: ChannelPipelineHintsRecord,
+        end: u64,
+    },
+}
+
+async fn read_indexed_channel_stream_head_from_reader<R: BlockReader + ?Sized>(
+    reader: &R,
+    block_size: usize,
+    exact_total_bytes: u64,
+) -> Result<ChannelStreamHead, ChannelStreamHeadReadError> {
+    let fixed_bytes =
+        read_channel_reader_bytes(reader, block_size, 0, CHANNEL_INDEX_RECORD_FIXED_HEADER_LEN)
+            .await?;
+    let fixed =
+        decode_channel_index_record_fixed_header(fixed_bytes.as_slice()).map_err(|err| {
+            ChannelStreamHeadReadError::Decode(ChannelStreamHeadError::DecodeFailure {
+                record_type: "channel index",
+                offset: 0,
+                cause: format!("decode channel index header at offset 0: {err}"),
+            })
+        })?;
+    let payload_size = fixed.payload_size_bytes as usize;
+    let base_offset = (CHANNEL_INDEX_RECORD_FIXED_HEADER_LEN as u64)
+        .checked_add(payload_size as u64)
+        .ok_or(ChannelStreamHeadReadError::RangeOverflow)?;
+    if base_offset > exact_total_bytes {
+        return Err(ChannelStreamHeadReadError::Decode(
+            ChannelStreamHeadError::DecodeFailure {
+                record_type: "channel index",
+                offset: 0,
+                cause: format!(
+                    "channel index payload (base_offset {base_offset}) exceeds channel size {exact_total_bytes}"
+                ),
+            },
+        ));
+    }
+
+    let payload_bytes = read_channel_reader_bytes(
+        reader,
+        block_size,
+        CHANNEL_INDEX_RECORD_FIXED_HEADER_LEN as u64,
+        payload_size,
+    )
+    .await?;
+    let index = decode_channel_index_payload(payload_bytes.as_slice()).map_err(|err| {
+        ChannelStreamHeadReadError::Decode(ChannelStreamHeadError::DecodeFailure {
+            record_type: "channel index",
+            offset: 0,
+            cause: format!("decode channel index payload at offset 0: {err}"),
+        })
+    })?;
+
+    let records_region_size = exact_total_bytes
+        .checked_sub(base_offset)
+        .ok_or(ChannelStreamHeadReadError::RangeOverflow)?;
+    validate_channel_index(
+        &index,
+        records_region_size,
+        CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS,
+    )
+    .map_err(|err| {
+        ChannelStreamHeadReadError::Decode(ChannelStreamHeadError::DecodeFailure {
+            record_type: "channel index",
+            offset: 0,
+            cause: format!("validate channel index at offset 0: {err}"),
+        })
+    })?;
+
+    let entries = &index.entries;
+    let results: Vec<DecodedIndexEntry> =
+        stream::iter(entries.iter().enumerate().map(|(idx, entry)| async move {
+            decode_indexed_entry_from_reader(reader, block_size, base_offset, idx, entry).await
+        }))
+        .buffered(CHANNEL_INDEX_PARALLEL_FETCH_LIMIT)
+        .try_collect()
+        .await?;
+
+    let mut out = ChannelStreamHead::default();
+    let mut last_end: u64 = base_offset;
+    for decoded in results {
+        match decoded {
+            DecodedIndexEntry::Boot { profile, end } => {
+                out.boot_profiles.push(profile);
+                last_end = end;
+            }
+            DecodedIndexEntry::Dev { profile, end } => {
+                out.dev_profiles.push(profile);
+                last_end = end;
+            }
+            DecodedIndexEntry::Hints { record, end } => {
+                out.pipeline_hint_records.push(record);
+                last_end = end;
+            }
+        }
+    }
+    out.consumed_bytes = last_end;
+    Ok(out)
+}
+
+async fn decode_indexed_entry_from_reader<R: BlockReader + ?Sized>(
+    reader: &R,
+    block_size: usize,
+    base_offset: u64,
+    idx: usize,
+    entry: &ChannelIndexEntryV0,
+) -> Result<DecodedIndexEntry, ChannelStreamHeadReadError> {
+    match entry {
+        ChannelIndexEntryV0::BootProfile { offset, size, id } => {
+            let absolute = base_offset
+                .checked_add(*offset)
+                .ok_or(ChannelStreamHeadReadError::RangeOverflow)?;
+            let end = absolute
+                .checked_add(*size)
+                .ok_or(ChannelStreamHeadReadError::RangeOverflow)?;
+            let size_usize =
+                usize::try_from(*size).map_err(|_| ChannelStreamHeadReadError::RangeOverflow)?;
+            let record_bytes =
+                read_channel_reader_bytes(reader, block_size, absolute, size_usize).await?;
+            if boot_profile_bin_header_version(record_bytes.as_slice()).is_none() {
+                return Err(ChannelStreamHeadReadError::Decode(
+                    ChannelStreamHeadError::DecodeFailure {
+                        record_type: "boot profile",
+                        offset: absolute,
+                        cause: format!(
+                            "channel index entry {idx} claims boot profile but record has wrong magic"
+                        ),
+                    },
+                ));
+            }
+            let (profile, _) =
+                decode_boot_profile_prefix(record_bytes.as_slice()).map_err(|err| {
+                    ChannelStreamHeadReadError::Decode(ChannelStreamHeadError::DecodeFailure {
+                        record_type: "boot profile",
+                        offset: absolute,
+                        cause: format!("decode boot profile stream at offset {absolute}: {err}"),
+                    })
+                })?;
+            if profile.id != *id {
+                return Err(ChannelStreamHeadReadError::Decode(
+                    ChannelStreamHeadError::DecodeFailure {
+                        record_type: "boot profile",
+                        offset: absolute,
+                        cause: format!(
+                            "channel index entry {idx} id '{id}' does not match decoded profile id '{}'",
+                            profile.id
+                        ),
+                    },
+                ));
+            }
+            validate_boot_profile(&profile).map_err(|err| {
+                ChannelStreamHeadReadError::Decode(ChannelStreamHeadError::DecodeFailure {
+                    record_type: "boot profile",
+                    offset: absolute,
+                    cause: format!(
+                        "validate boot profile '{}' at stream offset {absolute}: {err}",
+                        profile.id
+                    ),
+                })
+            })?;
+            Ok(DecodedIndexEntry::Boot { profile, end })
+        }
+        ChannelIndexEntryV0::DeviceProfile { offset, size, id } => {
+            let absolute = base_offset
+                .checked_add(*offset)
+                .ok_or(ChannelStreamHeadReadError::RangeOverflow)?;
+            let end = absolute
+                .checked_add(*size)
+                .ok_or(ChannelStreamHeadReadError::RangeOverflow)?;
+            let size_usize =
+                usize::try_from(*size).map_err(|_| ChannelStreamHeadReadError::RangeOverflow)?;
+            let record_bytes =
+                read_channel_reader_bytes(reader, block_size, absolute, size_usize).await?;
+            if dev_profile_bin_header_version(record_bytes.as_slice()).is_none() {
+                return Err(ChannelStreamHeadReadError::Decode(
+                    ChannelStreamHeadError::DecodeFailure {
+                        record_type: "dev profile",
+                        offset: absolute,
+                        cause: format!(
+                            "channel index entry {idx} claims dev profile but record has wrong magic"
+                        ),
+                    },
+                ));
+            }
+            let (profile, _) =
+                decode_dev_profile_prefix(record_bytes.as_slice()).map_err(|err| {
+                    ChannelStreamHeadReadError::Decode(ChannelStreamHeadError::DecodeFailure {
+                        record_type: "dev profile",
+                        offset: absolute,
+                        cause: format!("decode dev profile stream at offset {absolute}: {err}"),
+                    })
+                })?;
+            if profile.id != *id {
+                return Err(ChannelStreamHeadReadError::Decode(
+                    ChannelStreamHeadError::DecodeFailure {
+                        record_type: "dev profile",
+                        offset: absolute,
+                        cause: format!(
+                            "channel index entry {idx} id '{id}' does not match decoded profile id '{}'",
+                            profile.id
+                        ),
+                    },
+                ));
+            }
+            Ok(DecodedIndexEntry::Dev { profile, end })
+        }
+        ChannelIndexEntryV0::PipelineHints {
+            offset,
+            size,
+            payload_offset,
+            payload_size,
+            pipeline_identities,
+        } => {
+            // No fetch needed: the index already carries all the metadata
+            // that ChannelPipelineHintsRecord needs for lazy payload loading.
+            let record_offset = base_offset
+                .checked_add(*offset)
+                .ok_or(ChannelStreamHeadReadError::RangeOverflow)?;
+            let end = record_offset
+                .checked_add(*size)
+                .ok_or(ChannelStreamHeadReadError::RangeOverflow)?;
+            let payload_abs_offset = base_offset
+                .checked_add(*payload_offset)
+                .ok_or(ChannelStreamHeadReadError::RangeOverflow)?;
+            Ok(DecodedIndexEntry::Hints {
+                record: ChannelPipelineHintsRecord {
+                    record_offset_bytes: record_offset,
+                    payload_offset_bytes: payload_abs_offset,
+                    payload_size_bytes: *payload_size,
+                    pipeline_identities: pipeline_identities.clone(),
+                },
+                end,
+            })
+        }
+    }
 }
 
 pub fn boot_profile_pipeline_identities(profile: &BootProfile) -> BTreeSet<String> {
@@ -1197,5 +1677,46 @@ mod tests {
                 size_bytes: 1,
             })],
         }
+    }
+
+    #[test]
+    fn indexed_channel_round_trips_pipeline_hints() {
+        use crate::ChannelHeadRecord;
+        use crate::channel_index::encode_channel_head;
+
+        let hints = PipelineHints {
+            entries: vec![pipeline_hint_entry(
+                "xz{source=http{url=len:22:https://example.com/a;}}",
+                "sha512:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+        };
+        let encoded = encode_channel_head(&[ChannelHeadRecord::PipelineHints(hints.clone())])
+            .expect("encode indexed channel head");
+        let head = read_channel_stream_head(&encoded, encoded.len() as u64)
+            .expect("read indexed channel head");
+        assert!(head.boot_profiles.is_empty());
+        assert!(head.dev_profiles.is_empty());
+        // Lazy-load contract: indexed path populates records but leaves inline hints empty.
+        assert!(head.pipeline_hints.entries.is_empty());
+        assert_eq!(head.pipeline_hint_records.len(), 1);
+        assert_eq!(
+            head.pipeline_hint_records[0].pipeline_identities,
+            vec![String::from(
+                "xz{source=http{url=len:22:https://example.com/a;}}"
+            )]
+        );
+        assert_eq!(head.consumed_bytes, encoded.len() as u64);
+        assert_eq!(head.warning_count, 0);
+    }
+
+    #[test]
+    fn indexed_channel_rejects_invalid_payload() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"FBCHIDX0");
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // version
+        bytes.extend_from_slice(&16u32.to_le_bytes()); // payload size
+        bytes.extend_from_slice(&[0u8; 16]); // garbage payload
+        let err = read_channel_stream_head(&bytes, bytes.len() as u64).expect_err("bad payload");
+        assert!(matches!(err, ChannelStreamHeadError::DecodeFailure { .. }));
     }
 }

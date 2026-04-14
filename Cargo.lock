@@ -2908,6 +2908,7 @@ name = "fastboop-core"
 version = "0.0.1-rc.13"
 dependencies = [
  "fastboop-schema",
+ "futures-util",
  "gibblox-core",
  "gibblox-pipeline",
  "postcard",

@@ -2192,6 +2192,147 @@ stage0:
     }
 
     #[tokio::test]
+    async fn indexed_channel_stream_head_consumes_in_order() {
+        use fastboop_core::{ChannelHeadRecord, encode_channel_head};
+
+        let device = compile_device_profile(
+            r#"
+id: dev-one
+devicetree_name: test-device-tree
+match:
+  - fastboot:
+      vid: 0x1234
+      pid: 0x5678
+probe: []
+boot:
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 4096
+      kernel:
+        encoding: image
+stage0: {}
+"#,
+        );
+        let first = compile_boot_profile(
+            r#"
+id: first
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+        let second = compile_boot_profile(
+            r#"
+id: second
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+
+        let stream = encode_channel_head(&[
+            ChannelHeadRecord::DeviceProfile(device),
+            ChannelHeadRecord::BootProfile(first),
+            ChannelHeadRecord::BootProfile(second),
+        ])
+        .unwrap();
+        let stream_len = stream.len() as u64;
+
+        let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(stream, 512));
+        let head = read_channel_stream_head_from_reader(source.as_ref(), stream_len)
+            .await
+            .unwrap();
+
+        assert_eq!(head.dev_profiles.len(), 1);
+        assert_eq!(head.dev_profiles[0].id, "dev-one");
+        assert_eq!(head.boot_profiles.len(), 2);
+        assert_eq!(head.boot_profiles[0].id, "first");
+        assert_eq!(head.boot_profiles[1].id, "second");
+        assert_eq!(head.consumed_bytes, stream_len);
+        assert_eq!(head.warning_count, 0);
+    }
+
+    #[tokio::test]
+    async fn indexed_channel_stream_head_preserves_trailing_artifact_offset() {
+        use fastboop_core::{ChannelHeadRecord, encode_channel_head};
+
+        let profile = compile_boot_profile(
+            r#"
+id: indexed-then-tail
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+
+        let indexed = encode_channel_head(&[ChannelHeadRecord::BootProfile(profile)]).unwrap();
+
+        // Append a fake EROFS body at the tail
+        let mut trailing = vec![0u8; 2048];
+        trailing[1024..1028].copy_from_slice(&0xE0F5_E1E2u32.to_le_bytes());
+
+        let indexed_len = indexed.len() as u64;
+        let mut stream = indexed;
+        stream.extend_from_slice(trailing.as_slice());
+        let stream_len = stream.len() as u64;
+
+        let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(stream, 512));
+        let head = read_channel_stream_head_from_reader(source.as_ref(), stream_len)
+            .await
+            .unwrap();
+        assert_eq!(head.boot_profiles.len(), 1);
+        assert_eq!(head.boot_profiles[0].id, "indexed-then-tail");
+        assert_eq!(head.consumed_bytes, indexed_len);
+
+        let trailing_reader =
+            OffsetChannelBlockReader::new(source, head.consumed_bytes, stream_len).unwrap();
+        let trailing_reader: Arc<dyn BlockReader> = Arc::new(trailing_reader);
+        let unwrapped = unwrap_channel_reader(trailing_reader, None).await.unwrap();
+        let kind = classify_channel_reader(unwrapped.as_ref()).await.unwrap();
+        assert_eq!(kind, ChannelStreamKind::Erofs);
+    }
+
+    #[tokio::test]
+    async fn indexed_channel_stream_head_lazy_pipeline_hints() {
+        use fastboop_core::{ChannelHeadRecord, encode_channel_head};
+        use gibblox_pipeline::{
+            PipelineContentDigestHint, PipelineHint, PipelineHintEntry, PipelineHints,
+        };
+
+        let hints = PipelineHints {
+            entries: vec![PipelineHintEntry {
+                pipeline_identity: String::from("xz{source=http{url=len:9:https://a;}}"),
+                hints: vec![PipelineHint::ContentDigest(PipelineContentDigestHint {
+                    digest: String::from(
+                        "sha512:22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222",
+                    ),
+                    size_bytes: 2,
+                })],
+            }],
+        };
+
+        let stream = encode_channel_head(&[ChannelHeadRecord::PipelineHints(hints)]).unwrap();
+        let stream_len = stream.len() as u64;
+
+        let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(stream, 512));
+        let head = read_channel_stream_head_from_reader(source.as_ref(), stream_len)
+            .await
+            .unwrap();
+        assert!(head.boot_profiles.is_empty());
+        assert!(head.dev_profiles.is_empty());
+        // Lazy contract: indexed path populates hint records but does NOT inflate
+        // the inline pipeline_hints vector.
+        assert!(head.pipeline_hints.entries.is_empty());
+        assert_eq!(head.pipeline_hint_records.len(), 1);
+        assert_eq!(
+            head.pipeline_hint_records[0].pipeline_identities,
+            vec![String::from("xz{source=http{url=len:9:https://a;}}")]
+        );
+        assert_eq!(head.consumed_bytes, stream_len);
+    }
+
+    #[tokio::test]
     async fn bootprofile_stream_head_uses_exact_size_not_padded_blocks() {
         let profile = compile_boot_profile(
             r#"
