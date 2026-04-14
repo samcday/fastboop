@@ -16,8 +16,7 @@ use crate::channel_index::{
 use crate::channel_pipeline_hints::{
     CHANNEL_PIPELINE_HINTS_RECORD_FIXED_HEADER_LEN, ChannelPipelineHintsRecordHead,
     channel_pipeline_hints_record_header_version, decode_channel_pipeline_hints_record,
-    decode_channel_pipeline_hints_record_fixed_header,
-    decode_channel_pipeline_hints_record_payload, decode_channel_pipeline_hints_record_prefix,
+    decode_channel_pipeline_hints_record_fixed_header, decode_channel_pipeline_hints_record_prefix,
 };
 use crate::{
     BootProfile, BootProfileArtifactSource, DeviceProfile, boot_profile_bin_header_version,
@@ -1405,22 +1404,71 @@ pub async fn read_channel_pipeline_hints_for_identities<R: BlockReader + ?Sized>
             continue;
         }
 
-        let payload_len = usize::try_from(record.payload_size_bytes)
-            .map_err(|_| ChannelStreamHeadReadError::RangeOverflow)?;
-        let payload =
-            read_channel_reader_bytes(reader, block_size, record.payload_offset_bytes, payload_len)
-                .await?;
-        let hints =
-            decode_channel_pipeline_hints_record_payload(payload.as_slice()).map_err(|err| {
+        // Fetch the full record (fixed header + metadata section + payload)
+        // rather than just the payload, and run the canonical decoder so
+        // the metadata-vs-payload identity consistency check runs. The
+        // hoisted `record.pipeline_identities` list came from the channel
+        // index, which is not independently trustworthy: after the full
+        // decode we cross-check decoded identities against the hoisted
+        // list so a lying or stale index can't silently let a record
+        // through with the wrong contents.
+        let record_header_len = record
+            .payload_offset_bytes
+            .checked_sub(record.record_offset_bytes)
+            .ok_or(ChannelStreamHeadReadError::RangeOverflow)?;
+        let record_size = record_header_len
+            .checked_add(record.payload_size_bytes)
+            .ok_or(ChannelStreamHeadReadError::RangeOverflow)?;
+        let record_size_usize =
+            usize::try_from(record_size).map_err(|_| ChannelStreamHeadReadError::RangeOverflow)?;
+        let record_bytes = read_channel_reader_bytes(
+            reader,
+            block_size,
+            record.record_offset_bytes,
+            record_size_usize,
+        )
+        .await?;
+
+        let (hints, _consumed) = decode_channel_pipeline_hints_record(record_bytes.as_slice())
+            .map_err(|err| {
                 ChannelStreamHeadReadError::Decode(ChannelStreamHeadError::DecodeFailure {
                     record_type: "pipeline hints",
                     offset: record.record_offset_bytes,
                     cause: format!(
-                        "decode pipeline hints payload at offset {}: {err}",
-                        record.payload_offset_bytes
+                        "decode pipeline hints record at offset {}: {err}",
+                        record.record_offset_bytes
                     ),
                 })
             })?;
+
+        let decoded_identities: BTreeSet<&str> = hints
+            .entries
+            .iter()
+            .map(|entry| entry.pipeline_identity.as_str())
+            .collect();
+        let hoisted_identities: BTreeSet<&str> = record
+            .pipeline_identities
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        if decoded_identities != hoisted_identities {
+            return Err(ChannelStreamHeadReadError::Decode(
+                ChannelStreamHeadError::DecodeFailure {
+                    record_type: "pipeline hints",
+                    offset: record.record_offset_bytes,
+                    cause: format!(
+                        "pipeline hints identity mismatch at offset {}: index claims {:?}, record payload has {:?}",
+                        record.record_offset_bytes,
+                        record.pipeline_identities,
+                        hints
+                            .entries
+                            .iter()
+                            .map(|e| e.pipeline_identity.as_str())
+                            .collect::<Vec<_>>()
+                    ),
+                },
+            ));
+        }
 
         append_pipeline_hints(&mut out, &mut seen_identities, hints)
             .map_err(ChannelStreamHeadReadError::Decode)?;
