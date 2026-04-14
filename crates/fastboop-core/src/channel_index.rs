@@ -53,7 +53,6 @@ pub(crate) enum ChannelIndexEntryV0 {
 }
 
 impl ChannelIndexEntryV0 {
-    #[allow(dead_code)] // used by reader introduced in the next commit
     pub(crate) fn offset(&self) -> u64 {
         match self {
             Self::BootProfile { offset, .. }
@@ -301,7 +300,6 @@ pub fn decode_channel_index_record_fixed_header(
 
 /// Decode the postcard-serialized index payload from a slice sized exactly
 /// to `payload_size_bytes` (from the fixed header).
-#[allow(dead_code)] // used by reader introduced in the next commit
 pub(crate) fn decode_channel_index_payload(
     bytes: &[u8],
 ) -> Result<ChannelIndexV0, ChannelIndexCodecError> {
@@ -322,7 +320,6 @@ pub fn channel_index_record_header_version(bytes: &[u8]) -> Option<u16> {
     ]))
 }
 
-#[allow(dead_code)] // used by reader introduced in the next commit
 pub(crate) fn validate_channel_index(
     index: &ChannelIndexV0,
     records_region_size: u64,
