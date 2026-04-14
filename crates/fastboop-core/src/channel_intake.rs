@@ -76,6 +76,50 @@ pub struct ChannelPipelineHintsRecord {
     pub pipeline_identities: Vec<String>,
 }
 
+/// Location (and hoistable metadata) of a single head record inside a
+/// concatenated-records channel. Emitted by [`scan_channel_head_record_locations`]
+/// so callers like `fastboop channel index` can build a [`ChannelIndexV0`]
+/// without re-decoding the records after the scan.
+#[derive(Clone, Debug)]
+pub enum ChannelHeadRecordLocation {
+    BootProfile {
+        offset: u64,
+        size: u64,
+        id: String,
+    },
+    DeviceProfile {
+        offset: u64,
+        size: u64,
+        id: String,
+    },
+    PipelineHints {
+        offset: u64,
+        size: u64,
+        /// Payload offset relative to the start of the record (not the channel).
+        payload_offset: u64,
+        payload_size: u64,
+        pipeline_identities: Vec<String>,
+    },
+}
+
+impl ChannelHeadRecordLocation {
+    pub fn offset(&self) -> u64 {
+        match self {
+            Self::BootProfile { offset, .. }
+            | Self::DeviceProfile { offset, .. }
+            | Self::PipelineHints { offset, .. } => *offset,
+        }
+    }
+
+    pub fn size(&self) -> u64 {
+        match self {
+            Self::BootProfile { size, .. }
+            | Self::DeviceProfile { size, .. }
+            | Self::PipelineHints { size, .. } => *size,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ChannelStreamHead {
     pub boot_profiles: Vec<BootProfile>,
@@ -506,6 +550,146 @@ fn read_sequential_channel_stream_head(
         .sort_unstable_by(|left, right| left.pipeline_identity.cmp(&right.pipeline_identity));
     out.consumed_bytes = cursor as u64;
     Ok(out)
+}
+
+/// Walk a concatenated-records channel sequentially and emit per-record
+/// locations. Intended as the input to [`encode_channel_head`] when
+/// wrapping an existing channel with an index. Refuses to walk a channel
+/// that already begins with an `FBCHIDX0` record; indexing an indexed
+/// channel is a caller bug.
+///
+/// Returns `(locations, consumed_bytes)`.
+pub fn scan_channel_head_record_locations(
+    bytes: &[u8],
+    exact_total_bytes: u64,
+) -> Result<(Vec<ChannelHeadRecordLocation>, u64), ChannelStreamHeadError> {
+    if channel_index_record_header_version(bytes).is_some() {
+        return Err(ChannelStreamHeadError::DecodeFailure {
+            record_type: "channel index",
+            offset: 0,
+            cause: String::from("channel already begins with a FBCHIDX0 record; nothing to index"),
+        });
+    }
+
+    let scan_cap = core::cmp::min(
+        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
+        exact_total_bytes,
+    ) as usize;
+    let scan_len = core::cmp::min(scan_cap, bytes.len());
+
+    let mut locations: Vec<ChannelHeadRecordLocation> = Vec::new();
+    let mut cursor: usize = 0;
+
+    while cursor < scan_len {
+        if locations.len() >= CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS {
+            return Err(ChannelStreamHeadError::MaxRecordCountExceeded {
+                max_records: CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS,
+            });
+        }
+
+        let remaining = &bytes[cursor..scan_len];
+
+        if boot_profile_bin_header_version(remaining).is_some() {
+            let (profile, consumed) = decode_boot_profile_prefix(remaining).map_err(|err| {
+                ChannelStreamHeadError::DecodeFailure {
+                    record_type: "boot profile",
+                    offset: cursor as u64,
+                    cause: format!("decode boot profile stream at offset {cursor}: {err}"),
+                }
+            })?;
+            if consumed == 0 {
+                return Err(ChannelStreamHeadError::EmptyRecord {
+                    offset: cursor as u64,
+                });
+            }
+            validate_boot_profile(&profile).map_err(|err| {
+                ChannelStreamHeadError::DecodeFailure {
+                    record_type: "boot profile",
+                    offset: cursor as u64,
+                    cause: format!(
+                        "validate boot profile '{}' at stream offset {cursor}: {err}",
+                        profile.id
+                    ),
+                }
+            })?;
+            locations.push(ChannelHeadRecordLocation::BootProfile {
+                offset: cursor as u64,
+                size: consumed as u64,
+                id: profile.id.clone(),
+            });
+            cursor = cursor
+                .checked_add(consumed)
+                .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+            continue;
+        }
+
+        if dev_profile_bin_header_version(remaining).is_some() {
+            let (profile, consumed) = decode_dev_profile_prefix(remaining).map_err(|err| {
+                ChannelStreamHeadError::DecodeFailure {
+                    record_type: "dev profile",
+                    offset: cursor as u64,
+                    cause: format!("decode dev profile stream at offset {cursor}: {err}"),
+                }
+            })?;
+            if consumed == 0 {
+                return Err(ChannelStreamHeadError::EmptyRecord {
+                    offset: cursor as u64,
+                });
+            }
+            locations.push(ChannelHeadRecordLocation::DeviceProfile {
+                offset: cursor as u64,
+                size: consumed as u64,
+                id: profile.id.clone(),
+            });
+            cursor = cursor
+                .checked_add(consumed)
+                .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+            continue;
+        }
+
+        if channel_pipeline_hints_record_header_version(remaining).is_some() {
+            let record_head =
+                decode_channel_pipeline_hints_record_prefix(remaining).map_err(|err| {
+                    ChannelStreamHeadError::DecodeFailure {
+                        record_type: "pipeline hints",
+                        offset: cursor as u64,
+                        cause: format!("decode pipeline hints stream at offset {cursor}: {err}"),
+                    }
+                })?;
+            let record_size = usize::try_from(record_head.total_record_size_bytes)
+                .map_err(|_| ChannelStreamHeadError::CursorOverflow)?;
+            if record_size == 0 {
+                return Err(ChannelStreamHeadError::EmptyRecord {
+                    offset: cursor as u64,
+                });
+            }
+            if remaining.len() < record_size {
+                return Err(ChannelStreamHeadError::DecodeFailure {
+                    record_type: "pipeline hints",
+                    offset: cursor as u64,
+                    cause: format!(
+                        "decode pipeline hints stream at offset {cursor}: record requires {record_size} bytes, available {}",
+                        remaining.len()
+                    ),
+                });
+            }
+            locations.push(ChannelHeadRecordLocation::PipelineHints {
+                offset: cursor as u64,
+                size: record_size as u64,
+                payload_offset: record_head.payload_offset_bytes,
+                payload_size: record_head.payload_size_bytes,
+                pipeline_identities: record_head.pipeline_identities,
+            });
+            cursor = cursor
+                .checked_add(record_size)
+                .ok_or(ChannelStreamHeadError::CursorOverflow)?;
+            continue;
+        }
+
+        break;
+    }
+
+    Ok((locations, cursor as u64))
 }
 
 pub async fn read_channel_stream_head_from_reader<R: BlockReader + ?Sized>(
@@ -1588,6 +1772,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use super::{ChannelHeadRecordLocation, scan_channel_head_record_locations};
     use gibblox_pipeline::{
         PipelineContentDigestHint, PipelineHint, PipelineHintEntry, PipelineHints,
     };
@@ -1718,5 +1903,67 @@ mod tests {
         bytes.extend_from_slice(&[0u8; 16]); // garbage payload
         let err = read_channel_stream_head(&bytes, bytes.len() as u64).expect_err("bad payload");
         assert!(matches!(err, ChannelStreamHeadError::DecodeFailure { .. }));
+    }
+
+    #[test]
+    fn scan_channel_head_record_locations_tracks_pipeline_hints() {
+        let hints = PipelineHints {
+            entries: vec![pipeline_hint_entry(
+                "xz{source=http{url=len:22:https://example.com/a;}}",
+                "sha512:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+        };
+        let bytes = encode_channel_pipeline_hints_record(&hints).expect("encode hints");
+        let (locations, consumed) =
+            scan_channel_head_record_locations(&bytes, bytes.len() as u64).expect("scan");
+        assert_eq!(consumed, bytes.len() as u64);
+        assert_eq!(locations.len(), 1);
+        match &locations[0] {
+            ChannelHeadRecordLocation::PipelineHints {
+                offset,
+                size,
+                payload_offset,
+                payload_size,
+                pipeline_identities,
+            } => {
+                assert_eq!(*offset, 0);
+                assert_eq!(*size, bytes.len() as u64);
+                assert!(*payload_offset > 0);
+                assert!(*payload_size > 0);
+                assert_eq!(
+                    pipeline_identities,
+                    &vec![String::from(
+                        "xz{source=http{url=len:22:https://example.com/a;}}"
+                    )]
+                );
+            }
+            other => panic!("expected PipelineHints location, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scan_channel_head_record_locations_rejects_already_indexed() {
+        use crate::ChannelHeadRecord;
+        use crate::channel_index::encode_channel_head;
+
+        let hints = PipelineHints {
+            entries: vec![pipeline_hint_entry(
+                "xz{source=http{url=len:22:https://example.com/a;}}",
+                "sha512:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+        };
+        let encoded = encode_channel_head(&[ChannelHeadRecord::PipelineHints(hints)])
+            .expect("encode indexed");
+        let err = scan_channel_head_record_locations(&encoded, encoded.len() as u64)
+            .expect_err("indexed rejected");
+        match err {
+            ChannelStreamHeadError::DecodeFailure {
+                record_type, cause, ..
+            } => {
+                assert_eq!(record_type, "channel index");
+                assert!(cause.contains("already begins"));
+            }
+            other => panic!("expected DecodeFailure, got {other:?}"),
+        }
     }
 }
