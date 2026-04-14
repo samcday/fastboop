@@ -2335,6 +2335,59 @@ rootfs:
     }
 
     #[tokio::test]
+    async fn indexed_channel_lazy_hints_reject_hoist_vs_record_identity_mismatch() {
+        use fastboop_core::{
+            ChannelHeadRecord, encode_channel_head, read_channel_pipeline_hints_for_identities,
+        };
+        use gibblox_pipeline::{
+            PipelineContentDigestHint, PipelineHint, PipelineHintEntry, PipelineHints,
+        };
+        use std::collections::BTreeSet;
+
+        let real_identity = String::from("xz{source=http{url=len:9:https://a;}}");
+        let hints = PipelineHints {
+            entries: vec![PipelineHintEntry {
+                pipeline_identity: real_identity.clone(),
+                hints: vec![PipelineHint::ContentDigest(PipelineContentDigestHint {
+                    digest: String::from(
+                        "sha512:22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222",
+                    ),
+                    size_bytes: 2,
+                })],
+            }],
+        };
+
+        let stream = encode_channel_head(&[ChannelHeadRecord::PipelineHints(hints)]).unwrap();
+        let stream_len = stream.len() as u64;
+
+        let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(stream, 512));
+        let mut head = read_channel_stream_head_from_reader(source.as_ref(), stream_len)
+            .await
+            .unwrap();
+        assert_eq!(head.pipeline_hint_records.len(), 1);
+
+        // Tamper with the hoisted identity list so it falsely claims an
+        // extra identity that the on-disk record does not contain. The
+        // lazy loader must notice the mismatch when it fetches and
+        // decodes the record.
+        head.pipeline_hint_records[0]
+            .pipeline_identities
+            .push(String::from("fabricated-by-malicious-index{}"));
+
+        let mut requested: BTreeSet<String> = BTreeSet::new();
+        requested.insert(real_identity);
+
+        let err = read_channel_pipeline_hints_for_identities(source.as_ref(), &head, &requested)
+            .await
+            .expect_err("mismatch must error");
+        let message = format!("{err}");
+        assert!(
+            message.contains("pipeline hints identity mismatch"),
+            "expected identity mismatch error, got {message}"
+        );
+    }
+
+    #[tokio::test]
     async fn bootprofile_stream_head_uses_exact_size_not_padded_blocks() {
         let profile = compile_boot_profile(
             r#"
