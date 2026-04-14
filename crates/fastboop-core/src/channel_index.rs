@@ -193,24 +193,88 @@ pub fn encode_channel_head(
         encoded_records.push(bytes);
     }
 
+    let index_record = encode_channel_index_record_bytes(entries)?;
+    let total_records_bytes: usize = encoded_records.iter().map(|b| b.len()).sum();
+    let capacity = index_record
+        .len()
+        .checked_add(total_records_bytes)
+        .ok_or(ChannelIndexCodecError::LengthOverflow)?;
+
+    let mut out = Vec::with_capacity(capacity);
+    out.extend_from_slice(index_record.as_slice());
+    for record in encoded_records {
+        out.extend_from_slice(record.as_slice());
+    }
+    Ok(out)
+}
+
+/// Encode a standalone `FBCHIDX0` index record (header + payload, no trailing
+/// records). Used by `fastboop channel index` to wrap an already-concatenated
+/// channel byte stream with an index prefix — the original records live
+/// immediately after this record and their relative offsets (from
+/// end-of-index) stay valid without rewriting.
+pub fn encode_channel_index_record_from_locations(
+    locations: &[crate::channel_intake::ChannelHeadRecordLocation],
+) -> Result<Vec<u8>, ChannelIndexCodecError> {
+    use crate::channel_intake::ChannelHeadRecordLocation;
+    if locations.is_empty() {
+        return Err(ChannelIndexCodecError::Empty);
+    }
+    let mut entries: Vec<ChannelIndexEntryV0> = Vec::with_capacity(locations.len());
+    for location in locations {
+        let entry = match location {
+            ChannelHeadRecordLocation::BootProfile { offset, size, id } => {
+                ChannelIndexEntryV0::BootProfile {
+                    offset: *offset,
+                    size: *size,
+                    id: id.clone(),
+                }
+            }
+            ChannelHeadRecordLocation::DeviceProfile { offset, size, id } => {
+                ChannelIndexEntryV0::DeviceProfile {
+                    offset: *offset,
+                    size: *size,
+                    id: id.clone(),
+                }
+            }
+            ChannelHeadRecordLocation::PipelineHints {
+                offset,
+                size,
+                payload_offset,
+                payload_size,
+                pipeline_identities,
+            } => {
+                let absolute_payload_offset = offset
+                    .checked_add(*payload_offset)
+                    .ok_or(ChannelIndexCodecError::LengthOverflow)?;
+                ChannelIndexEntryV0::PipelineHints {
+                    offset: *offset,
+                    size: *size,
+                    payload_offset: absolute_payload_offset,
+                    payload_size: *payload_size,
+                    pipeline_identities: pipeline_identities.clone(),
+                }
+            }
+        };
+        entries.push(entry);
+    }
+    encode_channel_index_record_bytes(entries)
+}
+
+fn encode_channel_index_record_bytes(
+    entries: Vec<ChannelIndexEntryV0>,
+) -> Result<Vec<u8>, ChannelIndexCodecError> {
     let index_payload = postcard::to_allocvec(&ChannelIndexV0 { entries })?;
     let payload_len =
         u32::try_from(index_payload.len()).map_err(|_| ChannelIndexCodecError::LengthOverflow)?;
-
-    let total_records_bytes: usize = encoded_records.iter().map(|b| b.len()).sum();
     let capacity = CHANNEL_INDEX_RECORD_FIXED_HEADER_LEN
         .checked_add(index_payload.len())
-        .and_then(|v| v.checked_add(total_records_bytes))
         .ok_or(ChannelIndexCodecError::LengthOverflow)?;
-
     let mut out = Vec::with_capacity(capacity);
     out.extend_from_slice(&CHANNEL_INDEX_RECORD_MAGIC);
     out.extend_from_slice(&CHANNEL_INDEX_RECORD_FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&payload_len.to_le_bytes());
     out.extend_from_slice(index_payload.as_slice());
-    for record in encoded_records {
-        out.extend_from_slice(record.as_slice());
-    }
     Ok(out)
 }
 
