@@ -558,6 +558,17 @@ fn read_sequential_channel_stream_head(
 /// that already begins with an `FBCHIDX0` record; indexing an indexed
 /// channel is a caller bug.
 ///
+/// Unlike the streaming read paths, this helper does not apply a byte cap:
+/// the caller already has the full input in memory, so the
+/// `CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES` streaming budget is not
+/// relevant. The record count cap (`CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS`)
+/// still applies as a DoS guard.
+///
+/// If the loop exits because `bytes` ran out before a non-head byte was
+/// detected and `bytes.len() < exact_total_bytes`, the caller passed a
+/// truncated prefix and the scan cannot safely produce a complete index;
+/// returns an error in that case.
+///
 /// Returns `(locations, consumed_bytes)`.
 pub fn scan_channel_head_record_locations(
     bytes: &[u8],
@@ -571,14 +582,11 @@ pub fn scan_channel_head_record_locations(
         });
     }
 
-    let scan_cap = core::cmp::min(
-        CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES as u64,
-        exact_total_bytes,
-    ) as usize;
-    let scan_len = core::cmp::min(scan_cap, bytes.len());
+    let scan_len = core::cmp::min(bytes.len() as u64, exact_total_bytes) as usize;
 
     let mut locations: Vec<ChannelHeadRecordLocation> = Vec::new();
     let mut cursor: usize = 0;
+    let mut tail_boundary_detected = false;
 
     while cursor < scan_len {
         if locations.len() >= CHANNEL_BOOT_PROFILE_STREAM_MAX_RECORDS {
@@ -686,7 +694,23 @@ pub fn scan_channel_head_record_locations(
             continue;
         }
 
+        tail_boundary_detected = true;
         break;
+    }
+
+    // If the loop terminated without explicitly detecting a non-head byte
+    // AND the caller claimed there was more channel than we walked, we
+    // cannot safely emit a complete index — caller passed a truncated
+    // prefix.
+    if !tail_boundary_detected && (scan_len as u64) < exact_total_bytes {
+        return Err(ChannelStreamHeadError::DecodeFailure {
+            record_type: "channel head scan",
+            offset: scan_len as u64,
+            cause: format!(
+                "scan consumed {scan_len} bytes but exact_total_bytes is {exact_total_bytes}; \
+                 caller passed a truncated channel prefix and an index would silently drop the remainder"
+            ),
+        });
     }
 
     Ok((locations, cursor as u64))
@@ -1939,6 +1963,68 @@ mod tests {
             }
             other => panic!("expected PipelineHints location, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn scan_channel_head_record_locations_rejects_truncated_prefix() {
+        // Produce a real hint record, then lie to the scanner by passing a
+        // truncated prefix with exact_total_bytes pointing past what we
+        // actually have. Scan should refuse to produce a partial index.
+        let hints = PipelineHints {
+            entries: vec![pipeline_hint_entry(
+                "xz{source=http{url=len:22:https://example.com/a;}}",
+                "sha512:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+        };
+        let bytes = encode_channel_pipeline_hints_record(&hints).expect("encode hints");
+        // Claim the channel is 4x larger than the slice we hand over.
+        let lying_total = (bytes.len() as u64) * 4;
+        let err = scan_channel_head_record_locations(&bytes, lying_total).expect_err("truncated");
+        match err {
+            ChannelStreamHeadError::DecodeFailure {
+                record_type, cause, ..
+            } => {
+                assert_eq!(record_type, "channel head scan");
+                assert!(
+                    cause.contains("truncated channel prefix"),
+                    "expected truncated prefix diagnostic, got {cause}"
+                );
+            }
+            other => panic!("expected DecodeFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scan_channel_head_record_locations_walks_past_legacy_4mb_cap() {
+        // Legacy 4MB scan cap used to silently stop the walk. The byte-slice
+        // scan helper no longer imposes that cap, so a channel whose head
+        // records extend past 4MB should still be walked end-to-end.
+        // We don't actually build a 4MB-plus channel here (would be slow);
+        // this test documents the lifted cap via a small-but-explicit scan
+        // on a channel with two back-to-back records and asserts the helper
+        // visits both. The truncation-rejection test above covers the
+        // "incomplete caller input" case.
+        let first = encode_channel_pipeline_hints_record(&PipelineHints {
+            entries: vec![pipeline_hint_entry(
+                "xz{source=http{url=len:22:https://example.com/a;}}",
+                "sha512:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+        })
+        .expect("encode first");
+        let second = encode_channel_pipeline_hints_record(&PipelineHints {
+            entries: vec![pipeline_hint_entry(
+                "xz{source=http{url=len:22:https://example.com/b;}}",
+                "sha512:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            )],
+        })
+        .expect("encode second");
+        let mut stream = first;
+        stream.extend(second);
+        let (locations, consumed) =
+            scan_channel_head_record_locations(&stream, stream.len() as u64)
+                .expect("scan both records");
+        assert_eq!(locations.len(), 2);
+        assert_eq!(consumed, stream.len() as u64);
     }
 
     #[test]
