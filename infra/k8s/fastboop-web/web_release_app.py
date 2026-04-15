@@ -285,7 +285,8 @@ class WebReleaseHandler(BaseHTTPRequestHandler):
         self.handle_request(head_only=True)
 
     def handle_request(self, head_only: bool) -> None:
-        path = urllib.parse.urlsplit(self.path).path
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path
 
         if path == "/healthz":
             self.send_text_response(200, "ok\n", head_only=head_only)
@@ -298,7 +299,7 @@ class WebReleaseHandler(BaseHTTPRequestHandler):
         base_match = VERSION_BASE_RE.fullmatch(path)
         if base_match is not None:
             version = base_match.group(1)
-            self.send_redirect(f"/{version}/")
+            self.send_redirect(f"/{version}/", query=parsed.query)
             return
 
         request = parse_request(path)
@@ -336,10 +337,14 @@ class WebReleaseHandler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             return
 
-    def send_redirect(self, location: str) -> None:
-        self.send_response(308)
-        self.send_header("location", location)
-        self.send_header("cache-control", "public, max-age=300")
+    def send_redirect(self, location: str, *, query: str = "") -> None:
+        redirect_location = location
+        if query:
+            redirect_location = f"{location}?{query}"
+
+        self.send_response(307)
+        self.send_header("location", redirect_location)
+        self.send_header("cache-control", "no-store")
         self.send_header("content-length", "0")
         self.end_headers()
 

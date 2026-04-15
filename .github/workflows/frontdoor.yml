@@ -1,0 +1,44 @@
+name: Build Frontdoor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/frontdoor/**
+      - .github/workflows/frontdoor.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - infra/frontdoor/**
+      - .github/workflows/frontdoor.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-edge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install wash
+        run: |
+          curl -s https://packagecloud.io/install/repositories/wasmcloud/core/script.deb.sh | sudo bash
+          sudo apt-get install wash
+
+      - name: Build wasm component
+        working-directory: infra/frontdoor
+        run: |
+          cargo build --release --target wasm32-wasip2 -p frontdoor-edge
+
+      - name: Push wasm component to GHCR
+        if: github.event_name != 'pull_request'
+        env:
+          WASH_REG_USER: ${{ github.actor }}
+          WASH_REG_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: infra/frontdoor
+        run: |
+          wash push ghcr.io/${{ github.repository_owner }}/fastboop-frontdoor-edge:$(date +%s) target/wasm32-wasip2/release/frontdoor_edge.wasm

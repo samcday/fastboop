@@ -2,6 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: fastboop-web
+  annotations:
+    reloader.stakater.com/auto: "true"
+    configmap.reloader.stakater.com/reload: fastboop-web-config,live-version,fastboop-web-app
 spec:
   replicas: 2
   selector:
@@ -9,6 +12,8 @@ spec:
       app.kubernetes.io/name: fastboop-web
   template:
     metadata:
+      annotations:
+        reloader.stakater.com/auto: "true"
       labels:
         app.kubernetes.io/name: fastboop-web
     spec:
@@ -22,7 +27,7 @@ spec:
             - configMapRef:
                 name: fastboop-web-config
             - configMapRef:
-                name: fastboop-web-live
+                name: live-version
           ports:
             - name: http
               containerPort: 8080

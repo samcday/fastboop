@@ -1,0 +1,34 @@
+apiVersion: runtime.wasmcloud.dev/v1alpha1
+kind: WorkloadDeployment
+metadata:
+  name: frontdoor-edge
+spec:
+  replicas: 1
+  template:
+    spec:
+      hostSelector:
+        hostgroup: default
+      components:
+        - name: frontdoor-edge
+          image: ghcr.io/samcday/fastboop-frontdoor-edge:23927456205 # {"$imagepolicy": "fastboop:frontdoor-edge"}
+          localResources:
+            environment:
+              configFrom:
+                - name: live-version
+            allowedHosts:
+              - github.com
+              - objects.githubusercontent.com
+              - release-assets.githubusercontent.com
+            volumeMounts:
+              - name: cache
+                mountPath: /cache
+      volumes:
+        - name: cache
+          ephemeral: {}
+      hostInterfaces:
+        - namespace: wasi
+          package: http
+          interfaces:
+            - incoming-handler
+          config:
+            host: edge.fastboop.win

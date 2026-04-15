@@ -10,6 +10,7 @@ pub mod block_reader;
 pub mod bootimg;
 pub mod bootprofile;
 pub mod builtin;
+pub mod channel_index;
 pub mod channel_intake;
 pub mod channel_pipeline_hints;
 pub mod channel_profile_bundle;
@@ -24,6 +25,7 @@ use alloc::{string::String, vec::Vec};
 
 pub use block_reader::*;
 pub use bootprofile::*;
+pub use channel_index::*;
 pub use channel_intake::*;
 pub use channel_pipeline_hints::*;
 pub use channel_profile_bundle::*;

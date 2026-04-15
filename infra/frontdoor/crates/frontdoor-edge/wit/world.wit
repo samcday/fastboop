@@ -1,0 +1,5 @@
+package fastboop:frontdoor-edge;
+
+world edge-cache {
+  export wasi:http/incoming-handler@0.2.2;
+}
