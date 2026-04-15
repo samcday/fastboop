@@ -55,14 +55,6 @@ jobs:
           target: aarch64-unknown-linux-musl
           rustflags: "--cfg=web_sys_unstable_apis"
 
-      - name: Install cargo-binstall
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-binstall
-
-      - name: Install Dioxus CLI
-        run: cargo binstall dioxus-cli --force --no-confirm
-
       - name: Format
         run: cargo fmt --all -- --check
 
@@ -75,6 +67,53 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  web-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev libudev-dev libxdo-dev \
+            musl-tools linux-libc-dev device-tree-compiler
+
+      - name: Set up musl kernel headers
+        run: |
+          # fastboop-stage0-generator's build script cross-builds stage0 to
+          # aarch64-unknown-linux-musl; bindgen needs asm/ and linux/ headers
+          # findable for that target.
+          sudo mkdir -p /usr/include/$(uname -m)-linux-musl
+          sudo ln -sf /usr/include/linux /usr/include/$(uname -m)-linux-musl/linux
+          sudo ln -sf /usr/include/asm-generic /usr/include/$(uname -m)-linux-musl/asm-generic
+          if [ -d /usr/include/$(uname -m)-linux-gnu/asm ]; then
+            sudo ln -sf /usr/include/$(uname -m)-linux-gnu/asm /usr/include/$(uname -m)-linux-musl/asm
+          elif [ -d /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm /usr/include/$(uname -m)-linux-musl/asm
+          fi
+          if [ ! -e /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm-generic /usr/include/asm
+          fi
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: aarch64-unknown-linux-musl
+          rustflags: "--cfg=web_sys_unstable_apis"
+
+      - name: Install cargo-binstall
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+
+      - name: Install Dioxus CLI
+        run: cargo binstall dioxus-cli --force --no-confirm
+
       - name: Resolve web base path
         id: web-base
         run: |
@@ -86,9 +125,6 @@ jobs:
 
       - name: Dioxus build (web release)
         run: dx build -p fastboop-web --release --base-path "${{ steps.web-base.outputs.base_path }}"
-
-      - name: Dioxus build (desktop release)
-        run: dx build -p fastboop-desktop --release
 
       - name: Upload bleeding snapshot to R2
         if: github.ref == 'refs/heads/main'
@@ -110,6 +146,56 @@ jobs:
         with:
           name: fastboop-web
           path: target/dx/fastboop-web/release/web/public
+
+  desktop-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev libudev-dev libxdo-dev \
+            musl-tools linux-libc-dev device-tree-compiler
+
+      - name: Set up musl kernel headers
+        run: |
+          # fastboop-stage0-generator's build script cross-builds stage0 to
+          # aarch64-unknown-linux-musl; bindgen needs asm/ and linux/ headers
+          # findable for that target.
+          sudo mkdir -p /usr/include/$(uname -m)-linux-musl
+          sudo ln -sf /usr/include/linux /usr/include/$(uname -m)-linux-musl/linux
+          sudo ln -sf /usr/include/asm-generic /usr/include/$(uname -m)-linux-musl/asm-generic
+          if [ -d /usr/include/$(uname -m)-linux-gnu/asm ]; then
+            sudo ln -sf /usr/include/$(uname -m)-linux-gnu/asm /usr/include/$(uname -m)-linux-musl/asm
+          elif [ -d /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm /usr/include/$(uname -m)-linux-musl/asm
+          fi
+          if [ ! -e /usr/include/asm ]; then
+            sudo ln -sf /usr/include/asm-generic /usr/include/asm
+          fi
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: aarch64-unknown-linux-musl
+          rustflags: "--cfg=web_sys_unstable_apis"
+
+      - name: Install cargo-binstall
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+
+      - name: Install Dioxus CLI
+        run: cargo binstall dioxus-cli --force --no-confirm
+
+      - name: Dioxus build (desktop release)
+        run: dx build -p fastboop-desktop --release
 
   build:
     runs-on: ${{ matrix.runner }}
