@@ -923,6 +923,65 @@ fn sha512_file(path: &Path) -> Result<String> {
     Ok(format!("sha512:{:x}", hasher.finalize()))
 }
 
+pub(super) fn hydrate_pipeline_file_content(
+    source: &mut PipelineSource,
+    cache: &mut HashMap<PathBuf, PipelineSourceContent>,
+) -> Result<()> {
+    match source {
+        PipelineSource::File(file) => {
+            if file.content.is_some() {
+                return Ok(());
+            }
+            let path = Path::new(file.file.as_str());
+            let canonical = fs::canonicalize(path)
+                .with_context(|| format!("canonicalize file pipeline source {}", path.display()))?;
+            if let Some(cached) = cache.get(&canonical) {
+                file.content = Some(cached.clone());
+                return Ok(());
+            }
+            let metadata = fs::metadata(&canonical)
+                .with_context(|| format!("stat file pipeline source {}", canonical.display()))?;
+            if !metadata.is_file() {
+                bail!(
+                    "file pipeline source {} is not a regular file",
+                    canonical.display()
+                );
+            }
+            let size_bytes = metadata.len();
+            info!(
+                path = %canonical.display(),
+                size_bytes,
+                "hashing local file pipeline source"
+            );
+            let started = Instant::now();
+            let digest = sha512_file(canonical.as_path())?;
+            let elapsed = started.elapsed();
+            info!(
+                path = %canonical.display(),
+                digest = %digest,
+                size_bytes,
+                elapsed_ms = elapsed.as_millis() as u64,
+                "hydrated file pipeline source content metadata"
+            );
+            let content = PipelineSourceContent { digest, size_bytes };
+            cache.insert(canonical, content.clone());
+            file.content = Some(content);
+            Ok(())
+        }
+        PipelineSource::Http(_) | PipelineSource::Casync(_) => Ok(()),
+        PipelineSource::Xz(source) => hydrate_pipeline_file_content(source.xz.as_mut(), cache),
+        PipelineSource::AndroidSparseImg(source) => {
+            hydrate_pipeline_file_content(source.android_sparseimg.source.as_mut(), cache)
+        }
+        PipelineSource::Mbr(source) => {
+            hydrate_pipeline_file_content(source.mbr.source.as_mut(), cache)
+        }
+        PipelineSource::Gpt(source) => {
+            hydrate_pipeline_file_content(source.gpt.source.as_mut(), cache)
+        }
+    }
+}
+
 fn artifact_source_cache_key(source: &BootProfileArtifactSource) -> Result<String> {
     match source {
         BootProfileArtifactSource::Http(source) => Ok(format!("http:{}", source.http)),

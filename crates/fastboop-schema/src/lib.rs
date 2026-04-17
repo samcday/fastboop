@@ -471,6 +471,15 @@ impl BootProfileRootfs {
         }
     }
 
+    pub fn source_mut(&mut self) -> &mut BootProfileArtifactSource {
+        match self {
+            Self::Ostree(source) => source.source_mut(),
+            Self::Erofs(source) => &mut source.erofs,
+            Self::Ext4(source) => &mut source.ext4,
+            Self::Fat(source) => &mut source.fat,
+        }
+    }
+
     pub fn is_ostree(&self) -> bool {
         matches!(self, Self::Ostree(_))
     }
@@ -486,6 +495,10 @@ pub struct BootProfileRootfsOstreeSource {
 impl BootProfileRootfsOstreeSource {
     pub fn source(&self) -> &BootProfileArtifactSource {
         self.ostree.source()
+    }
+
+    pub fn source_mut(&mut self) -> &mut BootProfileArtifactSource {
+        self.ostree.source_mut()
     }
 }
 
@@ -506,6 +519,14 @@ impl BootProfileRootfsFilesystemSource {
             Self::Fat(source) => &source.fat,
         }
     }
+
+    pub fn source_mut(&mut self) -> &mut BootProfileArtifactSource {
+        match self {
+            Self::Erofs(source) => &mut source.erofs,
+            Self::Ext4(source) => &mut source.ext4,
+            Self::Fat(source) => &mut source.fat,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -519,6 +540,10 @@ pub struct BootProfileArtifactPathSource {
 impl BootProfileArtifactPathSource {
     pub fn artifact_source(&self) -> &BootProfileArtifactSource {
         self.source.source()
+    }
+
+    pub fn artifact_source_mut(&mut self) -> &mut BootProfileArtifactSource {
+        self.source.source_mut()
     }
 }
 

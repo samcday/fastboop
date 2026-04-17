@@ -86,7 +86,7 @@ extra_cmdline: console=ttyMSM0,115200n8
 - `rootfs` schema supports `erofs`, `ext4`, and `fat`.
 - Stage0 lower-root currently accepts `erofs` and `ext4`; use `fat` for kernel/dtbs source pipelines.
 - Artifact pipeline validation/limits come from `gibblox-pipeline` (`MAX_PIPELINE_DEPTH=16`).
-- Terminal stages (`http`, `casync`, `file`) must include `content` metadata (`digest`, `size_bytes`).
+- Terminal stages (`http`, `casync`, `file`) must include `content` metadata (`digest`, `size_bytes`). `bootprofile create` auto-populates `content` for bare local `file` sources by hashing the referenced path, so hand-authored manifests pointing at `pmbootstrap export` output (or any other local artifact) can omit it.
 - Wrapper stages (`xz`, `android_sparseimg`, `mbr`, `gpt`) may include optional `content` metadata.
 - GPT/MBR selector steps must choose exactly one selector field.
 - `kernel.path` and `dtbs.path` (if present) must be non-empty.

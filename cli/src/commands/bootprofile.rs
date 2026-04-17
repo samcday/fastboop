@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::CString;
 use std::fs;
 use std::future::Future;
@@ -30,7 +30,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
-use super::ArtifactReaderResolver;
+use super::{ArtifactReaderResolver, hydrate_pipeline_file_content};
 
 #[derive(Args)]
 pub struct BootProfileArgs {
@@ -121,9 +121,11 @@ async fn run_create(args: BootProfileCreateArgs) -> Result<()> {
         .with_context(|| format!("parsing boot profile document {}", io_label(&args.input)))?;
     debug!(profile_id = %manifest.id, "bootprofile create parsed manifest");
 
-    let compiled = manifest
+    let mut compiled = manifest
         .compile_dt_overlays(compile_dt_overlay)
         .context("compiling dt_overlays with dtc")?;
+
+    hydrate_profile_file_content(&mut compiled)?;
 
     validate_boot_profile(&compiled).map_err(|err| anyhow!("{err}"))?;
 
@@ -171,6 +173,18 @@ async fn run_create(args: BootProfileCreateArgs) -> Result<()> {
         output = %io_label(&args.output),
         "bootprofile create finished"
     );
+    Ok(())
+}
+
+fn hydrate_profile_file_content(profile: &mut BootProfile) -> Result<()> {
+    let mut cache = HashMap::new();
+    hydrate_pipeline_file_content(profile.rootfs.source_mut(), &mut cache)?;
+    if let Some(kernel) = profile.kernel.as_mut() {
+        hydrate_pipeline_file_content(kernel.artifact_source_mut(), &mut cache)?;
+    }
+    if let Some(dtbs) = profile.dtbs.as_mut() {
+        hydrate_pipeline_file_content(dtbs.artifact_source_mut(), &mut cache)?;
+    }
     Ok(())
 }
 
@@ -1406,6 +1420,7 @@ mod tests {
     use fastboop_core::{
         BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
     };
+    use gibblox_pipeline::PipelineSourceContent;
     use std::{
         collections::BTreeSet,
         fs,
@@ -1809,6 +1824,81 @@ rootfs:
 
         identities.sort_unstable();
         assert_eq!(identities, sorted);
+    }
+
+    #[test]
+    fn hydrate_profile_file_content_populates_bare_file_sources() {
+        let rootfs_path = temp_path("hydrate-rootfs.img");
+        let kernel_path = temp_path("hydrate-kernel.img");
+        fs::write(&rootfs_path, b"rootfs fixture bytes").expect("write rootfs fixture");
+        fs::write(&kernel_path, b"kernel fixture bytes").expect("write kernel fixture");
+
+        let yaml = format!(
+            "id: local-hydrate\nrootfs:\n  ext4:\n    gpt:\n      index: 1\n      android_sparseimg:\n        file: '{}'\nkernel:\n  path: /vmlinuz\n  fat:\n    file: '{}'\n",
+            rootfs_path.display(),
+            kernel_path.display(),
+        );
+        let manifest: BootProfileManifest =
+            serde_yaml::from_str(&yaml).expect("parse hydrate manifest");
+
+        let mut compiled = manifest
+            .compile_dt_overlays::<core::convert::Infallible, _>(|_| unreachable!())
+            .expect("compile profile");
+
+        assert!(
+            validate_boot_profile(&compiled).is_err(),
+            "bare file sources should fail validation before hydration"
+        );
+
+        hydrate_profile_file_content(&mut compiled).expect("hydrate file content");
+        validate_boot_profile(&compiled).expect("validation after hydration");
+
+        fn rootfs_file_content(profile: &BootProfile) -> PipelineSourceContent {
+            match profile.rootfs.source() {
+                BootProfileArtifactSource::Gpt(gpt) => match gpt.gpt.source.as_ref() {
+                    BootProfileArtifactSource::AndroidSparseImg(sparse) => {
+                        match sparse.android_sparseimg.source.as_ref() {
+                            BootProfileArtifactSource::File(file) => file
+                                .content
+                                .as_ref()
+                                .expect("rootfs file content populated")
+                                .clone(),
+                            other => panic!("expected file inner source, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected android_sparseimg inner source, got {other:?}"),
+                },
+                other => panic!("expected gpt root source, got {other:?}"),
+            }
+        }
+
+        let rootfs_content = rootfs_file_content(&compiled);
+        assert!(rootfs_content.digest.starts_with("sha512:"));
+        assert_eq!(
+            rootfs_content.size_bytes,
+            b"rootfs fixture bytes".len() as u64
+        );
+
+        let kernel = compiled.kernel.as_ref().expect("kernel populated");
+        let kernel_content = match kernel.artifact_source() {
+            BootProfileArtifactSource::File(file) => file
+                .content
+                .as_ref()
+                .expect("kernel file content populated"),
+            other => panic!("expected kernel file source, got {other:?}"),
+        };
+        assert!(kernel_content.digest.starts_with("sha512:"));
+        assert_eq!(
+            kernel_content.size_bytes,
+            b"kernel fixture bytes".len() as u64
+        );
+
+        hydrate_profile_file_content(&mut compiled).expect("second hydration is a no-op");
+        let rootfs_content_after = rootfs_file_content(&compiled);
+        assert_eq!(rootfs_content_after.digest, rootfs_content.digest);
+
+        let _ = fs::remove_file(rootfs_path);
+        let _ = fs::remove_file(kernel_path);
     }
 
     const SPARSE_MAGIC: u32 = 0xED26_FF3A;
