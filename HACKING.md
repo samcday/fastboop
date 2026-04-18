@@ -54,12 +54,29 @@ See `docs/dev/DEVICE_PROFILES.md` for schema and semantics.
 - `smoo-*` crates: consumed from crates.io (see upstream smoo docs for internals).
 - `gibblox-*` crates: consumed from crates.io (see upstream gibblox docs for internals).
 
-For local gibblox integration work, clone/worktree gibblox into `./gibblox` and run
-`./tools/cargo-local-gibblox.sh ...` (or pass `--config .cargo/config.gibblox-local.toml`
-to cargo commands directly). For Dioxus commands that shell out to cargo, use
-`./tools/dx-local-gibblox.sh ...` so `dx` receives a local gibblox overlay for
-the web HTTP reader path (`gibblox-http`).
-That applies a local `[patch.crates-io]` overlay without mutating workspace manifests.
+For local integration work across gibblox and/or smoo, clone either (or both) into
+the repo root and run `./tools/cargo-local.sh ...`:
+
+```sh
+git clone https://github.com/samcday/gibblox ./gibblox
+git clone https://github.com/samcday/smoo    ./smoo
+./tools/cargo-local.sh check --workspace --exclude fastboop-web
+```
+
+The script discovers every `<root>/crates/*/Cargo.toml` it finds and emits a
+`[patch.crates-io]` overlay fed to cargo via `--config`, so new gibblox/smoo
+crates get picked up automatically without editing this repo. At least one of
+`./gibblox` or `./smoo` must exist; either may be absent (the missing side
+resolves from crates.io as usual). Workspace manifests and `Cargo.lock` are not
+mutated.
+
+For Dioxus commands that shell out to cargo, use `./tools/dx-local.sh ...` so
+`dx` receives the overlay too (it also exports `FASTBOOP_STAGE0_CARGO` so the
+stage0 nested build inherits the same patches).
+
+For IDE integrations or direct invocations that want a static file, pass
+`--config .cargo/config.local.toml` to cargo. Keep that file in sync with the
+set of crates actually published by gibblox and smoo.
 
 ## Contributor workflow
 

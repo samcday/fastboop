@@ -4,5 +4,6 @@ terraform.tfstate.backup
 repo/
 build/
 gibblox/
+smoo/
 __pycache__/
 *.py[cod]
