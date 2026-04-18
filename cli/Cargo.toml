@@ -38,22 +38,22 @@ serde_json = "1.0.132"
 serde_yaml = { workspace = true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-gibblox-core = { version = "0.0.1-rc.19", features = ["std"] }
-gibblox-ext4 = { version = "0.0.1-rc.19" }
-gibblox-mbr = { version = "0.0.1-rc.19", features = ["std"] }
-gibblox-casync = { version = "0.0.1-rc.19", features = ["std"] }
-gibblox-casync-std = { version = "0.0.1-rc.19" }
-gibblox-file = { version = "0.0.1-rc.19" }
-gibblox-http = { version = "0.0.1-rc.19", default-features = false, features = ["native-client"] }
-gibblox-cache = { version = "0.0.1-rc.19" }
-gibblox-cache-store-std = { version = "0.0.1-rc.19" }
-gibblox-pipeline = { version = "0.0.1-rc.19", features = ["std"] }
-gibblox-android-sparse = { version = "0.0.1-rc.19", features = ["std"] }
-gibblox-xz = { version = "0.0.1-rc.19", features = ["std"] }
-gibblox-zip = { version = "0.0.1-rc.19", features = ["std"] }
-gobblytes-core = { version = "0.0.1-rc.19" }
-gobblytes-erofs = { version = "0.0.1-rc.19" }
-gobblytes-fat = { version = "0.0.1-rc.19" }
+gibblox-core = { version = "0.0.1", features = ["std"] }
+gibblox-ext4 = { version = "0.0.1" }
+gibblox-mbr = { version = "0.0.1", features = ["std"] }
+gibblox-casync = { version = "0.0.1", features = ["std"] }
+gibblox-casync-std = { version = "0.0.1" }
+gibblox-file = { version = "0.0.1" }
+gibblox-http = { version = "0.0.1", default-features = false, features = ["native-client"] }
+gibblox-cache = { version = "0.0.1" }
+gibblox-cache-store-std = { version = "0.0.1" }
+gibblox-pipeline = { version = "0.0.1", features = ["std"] }
+gibblox-android-sparse = { version = "0.0.1", features = ["std"] }
+gibblox-xz = { version = "0.0.1", features = ["std"] }
+gibblox-zip = { version = "0.0.1", features = ["std"] }
+gobblytes-core = { version = "0.0.1" }
+gobblytes-erofs = { version = "0.0.1" }
+gobblytes-fat = { version = "0.0.1" }
 smoo-host-core = { version = "0.0.1-rc.7" }
 smoo-host-session = { version = "0.0.1-rc.7" }
 smoo-host-transport-rusb = { version = "0.0.1-rc.7" }
