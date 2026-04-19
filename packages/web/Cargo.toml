@@ -13,29 +13,29 @@ ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
-gobblytes-erofs = { version = "0.0.1" }
-gobblytes-core = { version = "0.0.1" }
-gobblytes-fat = { version = "0.0.1" }
-gibblox-core = { version = "0.0.1" }
-gibblox-casync = { version = "0.0.1" }
-gibblox-casync-web = { version = "0.0.1" }
-gibblox-android-sparse = { version = "0.0.1" }
-gibblox-http = { version = "0.0.1", default-features = false, features = ["wasm-client"] }
-gibblox-ext4 = { version = "0.0.1" }
-gibblox-cache = { version = "0.0.1" }
-gibblox-cache-store-opfs = { version = "0.0.1" }
-gibblox-mbr = { version = "0.0.1" }
-gibblox-pipeline = { version = "0.0.1", features = ["web"] }
-gibblox-xz = { version = "0.0.1" }
-gibblox-zip = { version = "0.0.1" }
-gibblox-web-file = { version = "0.0.1" }
-gibblox-blockreader-messageport = { version = "0.0.1" }
-gibblox-web-worker = { version = "0.0.1" }
+gobblytes-erofs = { version = "0.0.2-rc.1" }
+gobblytes-core = { version = "0.0.2-rc.1" }
+gobblytes-fat = { version = "0.0.2-rc.1" }
+gibblox-core = { version = "0.0.2-rc.1" }
+gibblox-casync = { version = "0.0.2-rc.1" }
+gibblox-casync-web = { version = "0.0.2-rc.1" }
+gibblox-android-sparse = { version = "0.0.2-rc.1" }
+gibblox-http = { version = "0.0.2-rc.1", default-features = false, features = ["wasm-client"] }
+gibblox-ext4 = { version = "0.0.2-rc.1" }
+gibblox-cache = { version = "0.0.2-rc.1" }
+gibblox-cache-store-opfs = { version = "0.0.2-rc.1" }
+gibblox-mbr = { version = "0.0.2-rc.1" }
+gibblox-pipeline = { version = "0.0.2-rc.1", features = ["web"] }
+gibblox-xz = { version = "0.0.2-rc.1" }
+gibblox-zip = { version = "0.0.2-rc.1" }
+gibblox-web-file = { version = "0.0.2-rc.1" }
+gibblox-blockreader-messageport = { version = "0.0.2-rc.1" }
+gibblox-web-worker = { version = "0.0.2-rc.1" }
 url = { workspace = true }
 serde_json = "1.0.145"
-smoo-host-core = { version = "0.0.1-rc.7" }
-smoo-host-session = { version = "0.0.1-rc.7" }
-smoo-host-blocksource-gibblox = { version = "0.0.1-rc.7" }
+smoo-host-core = { version = "0.0.2-rc.3" }
+smoo-host-session = { version = "0.0.2-rc.3" }
+smoo-host-blocksource-gibblox = { version = "0.0.2-rc.3" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "registry", "std"] }
 tracing-wasm = "0.2.1"
@@ -53,4 +53,4 @@ default = ["web"]
 web = ["dioxus/web"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-smoo-host-web-worker = { version = "0.0.1-rc.7" }
+smoo-host-web-worker = { version = "0.0.2-rc.3" }
