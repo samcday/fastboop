@@ -141,6 +141,7 @@ fn accepts_gpt_over_casync_pipeline() {
                     partlabel: Some("rootfs".to_string()),
                     partuuid: None,
                     index: None,
+                    lba_size: None,
                     source: Box::new(BootProfileArtifactSource::Casync(
                         BootProfileArtifactSourceCasyncSource {
                             casync: BootProfileArtifactSourceCasync {
@@ -236,6 +237,7 @@ fn rejects_gpt_step_without_selector() {
                     partlabel: None,
                     partuuid: None,
                     index: None,
+                    lba_size: None,
                     source: Box::new(BootProfileArtifactSource::Http(
                         BootProfileArtifactSourceHttpSource {
                             http: "https://example.invalid/rootfs.img".to_string(),
@@ -273,6 +275,7 @@ fn rejects_mbr_step_without_selector() {
                 mbr: BootProfileArtifactSourceMbr {
                     partuuid: None,
                     index: None,
+                    lba_size: None,
                     source: Box::new(BootProfileArtifactSource::Http(
                         BootProfileArtifactSourceHttpSource {
                             http: "https://example.invalid/rootfs.img".to_string(),
