@@ -4,6 +4,7 @@ namespace: fastboop
 resources:
   - deployment.yaml
   - service.yaml
+  - vpa.yaml
 configMapGenerator:
   - name: fastboop-web-config
     literals:

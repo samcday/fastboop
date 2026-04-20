@@ -5,6 +5,7 @@ resources:
   - deployment.yaml
   - github-token.yaml
   - service.yaml
+  - vpa.yaml
 configMapGenerator:
   - name: gha-proxy-config
     literals:

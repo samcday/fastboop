@@ -6,3 +6,4 @@ resources:
   - caddy-config.yaml
   - deployment.yaml
   - service.yaml
+  - vpa.yaml
