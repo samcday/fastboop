@@ -5,7 +5,6 @@ This OpenTofu config provisions:
 - A Workers script that serves `https://bleeding.fastboop.win`.
 - A Workers route to map the bleeding hostname.
 - A DNS A record for the bleeding hostname.
-- A DNS CNAME record for `docs.fastboop.win` -> GitHub Pages.
 
 The worker behavior:
 - `/` and `/latest` 302 redirect to `/commit/<sha>/`.

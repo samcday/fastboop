@@ -10,6 +10,7 @@ resources:
   - frontdoor-edge
   - image-automation
   - conduit
+  - docs-dns
   - gha-proxy
 configMapGenerator:
   - name: live-version
