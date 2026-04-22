@@ -99,3 +99,47 @@ pub fn dedup_profiles(profiles: &HashMap<String, DeviceProfile>) -> Vec<&DeviceP
     }
     unique
 }
+
+/// Returns the device profile matching pool. When the channel carries DevPros,
+/// those become the pool (replace, not union); otherwise fall back to local +
+/// builtin profiles loaded from the configured devpro dirs.
+pub fn channel_matching_pool(
+    channel_dev_profiles: &[DeviceProfile],
+    devpro_dirs: &[PathBuf],
+) -> Result<Vec<DeviceProfile>> {
+    if !channel_dev_profiles.is_empty() {
+        return Ok(channel_dev_profiles.to_vec());
+    }
+    let local = load_device_profiles(devpro_dirs)?;
+    Ok(dedup_profiles(&local).into_iter().cloned().collect())
+}
+
+/// Picks a device profile from a matching pool by id. The channel slice is
+/// only consulted to shape the error message — when it is non-empty we report
+/// the channel-specific failure; otherwise we name the local devpro dirs.
+pub fn resolve_profile_in_pool(
+    pool: &[DeviceProfile],
+    channel_dev_profiles: &[DeviceProfile],
+    devpro_dirs: &[PathBuf],
+    requested: &str,
+) -> Result<DeviceProfile> {
+    if let Some(profile) = pool.iter().find(|profile| profile.id == requested) {
+        return Ok(profile.clone());
+    }
+
+    let mut ids: Vec<_> = pool.iter().map(|profile| profile.id.clone()).collect();
+    ids.sort();
+    if !channel_dev_profiles.is_empty() {
+        bail!(
+            "device profile '{}' is not in channel DevPros [{}]",
+            requested,
+            ids.join(", ")
+        );
+    }
+    bail!(
+        "device profile '{}' not found in {:?}; available ids: {:?}",
+        requested,
+        devpro_dirs,
+        ids
+    );
+}

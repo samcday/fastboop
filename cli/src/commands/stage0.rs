@@ -1,15 +1,14 @@
-use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use fastboop_core::resolve_effective_boot_profile_stage0;
 use fastboop_stage0_generator::{Stage0Options, build_stage0};
 use gobblytes_core::OstreeFs as OstreeRootfs;
 use tracing::debug;
 
-use crate::devpros::{load_device_profiles, resolve_devpro_dirs};
+use crate::devpros::{channel_matching_pool, resolve_devpro_dirs, resolve_profile_in_pool};
 
 use super::{
     ArtifactReaderResolver, OstreeArg, Stage0CoalescingFilesystem,
@@ -62,16 +61,33 @@ pub struct Stage0Args {
 
 pub async fn run_stage0(args: Stage0Args) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
-    let profiles = load_device_profiles(&devpro_dirs)?;
-    let profile = profiles.get(&args.device_profile);
-    let profile = profile.with_context(|| {
-        let mut ids: Vec<_> = profiles.keys().cloned().collect();
-        ids.sort();
-        format!(
-            "device profile '{}' not found in {:?}; available ids: {:?}",
-            args.device_profile, devpro_dirs, ids
-        )
-    })?;
+    let mut artifact_resolver =
+        ArtifactReaderResolver::with_local_artifacts(args.local_artifact.as_slice())?;
+    let channel_head = artifact_resolver
+        .read_channel_stream_head(&args.channel)
+        .await
+        .with_context(|| {
+            format!(
+                "read channel profile stream head for {}",
+                args.channel.display()
+            )
+        })?;
+
+    if channel_head.warning_count > 0 {
+        eprintln!(
+            "channel stream has {} warning(s) while reading profile head; using {} bytes of leading records",
+            channel_head.warning_count, channel_head.consumed_bytes
+        );
+    }
+
+    let pool = channel_matching_pool(&channel_head.dev_profiles, &devpro_dirs)?;
+    let profile = resolve_profile_in_pool(
+        &pool,
+        &channel_head.dev_profiles,
+        &devpro_dirs,
+        &args.device_profile,
+    )?;
+    let profile = &profile;
 
     let cli_dtb_override = match &args.dtb {
         Some(path) => {
@@ -93,8 +109,6 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    let mut artifact_resolver =
-        ArtifactReaderResolver::with_local_artifacts(args.local_artifact.as_slice())?;
     let build = {
         let input = artifact_resolver
             .open_channel_input(
@@ -103,27 +117,6 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                 args.boot_profile.as_deref(),
             )
             .await?;
-
-        if input.warning_count > 0 {
-            eprintln!(
-                "channel stream has {} warning(s) while reading profile head; using {} bytes of leading records",
-                input.warning_count,
-                input.consumed_bytes
-            );
-        }
-
-        let accepted_profile_ids: HashSet<&str> =
-            input.dev_profiles.iter().map(|profile| profile.id.as_str()).collect();
-        if !accepted_profile_ids.is_empty() && !accepted_profile_ids.contains(profile.id.as_str()) {
-            let mut accepted_ids: Vec<_> =
-                input.dev_profiles.iter().map(|profile| profile.id.as_str()).collect();
-            accepted_ids.sort_unstable();
-            bail!(
-                "device profile '{}' is not accepted by channel profile constraints [{}]",
-                profile.id,
-                accepted_ids.join(", ")
-            );
-        }
 
         let profile_source_overrides = resolve_boot_profile_source_overrides(
             input.boot_profile.as_ref(),

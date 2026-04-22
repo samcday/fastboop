@@ -1,4 +1,3 @@
-use std::collections::{HashMap, HashSet};
 #[cfg(feature = "tui")]
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -22,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
-use crate::devpros::{dedup_profiles, load_device_profiles, resolve_devpro_dirs};
+use crate::devpros::{channel_matching_pool, resolve_devpro_dirs, resolve_profile_in_pool};
 use crate::personalization::personalization_from_host;
 use crate::smoo_host::run_host_daemon;
 #[cfg(feature = "tui")]
@@ -190,10 +189,8 @@ async fn run_boot_inner(
     shutdown: CancellationToken,
 ) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
-    let profiles = load_device_profiles(&devpro_dirs)?;
     let mut artifact_resolver =
         ArtifactReaderResolver::with_local_artifacts(args.stage0.local_artifact.as_slice())?;
-    let requested_profile_id = args.stage0.device_profile.as_deref();
     let channel_head = artifact_resolver
         .read_channel_stream_head(&args.stage0.channel)
         .await
@@ -214,58 +211,15 @@ async fn run_boot_inner(
         );
     }
 
-    let loaded_profiles = dedup_profiles(&profiles);
-    let accepted_profile_ids: HashSet<&str> = channel_head
-        .dev_profiles
-        .iter()
-        .map(|profile| profile.id.as_str())
-        .collect();
-
-    let constrained_profiles: Vec<DeviceProfile> = if accepted_profile_ids.is_empty() {
-        loaded_profiles.iter().copied().cloned().collect()
-    } else {
-        loaded_profiles
-            .iter()
-            .filter(|profile| accepted_profile_ids.contains(profile.id.as_str()))
-            .copied()
-            .cloned()
-            .collect()
-    };
-
-    if !accepted_profile_ids.is_empty() && constrained_profiles.is_empty() {
-        let mut available: Vec<_> = channel_head
-            .dev_profiles
-            .iter()
-            .map(|profile| profile.id.as_str())
-            .collect();
-        available.sort_unstable();
-        bail!(
-            "channel profile constraints require one of [{}], but none are loaded from {:?}",
-            available.join(", "),
-            devpro_dirs
-        );
-    }
-
-    if !accepted_profile_ids.is_empty() {
-        if let Some(requested) = requested_profile_id {
-            if !accepted_profile_ids.contains(requested) {
-                let mut available: Vec<_> = channel_head
-                    .dev_profiles
-                    .iter()
-                    .map(|profile| profile.id.as_str())
-                    .collect();
-                available.sort_unstable();
-                bail!(
-                    "device profile '{}' is not accepted by channel profile constraints [{}]",
-                    requested,
-                    available.join(", ")
-                );
-            }
-        }
-    }
+    let matching_pool = channel_matching_pool(&channel_head.dev_profiles, &devpro_dirs)?;
 
     let mut profile = match args.stage0.device_profile.as_deref() {
-        Some(requested) => Some(resolve_profile_by_id(&profiles, &devpro_dirs, requested)?),
+        Some(requested) => Some(resolve_profile_in_pool(
+            &matching_pool,
+            &channel_head.dev_profiles,
+            &devpro_dirs,
+            requested,
+        )?),
         None => None,
     };
 
@@ -294,8 +248,7 @@ async fn run_boot_inner(
                     detail: "profile=auto".to_string(),
                 },
             );
-            let resolved =
-                wait_for_fastboot_device_auto(&constrained_profiles, wait, &events).await?;
+            let resolved = wait_for_fastboot_device_auto(&matching_pool, wait, &events).await?;
             profile = Some(resolved.profile);
             Some(resolved.device)
         }
@@ -897,21 +850,6 @@ fn join_cmdline(left: Option<&str>, right: Option<&str>) -> String {
         }
     }
     out
-}
-
-fn resolve_profile_by_id(
-    profiles: &HashMap<String, DeviceProfile>,
-    devpro_dirs: &[PathBuf],
-    requested: &str,
-) -> Result<DeviceProfile> {
-    profiles.get(requested).cloned().with_context(|| {
-        let mut ids: Vec<_> = profiles.keys().cloned().collect();
-        ids.sort();
-        format!(
-            "device profile '{}' not found in {:?}; available ids: {:?}",
-            requested, devpro_dirs, ids
-        )
-    })
 }
 
 fn profile_choice_label(profile: &DeviceProfile) -> String {
