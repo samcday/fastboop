@@ -51,6 +51,10 @@ pub struct Stage0Args {
     /// Enable CDC-ACM gadget (smoo.acm=1) and include usb_f_acm.
     #[arg(long)]
     pub serial: bool,
+    /// Mimic fastboot USB protocol identity so existing fastboot udev rules apply
+    /// (use --impersonate-fastboot=false to disable).
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub impersonate_fastboot: bool,
     /// Local artifact file to short-circuit matching pipeline stages (repeatable).
     #[arg(long = "local-artifact", value_name = "PATH")]
     pub local_artifact: Vec<PathBuf>,
@@ -154,7 +158,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
             dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
             dtbo_overlays,
             enable_serial: serial_enabled,
-            mimic_fastboot: false,
+            mimic_fastboot: args.impersonate_fastboot,
             smoo_vendor: None,
             smoo_product: None,
             smoo_serial: None,

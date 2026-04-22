@@ -19,6 +19,8 @@ use crate::boot_ui::{BootEvent, BootPhase};
 const SMOO_INTERFACE_CLASS: u8 = 0xFF;
 const SMOO_INTERFACE_SUBCLASS: u8 = 0x53;
 const SMOO_INTERFACE_PROTOCOL: u8 = 0x4D;
+const FASTBOOT_INTERFACE_SUBCLASS: u8 = 0x42;
+const FASTBOOT_INTERFACE_PROTOCOL: u8 = 0x03;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(1);
 const DISCOVERY_RETRY: Duration = Duration::from_millis(500);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
@@ -28,16 +30,26 @@ pub(crate) async fn run_host_daemon(
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,
     identity: String,
+    impersonate_fastboot: bool,
     events: Sender<BootEvent>,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    run_host_daemon_async(reader, size_bytes, identity, events, shutdown).await
+    run_host_daemon_async(
+        reader,
+        size_bytes,
+        identity,
+        impersonate_fastboot,
+        events,
+        shutdown,
+    )
+    .await
 }
 
 async fn run_host_daemon_async(
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,
     identity: String,
+    impersonate_fastboot: bool,
     events: Sender<BootEvent>,
     shutdown: CancellationToken,
 ) -> Result<()> {
@@ -58,13 +70,19 @@ async fn run_host_daemon_async(
         &events,
         BootEvent::Log("Waiting for smoo gadget and starting host daemon...".to_string()),
     );
+    let (interface_subclass, interface_protocol) = if impersonate_fastboot {
+        (FASTBOOT_INTERFACE_SUBCLASS, FASTBOOT_INTERFACE_PROTOCOL)
+    } else {
+        (SMOO_INTERFACE_SUBCLASS, SMOO_INTERFACE_PROTOCOL)
+    };
+
     while !shutdown.is_cancelled() {
         let (transport, control) = match RusbTransport::open_matching(
             None,
             None,
             SMOO_INTERFACE_CLASS,
-            SMOO_INTERFACE_SUBCLASS,
-            SMOO_INTERFACE_PROTOCOL,
+            interface_subclass,
+            interface_protocol,
             TRANSFER_TIMEOUT,
         )
         .await

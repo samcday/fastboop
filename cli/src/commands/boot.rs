@@ -81,6 +81,10 @@ pub struct BootStage0Args {
     /// Enable CDC-ACM gadget (smoo.acm=1) and include usb_f_acm.
     #[arg(long)]
     pub serial: bool,
+    /// Mimic fastboot USB protocol identity so existing fastboot udev rules apply
+    /// (use --impersonate-fastboot=false to disable).
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub impersonate_fastboot: bool,
     /// Local artifact file to short-circuit matching pipeline stages (repeatable).
     #[arg(long = "local-artifact", value_name = "PATH")]
     pub local_artifact: Vec<PathBuf>,
@@ -333,6 +337,7 @@ async fn run_boot_inner(
     let ostree_arg = parse_ostree_arg(args.stage0.ostree.as_ref())?;
     let cli_extra_modules = args.stage0.require_modules;
     let serial_enabled = args.stage0.serial;
+    let impersonate_fastboot = args.stage0.impersonate_fastboot;
     let personalization = args.systemd_firstboot.then(personalization_from_host);
 
     let existing = read_existing_initrd(&args.stage0.augment)?;
@@ -402,7 +407,7 @@ async fn run_boot_inner(
             dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
             dtbo_overlays,
             enable_serial: serial_enabled,
-            mimic_fastboot: false,
+            mimic_fastboot: impersonate_fastboot,
             smoo_vendor: detected_device.as_ref().map(|device| device.vid),
             smoo_product: detected_device.as_ref().map(|device| device.pid),
             smoo_serial: detected_device
@@ -561,6 +566,7 @@ async fn run_boot_inner(
         block_reader,
         image_size_bytes,
         image_identity,
+        impersonate_fastboot,
         events,
         shutdown,
     )
