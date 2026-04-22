@@ -29,18 +29,6 @@ pub fn resolve_devpro_dirs() -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-pub fn load_device_profiles(dirs: &[PathBuf]) -> Result<HashMap<String, DeviceProfile>> {
-    let mut profiles = HashMap::new();
-    let builtin = builtin_profiles().context("loading builtin device profiles")?;
-    for profile in builtin {
-        profiles.insert(profile.id.clone(), profile);
-    }
-    for (id, profile) in load_local_device_profiles(dirs)? {
-        profiles.insert(id, profile);
-    }
-    Ok(profiles)
-}
-
 pub fn load_local_device_profiles(dirs: &[PathBuf]) -> Result<HashMap<String, DeviceProfile>> {
     let mut profiles = HashMap::new();
     let mut file_ids = HashSet::new();
@@ -89,37 +77,28 @@ pub fn load_local_device_profiles(dirs: &[PathBuf]) -> Result<HashMap<String, De
     Ok(profiles)
 }
 
-pub fn dedup_profiles(profiles: &HashMap<String, DeviceProfile>) -> Vec<&DeviceProfile> {
-    let mut seen = HashSet::new();
-    let mut unique = Vec::new();
-    for profile in profiles.values() {
-        if seen.insert(profile.id.clone()) {
-            unique.push(profile);
-        }
-    }
-    unique
-}
-
-/// Returns the device profile matching pool. When the channel carries DevPros,
-/// those become the pool (replace, not union); otherwise fall back to local +
-/// builtin profiles loaded from the configured devpro dirs.
+/// Returns the device profile matching pool: the union of built-in,
+/// channel-carried, and locally-loaded DevPros. Precedence on id collision
+/// is `local > channel > built-in`.
 pub fn channel_matching_pool(
     channel_dev_profiles: &[DeviceProfile],
     devpro_dirs: &[PathBuf],
 ) -> Result<Vec<DeviceProfile>> {
-    if !channel_dev_profiles.is_empty() {
-        return Ok(channel_dev_profiles.to_vec());
+    let mut profiles: HashMap<String, DeviceProfile> = HashMap::new();
+    for profile in builtin_profiles().context("loading builtin device profiles")? {
+        profiles.insert(profile.id.clone(), profile);
     }
-    let local = load_device_profiles(devpro_dirs)?;
-    Ok(dedup_profiles(&local).into_iter().cloned().collect())
+    for profile in channel_dev_profiles {
+        profiles.insert(profile.id.clone(), profile.clone());
+    }
+    for (id, profile) in load_local_device_profiles(devpro_dirs)? {
+        profiles.insert(id, profile);
+    }
+    Ok(profiles.into_values().collect())
 }
 
-/// Picks a device profile from a matching pool by id. The channel slice is
-/// only consulted to shape the error message — when it is non-empty we report
-/// the channel-specific failure; otherwise we name the local devpro dirs.
 pub fn resolve_profile_in_pool(
     pool: &[DeviceProfile],
-    channel_dev_profiles: &[DeviceProfile],
     devpro_dirs: &[PathBuf],
     requested: &str,
 ) -> Result<DeviceProfile> {
@@ -129,17 +108,10 @@ pub fn resolve_profile_in_pool(
 
     let mut ids: Vec<_> = pool.iter().map(|profile| profile.id.clone()).collect();
     ids.sort();
-    if !channel_dev_profiles.is_empty() {
-        bail!(
-            "device profile '{}' is not in channel DevPros [{}]",
-            requested,
-            ids.join(", ")
-        );
-    }
     bail!(
-        "device profile '{}' not found in {:?}; available ids: {:?}",
+        "device profile '{}' not found; available ids: [{}]; checked dirs: {:?}",
         requested,
-        devpro_dirs,
-        ids
+        ids.join(", "),
+        devpro_dirs
     );
 }

@@ -81,12 +81,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
     }
 
     let pool = channel_matching_pool(&channel_head.dev_profiles, &devpro_dirs)?;
-    let profile = resolve_profile_in_pool(
-        &pool,
-        &channel_head.dev_profiles,
-        &devpro_dirs,
-        &args.device_profile,
-    )?;
+    let profile = resolve_profile_in_pool(&pool, &devpro_dirs, &args.device_profile)?;
     let profile = &profile;
 
     let cli_dtb_override = match &args.dtb {
