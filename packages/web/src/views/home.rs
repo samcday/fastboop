@@ -441,7 +441,6 @@ pub fn Home(channel: Option<String>) -> Element {
                     consumed_bytes: intake.stream_head.consumed_bytes,
                     warning_count: intake.stream_head.warning_count,
                     has_artifact_payload: intake.has_artifact_payload(),
-                    accepted_dev_profiles: intake.stream_head.dev_profiles.clone(),
                     compatible_boot_profiles,
                     pipeline_hint_records: intake.stream_head.pipeline_hint_records.clone(),
                 },
@@ -688,18 +687,20 @@ fn set_startup_channel_drop_error(
 fn load_profiles_for_channel(
     intake: &crate::StartupChannelIntake,
 ) -> Vec<fastboop_core::DeviceProfile> {
-    let channel_dev_profiles = &intake.stream_head.dev_profiles;
-    let profiles = if channel_dev_profiles.is_empty() {
-        builtin_profiles().unwrap_or_default()
-    } else {
-        channel_dev_profiles.clone()
-    };
+    let mut profiles: std::collections::HashMap<String, fastboop_core::DeviceProfile> =
+        std::collections::HashMap::new();
+    for profile in builtin_profiles().unwrap_or_default() {
+        profiles.insert(profile.id.clone(), profile);
+    }
+    for profile in &intake.stream_head.dev_profiles {
+        profiles.insert(profile.id.clone(), profile.clone());
+    }
 
     let allowed_by_boot_profiles =
         allowed_boot_profile_device_ids(&intake.stream_head.boot_profiles);
 
     profiles
-        .into_iter()
+        .into_values()
         .filter(|profile| match allowed_by_boot_profiles.as_ref() {
             Some(allowed) => allowed.contains(profile.id.as_str()),
             None => true,

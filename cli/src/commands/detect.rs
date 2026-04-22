@@ -58,12 +58,7 @@ pub async fn run_detect(args: DetectArgs) -> Result<()> {
     let pool = channel_matching_pool(&channel_dev_profiles, &devpro_dirs)?;
 
     let profiles: Vec<DeviceProfile> = match args.device_profile.as_deref() {
-        Some(requested) => vec![resolve_profile_in_pool(
-            &pool,
-            &channel_dev_profiles,
-            &devpro_dirs,
-            requested,
-        )?],
+        Some(requested) => vec![resolve_profile_in_pool(&pool, &devpro_dirs, requested)?],
         None => pool,
     };
 

@@ -267,17 +267,6 @@ pub async fn boot_selected_device(
         .ok_or_else(|| anyhow::anyhow!("session not found"))?;
     let mut boot_config = session.boot_config.clone();
 
-    validate_session_dev_profiles(
-        &session.device.profile.id,
-        &session.channel_intake.accepted_dev_profiles,
-    )
-    .with_context(|| {
-        format!(
-            "device '{}' is not accepted by channel stream dev profiles",
-            session.device.profile.id
-        )
-    })?;
-
     let selected_boot_profile = select_boot_profile_for_session(&session)?;
     let profile_stage0 = selected_boot_profile
         .as_ref()
@@ -1377,29 +1366,6 @@ fn open_boot_profile_artifact_source<'a>(
             }
         }
     })
-}
-
-fn validate_session_dev_profiles(
-    session_device_profile_id: &str,
-    accepted: &[fastboop_core::DeviceProfile],
-) -> anyhow::Result<()> {
-    if accepted.is_empty() {
-        return Ok(());
-    }
-
-    if accepted
-        .iter()
-        .any(|profile| profile.id == session_device_profile_id)
-    {
-        return Ok(());
-    }
-
-    let allowed: Vec<_> = accepted.iter().map(|profile| profile.id.as_str()).collect();
-    anyhow::bail!(
-        "device '{}' is not accepted by this channel stream; channel-dev-profiles: {}",
-        session_device_profile_id,
-        allowed.join(", ")
-    )
 }
 
 #[cfg(target_arch = "wasm32")]

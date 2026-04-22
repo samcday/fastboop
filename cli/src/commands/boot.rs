@@ -216,7 +216,6 @@ async fn run_boot_inner(
     let mut profile = match args.stage0.device_profile.as_deref() {
         Some(requested) => Some(resolve_profile_in_pool(
             &matching_pool,
-            &channel_head.dev_profiles,
             &devpro_dirs,
             requested,
         )?),

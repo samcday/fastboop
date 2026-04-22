@@ -59,7 +59,6 @@ pub struct SessionChannelIntake {
     pub consumed_bytes: u64,
     pub warning_count: usize,
     pub has_artifact_payload: bool,
-    pub accepted_dev_profiles: Vec<DeviceProfile>,
     pub compatible_boot_profiles: Vec<BootProfile>,
     pub pipeline_hint_records: Vec<ChannelPipelineHintsRecord>,
 }
