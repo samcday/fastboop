@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
@@ -10,9 +11,9 @@ use fastboop_core::prober::probe_candidates;
 use fastboop_fastboot_rusb::{DeviceWatcher, RusbDeviceHandle};
 use tracing::{debug, trace};
 
-use crate::devpros::{dedup_profiles, load_device_profiles, resolve_devpro_dirs};
+use crate::devpros::{channel_matching_pool, resolve_devpro_dirs, resolve_profile_in_pool};
 
-use super::format_probe_error;
+use super::{ArtifactReaderResolver, format_probe_error};
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const NO_MATCHING_DEVICE_MSG: &str = "No matching fastboot devices detected.";
@@ -23,6 +24,10 @@ pub struct DetectArgs {
     #[arg(long)]
     pub device_profile: Option<String>,
 
+    /// Channel artifact (path or HTTP(S) URL) whose DevPros define the matching pool.
+    #[arg(long, value_name = "CHANNEL")]
+    pub channel: Option<PathBuf>,
+
     /// Wait up to N seconds for a matching device (0 = infinite). Disabled by default.
     #[arg(long)]
     pub wait: Option<u64>,
@@ -30,24 +35,38 @@ pub struct DetectArgs {
 
 pub async fn run_detect(args: DetectArgs) -> Result<()> {
     let devpro_dirs = resolve_devpro_dirs()?;
-    let profiles = load_device_profiles(&devpro_dirs)?;
-    let profiles = match args.device_profile.as_deref() {
-        Some(requested) => {
-            let mut ids: Vec<_> = profiles.keys().cloned().collect();
-            ids.sort();
-            let Some(profile) = profiles.get(requested) else {
-                bail!(
-                    "device profile '{}' not found in {:?}; available ids: {:?}",
-                    requested,
-                    devpro_dirs,
-                    ids
-                )
-            };
-            vec![profile]
+
+    let channel_dev_profiles = if let Some(channel) = args.channel.as_deref() {
+        let resolver = ArtifactReaderResolver::new();
+        let head = resolver
+            .read_channel_stream_head(channel)
+            .await
+            .with_context(|| {
+                format!("read channel profile stream head for {}", channel.display())
+            })?;
+        if head.warning_count > 0 {
+            eprintln!(
+                "channel stream has {} warning(s) while reading profile head; using {} bytes of leading records",
+                head.warning_count, head.consumed_bytes
+            );
         }
-        None => dedup_profiles(&profiles),
+        head.dev_profiles
+    } else {
+        Vec::new()
     };
-    let profiles: Vec<DeviceProfile> = profiles.into_iter().cloned().collect();
+
+    let pool = channel_matching_pool(&channel_dev_profiles, &devpro_dirs)?;
+
+    let profiles: Vec<DeviceProfile> = match args.device_profile.as_deref() {
+        Some(requested) => vec![resolve_profile_in_pool(
+            &pool,
+            &channel_dev_profiles,
+            &devpro_dirs,
+            requested,
+        )?],
+        None => pool,
+    };
+
     let mut profiles_by_id = HashMap::new();
     for profile in &profiles {
         profiles_by_id.insert(profile.id.clone(), profile);

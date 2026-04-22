@@ -69,9 +69,6 @@ pub(crate) struct ChannelInput {
     pub(crate) reader: Arc<dyn BlockReader>,
     pub(crate) stage0_readers: Vec<Arc<dyn BlockReader>>,
     pub(crate) boot_profile: Option<fastboop_core::BootProfile>,
-    pub(crate) consumed_bytes: u64,
-    pub(crate) dev_profiles: Vec<DeviceProfile>,
-    pub(crate) warning_count: usize,
 }
 
 struct ChannelSourceReader {
@@ -620,9 +617,6 @@ impl ArtifactReaderResolver {
                 reader,
                 stage0_readers,
                 boot_profile: None,
-                consumed_bytes: stream_head.consumed_bytes,
-                dev_profiles: stream_head.dev_profiles,
-                warning_count: stream_head.warning_count,
             });
         }
 
@@ -660,9 +654,6 @@ impl ArtifactReaderResolver {
             reader,
             stage0_readers,
             boot_profile: Some(boot_profile),
-            consumed_bytes: stream_head.consumed_bytes,
-            dev_profiles: stream_head.dev_profiles,
-            warning_count: stream_head.warning_count,
         })
     }
 
