@@ -55,6 +55,8 @@ pub enum ProbeStep {
     #[serde(untagged)]
     FastbootGetvarEq(FastbootGetvarEq),
     #[serde(untagged)]
+    FastbootGetvarStartsWith(FastbootGetvarStartsWith),
+    #[serde(untagged)]
     FastbootGetvarNotEq(FastbootGetvarNotEq),
     #[serde(untagged)]
     FastbootGetvarExists(FastbootGetvarExists),
@@ -68,6 +70,14 @@ pub struct FastbootGetvarEq {
     #[serde(rename = "fastboot.getvar")]
     pub name: String,
     pub equals: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct FastbootGetvarStartsWith {
+    #[serde(rename = "fastboot.getvar")]
+    pub name: String,
+    pub starts_with: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

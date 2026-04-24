@@ -266,7 +266,7 @@ mod tests {
         let yaml = r#"
 id: dev-one
 display_name: Dev One
-devicetree_name: oneplus,enchilada
+devicetree_name: qcom/sdm845-shift-axolotl
 match:
   - fastboot:
       vid: 0x18d1
@@ -297,6 +297,42 @@ probe: []
             decoded.r#match[0].fastboot.pid,
             profile.r#match[0].fastboot.pid
         );
+    }
+
+    #[test]
+    fn starts_with_probe_roundtrips() {
+        let yaml = r#"
+id: dev-one
+display_name: Dev One
+devicetree_name: oneplus,enchilada
+match:
+  - fastboot:
+      vid: 0x18d1
+      pid: 0x4ee1
+probe:
+  - fastboot.getvar: serialno
+    starts_with: S6MQ
+boot:
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 4096
+      kernel:
+        encoding: image
+stage0: {}
+"#;
+
+        let profile: DeviceProfile = serde_yaml::from_str(yaml).expect("parse device profile");
+        let encoded = encode_dev_profile(&profile).expect("encode device profile");
+        let decoded = decode_dev_profile(&encoded).expect("decode device profile");
+
+        match &decoded.probe[0] {
+            fastboop_core::ProbeStep::FastbootGetvarStartsWith(check) => {
+                assert_eq!(check.name, "serialno");
+                assert_eq!(check.starts_with, "S6MQ");
+            }
+            other => panic!("unexpected probe step: {other:?}"),
+        }
     }
 
     #[test]

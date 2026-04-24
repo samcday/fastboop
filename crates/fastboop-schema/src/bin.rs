@@ -11,8 +11,8 @@ use crate::{
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
     BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileRootfsFilesystemSource,
     BootProfileRootfsOstreeSource, BootProfileStage0, DeviceProfile, ExistsFlag, FastbootGetvarEq,
-    FastbootGetvarExists, FastbootGetvarNotEq, FastbootGetvarNotExists, InjectMac, MatchRule,
-    NotExistsFlag, ProbeStep, Stage0,
+    FastbootGetvarExists, FastbootGetvarNotEq, FastbootGetvarNotExists, FastbootGetvarStartsWith,
+    InjectMac, MatchRule, NotExistsFlag, ProbeStep, Stage0,
 };
 
 // v0 wire formats are intentionally unstable while fastboop is unreleased.
@@ -98,6 +98,7 @@ pub struct DeviceProfileBin {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ProbeStepBin {
     FastbootGetvarEq { name: String, equals: String },
+    FastbootGetvarStartsWith { name: String, starts_with: String },
     FastbootGetvarNotEq { name: String, not_equals: String },
     FastbootGetvarExists { name: String },
     FastbootGetvarNotExists { name: String },
@@ -149,6 +150,9 @@ impl From<ProbeStep> for ProbeStepBin {
             ProbeStep::FastbootGetvarEq(FastbootGetvarEq { name, equals }) => {
                 ProbeStepBin::FastbootGetvarEq { name, equals }
             }
+            ProbeStep::FastbootGetvarStartsWith(FastbootGetvarStartsWith { name, starts_with }) => {
+                ProbeStepBin::FastbootGetvarStartsWith { name, starts_with }
+            }
             ProbeStep::FastbootGetvarNotEq(FastbootGetvarNotEq { name, not_equals }) => {
                 ProbeStepBin::FastbootGetvarNotEq { name, not_equals }
             }
@@ -167,6 +171,9 @@ impl From<ProbeStepBin> for ProbeStep {
         match step {
             ProbeStepBin::FastbootGetvarEq { name, equals } => {
                 ProbeStep::FastbootGetvarEq(FastbootGetvarEq { name, equals })
+            }
+            ProbeStepBin::FastbootGetvarStartsWith { name, starts_with } => {
+                ProbeStep::FastbootGetvarStartsWith(FastbootGetvarStartsWith { name, starts_with })
             }
             ProbeStepBin::FastbootGetvarNotEq { name, not_equals } => {
                 ProbeStep::FastbootGetvarNotEq(FastbootGetvarNotEq { name, not_equals })
