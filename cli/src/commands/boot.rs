@@ -438,7 +438,6 @@ async fn run_boot_inner(
     );
 
     let mut kernel_image = build.kernel_image;
-    let mut profile = profile;
     if profile
         .boot
         .fastboot_boot
@@ -448,15 +447,6 @@ async fn run_boot_inner(
         .append_dtb()
     {
         kernel_image.extend_from_slice(&build.dtb);
-        let header_version = profile.boot.fastboot_boot.android_bootimg.header_version;
-        if header_version >= 2 {
-            debug!(
-                from = header_version,
-                to = 0,
-                "downgrading android boot header for appended dtb"
-            );
-            profile.boot.fastboot_boot.android_bootimg.header_version = 0;
-        }
     }
 
     let bootimg = build_android_bootimg(

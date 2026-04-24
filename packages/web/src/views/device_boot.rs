@@ -367,7 +367,7 @@ pub async fn boot_selected_device(
         Some(build.kernel_cmdline_append.as_str()),
     );
     let mut kernel_image = build.kernel_image;
-    let mut profile = session.device.profile.clone();
+    let profile = session.device.profile.clone();
     if profile
         .boot
         .fastboot_boot
@@ -377,10 +377,6 @@ pub async fn boot_selected_device(
         .append_dtb()
     {
         kernel_image.extend_from_slice(&build.dtb);
-        let header_version = profile.boot.fastboot_boot.android_bootimg.header_version;
-        if header_version >= 2 {
-            profile.boot.fastboot_boot.android_bootimg.header_version = 0;
-        }
     }
     let bootimg = build_android_bootimg(
         &profile,
