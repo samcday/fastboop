@@ -7,10 +7,9 @@ match:
       vid: 0x18d1
       pid: 0xd00d
 
-# SHIFT6mq shares VID/PID with the OnePlus 6/6T and, for now, only exposes the
-# same SoC-level `product` discriminator. This profile is intentionally kept at
-# that level until we have a SHIFT-specific fastboot var to disambiguate it.
 probe:
+  - fastboot.getvar: serialno
+    starts_with: S6MQ
   - fastboot.getvar: product
     equals: sdm845
 
