@@ -82,6 +82,7 @@ If any required step fails, the profile does not match.
 Current probe primitives in schema are:
 
 - `equals`
+- `starts_with`
 - `not_equals`
 - `exists`
 - `not_exists`
@@ -90,6 +91,9 @@ Practical guidance:
 
 - Put highly discriminating checks early to fail fast.
 - Use multiple checks when one getvar is ambiguous across sibling devices.
+- Use `starts_with` when vendors assign stable serial or SKU prefixes but not a
+  single exact value.
+- `starts_with` is case-sensitive.
 
 ## Boot
 

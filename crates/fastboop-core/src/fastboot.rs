@@ -230,12 +230,39 @@ pub async fn probe_profile_with_cache<F: FastbootWire>(
                     name = %check.name,
                     cached = cached,
                     value = %value,
-                    "fastboot getvar"
+                    "fastboot getvar (equals)"
                 );
                 if value != check.equals {
                     return Err(ProbeError::Mismatch {
                         name: check.name.clone(),
                         expected: check.equals.clone(),
+                        actual: value,
+                    });
+                }
+            }
+            ProbeStep::FastbootGetvarStartsWith(check) => {
+                let mut cached = true;
+                let value = if let Some(value) = cache.get(&check.name) {
+                    value.clone()
+                } else {
+                    cached = false;
+                    let value = getvar(fastboot, &check.name)
+                        .await
+                        .map_err(ProbeError::Transport)?;
+                    cache.insert(check.name.clone(), value.clone());
+                    value
+                };
+                debug!(
+                    profile_id = %profile.id,
+                    name = %check.name,
+                    cached = cached,
+                    value = %value,
+                    "fastboot getvar (starts_with)"
+                );
+                if !value.starts_with(&check.starts_with) {
+                    return Err(ProbeError::Mismatch {
+                        name: check.name.clone(),
+                        expected: format!("starts with {}", check.starts_with),
                         actual: value,
                     });
                 }

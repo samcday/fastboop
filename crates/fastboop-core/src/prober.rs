@@ -119,8 +119,8 @@ mod tests {
     use super::*;
     use crate::devpro::{
         AndroidBootImage, AndroidInitrd, AndroidKernel, Boot, BootLimits, BootPayload,
-        DeviceProfile, FastbootGetvarEq, FastbootMatch, KernelEncoding, MatchRule, ProbeStep,
-        Stage0,
+        DeviceProfile, FastbootGetvarEq, FastbootGetvarStartsWith, FastbootMatch, KernelEncoding,
+        MatchRule, ProbeStep, Stage0,
     };
     use crate::fastboot::{FastbootWire, Response};
     use alloc::collections::BTreeMap;
@@ -360,6 +360,52 @@ mod tests {
         let reports = block_on(probe_candidates(&[profile], &candidates));
         assert_eq!(reports.len(), 1);
         assert!(reports[0].attempts[0].result.is_ok());
+    }
+
+    #[test]
+    fn probe_starts_with_succeeds_when_prefix_matches() {
+        let mut responses = BTreeMap::new();
+        responses.insert("serialno".to_string(), "S6MQ123456".to_string());
+        let candidates = vec![MockCandidate::new(0x1234, 0x5678, responses)];
+
+        let profile = dummy_profile(
+            "test",
+            0x1234,
+            0x5678,
+            vec![ProbeStep::FastbootGetvarStartsWith(
+                FastbootGetvarStartsWith {
+                    name: "serialno".to_string(),
+                    starts_with: "S6MQ".to_string(),
+                },
+            )],
+        );
+
+        let reports = block_on(probe_candidates(&[profile], &candidates));
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].attempts[0].result.is_ok());
+    }
+
+    #[test]
+    fn probe_starts_with_fails_when_prefix_differs() {
+        let mut responses = BTreeMap::new();
+        responses.insert("serialno".to_string(), "FAJ123456".to_string());
+        let candidates = vec![MockCandidate::new(0x1234, 0x5678, responses)];
+
+        let profile = dummy_profile(
+            "test",
+            0x1234,
+            0x5678,
+            vec![ProbeStep::FastbootGetvarStartsWith(
+                FastbootGetvarStartsWith {
+                    name: "serialno".to_string(),
+                    starts_with: "S6MQ".to_string(),
+                },
+            )],
+        );
+
+        let reports = block_on(probe_candidates(&[profile], &candidates));
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].attempts[0].result.is_err());
     }
 
     #[test]
