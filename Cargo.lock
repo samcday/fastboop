@@ -2860,6 +2860,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastboop-bootpro"
+version = "0.0.1-rc.17"
+dependencies = [
+ "anyhow",
+ "fastboop-core",
+ "gibblox-android-sparse",
+ "gibblox-cache",
+ "gibblox-cache-store-std",
+ "gibblox-casync",
+ "gibblox-casync-std",
+ "gibblox-core",
+ "gibblox-file",
+ "gibblox-http",
+ "gibblox-mbr",
+ "gibblox-pipeline",
+ "gibblox-xz",
+ "serde_yaml",
+ "sha2",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "fastboop-cli"
 version = "0.0.1-rc.17"
 dependencies = [
@@ -4275,19 +4299,20 @@ dependencies = [
 
 [[package]]
 name = "hadris-common"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "917609e8913a78e154165a38cf4bd5fbe438f81273ce1d5bd0fcffb8ea0f41a8"
+checksum = "6a9dba84a6cbcceae87e6ae05678baa5ee166ac67d81d200f7bfa407b0ed06db"
 dependencies = [
  "hadris-io",
  "noalloc",
+ "zerocopy",
 ]
 
 [[package]]
 name = "hadris-fat"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "603ab118422e8c504d7c2c49e774e0261feaad6ec1f40ee8a5e0825213314b82"
+checksum = "8d2ed279d245466a344ff41aa792617ebda758c8427a317aec8c1c3cd44c4fb0"
 dependencies = [
  "bitflags 2.11.0",
  "bytemuck",
@@ -4301,9 +4326,9 @@ dependencies = [
 
 [[package]]
 name = "hadris-io"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "841b5b885a71a0c1c8681ef4545d73029f2fc41e19d87a6d3ef2c2c499a5e34a"
+checksum = "a0e6c5ab7e56eeef44f4aaee489bcec9fee52b329cfd1b4388799bb35ee69654"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -4311,9 +4336,9 @@ dependencies = [
 
 [[package]]
 name = "hadris-macros"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e93aa01113605244d8ca16cd14d7c62373c977d54b3d7153209570e8526ddeef"
+checksum = "c391784dcf01c2711219a7a614c71f62fe16284b00f96e8be9ed882f1b82e116"
 dependencies = [
  "proc-macro2",
 ]
