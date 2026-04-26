@@ -1,0 +1,27 @@
+[package]
+name = "fastboop-bootpro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "std boot profile compilation and optimization helpers for fastboop."
+
+[dependencies]
+anyhow = { workspace = true }
+fastboop-core = { path = "../fastboop-core", version = "0.0.1-rc.17" }
+gibblox-android-sparse = { version = "0.0.2-rc.1", features = ["std"] }
+gibblox-cache = { version = "0.0.2-rc.1" }
+gibblox-cache-store-std = { version = "0.0.2-rc.1" }
+gibblox-casync = { version = "0.0.2-rc.1", features = ["std"] }
+gibblox-casync-std = { version = "0.0.2-rc.1" }
+gibblox-core = { version = "0.0.2-rc.1", features = ["std"] }
+gibblox-file = { version = "0.0.2-rc.1" }
+gibblox-http = { version = "0.0.2-rc.1", default-features = false, features = ["native-client"] }
+gibblox-mbr = { version = "0.0.2-rc.1", features = ["std"] }
+gibblox-pipeline = { version = "0.0.2-rc.1", features = ["std"] }
+gibblox-xz = { version = "0.0.2-rc.1", features = ["std"] }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true, default-features = true }
+tokio = { workspace = true, features = ["rt", "sync"] }
+tracing = "0.1.41"
+url = { workspace = true }
