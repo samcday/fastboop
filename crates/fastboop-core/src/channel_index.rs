@@ -107,6 +107,33 @@ pub enum ChannelIndexCodecError {
     },
 }
 
+#[derive(Debug)]
+pub enum ChannelIndexBuildError {
+    Scan(crate::channel_intake::ChannelStreamHeadError),
+    Encode(ChannelIndexCodecError),
+}
+
+impl core::fmt::Display for ChannelIndexBuildError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Scan(err) => write!(f, "{err}"),
+            Self::Encode(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl From<crate::channel_intake::ChannelStreamHeadError> for ChannelIndexBuildError {
+    fn from(err: crate::channel_intake::ChannelStreamHeadError) -> Self {
+        Self::Scan(err)
+    }
+}
+
+impl From<ChannelIndexCodecError> for ChannelIndexBuildError {
+    fn from(err: ChannelIndexCodecError) -> Self {
+        Self::Encode(err)
+    }
+}
+
 impl core::fmt::Display for ChannelIndexCodecError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -259,6 +286,24 @@ pub fn encode_channel_index_record_from_locations(
         entries.push(entry);
     }
     encode_channel_index_record_bytes(entries)
+}
+
+/// Prefix a concatenated-records channel with an index record.
+///
+/// The input bytes are copied verbatim after the generated `FBCHIDX0` record,
+/// so any trailing artifact payload remains byte-for-byte intact.
+pub fn index_channel_bytes(input: &[u8]) -> Result<Vec<u8>, ChannelIndexBuildError> {
+    let (locations, _consumed) =
+        crate::channel_intake::scan_channel_head_record_locations(input, input.len() as u64)?;
+    let index_record = encode_channel_index_record_from_locations(locations.as_slice())?;
+    let capacity = index_record
+        .len()
+        .checked_add(input.len())
+        .ok_or(ChannelIndexCodecError::LengthOverflow)?;
+    let mut out = Vec::with_capacity(capacity);
+    out.extend_from_slice(index_record.as_slice());
+    out.extend_from_slice(input);
+    Ok(out)
 }
 
 fn encode_channel_index_record_bytes(
@@ -535,6 +580,10 @@ mod tests {
     }
 
     fn sample_pipeline_hints() -> PipelineHints {
+        sample_pipeline_hints_with_url_suffix("b")
+    }
+
+    fn sample_pipeline_hints_with_url_suffix(url_suffix: &str) -> PipelineHints {
         PipelineHints {
             entries: vec![
                 PipelineHintEntry {
@@ -549,7 +598,9 @@ mod tests {
                     })],
                 },
                 PipelineHintEntry {
-                    pipeline_identity: String::from("xz{source=http{url=len:9:https://b;}}"),
+                    pipeline_identity: alloc::format!(
+                        "xz{{source=http{{url=len:22:https://example.com/{url_suffix};}}}}",
+                    ),
                     hints: vec![PipelineHint::ContentDigest(PipelineContentDigestHint {
                         digest: String::from(
                             "sha512:22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222",
@@ -620,6 +671,85 @@ mod tests {
             }
             other => panic!("entry 2 should be PipelineHints, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn index_channel_bytes_wraps_hints_only_channel() {
+        let hints = sample_pipeline_hints_with_url_suffix("a");
+        let record_bytes = encode_channel_pipeline_hints_record(&hints).unwrap();
+        let indexed = index_channel_bytes(record_bytes.as_slice()).unwrap();
+
+        assert!(indexed.starts_with(b"FBCHIDX0"));
+        assert!(indexed.len() > record_bytes.len());
+
+        let head = crate::channel_intake::read_channel_stream_head(
+            indexed.as_slice(),
+            indexed.len() as u64,
+        )
+        .unwrap();
+        assert!(head.pipeline_hints.entries.is_empty());
+        assert_eq!(head.pipeline_hint_records.len(), 1);
+        assert_eq!(
+            head.pipeline_hint_records[0].pipeline_identities,
+            vec![
+                String::from("android_sparseimg{source=http{url=len:9:https://a;}}"),
+                String::from("xz{source=http{url=len:22:https://example.com/a;}}")
+            ]
+        );
+        assert_eq!(head.consumed_bytes, indexed.len() as u64);
+    }
+
+    #[test]
+    fn index_channel_bytes_preserves_trailing_artifact() {
+        let hints = sample_pipeline_hints_with_url_suffix("a");
+        let record_bytes = encode_channel_pipeline_hints_record(&hints).unwrap();
+        let mut trailing = vec![0u8; 2048];
+        trailing[1024..1028].copy_from_slice(&0xE0F5_E1E2u32.to_le_bytes());
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(record_bytes.as_slice());
+        stream.extend_from_slice(trailing.as_slice());
+
+        let indexed = index_channel_bytes(stream.as_slice()).unwrap();
+        assert!(indexed.starts_with(b"FBCHIDX0"));
+
+        let tail_start = indexed.len() - stream.len();
+        assert_eq!(&indexed[tail_start..], stream.as_slice());
+
+        let head = crate::channel_intake::read_channel_stream_head(
+            indexed.as_slice(),
+            indexed.len() as u64,
+        )
+        .unwrap();
+        assert_eq!(head.pipeline_hint_records.len(), 1);
+        assert!(head.consumed_bytes < indexed.len() as u64);
+        assert_eq!(
+            head.consumed_bytes as usize,
+            tail_start + record_bytes.len()
+        );
+    }
+
+    #[test]
+    fn index_channel_bytes_rejects_already_indexed_input() {
+        let indexed = encode_channel_head(&[ChannelHeadRecord::PipelineHints(
+            sample_pipeline_hints_with_url_suffix("a"),
+        )])
+        .unwrap();
+        let err = index_channel_bytes(indexed.as_slice()).unwrap_err();
+        let message = alloc::format!("{err}");
+        assert!(
+            message.contains("already begins"),
+            "expected already-indexed rejection, got {message}"
+        );
+    }
+
+    #[test]
+    fn index_channel_bytes_rejects_empty_channel() {
+        let err = index_channel_bytes(&[]).unwrap_err();
+        assert!(matches!(
+            err,
+            ChannelIndexBuildError::Encode(ChannelIndexCodecError::Empty)
+        ));
     }
 
     #[test]
