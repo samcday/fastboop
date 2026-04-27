@@ -1,9 +1,5 @@
 # fastboop development tasks
 
-# Generate deterministic channel stream fixtures under build/
-channels-fixtures:
-    tools/channels/generate-fixtures.sh
-
 # Run channel stream fixture harness tests
 channels-test:
     tools/channels/generate-fixtures.sh
