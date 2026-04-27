@@ -1,9 +1,12 @@
 mod channels;
 mod check;
 mod frontdoor_dev;
+mod release;
 
 fn main() {
-    match std::env::args().nth(1).as_deref() {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    match args.first().map(String::as_str) {
+        Some("bump") => release::bump(args.get(1).map(String::as_str)),
         Some("channels-fixtures") => channels::fixtures(),
         Some("channels-test") => channels::test(),
         Some("check") => check::run(false),
@@ -16,7 +19,7 @@ fn main() {
         None => {
             eprintln!("usage: cargo xtask <command>");
             eprintln!(
-                "commands: channels-fixtures, channels-test, check, check-local, frontdoor-dev"
+                "commands: bump, channels-fixtures, channels-test, check, check-local, frontdoor-dev"
             );
             std::process::exit(1);
         }
