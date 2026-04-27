@@ -69,6 +69,21 @@ pub fn publish(live: bool) {
     }
 }
 
+pub fn www_live(version: Option<&str>) {
+    let version = version.unwrap_or_else(|| die("usage: cargo xtask www-live <version>"));
+    let Some(raw_version) = version.strip_prefix('v') else {
+        die("version must match vX.Y.Z or vX.Y.Z-rc.N");
+    };
+    if !valid_version(raw_version) {
+        die("version must match vX.Y.Z or vX.Y.Z-rc.N");
+    }
+
+    let path = "infra/k8s/fastboop-web/live-version.txt";
+    fs::write(path, format!("{version}\n"))
+        .unwrap_or_else(|err| panic!("failed to write {path}: {err}"));
+    eprintln!("Updated {path} -> {version}");
+}
+
 fn valid_version(version: &str) -> bool {
     let (core, rc) = if let Some((core, rc)) = version.split_once("-rc.") {
         (core, Some(rc))
