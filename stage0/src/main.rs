@@ -703,7 +703,7 @@ fn stage_firstboot_credentials() -> Result<()> {
             continue;
         }
         std::fs::create_dir_all(STAGE0_CREDSTORE_DIR)
-            .with_context(|| format!("create {}", STAGE0_CREDSTORE_DIR))?;
+            .with_context(|| format!("create {STAGE0_CREDSTORE_DIR}"))?;
         let path = Path::new(STAGE0_CREDSTORE_DIR).join(key);
         std::fs::write(&path, value.as_bytes())
             .with_context(|| format!("write {}", path.display()))?;
