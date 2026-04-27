@@ -1,9 +1,5 @@
 # fastboop development tasks
 
-# Publish local crates to crates.io in publish order
-publish:
-    tools/publish-crates.sh --publish
-
 # Set live www.fastboop.win release version
 www-live version:
     #!/usr/bin/env bash
