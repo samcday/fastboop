@@ -1,11 +1,5 @@
 # fastboop development tasks
 
-# Run channel stream fixture harness tests
-channels-test:
-    tools/channels/generate-fixtures.sh
-    cargo test -p fastboop-core channel_stream:: -- --nocapture
-    cargo test -p fastboop-core generated_fixtures_match_expected_stream_kinds -- --nocapture
-
 # Bump version across all packaging files
 bump version:
     #!/usr/bin/env bash
