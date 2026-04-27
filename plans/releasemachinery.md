@@ -16,7 +16,7 @@ This first pass is intentionally pragmatic: artifact release orchestration now, 
 - `.github/workflows/ci.yml` builds/tests and can upload release binaries only on `release: published` events.
 - `.github/workflows/debian.yml` builds `.deb` artifacts for CI contexts.
 - `.github/workflows/alpine.yml` builds `.apk` artifacts and uploads on `release: published`.
-- `just bump` exists, but it is not yet semver-rc aware for distro-specific version formats.
+- `cargo xtask bump` exists, but it is not yet semver-rc aware for distro-specific version formats.
 
 ## First-Pass Decisions
 
@@ -74,7 +74,7 @@ PR mode verifies this full set exists. Tag mode uploads the same set to the GitH
    - publish draft only after all required jobs are green.
 
 5. **Version bump helper hardening**
-   - Upgrade `just bump` semantics to map semver prerelease forms correctly:
+   - Upgrade `cargo xtask bump` semantics to map semver prerelease forms correctly:
      - Cargo: `0.0.1-rc.1`
      - RPM/APK version fields: `0.0.1_rc1` where required by packaging constraints
      - Debian changelog version: `0.0.1~rc1`

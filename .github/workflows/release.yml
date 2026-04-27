@@ -150,11 +150,9 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - uses: taiki-e/install-action@just
-
       - if: needs.gate.outputs.mode == 'pr'
         name: Validate crate publish (dry-run)
-        run: just publish-dry-run
+        run: cargo xtask publish-dry-run
 
       - if: needs.gate.outputs.mode == 'tag'
         name: Require crates.io token
@@ -195,7 +193,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          just publish
+          cargo xtask publish
 
   publish-assets:
     needs: [gate, release, ci, stage0-preflight, debian, alpine]

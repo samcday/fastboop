@@ -149,20 +149,16 @@ fn serve(live_version: &str, cache_dir: &str, wasm_path: &str, addr: &str) -> Ch
     if let Some(stdout) = child.stdout.take() {
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    eprintln!("{line}");
-                }
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("{line}");
             }
         });
     }
     if let Some(stderr) = child.stderr.take() {
         std::thread::spawn(move || {
             let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    eprintln!("{line}");
-                }
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("{line}");
             }
         });
     }
