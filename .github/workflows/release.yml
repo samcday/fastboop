@@ -154,7 +154,7 @@ jobs:
 
       - if: needs.gate.outputs.mode == 'pr'
         name: Validate crate publish (dry-run)
-        run: just publish-dry-run
+        run: cargo xtask publish-dry-run
 
       - if: needs.gate.outputs.mode == 'tag'
         name: Require crates.io token

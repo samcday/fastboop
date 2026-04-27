@@ -61,6 +61,14 @@ pub fn bump(version: Option<&str>) {
     eprintln!("  4. Push: git push && git push --tags");
 }
 
+pub fn publish(live: bool) {
+    if live {
+        run("tools/publish-crates.sh", &["--publish"]);
+    } else {
+        run("tools/publish-crates.sh", &["--dry-run"]);
+    }
+}
+
 fn valid_version(version: &str) -> bool {
     let (core, rc) = if let Some((core, rc)) = version.split_once("-rc.") {
         (core, Some(rc))
