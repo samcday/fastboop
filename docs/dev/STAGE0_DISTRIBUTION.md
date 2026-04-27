@@ -38,7 +38,7 @@ This preserves local `cargo build -p fastboop-cli` round-trips while allowing di
 - `.github/workflows/ci.yml` builds stage0 static artifacts in a dedicated `stage0-static` matrix.
 - `.github/workflows/release.yml` runs `stage0-preflight` before downstream packaging jobs.
 - `stage0-preflight` verifies both required stage0 artifacts exist and are static/static-pie linked.
-- `.github/workflows/release.yml` tag mode bakes `crates/fastboop-stage0-generator/stage0-aarch64.sha256sum` from CI stage0 artifacts immediately before `just publish`.
+- `.github/workflows/release.yml` tag mode bakes `crates/fastboop-stage0-generator/stage0-aarch64.sha256sum` from CI stage0 artifacts immediately before `cargo xtask publish`.
 - Release asset fan-in includes stage0 binaries and `SHA256SUMS`.
 
 ## Downstream Packaging

@@ -13,6 +13,7 @@ fn main() {
         Some("check-local") => check::run(true),
         Some("frontdoor-dev") => frontdoor_dev::run(),
         Some("publish-dry-run") => release::publish(false),
+        Some("publish") => release::publish(true),
         Some(cmd) => {
             eprintln!("unknown command: {cmd}");
             std::process::exit(1);
@@ -20,7 +21,7 @@ fn main() {
         None => {
             eprintln!("usage: cargo xtask <command>");
             eprintln!(
-                "commands: bump, channels-fixtures, channels-test, check, check-local, frontdoor-dev, publish-dry-run"
+                "commands: bump, channels-fixtures, channels-test, check, check-local, frontdoor-dev, publish, publish-dry-run"
             );
             std::process::exit(1);
         }
