@@ -1,9 +1,5 @@
 # fastboop development tasks
 
-# Validate local publishable crates can be packaged in publish order
-publish-dry-run:
-    tools/publish-crates.sh --dry-run
-
 # Publish local crates to crates.io in publish order
 publish:
     tools/publish-crates.sh --publish
