@@ -1,20 +1,5 @@
 # fastboop development tasks
 
-# Unified target-aware validation for developers, CI, and automation.
-check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    echo "==> rustfmt"
-    cargo fmt --all --check
-
-    echo "==> root workspace (host target)"
-    cargo check --workspace --exclude fastboop-web
-
-    echo "==> root wasm targets"
-    cargo check -p fastboop-fastboot-webusb --target wasm32-unknown-unknown
-    cargo check -p fastboop-web --target wasm32-unknown-unknown
-
 # Same as `check`, but with local ./gibblox and/or ./smoo crate overlays.
 check-local:
     #!/usr/bin/env bash
