@@ -34,10 +34,6 @@ data:
       }
     }
 
-    http://www.fastboop.win {
-      reverse_proxy fastboop-web.fastboop.svc.cluster.local:80
-    }
-
     http://matrix.fastboop.win {
       reverse_proxy conduit-generic.fastboop.svc.cluster.local:80
     }

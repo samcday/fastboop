@@ -54,7 +54,7 @@ ingress_dns_tls:
       - HTTP :80 (served behind shared Gateway)
   dns:
     managed_by: foundational external-dns
-    source: HTTPRoute annotations on fastboop/public
+    source: HTTPRoute annotations on fastboop/public and fastboop/frontdoor-edge
     current_hostnames:
       - fastboop.win
       - www.fastboop.win
@@ -64,10 +64,12 @@ ingress_dns_tls:
     managed_by: foundational cert-manager
     issuer: ClusterIssuer/letsencrypt (pre-existing)
   web_release_app:
-    component: infra/k8s/fastboop-web
-    deployment: fastboop/fastboop-web
-    service: fastboop/fastboop-web
-    host: www.fastboop.win
+    component: infra/k8s/frontdoor-edge
+    workload: fastboop/frontdoor-edge
+    gateway_service: wasmcloud/runtime-gateway
+    hosts:
+      - www.fastboop.win
+      - edge.fastboop.win
     route_contract:
       - / serves the configured live release version.
       - /vX.Y.Z(-rc.N)/ serves that explicit tagged release.

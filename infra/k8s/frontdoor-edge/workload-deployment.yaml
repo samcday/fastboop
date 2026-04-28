@@ -32,3 +32,9 @@ spec:
             - incoming-handler
           config:
             host: edge.fastboop.win
+        - namespace: wasi
+          package: http
+          interfaces:
+            - incoming-handler
+          config:
+            host: www.fastboop.win
