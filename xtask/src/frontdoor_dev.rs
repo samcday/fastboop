@@ -12,6 +12,8 @@ pub fn run() {
     let live_version = fs::read_to_string("infra/k8s/live-version.txt")
         .expect("failed to read infra/k8s/live-version.txt")
         .trim()
+        .strip_prefix("LIVE_VERSION=")
+        .expect("infra/k8s/live-version.txt must contain LIVE_VERSION=<version>")
         .to_string();
     eprintln!("live version: {live_version}");
 

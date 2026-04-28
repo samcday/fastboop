@@ -75,7 +75,7 @@ ingress_dns_tls:
     release_asset:
       source_repo: samcday/fastboop
       name_template: fastboop-web-{version}.tar.gz
-      live_version_file: infra/k8s/live-version.txt
+      live_version_file: "infra/k8s/live-version.txt (env-file format: LIVE_VERSION=vX.Y.Z[-rc.N])"
       live_version_source: .github/workflows/ci.yml release event pushes this pin to main
 
 gha_proxy:
@@ -109,7 +109,7 @@ layout_and_conventions:
   - Store secrets in infra/k8s as SOPS-encrypted manifests.
   - Keep external DNS behavior explicit via annotations on routed entry resources (HTTPRoute/Service).
   - Keep frontdoor Caddyfile as the single source of public host/path routing.
-  - Keep fastboop-web live version pin in infra/k8s/live-version.txt.
+  - Keep fastboop-web live version pin in infra/k8s/live-version.txt as an env-file entry named LIVE_VERSION.
 
 secrets_and_encryption:
   sops_config: infra/k8s/.sops.yaml

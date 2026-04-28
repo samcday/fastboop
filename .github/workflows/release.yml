@@ -384,7 +384,7 @@ jobs:
             git fetch origin main
             git checkout -B main origin/main
 
-            printf '%s\n' "$WEB_TAG" > "$target_file"
+            printf 'LIVE_VERSION=%s\n' "$WEB_TAG" > "$target_file"
             if git diff --quiet -- "$target_file"; then
               echo "live version already set to $WEB_TAG"
               exit 0

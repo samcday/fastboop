@@ -14,5 +14,5 @@ resources:
   - gha-proxy
 configMapGenerator:
   - name: live-version
-    files:
-      - LIVE_VERSION=live-version.txt
+    envs:
+      - live-version.txt

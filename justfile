@@ -156,5 +156,5 @@ www-live version:
       exit 1
     fi
 
-    printf '%s\n' "$version" > infra/k8s/live-version.txt
+    printf 'LIVE_VERSION=%s\n' "$version" > infra/k8s/live-version.txt
     echo "Updated infra/k8s/live-version.txt -> $version"
