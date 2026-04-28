@@ -377,7 +377,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          target_file="infra/k8s/fastboop-web/live-version.txt"
+          target_file="infra/k8s/live-version.txt"
 
           for attempt in 1 2 3; do
             echo "attempt $attempt: setting $target_file -> $WEB_TAG"
