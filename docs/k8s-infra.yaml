@@ -110,8 +110,8 @@ layout_and_conventions:
   - Do not place flux-system-scoped resources under infra/k8s.
   - Store secrets in infra/k8s as SOPS-encrypted manifests.
   - Keep external DNS behavior explicit via annotations on routed entry resources (HTTPRoute/Service).
-  - Keep frontdoor Caddyfile as the single source of public host/path routing.
-  - Keep fastboop-web live version pin in infra/k8s/live-version.txt as an env-file entry named LIVE_VERSION.
+  - Keep public host/path routing explicit in HTTPRoutes plus frontdoor Caddyfile rules.
+  - Keep web release live version pin in infra/k8s/live-version.txt as an env-file entry named LIVE_VERSION.
 
 secrets_and_encryption:
   sops_config: infra/k8s/.sops.yaml
