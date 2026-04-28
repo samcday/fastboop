@@ -69,7 +69,6 @@ ingress_dns_tls:
     gateway_service: wasmcloud/runtime-gateway
     hosts:
       - www.fastboop.win
-      - edge.fastboop.win
     route_contract:
       - / serves the configured live release version.
       - /vX.Y.Z(-rc.N)/ serves that explicit tagged release.
