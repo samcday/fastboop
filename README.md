@@ -6,7 +6,5 @@ If you want to try fastboop, you can get started right now by visiting https://w
 
 If you are interested in hacking on fastboop then check out the [dev dox][].
 
-🤖: read `AGENTS.md`
-
 [user dox]: http://docs.fastboop.win/user/
 [dev dox]: http://docs.fastboop.win/dev/
