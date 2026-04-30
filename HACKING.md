@@ -79,6 +79,10 @@ For IDE integrations or direct invocations that want a static file, pass
 `--config .cargo/config.local.toml` to cargo. Keep that file in sync with the
 set of crates actually published by gibblox and smoo.
 
+CI uses the same local overlay wrappers when a draft PR includes `./gibblox` or
+`./smoo`. Ready-for-review PRs, release builds, and main builds fail if either
+checkout is present so throwaway dependency commits cannot merge by accident.
+
 ## Contributor workflow
 
 - Read `AGENTS.md` and use its read-on-demand doc index.

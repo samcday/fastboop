@@ -44,4 +44,8 @@ config_path="${temp_dir}/config.local.toml"
 
 export FASTBOOP_STAGE0_CARGO="${script_dir}/cargo-local.sh"
 
-cargo --config "${config_path}" "$@"
+if [[ "${1:-}" == "clippy" ]]; then
+  cargo clippy --config "${config_path}" "${@:2}"
+else
+  cargo --config "${config_path}" "$@"
+fi
