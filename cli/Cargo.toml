@@ -31,6 +31,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
 fastboop-core = { path = "../crates/fastboop-core", version = "0.0.1-rc.12" }
+fastboop-bootpro = { workspace = true }
 fastboop-stage0-generator = { path = "../crates/fastboop-stage0-generator", version = "0.0.1-rc.12" }
 fastboop-fastboot-rusb = { path = "../crates/fastboop-fastboot-rusb", version = "0.0.1-rc.12" }
 serde = { version = "1.0.217", features = ["derive"] }
@@ -47,7 +48,6 @@ gibblox-file = { version = "0.0.2-rc.1" }
 gibblox-http = { version = "0.0.2-rc.1", default-features = false, features = ["native-client"] }
 gibblox-cache = { version = "0.0.2-rc.1" }
 gibblox-cache-store-std = { version = "0.0.2-rc.1" }
-gibblox-optimizer = { version = "0.0.2-rc.1" }
 gibblox-pipeline = { version = "0.0.2-rc.1", features = ["std"] }
 gibblox-android-sparse = { version = "0.0.2-rc.1", features = ["std"] }
 gibblox-tar = { version = "0.0.2-rc.1", features = ["std"] }
