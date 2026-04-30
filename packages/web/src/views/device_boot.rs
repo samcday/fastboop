@@ -19,34 +19,19 @@ use fastboop_stage0_generator::Stage0KernelOverride;
 use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
 #[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
-#[cfg(target_arch = "wasm32")]
-use gibblox_android_sparse::{
-    AndroidSparseBlockReader, AndroidSparseChunkIndex, AndroidSparseImageIndex,
-};
-#[cfg(target_arch = "wasm32")]
-use gibblox_core::AlignedByteReader;
-use gibblox_core::{block_identity_string, BlockByteReader, BlockReader};
-#[cfg(target_arch = "wasm32")]
-use gibblox_core::{GptBlockReader, GptPartitionSelector};
+#[cfg(not(target_arch = "wasm32"))]
+use gibblox_core::BlockByteReader;
+use gibblox_core::{block_identity_string, BlockReader};
 #[cfg(target_arch = "wasm32")]
 use gibblox_ext4::{Ext4EntryType, Ext4Fs};
 #[cfg(not(target_arch = "wasm32"))]
 use gibblox_http::HttpReader;
 #[cfg(target_arch = "wasm32")]
-use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
-#[cfg(target_arch = "wasm32")]
 use gibblox_pipeline::{
-    encode_pipeline, encode_pipeline_hints, pipeline_identity_string, validate_pipeline_hints,
-    PipelineCachePolicy, PipelineHint, PipelineHints, PipelineSource,
+    encode_pipeline, encode_pipeline_hints, PipelineCachePolicy, PipelineHints, PipelineSource,
 };
 #[cfg(target_arch = "wasm32")]
-use gibblox_tar::TarEntryByteReader;
-#[cfg(target_arch = "wasm32")]
-use gibblox_web_file::WebFileReader;
-#[cfg(target_arch = "wasm32")]
 use gibblox_web_worker::{GibbloxWebWorker, OpenPipelineRequestOptions};
-#[cfg(target_arch = "wasm32")]
-use gibblox_xz::XzBlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::sleep;
@@ -61,11 +46,7 @@ use js_sys::Reflect;
 use serde_json::json;
 #[cfg(target_arch = "wasm32")]
 use smoo_host_web_worker::{HostWorker, HostWorkerConfig, HostWorkerEvent, HostWorkerState};
-#[cfg(target_arch = "wasm32")]
-use std::collections::HashMap;
 use std::future::Future;
-#[cfg(target_arch = "wasm32")]
-use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
@@ -476,46 +457,28 @@ async fn build_stage0_artifacts(
                 using_boot_profile_rootfs,
             ) = {
                 if channel_intake.has_artifact_payload {
-                    if let Some(web_file) = crate::resolve_web_file_channel(&channel) {
-                        let channel_offset_bytes = channel_intake.consumed_bytes;
-                        let provider_reader =
-                            open_web_file_channel_payload_reader(web_file, channel_offset_bytes)
-                                .await?;
-                        let size_bytes = reader_size_bytes(provider_reader.as_ref()).await?;
-                        let channel_identity = block_identity_string(provider_reader.as_ref());
-                        let local_reader_bridge = LocalReaderBridge::new(provider_reader.clone());
-                        (
-                            provider_reader,
-                            size_bytes,
-                            Some(local_reader_bridge),
-                            channel_identity,
-                            channel_offset_bytes,
-                            false,
-                        )
-                    } else {
-                        let channel_offset_bytes = channel_intake.consumed_bytes;
-                        let gibblox_worker = spawn_gibblox_worker(channel.clone(), 0, None)
-                            .await
-                            .map_err(|err| anyhow::anyhow!("spawn gibblox worker failed: {err}"))?;
-                        let provider_reader = open_channel_payload_reader_via_worker(
-                            &gibblox_worker,
-                            &channel,
-                            channel_offset_bytes,
-                            None,
-                        )
-                        .await?;
-                        let size_bytes = reader_size_bytes(provider_reader.as_ref()).await?;
-                        let channel_identity = block_identity_string(provider_reader.as_ref());
-                        let local_reader_bridge = LocalReaderBridge::new(provider_reader.clone());
-                        (
-                            provider_reader,
-                            size_bytes,
-                            Some(local_reader_bridge),
-                            channel_identity,
-                            channel_offset_bytes,
-                            false,
-                        )
-                    }
+                    let channel_offset_bytes = channel_intake.consumed_bytes;
+                    let gibblox_worker = spawn_gibblox_worker(channel.clone(), 0, None)
+                        .await
+                        .map_err(|err| anyhow::anyhow!("spawn gibblox worker failed: {err}"))?;
+                    let provider_reader = open_channel_payload_reader_via_worker(
+                        &gibblox_worker,
+                        &channel,
+                        channel_offset_bytes,
+                        None,
+                    )
+                    .await?;
+                    let size_bytes = reader_size_bytes(provider_reader.as_ref()).await?;
+                    let channel_identity = block_identity_string(provider_reader.as_ref());
+                    let local_reader_bridge = LocalReaderBridge::new(provider_reader.clone());
+                    (
+                        provider_reader,
+                        size_bytes,
+                        Some(local_reader_bridge),
+                        channel_identity,
+                        channel_offset_bytes,
+                        false,
+                    )
                 } else {
                     let boot_profile = selected_boot_profile.as_ref().ok_or_else(|| {
                         anyhow::anyhow!(
@@ -534,14 +497,14 @@ async fn build_stage0_artifacts(
                     let provider_reader = open_boot_profile_rootfs_reader(
                         boot_profile,
                         &pipeline_hints,
-                        Some(&gibblox_worker),
+                        &gibblox_worker,
                     )
                     .await?;
                     let (kernel_override, dtb_override) = resolve_boot_profile_source_overrides_web(
                         boot_profile,
                         &profile,
                         &pipeline_hints,
-                        Some(&gibblox_worker),
+                        &gibblox_worker,
                     )
                     .await?;
                     stage0_opts.kernel_override = kernel_override;
@@ -874,37 +837,6 @@ fn select_boot_profile_for_session(session: &DeviceSession) -> anyhow::Result<Op
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn open_web_file_channel_payload_reader(
-    web_file: web_sys::File,
-    channel_offset_bytes: u64,
-) -> anyhow::Result<Arc<dyn BlockReader>> {
-    let file_name = web_file.name();
-    let file_name_lower = file_name.to_ascii_lowercase();
-
-    if file_name_lower.ends_with(".caibx") || file_name_lower.ends_with(".caidx") {
-        anyhow::bail!(
-            "web-file channel '{}' is a casync index; use an HTTP(S) channel URL so chunk-store URLs can be resolved",
-            file_name
-        );
-    }
-
-    let reader = WebFileReader::new(web_file, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-        .map_err(|err| anyhow::anyhow!("open web file channel reader: {err}"))?;
-    let reader: Arc<dyn BlockReader> = Arc::new(reader);
-    let reader = crate::channel_source::maybe_offset_reader(reader, channel_offset_bytes).await?;
-
-    match zip_entry_name_from_file_name(Some(file_name.as_str()))? {
-        Some(entry_name) => {
-            let zip_reader = ZipEntryBlockReader::new(&entry_name, reader)
-                .await
-                .map_err(|err| anyhow::anyhow!("open ZIP entry {entry_name}: {err}"))?;
-            Ok(Arc::new(zip_reader))
-        }
-        None => Ok(reader),
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
 async fn load_pipeline_hints_for_boot_profile(
     channel: &str,
     channel_intake: &SessionChannelIntake,
@@ -919,15 +851,10 @@ async fn load_pipeline_hints_for_boot_profile(
         return Ok(PipelineHints::default());
     }
 
-    let reader: Arc<dyn BlockReader> = if let Some(web_file) =
-        crate::resolve_web_file_channel(channel)
-    {
-        open_web_file_channel_payload_reader(web_file, 0).await?
-    } else {
+    let reader: Arc<dyn BlockReader> =
         crate::channel_source::build_channel_reader_pipeline(channel, 0, None, None, false, false)
             .await
-            .map_err(|err| anyhow::anyhow!("open channel reader for pipeline hints: {err}"))?
-    };
+            .map_err(|err| anyhow::anyhow!("open channel reader for pipeline hints: {err}"))?;
 
     let stream_head = ChannelStreamHead {
         pipeline_hint_records: channel_intake.pipeline_hint_records.clone(),
@@ -939,60 +866,10 @@ async fn load_pipeline_hints_for_boot_profile(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn android_sparse_hints_by_identity(
-    pipeline_hints: &PipelineHints,
-) -> anyhow::Result<HashMap<String, AndroidSparseImageIndex>> {
-    validate_pipeline_hints(pipeline_hints)
-        .map_err(|err| anyhow::anyhow!("validate pipeline hints: {err}"))?;
-
-    let mut out = HashMap::new();
-    for entry in &pipeline_hints.entries {
-        for hint in &entry.hints {
-            match hint {
-                PipelineHint::AndroidSparseIndex(index) => {
-                    out.insert(
-                        entry.pipeline_identity.clone(),
-                        AndroidSparseImageIndex {
-                            file_hdr_sz: index.file_hdr_sz,
-                            chunk_hdr_sz: index.chunk_hdr_sz,
-                            blk_sz: index.blk_sz,
-                            total_blks: index.total_blks,
-                            total_chunks: index.total_chunks,
-                            image_checksum: index.image_checksum,
-                            chunks: index
-                                .chunks
-                                .iter()
-                                .map(|chunk| AndroidSparseChunkIndex {
-                                    chunk_index: chunk.chunk_index,
-                                    chunk_type: chunk.chunk_type,
-                                    chunk_sz: chunk.chunk_sz,
-                                    total_sz: chunk.total_sz,
-                                    chunk_offset: chunk.chunk_offset,
-                                    payload_offset: chunk.payload_offset,
-                                    payload_size: chunk.payload_size,
-                                    output_start: chunk.output_start,
-                                    output_end: chunk.output_end,
-                                    fill_pattern: chunk.fill_pattern,
-                                    crc32: chunk.crc32,
-                                })
-                                .collect(),
-                        },
-                    );
-                }
-                PipelineHint::TarEntryIndex(_) => {}
-                PipelineHint::ContentDigest(_) => {}
-            }
-        }
-    }
-
-    Ok(out)
-}
-
-#[cfg(target_arch = "wasm32")]
 async fn open_boot_profile_rootfs_reader(
     boot_profile: &BootProfile,
     pipeline_hints: &PipelineHints,
-    gibblox_worker: Option<&GibbloxWebWorker>,
+    gibblox_worker: &GibbloxWebWorker,
 ) -> anyhow::Result<Arc<dyn BlockReader>> {
     open_boot_profile_artifact_source(boot_profile.rootfs.source(), pipeline_hints, gibblox_worker)
         .await
@@ -1003,7 +880,7 @@ async fn resolve_boot_profile_source_overrides_web(
     boot_profile: &BootProfile,
     device_profile: &fastboop_core::DeviceProfile,
     pipeline_hints: &PipelineHints,
-    gibblox_worker: Option<&GibbloxWebWorker>,
+    gibblox_worker: &GibbloxWebWorker,
 ) -> anyhow::Result<(Option<Stage0KernelOverride>, Option<Vec<u8>>)> {
     let kernel_override = if let Some(kernel_source) = boot_profile.kernel.as_ref() {
         let kernel_path = non_empty_profile_path(kernel_source.path.as_str(), "kernel.path")?;
@@ -1193,219 +1070,19 @@ fn join_profile_path(base: &str, suffix: &str) -> String {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn open_boot_profile_artifact_source<'a>(
-    source: &'a BootProfileArtifactSource,
-    pipeline_hints: &'a PipelineHints,
-    gibblox_worker: Option<&'a GibbloxWebWorker>,
-) -> Pin<Box<dyn Future<Output = anyhow::Result<Arc<dyn BlockReader>>> + 'a>> {
-    Box::pin(async move {
-        if let Some(gibblox_worker) = gibblox_worker {
-            if !matches!(source, BootProfileArtifactSource::File(_)) {
-                return open_artifact_source_via_worker(gibblox_worker, source, pipeline_hints)
-                    .await;
-            }
-        }
+async fn open_boot_profile_artifact_source(
+    source: &BootProfileArtifactSource,
+    pipeline_hints: &PipelineHints,
+    gibblox_worker: &GibbloxWebWorker,
+) -> anyhow::Result<Arc<dyn BlockReader>> {
+    if let BootProfileArtifactSource::File(source) = source {
+        anyhow::bail!(
+            "boot profile file source '{}' is not supported in fastboop-web; use HTTP/casync sources",
+            source.file
+        );
+    }
 
-        match source {
-            BootProfileArtifactSource::Http(source) => {
-                let channel = source.http.trim();
-                if channel.is_empty() {
-                    anyhow::bail!("boot profile rootfs.http source is empty");
-                }
-                if let Some(gibblox_worker) = gibblox_worker {
-                    let pipeline_source = PipelineSource::Http(source.clone());
-                    return open_artifact_source_via_worker(
-                        gibblox_worker,
-                        &pipeline_source,
-                        pipeline_hints,
-                    )
-                    .await
-                    .map_err(|err| anyhow::anyhow!("open HTTP artifact source {channel}: {err}"));
-                }
-                crate::channel_source::build_channel_reader_pipeline(
-                    channel,
-                    0,
-                    None,
-                    source.content.as_ref().map(|content| content.size_bytes),
-                    source.cors_safelisted_mode,
-                    true,
-                )
-                .await
-                .map_err(|err| anyhow::anyhow!("open HTTP artifact source {channel}: {err}"))
-            }
-            BootProfileArtifactSource::Casync(source) => {
-                let index = source.casync.index.trim();
-                if index.is_empty() {
-                    anyhow::bail!("boot profile rootfs.casync.index source is empty");
-                }
-                let chunk_store = source
-                    .casync
-                    .chunk_store
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty());
-                if let Some(gibblox_worker) = gibblox_worker {
-                    let pipeline_source = PipelineSource::Casync(source.clone());
-                    return open_artifact_source_via_worker(
-                        gibblox_worker,
-                        &pipeline_source,
-                        pipeline_hints,
-                    )
-                    .await
-                    .map_err(|err| anyhow::anyhow!("open casync artifact source {index}: {err}"));
-                }
-                crate::channel_source::build_channel_reader_pipeline(
-                    index,
-                    0,
-                    chunk_store,
-                    source
-                        .casync
-                        .content
-                        .as_ref()
-                        .map(|content| content.size_bytes),
-                    false,
-                    true,
-                )
-                .await
-                .map_err(|err| anyhow::anyhow!("open casync artifact source {index}: {err}"))
-            }
-            BootProfileArtifactSource::File(source) => {
-                let path = source.file.trim();
-                if path.is_empty() {
-                    anyhow::bail!("boot profile rootfs.file source is empty");
-                }
-                let Some(web_file) = crate::resolve_web_file_channel(path) else {
-                    anyhow::bail!(
-                        "boot profile file source '{}' is not accessible in browser; use HTTP/casync sources or a web-file://<id> source",
-                        path
-                    );
-                };
-                let reader =
-                    WebFileReader::new(web_file, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-                        .map_err(|err| {
-                            anyhow::anyhow!("open web file artifact source {path}: {err}")
-                        })?;
-                let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                Ok(reader)
-            }
-            BootProfileArtifactSource::Xz(source) => {
-                let upstream = open_boot_profile_artifact_source(
-                    source.xz.as_ref(),
-                    pipeline_hints,
-                    gibblox_worker,
-                )
-                .await?;
-                let upstream = AlignedByteReader::new(upstream).await.map_err(|err| {
-                    anyhow::anyhow!("open aligned byte view for xz source: {err}")
-                })?;
-                let reader = XzBlockReader::new_from_byte_reader(Arc::new(upstream))
-                    .await
-                    .map_err(|err| anyhow::anyhow!("open xz block reader: {err}"))?;
-                let reader =
-                    BlockByteReader::new(reader, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-                        .map_err(|err| anyhow::anyhow!("open xz block view: {err}"))?;
-                let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                Ok(reader)
-            }
-            BootProfileArtifactSource::AndroidSparseImg(source) => {
-                let upstream = open_boot_profile_artifact_source(
-                    source.android_sparseimg.source.as_ref(),
-                    pipeline_hints,
-                    gibblox_worker,
-                )
-                .await?;
-                let sparse_hints = android_sparse_hints_by_identity(pipeline_hints)?;
-                let identity = pipeline_identity_string(
-                    &BootProfileArtifactSource::AndroidSparseImg(source.clone()),
-                );
-                let sidecar_index = sparse_hints.get(&identity);
-                let reader = if let Some(index) = sidecar_index {
-                    AndroidSparseBlockReader::new_with_index(upstream, index.clone())
-                        .await
-                        .map_err(|err| {
-                            anyhow::anyhow!("open android sparse reader from sidecar index: {err}")
-                        })?
-                } else {
-                    AndroidSparseBlockReader::new(upstream)
-                        .await
-                        .map_err(|err| anyhow::anyhow!("open android sparse reader: {err}"))?
-                };
-                let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                Ok(reader)
-            }
-            BootProfileArtifactSource::Tar(source) => {
-                let upstream = open_boot_profile_artifact_source(
-                    source.tar.source.as_ref(),
-                    pipeline_hints,
-                    gibblox_worker,
-                )
-                .await?;
-                let upstream = AlignedByteReader::new(upstream).await.map_err(|err| {
-                    anyhow::anyhow!("open aligned byte view for tar source: {err}")
-                })?;
-                let reader = TarEntryByteReader::new(source.tar.entry.as_str(), Arc::new(upstream))
-                    .await
-                    .map_err(|err| anyhow::anyhow!("open tar entry reader: {err}"))?;
-                let reader =
-                    BlockByteReader::new(reader, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-                        .map_err(|err| anyhow::anyhow!("open tar entry block view: {err}"))?;
-                let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                Ok(reader)
-            }
-            BootProfileArtifactSource::Mbr(source) => {
-                let selector = if let Some(partuuid) = source.mbr.partuuid.as_deref() {
-                    MbrPartitionSelector::part_uuid(partuuid)
-                } else if let Some(index) = source.mbr.index {
-                    MbrPartitionSelector::index(index)
-                } else {
-                    anyhow::bail!("boot profile MBR source missing selector")
-                };
-
-                let upstream = open_boot_profile_artifact_source(
-                    source.mbr.source.as_ref(),
-                    pipeline_hints,
-                    gibblox_worker,
-                )
-                .await?;
-                let reader = MbrBlockReader::new(
-                    upstream,
-                    selector,
-                    gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
-                )
-                .await
-                .map_err(|err| anyhow::anyhow!("open MBR partition reader: {err}"))?;
-                let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                Ok(reader)
-            }
-            BootProfileArtifactSource::Gpt(source) => {
-                let selector = if let Some(partlabel) = source.gpt.partlabel.as_deref() {
-                    GptPartitionSelector::part_label(partlabel)
-                } else if let Some(partuuid) = source.gpt.partuuid.as_deref() {
-                    GptPartitionSelector::part_uuid(partuuid)
-                } else if let Some(index) = source.gpt.index {
-                    GptPartitionSelector::index(index)
-                } else {
-                    anyhow::bail!("boot profile GPT source missing selector")
-                };
-
-                let upstream = open_boot_profile_artifact_source(
-                    source.gpt.source.as_ref(),
-                    pipeline_hints,
-                    gibblox_worker,
-                )
-                .await?;
-                let reader = GptBlockReader::new(
-                    upstream,
-                    selector,
-                    gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
-                )
-                .await
-                .map_err(|err| anyhow::anyhow!("open GPT partition reader: {err}"))?;
-                let reader: Arc<dyn BlockReader> = Arc::new(reader);
-                Ok(reader)
-            }
-        }
-    })
+    open_artifact_source_via_worker(gibblox_worker, source, pipeline_hints).await
 }
 
 #[cfg(target_arch = "wasm32")]

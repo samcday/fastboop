@@ -15,20 +15,12 @@ pub fn StartupError(
     title: String,
     details: String,
     launch_hint: String,
-    on_drop_channel: Option<EventHandler<DragEvent>>,
-    on_pick_channel: Option<EventHandler<MouseEvent>>,
-    drop_hint: Option<String>,
     channel_url_value: Option<String>,
     on_channel_url_input: Option<EventHandler<FormEvent>>,
     on_submit_channel_url: Option<EventHandler<MouseEvent>>,
     submit_channel_url_pending: Option<bool>,
 ) -> Element {
     let hero_css = stylesheet_href(&HERO_CSS, "/assets/styling/hero.css");
-    let drop_hint = drop_hint.unwrap_or_else(|| {
-        "Drop a local artifact and fastboop will attempt channel detection.".to_string()
-    });
-    let dropzone_clickable = on_pick_channel.is_some();
-    let on_pick_channel_for_dropzone = on_pick_channel.clone();
     let channel_url_value = channel_url_value.unwrap_or_default();
     let submit_channel_url_pending = submit_channel_url_pending.unwrap_or(false);
     let submit_channel_url_disabled =
@@ -49,30 +41,6 @@ pub fn StartupError(
                 div { class: "cta cta--blocked",
                     p { class: "cta__error", "{details}" }
                     p { class: "cta__hint", "{launch_hint}" }
-                }
-
-                if let Some(on_drop_channel) = on_drop_channel {
-                    div {
-                        class: if dropzone_clickable {
-                            "startup-dropzone startup-dropzone--clickable"
-                        } else {
-                            "startup-dropzone"
-                        },
-                        ondragenter: move |evt| evt.prevent_default(),
-                        ondragover: move |evt| evt.prevent_default(),
-                        onclick: move |evt| {
-                            if let Some(on_pick_channel) = &on_pick_channel_for_dropzone {
-                                evt.prevent_default();
-                                on_pick_channel.call(evt);
-                            }
-                        },
-                        ondrop: move |evt| {
-                            evt.prevent_default();
-                            on_drop_channel.call(evt);
-                        },
-                        p { class: "startup-dropzone__title", "Drop a channel file to continue" }
-                        p { class: "startup-dropzone__hint", "{drop_hint}" }
-                    }
                 }
 
                 if let (Some(on_channel_url_input), Some(on_submit_channel_url)) =

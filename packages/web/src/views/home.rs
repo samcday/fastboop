@@ -1,7 +1,5 @@
 use dioxus::prelude::*;
 #[cfg(target_arch = "wasm32")]
-use dioxus::web::WebFileExt;
-#[cfg(target_arch = "wasm32")]
 use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Reflect;
@@ -14,9 +12,7 @@ use ui::{
 #[cfg(target_arch = "wasm32")]
 use ui::{build_probe_snapshot, TransportKind};
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::{JsCast, JsValue};
-#[cfg(target_arch = "wasm32")]
-use web_sys::HtmlInputElement;
+use wasm_bindgen::JsValue;
 
 use crate::Route;
 
@@ -38,75 +34,17 @@ use fastboop_fastboot_webusb::{request_device, DeviceWatcher};
 #[cfg(target_arch = "wasm32")]
 use tracing::{debug, info, warn};
 
-#[cfg(target_arch = "wasm32")]
-const STARTUP_CHANNEL_FILE_PICKER_ID: &str = "startup-channel-file-picker";
-
 #[component]
 pub fn Home(channel: Option<String>) -> Element {
     let sessions = use_context::<SessionStore>();
     let navigator = use_navigator();
 
-    let startup_channel_override = use_signal(|| None::<String>);
     let startup_channel_drop_error = use_signal(|| None::<crate::StartupChannelError>);
     let route_channel = channel
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let startup_channel_url_value = use_signal(|| route_channel.clone().unwrap_or_default());
     let startup_channel_url_submit_pending = use_signal(|| false);
-
-    #[cfg(target_arch = "wasm32")]
-    let drop_channel_handler: Option<EventHandler<DragEvent>> = {
-        let startup_channel_override = startup_channel_override;
-        let mut startup_channel_drop_error = startup_channel_drop_error;
-        Some(EventHandler::new(move |evt: DragEvent| {
-            evt.prevent_default();
-            let files = evt.data_transfer().files();
-            let Some(file_data) = files.into_iter().next() else {
-                startup_channel_drop_error.set(Some(crate::StartupChannelError {
-                    title: "Invalid launch channel",
-                    details: "drop payload did not include a file".to_string(),
-                    launch_hint:
-                        "Drop a local channel artifact file (for example .ero, .zip, or .caibx)."
-                            .to_string(),
-                }));
-                return;
-            };
-            let file_name = file_data.name();
-            let Some(web_file) = file_data.get_web_file() else {
-                startup_channel_drop_error.set(Some(crate::StartupChannelError {
-                    title: "Invalid launch channel",
-                    details: format!(
-                        "dropped file '{file_name}' is not available as a Web File source"
-                    ),
-                    launch_hint:
-                        "Use drag-and-drop from your local filesystem in this browser tab."
-                            .to_string(),
-                }));
-                return;
-            };
-
-            handle_selected_channel_file(
-                file_name,
-                web_file,
-                startup_channel_override,
-                startup_channel_drop_error,
-            );
-        }))
-    };
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let drop_channel_handler: Option<EventHandler<DragEvent>> = None;
-
-    #[cfg(target_arch = "wasm32")]
-    let pick_channel_handler: Option<EventHandler<MouseEvent>> = {
-        let startup_channel_drop_error = startup_channel_drop_error;
-        Some(EventHandler::new(move |_evt: MouseEvent| {
-            open_startup_channel_picker(startup_channel_drop_error);
-        }))
-    };
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let pick_channel_handler: Option<EventHandler<MouseEvent>> = None;
 
     let channel_url_input_handler: Option<EventHandler<FormEvent>> = {
         let mut startup_channel_url_value = startup_channel_url_value;
@@ -162,9 +100,7 @@ pub fn Home(channel: Option<String>) -> Element {
         }))
     };
 
-    let startup_channel = if let Some(channel) = startup_channel_override() {
-        channel
-    } else if let Some(channel) = route_channel.clone() {
+    let startup_channel = if let Some(channel) = route_channel.clone() {
         channel
     } else {
         match crate::startup_channel() {
@@ -172,14 +108,10 @@ pub fn Home(channel: Option<String>) -> Element {
             Err(err) => {
                 let display_error = startup_channel_drop_error().unwrap_or(err);
                 return rsx! {
-                    {startup_channel_picker_input(startup_channel_override, startup_channel_drop_error)}
                     StartupError {
                         title: display_error.title.to_string(),
                         details: display_error.details,
                         launch_hint: display_error.launch_hint,
-                        on_drop_channel: drop_channel_handler.clone(),
-                        on_pick_channel: pick_channel_handler.clone(),
-                        drop_hint: Some("Drop a local channel artifact, or click here to choose one from disk.".to_string()),
                         channel_url_value: Some(startup_channel_url_value()),
                         on_channel_url_input: channel_url_input_handler.clone(),
                         on_submit_channel_url: submit_channel_url_handler.clone(),
@@ -483,14 +415,10 @@ pub fn Home(channel: Option<String>) -> Element {
         };
 
         return rsx! {
-            {startup_channel_picker_input(startup_channel_override, startup_channel_drop_error)}
             StartupError {
                 title,
                 details,
                 launch_hint,
-                on_drop_channel: drop_channel_handler.clone(),
-                on_pick_channel: pick_channel_handler.clone(),
-                drop_hint: Some("Drop a local channel artifact, or click here to choose one from disk.".to_string()),
                 channel_url_value: Some(startup_channel_url_value()),
                 on_channel_url_input: channel_url_input_handler.clone(),
                 on_submit_channel_url: submit_channel_url_handler.clone(),
@@ -513,174 +441,6 @@ pub fn Home(channel: Option<String>) -> Element {
             }
         }
     }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn startup_channel_picker_input(
-    startup_channel_override: Signal<Option<String>>,
-    startup_channel_drop_error: Signal<Option<crate::StartupChannelError>>,
-) -> Element {
-    rsx! {
-        input {
-            id: STARTUP_CHANNEL_FILE_PICKER_ID,
-            r#type: "file",
-            style: "display: none;",
-            onchange: move |_| {
-                let Some(window) = web_sys::window() else {
-                    set_startup_channel_drop_error(
-                        startup_channel_drop_error,
-                        "file picker window is unavailable in this context",
-                        "Drag and drop a local channel artifact file instead.",
-                    );
-                    return;
-                };
-                let Some(document) = window.document() else {
-                    set_startup_channel_drop_error(
-                        startup_channel_drop_error,
-                        "file picker document is unavailable in this context",
-                        "Drag and drop a local channel artifact file instead.",
-                    );
-                    return;
-                };
-                let Some(element) = document.get_element_by_id(STARTUP_CHANNEL_FILE_PICKER_ID)
-                else {
-                    set_startup_channel_drop_error(
-                        startup_channel_drop_error,
-                        "startup file picker is not available on this page",
-                        "Reload and try again, or drag and drop a local channel artifact file.",
-                    );
-                    return;
-                };
-                let Ok(input) = element.dyn_into::<HtmlInputElement>() else {
-                    set_startup_channel_drop_error(
-                        startup_channel_drop_error,
-                        "startup file picker is not an HTML file input",
-                        "Reload and try again, or drag and drop a local channel artifact file.",
-                    );
-                    return;
-                };
-                let Some(files) = input.files() else {
-                    return;
-                };
-                let Some(web_file) = files.item(0) else {
-                    return;
-                };
-                let file_name = web_file.name();
-                input.set_value("");
-                handle_selected_channel_file(
-                    file_name,
-                    web_file,
-                    startup_channel_override,
-                    startup_channel_drop_error,
-                );
-            },
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn startup_channel_picker_input(
-    _startup_channel_override: Signal<Option<String>>,
-    _startup_channel_drop_error: Signal<Option<crate::StartupChannelError>>,
-) -> Element {
-    rsx! {}
-}
-
-#[cfg(target_arch = "wasm32")]
-fn open_startup_channel_picker(
-    startup_channel_drop_error: Signal<Option<crate::StartupChannelError>>,
-) {
-    let Some(window) = web_sys::window() else {
-        set_startup_channel_drop_error(
-            startup_channel_drop_error,
-            "file picker window is unavailable in this context",
-            "Drag and drop a local channel artifact file instead.",
-        );
-        return;
-    };
-    let Some(document) = window.document() else {
-        set_startup_channel_drop_error(
-            startup_channel_drop_error,
-            "file picker document is unavailable in this context",
-            "Drag and drop a local channel artifact file instead.",
-        );
-        return;
-    };
-    let Some(element) = document.get_element_by_id(STARTUP_CHANNEL_FILE_PICKER_ID) else {
-        set_startup_channel_drop_error(
-            startup_channel_drop_error,
-            "startup file picker is not available on this page",
-            "Reload and try again, or drag and drop a local channel artifact file.",
-        );
-        return;
-    };
-    let Ok(input) = element.dyn_into::<HtmlInputElement>() else {
-        set_startup_channel_drop_error(
-            startup_channel_drop_error,
-            "startup file picker is not an HTML file input",
-            "Reload and try again, or drag and drop a local channel artifact file.",
-        );
-        return;
-    };
-
-    input.set_value("");
-    input.click();
-}
-
-#[cfg(target_arch = "wasm32")]
-fn handle_selected_channel_file(
-    file_name: String,
-    web_file: web_sys::File,
-    mut startup_channel_override: Signal<Option<String>>,
-    mut startup_channel_drop_error: Signal<Option<crate::StartupChannelError>>,
-) {
-    if web_file.size() <= 0.0 {
-        set_startup_channel_drop_error(
-            startup_channel_drop_error,
-            format!("selected file '{file_name}' reports zero bytes from this browser path"),
-            "Try clicking to choose the file from disk instead of drag and drop.",
-        );
-        return;
-    }
-
-    let previous_channel = startup_channel_override();
-    let dropped_channel = crate::register_web_file_channel(web_file);
-    startup_channel_drop_error.set(Some(crate::StartupChannelError {
-        title: "Validating dropped channel",
-        details: format!("Checking file '{file_name}' for a valid channel stream."),
-        launch_hint: "This may take a moment for large files.".to_string(),
-    }));
-
-    spawn(async move {
-        match crate::preflight_startup_channel(&dropped_channel).await {
-            Ok(()) => {
-                if let Some(previous_channel) = previous_channel.as_ref() {
-                    if previous_channel != &dropped_channel {
-                        crate::unregister_web_file_channel(previous_channel);
-                    }
-                }
-                startup_channel_override.set(Some(dropped_channel));
-                startup_channel_drop_error.set(None);
-            }
-            Err(err) => {
-                crate::unregister_web_file_channel(&dropped_channel);
-                startup_channel_drop_error.set(Some(err));
-            }
-        }
-    });
-}
-
-#[cfg(target_arch = "wasm32")]
-fn set_startup_channel_drop_error(
-    mut startup_channel_drop_error: Signal<Option<crate::StartupChannelError>>,
-    details: impl Into<String>,
-    launch_hint: impl Into<String>,
-) {
-    startup_channel_drop_error.set(Some(crate::StartupChannelError {
-        title: "Invalid launch channel",
-        details: details.into(),
-        launch_hint: launch_hint.into(),
-    }));
 }
 
 #[cfg(target_arch = "wasm32")]
