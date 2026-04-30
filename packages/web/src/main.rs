@@ -3,15 +3,7 @@ use fastboop_core::read_channel_stream_head_from_reader;
 use gibblox_core::BlockByteReader;
 use gibblox_core::BlockReader;
 use gibblox_http::HttpReader;
-#[cfg(target_arch = "wasm32")]
-use gibblox_web_file::WebFileReader;
 use js_sys::Reflect;
-#[cfg(target_arch = "wasm32")]
-use std::cell::RefCell;
-#[cfg(target_arch = "wasm32")]
-use std::collections::BTreeMap;
-#[cfg(target_arch = "wasm32")]
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use tracing::Level;
 use tracing_subscriber::filter::Targets;
@@ -28,17 +20,7 @@ mod views;
 
 const LOG_LEVEL_HINT_KEY: &str = "__FASTBOOP_LOG_LEVEL";
 const CHANNEL_QUERY_KEY: &str = "channel";
-#[cfg(target_arch = "wasm32")]
-const WEB_FILE_CHANNEL_PREFIX: &str = "web-file://";
 static STARTUP_CHANNEL: OnceLock<Result<String, StartupChannelError>> = OnceLock::new();
-#[cfg(target_arch = "wasm32")]
-static WEB_FILE_CHANNEL_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-#[cfg(target_arch = "wasm32")]
-thread_local! {
-    static WEB_FILE_CHANNEL_REGISTRY: RefCell<BTreeMap<String, web_sys::File>> =
-        const { RefCell::new(BTreeMap::new()) };
-}
 
 #[derive(Clone, Debug)]
 pub(crate) struct StartupChannelError {
@@ -117,16 +99,6 @@ pub(crate) async fn preflight_startup_channel(channel: &str) -> Result<(), Start
 pub(crate) async fn load_startup_channel_intake(
     channel: &str,
 ) -> Result<StartupChannelIntake, StartupChannelError> {
-    #[cfg(target_arch = "wasm32")]
-    if let Some(file) = resolve_web_file_channel(channel) {
-        let reader =
-            WebFileReader::new(file, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE).map_err(|err| {
-                invalid_web_channel_error(channel, &format!("open web file reader: {err}"))
-            })?;
-        let exact_total_bytes = reader.size_bytes();
-        return read_startup_channel_intake(channel, &reader, exact_total_bytes).await;
-    }
-
     let url =
         Url::parse(channel).map_err(|err| invalid_web_channel_error(channel, &err.to_string()))?;
 
@@ -208,32 +180,6 @@ where
     }
 
     Ok(intake)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn register_web_file_channel(file: web_sys::File) -> String {
-    let channel_id = WEB_FILE_CHANNEL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let channel_key = channel_id.to_string();
-    WEB_FILE_CHANNEL_REGISTRY.with(|registry| {
-        registry.borrow_mut().insert(channel_key.clone(), file);
-    });
-    format!("{WEB_FILE_CHANNEL_PREFIX}{channel_key}")
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn unregister_web_file_channel(channel: &str) {
-    let Some(channel_key) = channel.strip_prefix(WEB_FILE_CHANNEL_PREFIX) else {
-        return;
-    };
-    WEB_FILE_CHANNEL_REGISTRY.with(|registry| {
-        registry.borrow_mut().remove(channel_key);
-    });
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn resolve_web_file_channel(channel: &str) -> Option<web_sys::File> {
-    let channel_key = channel.strip_prefix(WEB_FILE_CHANNEL_PREFIX)?;
-    WEB_FILE_CHANNEL_REGISTRY.with(|registry| registry.borrow().get(channel_key).cloned())
 }
 
 fn validate_web_channel_url(channel: &str) -> Result<String, StartupChannelError> {

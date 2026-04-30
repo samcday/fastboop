@@ -3058,7 +3058,6 @@ dependencies = [
  "fastboop-stage0-generator",
  "futures-channel",
  "futures-util",
- "gibblox-android-sparse",
  "gibblox-blockreader-messageport",
  "gibblox-cache",
  "gibblox-cache-store-opfs",
@@ -3067,12 +3066,8 @@ dependencies = [
  "gibblox-core",
  "gibblox-ext4",
  "gibblox-http",
- "gibblox-mbr",
  "gibblox-pipeline",
- "gibblox-tar",
- "gibblox-web-file",
  "gibblox-web-worker",
- "gibblox-xz",
  "gibblox-zip",
  "gloo-timers",
  "gobblytes-core",
@@ -3796,19 +3791,6 @@ dependencies = [
  "async-trait",
  "gibblox-core",
  "tracing",
-]
-
-[[package]]
-name = "gibblox-web-file"
-version = "0.0.2-rc.1"
-dependencies = [
- "async-trait",
- "gibblox-core",
- "js-sys",
- "tracing",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]
@@ -11662,4 +11644,8 @@ dependencies = [
 
 [[patch.unused]]
 name = "gibblox-iso9660"
+version = "0.0.2-rc.1"
+
+[[patch.unused]]
+name = "gibblox-web-file"
 version = "0.0.2-rc.1"
