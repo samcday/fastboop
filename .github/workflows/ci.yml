@@ -3,6 +3,7 @@ name: CI
 on:
   workflow_call:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
   workflow_dispatch:
@@ -22,6 +23,12 @@ jobs:
         with:
           lfs: true
           submodules: recursive
+
+      - name: Resolve local dependency policy
+        id: local-deps
+        env:
+          FASTBOOP_ALLOW_LOCAL_DEPS: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft }}
+        run: ./tools/ci-local-deps.sh
 
       - name: Install system dependencies
         run: |
@@ -53,19 +60,20 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: aarch64-unknown-linux-musl
+          cache: ${{ steps.local-deps.outputs.using_local != 'true' }}
           rustflags: "--cfg=web_sys_unstable_apis"
 
       - name: Format
-        run: cargo fmt --all -- --check
+        run: $FASTBOOP_CARGO fmt --all -- --check
 
       - name: Check
-        run: cargo check --workspace --locked
+        run: $FASTBOOP_CARGO check --workspace --locked
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets
+        run: $FASTBOOP_CARGO clippy --workspace --all-targets
 
       - name: Test
-        run: cargo test --workspace --locked
+        run: $FASTBOOP_CARGO test --workspace --locked
 
   web-build:
     runs-on: ubuntu-latest
@@ -75,6 +83,12 @@ jobs:
         with:
           lfs: true
           submodules: recursive
+
+      - name: Resolve local dependency policy
+        id: local-deps
+        env:
+          FASTBOOP_ALLOW_LOCAL_DEPS: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft }}
+        run: ./tools/ci-local-deps.sh
 
       - name: Install system dependencies
         run: |
@@ -104,6 +118,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: aarch64-unknown-linux-musl
+          cache: ${{ steps.local-deps.outputs.using_local != 'true' }}
           rustflags: "--cfg=web_sys_unstable_apis"
 
       - name: Install cargo-binstall
@@ -124,7 +139,7 @@ jobs:
           fi
 
       - name: Dioxus build (web release)
-        run: dx build -p fastboop-web --release --base-path "${{ steps.web-base.outputs.base_path }}"
+        run: $FASTBOOP_DX build -p fastboop-web --release --base-path "${{ steps.web-base.outputs.base_path }}"
 
       - name: Upload bleeding snapshot to R2
         if: github.ref == 'refs/heads/main'
@@ -156,6 +171,12 @@ jobs:
           lfs: true
           submodules: recursive
 
+      - name: Resolve local dependency policy
+        id: local-deps
+        env:
+          FASTBOOP_ALLOW_LOCAL_DEPS: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft }}
+        run: ./tools/ci-local-deps.sh
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -184,6 +205,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: aarch64-unknown-linux-musl
+          cache: ${{ steps.local-deps.outputs.using_local != 'true' }}
           rustflags: "--cfg=web_sys_unstable_apis"
 
       - name: Install cargo-binstall
@@ -195,7 +217,7 @@ jobs:
         run: cargo binstall dioxus-cli --force --no-confirm
 
       - name: Dioxus build (desktop release)
-        run: dx build -p fastboop-desktop --release
+        run: $FASTBOOP_DX build -p fastboop-desktop --release
 
   build:
     runs-on: ${{ matrix.runner }}
@@ -218,6 +240,12 @@ jobs:
         with:
           lfs: true
           submodules: recursive
+
+      - name: Resolve local dependency policy
+        id: local-deps
+        env:
+          FASTBOOP_ALLOW_LOCAL_DEPS: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft }}
+        run: ./tools/ci-local-deps.sh
 
       - name: Install system dependencies
         run: |
@@ -245,11 +273,12 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
+          cache: ${{ steps.local-deps.outputs.using_local != 'true' }}
           rustflags: "--cfg=web_sys_unstable_apis"
 
       - name: Build CLI (static musl)
         run: |
-          cargo build \
+          $FASTBOOP_CARGO build \
             -p fastboop-cli \
             --release \
             --target ${{ matrix.target }}
@@ -283,6 +312,12 @@ jobs:
           lfs: true
           submodules: recursive
 
+      - name: Resolve local dependency policy
+        id: local-deps
+        env:
+          FASTBOOP_ALLOW_LOCAL_DEPS: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft }}
+        run: ./tools/ci-local-deps.sh
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -305,6 +340,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
+          cache: ${{ steps.local-deps.outputs.using_local != 'true' }}
 
       - name: Preflight stage0 target support
         run: |
@@ -321,7 +357,7 @@ jobs:
           export "${linker_var}=rust-lld"
           export "${rustflags_var}=-C target-feature=+crt-static"
 
-          cargo build \
+          $FASTBOOP_CARGO build \
             -p fastboop-stage0 \
             --release \
             --target "${{ matrix.target }}" \
