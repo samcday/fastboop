@@ -16,6 +16,8 @@ pub use gibblox_pipeline::{
     PipelineSourceHttpSource as BootProfileArtifactSourceHttpSource,
     PipelineSourceMbr as BootProfileArtifactSourceMbr,
     PipelineSourceMbrSource as BootProfileArtifactSourceMbrSource,
+    PipelineSourceTar as BootProfileArtifactSourceTar,
+    PipelineSourceTarSource as BootProfileArtifactSourceTarSource,
     PipelineSourceXzSource as BootProfileArtifactSourceXzSource,
 };
 use serde::{Deserialize, Serialize};

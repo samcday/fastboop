@@ -42,4 +42,6 @@ config_path="${temp_dir}/config.local.toml"
   done
 } > "${config_path}"
 
+export FASTBOOP_STAGE0_CARGO="${script_dir}/cargo-local.sh"
+
 cargo --config "${config_path}" "$@"

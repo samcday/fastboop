@@ -36,9 +36,11 @@ use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 #[cfg(target_arch = "wasm32")]
 use gibblox_pipeline::{
-    encode_pipeline, pipeline_identity_string, validate_pipeline_hints, PipelineCachePolicy,
-    PipelineHint, PipelineHints, PipelineSource,
+    encode_pipeline, encode_pipeline_hints, pipeline_identity_string, validate_pipeline_hints,
+    PipelineCachePolicy, PipelineHint, PipelineHints, PipelineSource,
 };
+#[cfg(target_arch = "wasm32")]
+use gibblox_tar::TarEntryByteReader;
 #[cfg(target_arch = "wasm32")]
 use gibblox_web_file::WebFileReader;
 #[cfg(target_arch = "wasm32")]
@@ -522,7 +524,7 @@ async fn build_stage0_artifacts(
                     let gibblox_worker = spawn_gibblox_worker(channel.clone(), 0, None)
                         .await
                         .map_err(|err| anyhow::anyhow!("spawn gibblox worker failed: {err}"))?;
-                    let sparse_hints = load_android_sparse_hints_for_boot_profile(
+                    let pipeline_hints = load_pipeline_hints_for_boot_profile(
                         channel.as_str(),
                         &channel_intake,
                         boot_profile,
@@ -530,14 +532,14 @@ async fn build_stage0_artifacts(
                     .await?;
                     let provider_reader = open_boot_profile_rootfs_reader(
                         boot_profile,
-                        &sparse_hints,
+                        &pipeline_hints,
                         Some(&gibblox_worker),
                     )
                     .await?;
                     let (kernel_override, dtb_override) = resolve_boot_profile_source_overrides_web(
                         boot_profile,
                         &profile,
-                        &sparse_hints,
+                        &pipeline_hints,
                         Some(&gibblox_worker),
                     )
                     .await?;
@@ -736,6 +738,7 @@ async fn open_channel_payload_reader_via_worker(
     let open_options = OpenPipelineRequestOptions {
         image_block_size: None,
         cache_policy: Some(PipelineCachePolicy::None),
+        pipeline_hints_bin: None,
     };
     let opened = worker
         .open_pipeline_with_options(&pipeline_bytes, &open_options)
@@ -760,18 +763,32 @@ async fn open_channel_payload_reader_via_worker(
 async fn open_artifact_source_via_worker(
     worker: &GibbloxWebWorker,
     source: &PipelineSource,
+    pipeline_hints: &PipelineHints,
 ) -> anyhow::Result<Arc<dyn BlockReader>> {
     let pipeline_bytes = encode_pipeline(source)
         .map_err(|err| anyhow::anyhow!("encode artifact pipeline source: {err}"))?;
     let open_options = OpenPipelineRequestOptions {
         image_block_size: None,
         cache_policy: Some(PipelineCachePolicy::Head),
+        pipeline_hints_bin: encode_pipeline_hints_for_worker(pipeline_hints)?,
     };
     let opened = worker
         .open_pipeline_with_options(&pipeline_bytes, &open_options)
         .await
         .map_err(|err| anyhow::anyhow!("open gibblox worker artifact pipeline: {err}"))?;
     Ok(Arc::new(opened.reader))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn encode_pipeline_hints_for_worker(
+    pipeline_hints: &PipelineHints,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    if pipeline_hints.entries.is_empty() {
+        return Ok(None);
+    }
+    encode_pipeline_hints(pipeline_hints)
+        .map(Some)
+        .map_err(|err| anyhow::anyhow!("encode pipeline hints for worker: {err}"))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -887,18 +904,18 @@ async fn open_web_file_channel_payload_reader(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn load_android_sparse_hints_for_boot_profile(
+async fn load_pipeline_hints_for_boot_profile(
     channel: &str,
     channel_intake: &SessionChannelIntake,
     boot_profile: &BootProfile,
-) -> anyhow::Result<HashMap<String, AndroidSparseImageIndex>> {
+) -> anyhow::Result<PipelineHints> {
     if channel_intake.pipeline_hint_records.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(PipelineHints::default());
     }
 
     let required_identities = boot_profile_pipeline_identities(boot_profile);
     if required_identities.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(PipelineHints::default());
     }
 
     let reader: Arc<dyn BlockReader> = if let Some(web_file) =
@@ -915,15 +932,9 @@ async fn load_android_sparse_hints_for_boot_profile(
         pipeline_hint_records: channel_intake.pipeline_hint_records.clone(),
         ..ChannelStreamHead::default()
     };
-    let pipeline_hints = read_channel_pipeline_hints_for_identities(
-        reader.as_ref(),
-        &stream_head,
-        &required_identities,
-    )
-    .await
-    .map_err(|err| anyhow::anyhow!("read channel pipeline hints: {err}"))?;
-
-    android_sparse_hints_by_identity(&pipeline_hints)
+    read_channel_pipeline_hints_for_identities(reader.as_ref(), &stream_head, &required_identities)
+        .await
+        .map_err(|err| anyhow::anyhow!("read channel pipeline hints: {err}"))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -967,6 +978,7 @@ fn android_sparse_hints_by_identity(
                         },
                     );
                 }
+                PipelineHint::TarEntryIndex(_) => {}
                 PipelineHint::ContentDigest(_) => {}
             }
         }
@@ -978,10 +990,10 @@ fn android_sparse_hints_by_identity(
 #[cfg(target_arch = "wasm32")]
 async fn open_boot_profile_rootfs_reader(
     boot_profile: &BootProfile,
-    sparse_hints: &HashMap<String, AndroidSparseImageIndex>,
+    pipeline_hints: &PipelineHints,
     gibblox_worker: Option<&GibbloxWebWorker>,
 ) -> anyhow::Result<Arc<dyn BlockReader>> {
-    open_boot_profile_artifact_source(boot_profile.rootfs.source(), sparse_hints, gibblox_worker)
+    open_boot_profile_artifact_source(boot_profile.rootfs.source(), pipeline_hints, gibblox_worker)
         .await
 }
 
@@ -989,14 +1001,14 @@ async fn open_boot_profile_rootfs_reader(
 async fn resolve_boot_profile_source_overrides_web(
     boot_profile: &BootProfile,
     device_profile: &fastboop_core::DeviceProfile,
-    sparse_hints: &HashMap<String, AndroidSparseImageIndex>,
+    pipeline_hints: &PipelineHints,
     gibblox_worker: Option<&GibbloxWebWorker>,
 ) -> anyhow::Result<(Option<Stage0KernelOverride>, Option<Vec<u8>>)> {
     let kernel_override = if let Some(kernel_source) = boot_profile.kernel.as_ref() {
         let kernel_path = non_empty_profile_path(kernel_source.path.as_str(), "kernel.path")?;
         let source_reader = open_boot_profile_artifact_source(
             kernel_source.artifact_source(),
-            sparse_hints,
+            pipeline_hints,
             gibblox_worker,
         )
         .await?;
@@ -1014,7 +1026,7 @@ async fn resolve_boot_profile_source_overrides_web(
         let dtbs_base = non_empty_profile_path(dtbs_source.path.as_str(), "dtbs.path")?;
         let source_reader = open_boot_profile_artifact_source(
             dtbs_source.artifact_source(),
-            sparse_hints,
+            pipeline_hints,
             gibblox_worker,
         )
         .await?;
@@ -1182,10 +1194,17 @@ fn join_profile_path(base: &str, suffix: &str) -> String {
 #[cfg(target_arch = "wasm32")]
 fn open_boot_profile_artifact_source<'a>(
     source: &'a BootProfileArtifactSource,
-    sparse_hints: &'a HashMap<String, AndroidSparseImageIndex>,
+    pipeline_hints: &'a PipelineHints,
     gibblox_worker: Option<&'a GibbloxWebWorker>,
 ) -> Pin<Box<dyn Future<Output = anyhow::Result<Arc<dyn BlockReader>>> + 'a>> {
     Box::pin(async move {
+        if let Some(gibblox_worker) = gibblox_worker {
+            if !matches!(source, BootProfileArtifactSource::File(_)) {
+                return open_artifact_source_via_worker(gibblox_worker, source, pipeline_hints)
+                    .await;
+            }
+        }
+
         match source {
             BootProfileArtifactSource::Http(source) => {
                 let channel = source.http.trim();
@@ -1194,11 +1213,13 @@ fn open_boot_profile_artifact_source<'a>(
                 }
                 if let Some(gibblox_worker) = gibblox_worker {
                     let pipeline_source = PipelineSource::Http(source.clone());
-                    return open_artifact_source_via_worker(gibblox_worker, &pipeline_source)
-                        .await
-                        .map_err(|err| {
-                            anyhow::anyhow!("open HTTP artifact source {channel}: {err}")
-                        });
+                    return open_artifact_source_via_worker(
+                        gibblox_worker,
+                        &pipeline_source,
+                        pipeline_hints,
+                    )
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open HTTP artifact source {channel}: {err}"));
                 }
                 crate::channel_source::build_channel_reader_pipeline(
                     channel,
@@ -1224,11 +1245,13 @@ fn open_boot_profile_artifact_source<'a>(
                     .filter(|value| !value.is_empty());
                 if let Some(gibblox_worker) = gibblox_worker {
                     let pipeline_source = PipelineSource::Casync(source.clone());
-                    return open_artifact_source_via_worker(gibblox_worker, &pipeline_source)
-                        .await
-                        .map_err(|err| {
-                            anyhow::anyhow!("open casync artifact source {index}: {err}")
-                        });
+                    return open_artifact_source_via_worker(
+                        gibblox_worker,
+                        &pipeline_source,
+                        pipeline_hints,
+                    )
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open casync artifact source {index}: {err}"));
                 }
                 crate::channel_source::build_channel_reader_pipeline(
                     index,
@@ -1267,7 +1290,7 @@ fn open_boot_profile_artifact_source<'a>(
             BootProfileArtifactSource::Xz(source) => {
                 let upstream = open_boot_profile_artifact_source(
                     source.xz.as_ref(),
-                    sparse_hints,
+                    pipeline_hints,
                     gibblox_worker,
                 )
                 .await?;
@@ -1286,10 +1309,11 @@ fn open_boot_profile_artifact_source<'a>(
             BootProfileArtifactSource::AndroidSparseImg(source) => {
                 let upstream = open_boot_profile_artifact_source(
                     source.android_sparseimg.source.as_ref(),
-                    sparse_hints,
+                    pipeline_hints,
                     gibblox_worker,
                 )
                 .await?;
+                let sparse_hints = android_sparse_hints_by_identity(pipeline_hints)?;
                 let identity = pipeline_identity_string(
                     &BootProfileArtifactSource::AndroidSparseImg(source.clone()),
                 );
@@ -1308,6 +1332,25 @@ fn open_boot_profile_artifact_source<'a>(
                 let reader: Arc<dyn BlockReader> = Arc::new(reader);
                 Ok(reader)
             }
+            BootProfileArtifactSource::Tar(source) => {
+                let upstream = open_boot_profile_artifact_source(
+                    source.tar.source.as_ref(),
+                    pipeline_hints,
+                    gibblox_worker,
+                )
+                .await?;
+                let upstream = AlignedByteReader::new(upstream).await.map_err(|err| {
+                    anyhow::anyhow!("open aligned byte view for tar source: {err}")
+                })?;
+                let reader = TarEntryByteReader::new(source.tar.entry.as_str(), Arc::new(upstream))
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open tar entry reader: {err}"))?;
+                let reader =
+                    BlockByteReader::new(reader, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+                        .map_err(|err| anyhow::anyhow!("open tar entry block view: {err}"))?;
+                let reader: Arc<dyn BlockReader> = Arc::new(reader);
+                Ok(reader)
+            }
             BootProfileArtifactSource::Mbr(source) => {
                 let selector = if let Some(partuuid) = source.mbr.partuuid.as_deref() {
                     MbrPartitionSelector::part_uuid(partuuid)
@@ -1319,7 +1362,7 @@ fn open_boot_profile_artifact_source<'a>(
 
                 let upstream = open_boot_profile_artifact_source(
                     source.mbr.source.as_ref(),
-                    sparse_hints,
+                    pipeline_hints,
                     gibblox_worker,
                 )
                 .await?;
@@ -1346,7 +1389,7 @@ fn open_boot_profile_artifact_source<'a>(
 
                 let upstream = open_boot_profile_artifact_source(
                     source.gpt.source.as_ref(),
-                    sparse_hints,
+                    pipeline_hints,
                     gibblox_worker,
                 )
                 .await?;

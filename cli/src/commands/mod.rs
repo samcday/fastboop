@@ -37,9 +37,10 @@ use gibblox_file::FileReader;
 use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 use gibblox_pipeline::{
-    PipelineHint, PipelineHints, PipelineSource, PipelineSourceContent, pipeline_identity_string,
-    validate_pipeline_hints,
+    OpenPipelineOptions, PipelineCachePolicy, PipelineHint, PipelineHints, PipelineSource,
+    PipelineSourceContent, open_pipeline, pipeline_identity_string, validate_pipeline_hints,
 };
+use gibblox_tar::{TarEntryByteReader, TarEntryByteReaderConfig, TarEntryIndex};
 use gibblox_xz::XzBlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_core::{Filesystem, FilesystemEntryType, normalize_ostree_deployment_path};
@@ -476,7 +477,9 @@ impl BlockReader for OffsetChannelBlockReader {
 pub(crate) struct ArtifactReaderResolver {
     cache: HashMap<String, Arc<dyn BlockReader>>,
     sparse_index_hints: HashMap<String, AndroidSparseImageIndex>,
+    tar_entry_hints: HashMap<String, TarEntryIndex>,
     content_digest_hints: HashMap<String, PipelineSourceContent>,
+    pipeline_hints: PipelineHints,
     local_artifacts: HashMap<ArtifactContentKey, PathBuf>,
 }
 
@@ -486,8 +489,7 @@ struct ArtifactContentKey {
     size_bytes: u64,
 }
 
-type OpenArtifactFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Arc<dyn BlockReader>>> + Send + 'a>>;
+type OpenArtifactFuture<'a> = Pin<Box<dyn Future<Output = Result<Arc<dyn BlockReader>>> + 'a>>;
 
 impl ArtifactReaderResolver {
     pub(crate) fn new() -> Self {
@@ -528,7 +530,9 @@ impl ArtifactReaderResolver {
     fn reset_pipeline_hints(&mut self, hints: &PipelineHints) -> Result<()> {
         validate_pipeline_hints(hints).map_err(|err| anyhow!("validate pipeline hints: {err}"))?;
         self.sparse_index_hints.clear();
+        self.tar_entry_hints.clear();
         self.content_digest_hints.clear();
+        self.pipeline_hints = hints.clone();
 
         for entry in &hints.entries {
             for hint in &entry.hints {
@@ -560,6 +564,18 @@ impl ArtifactReaderResolver {
                                         crc32: chunk.crc32,
                                     })
                                     .collect(),
+                            },
+                        );
+                    }
+                    PipelineHint::TarEntryIndex(index) => {
+                        self.tar_entry_hints.insert(
+                            entry.pipeline_identity.clone(),
+                            TarEntryIndex {
+                                entry_name: index.entry_name.clone(),
+                                header_offset: index.header_offset,
+                                data_offset: index.data_offset,
+                                size_bytes: index.size_bytes,
+                                entry_type: index.entry_type,
                             },
                         );
                     }
@@ -690,6 +706,22 @@ impl ArtifactReaderResolver {
                 return Ok(reader);
             }
 
+            if self.local_artifacts.is_empty() {
+                let reader = open_pipeline(
+                    source,
+                    &OpenPipelineOptions {
+                        image_block_size: DEFAULT_IMAGE_BLOCK_SIZE,
+                        cache_policy: PipelineCachePolicy::Head,
+                        pipeline_hints: Some(self.pipeline_hints.clone()),
+                        ..OpenPipelineOptions::default()
+                    },
+                )
+                .await
+                .map_err(|err| anyhow!("open artifact pipeline: {err}"))?;
+                self.cache.insert(cache_key, reader.clone());
+                return Ok(reader);
+            }
+
             let reader: Arc<dyn BlockReader> = match source {
                 BootProfileArtifactSource::Http(source) => {
                     let url = Url::parse(source.http.as_str())
@@ -758,6 +790,33 @@ impl ArtifactReaderResolver {
                             .await
                             .map_err(|err| anyhow!("open android sparse reader: {err}"))?
                     };
+                    Arc::new(reader)
+                }
+                BootProfileArtifactSource::Tar(source) => {
+                    let upstream = self
+                        .open_artifact_source(source.tar.source.as_ref())
+                        .await?;
+                    let upstream = AlignedByteReader::new(upstream)
+                        .await
+                        .map_err(|err| anyhow!("open aligned byte view for tar source: {err}"))?;
+                    let pipeline_identity =
+                        pipeline_identity_string(&BootProfileArtifactSource::Tar(source.clone()));
+                    let upstream: Arc<dyn gibblox_core::ByteReader> = Arc::new(upstream);
+                    let config = TarEntryByteReaderConfig::new(source.tar.entry.as_str())?
+                        .with_source_identity(pipeline_identity_string(source.tar.source.as_ref()));
+                    let reader = if let Some(index) = self.tar_entry_hints.get(&pipeline_identity) {
+                        TarEntryByteReader::open_with_index(upstream, config, index.clone())
+                            .await
+                            .map_err(|err| {
+                                anyhow!("open tar entry reader from sidecar index: {err}")
+                            })?
+                    } else {
+                        TarEntryByteReader::open_with_config(upstream, config)
+                            .await
+                            .map_err(|err| anyhow!("open tar entry reader: {err}"))?
+                    };
+                    let reader = BlockByteReader::new(reader, DEFAULT_IMAGE_BLOCK_SIZE)
+                        .map_err(|err| anyhow!("open tar entry block view: {err}"))?;
                     Arc::new(reader)
                 }
                 BootProfileArtifactSource::Mbr(source) => {
@@ -836,6 +895,7 @@ fn artifact_source_content(source: &PipelineSource) -> Option<&PipelineSourceCon
         PipelineSource::Casync(source) => source.casync.content.as_ref(),
         PipelineSource::Xz(source) => source.content.as_ref(),
         PipelineSource::AndroidSparseImg(source) => source.android_sparseimg.content.as_ref(),
+        PipelineSource::Tar(source) => source.tar.content.as_ref(),
         PipelineSource::Mbr(source) => source.mbr.content.as_ref(),
         PipelineSource::Gpt(source) => source.gpt.content.as_ref(),
     }
@@ -964,6 +1024,9 @@ pub(super) fn hydrate_pipeline_file_content(
         PipelineSource::AndroidSparseImg(source) => {
             hydrate_pipeline_file_content(source.android_sparseimg.source.as_mut(), cache)
         }
+        PipelineSource::Tar(source) => {
+            hydrate_pipeline_file_content(source.tar.source.as_mut(), cache)
+        }
         PipelineSource::Mbr(source) => {
             hydrate_pipeline_file_content(source.mbr.source.as_mut(), cache)
         }
@@ -993,6 +1056,11 @@ fn artifact_source_cache_key(source: &BootProfileArtifactSource) -> Result<Strin
         BootProfileArtifactSource::AndroidSparseImg(source) => Ok(format!(
             "android_sparseimg:{}",
             artifact_source_cache_key(source.android_sparseimg.source.as_ref())?
+        )),
+        BootProfileArtifactSource::Tar(source) => Ok(format!(
+            "tar:entry={}:{}",
+            source.tar.entry,
+            artifact_source_cache_key(source.tar.source.as_ref())?
         )),
         BootProfileArtifactSource::Mbr(source) => {
             let selector = if let Some(partuuid) = source.mbr.partuuid.as_deref() {
@@ -2574,6 +2642,9 @@ rootfs:
             }
             BootProfileArtifactSource::AndroidSparseImg(source) => {
                 hydrate_test_pipeline_content(source.android_sparseimg.source.as_mut());
+            }
+            BootProfileArtifactSource::Tar(source) => {
+                hydrate_test_pipeline_content(source.tar.source.as_mut());
             }
             BootProfileArtifactSource::Mbr(source) => {
                 hydrate_test_pipeline_content(source.mbr.source.as_mut());

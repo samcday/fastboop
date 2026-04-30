@@ -26,6 +26,7 @@ gibblox-cache = { version = "0.0.2-rc.1" }
 gibblox-cache-store-opfs = { version = "0.0.2-rc.1" }
 gibblox-mbr = { version = "0.0.2-rc.1" }
 gibblox-pipeline = { version = "0.0.2-rc.1", features = ["web"] }
+gibblox-tar = { version = "0.0.2-rc.1" }
 gibblox-xz = { version = "0.0.2-rc.1" }
 gibblox-zip = { version = "0.0.2-rc.1" }
 gibblox-web-file = { version = "0.0.2-rc.1" }
