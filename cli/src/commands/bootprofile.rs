@@ -405,6 +405,55 @@ rootfs:
     }
 
     #[test]
+    fn parses_stage0_kernel_modules_and_inject_mac_yaml() {
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: pmos-fajita
+rootfs:
+  erofs:
+    file: ./images/rootfs.ero
+stage0:
+  kernel_modules:
+    - dwc3
+  inject_mac:
+    bluetooth: qcom,wcn3990-bt
+  devices:
+    oneplus-fajita:
+      stage0:
+        kernel_modules:
+          - gcc-sdm845
+        inject_mac:
+          wifi: qcom,wcn3990-wifi
+"#,
+        )
+        .expect("parse manifest");
+
+        assert_eq!(manifest.stage0.kernel_modules, vec!["dwc3".to_string()]);
+        assert_eq!(
+            manifest
+                .stage0
+                .inject_mac
+                .as_ref()
+                .and_then(|mac| mac.bluetooth.as_deref()),
+            Some("qcom,wcn3990-bt")
+        );
+        let device = manifest
+            .stage0
+            .devices
+            .get("oneplus-fajita")
+            .expect("device override");
+        assert_eq!(device.stage0.kernel_modules, vec!["gcc-sdm845".to_string()]);
+        assert_eq!(
+            device
+                .stage0
+                .inject_mac
+                .as_ref()
+                .and_then(|mac| mac.wifi.as_deref()),
+            Some("qcom,wcn3990-wifi")
+        );
+    }
+
+    #[test]
     fn parses_kernel_and_dtbs_profile_sources() {
         let manifest: BootProfileManifest = serde_yaml::from_str(
             r#"

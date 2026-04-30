@@ -510,7 +510,7 @@ mod tests {
     use fastboop_schema::{
         AndroidBootImage, AndroidKernel, Boot, BootPayload, BootProfile, BootProfileArtifactSource,
         BootProfileArtifactSourceHttpSource, BootProfileRootfs, BootProfileRootfsErofsSource,
-        BootProfileStage0, DeviceProfile, FastbootMatch, KernelEncoding, MatchRule, Stage0,
+        BootProfileStage0, DeviceProfile, FastbootMatch, KernelEncoding, MatchRule,
     };
     use gibblox_pipeline::{
         PipelineContentDigestHint, PipelineHint, PipelineHintEntry, PipelineHints,
@@ -571,10 +571,6 @@ mod tests {
                         cmdline_append: None,
                     },
                 },
-            },
-            stage0: Stage0 {
-                kernel_modules: vec![],
-                inject_mac: None,
             },
         }
     }

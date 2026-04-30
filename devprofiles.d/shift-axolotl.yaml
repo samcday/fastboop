@@ -22,15 +22,3 @@ boot:
 
       kernel:
         encoding: image.gz
-
-stage0:
-  inject_mac:
-    bluetooth: qcom,wcn3990-bt
-    wifi: qcom,wcn3990-wifi
-  kernel_modules:
-    - dwc3
-    - dwc3-qcom-legacy
-    - phy-qcom-qusb2
-    - nvmem_qfprom
-    - gcc-sdm845
-    - qnoc-sdm845

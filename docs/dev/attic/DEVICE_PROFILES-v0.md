@@ -1,6 +1,6 @@
 # DevPro (device profiles) — fastboop v0
 
-This document freezes the **v0 assumptions** for DevPro in fastboop.
+This document records the early **v0 assumptions** for DevPro in fastboop. The active schema now keeps Stage0 construction hints in Boot Profiles.
 
 If you are reading this while implementing code: you are allowed to stop thinking.
 This is the box. Stay inside it.
@@ -44,13 +44,6 @@ boot:
       encoding: image.gz+dtb
 
     cmdline_append: "console=ttyMSM0,115200n8"
-
-stage0:
-  # extra kernel modules that are needed for UDC to come up
-  kernel_modules: [dwc3, phy-qcom-qusb2, nvmem_qfprom]
-  inject_mac:
-    wifi: qcom,wcn3990-wifi
-    bluetooth: qcom,wcn3990-bt
 ```
 
 This is descriptive: it states what the vendor bootloader accepts and how to prove identity. It does not add logic beyond match → probe → fastboot RAM boot.
@@ -128,13 +121,12 @@ Those belong elsewhere.
 
 ## Stage0 MAC injection
 
-Optional `stage0.inject_mac` entries identify target nodes by `compatible` string and inject
-deterministic addresses into the DTB used by stage0:
+Stage0 MAC injection now belongs to Boot Profiles. Optional `stage0.inject_mac` entries there identify target nodes by `compatible` string and inject deterministic addresses into the DTB used by stage0:
 
 - `wifi` writes `local-mac-address` using MSB order
 - `bluetooth` writes `local-bd-address` using LSB order
 
-Both fields are optional; omit `stage0.inject_mac` entirely if no injection is needed.
+Both fields are optional; omit BootProfile `stage0.inject_mac` entirely if no injection is needed.
 
 ---
 

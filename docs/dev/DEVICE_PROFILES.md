@@ -10,7 +10,7 @@ For local authoring and iteration, `fastboop` also loads profiles from:
 - `$XDG_CONFIG_HOME/fastboop/devpro` (or `~/.config/fastboop/devpro`)
 - `/usr/share/fastboop/devpro`
 
-`DevPro`s describe how to locate a particular device in its bootloader state, capture the constraints of that environment, and define [Stage0](STAGE0.md) requirements. There is no distro, installer, or user policy here.
+`DevPro`s describe how to locate a particular device in its bootloader state and capture the constraints of that environment. There is no distro, installer, Stage0 construction, or user policy here.
 
 ## Minimal Shape
 
@@ -39,23 +39,6 @@ boot:
 
       kernel:
         encoding: image.gz
-
-stage0:
-  kernel_modules:
-    # This is the core set for a working UDC.
-    - dwc3
-    - dwc3-qcom
-    - dwc3-qcom-legacy
-    - phy-qcom-qusb2
-    - nvmem_qfprom
-    - i2c-qcom-geni
-    - pinctrl-sdm845
-    - gcc-sdm845
-    - qnoc-sdm845
-
-    # This isn't required for UDC, but needs to load
-    # early to avoid deferred-probe timeouts on arm-smmu.
-    - gpucc-sdm845
 ```
 
 ## Match
@@ -109,10 +92,9 @@ Treat this as a hardware contract, not distro policy:
 - Keep values factual to observed device behavior.
 - Avoid adding logic that belongs in Boot Profiles or stage0 generation.
 
-## Stage0 Hints
+## Stage0 Ownership
 
-`stage0.kernel_modules` lists module requirements needed for reliable gadget/runtime bring-up.
-Keep this list focused: enough for consistent boot/handoff, not a generic module wishlist.
+Stage0 module requirements, DT overlays, MAC injection, and per-image kernel cmdline belong in [Boot Profiles](BOOT_PROFILES.md). These details depend on the image/kernel being booted, so they do not live in DevPro.
 
 As always, keep profiles non-mutating: no write/flash semantics.
 
@@ -126,14 +108,14 @@ Ensure `match` + `probe` match your device. Test with the real device:
 RUST_LOG=trace fastboop detect --device-profile your-device
 ```
 
-Smoke-test payload generation with `fastboop boot` or `fastboop stage0` (if you have a rootfs to test with):
+Smoke-test payload generation with a Boot Profile or explicit `--require-module` hints if the image needs non-base modules for gadget bring-up:
 
 ```
 # generate just the stage0 payload:
-fastboop stage0 --device-profile your-device rootfs.img
+fastboop stage0 --device-profile your-device profile.fbp
 
 # or the entire boot artifact:
-fastboop boot rootfs.img --device-profile your-device --output /tmp/boot.img
+fastboop boot profile.fbp --device-profile your-device --output /tmp/boot.img
 ```
 
 ## Source of Truth

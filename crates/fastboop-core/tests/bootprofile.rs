@@ -8,7 +8,7 @@ use fastboop_core::{
     BootProfileArtifactSourceMbrSource, BootProfileCodecError, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
     BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileRootfsFilesystemSource,
-    BootProfileRootfsOstreeSource, BootProfileStage0, BootProfileValidationError,
+    BootProfileRootfsOstreeSource, BootProfileStage0, BootProfileValidationError, InjectMac,
     decode_boot_profile, decode_boot_profile_prefix, encode_boot_profile,
     resolve_effective_boot_profile_stage0, validate_boot_profile,
 };
@@ -73,12 +73,19 @@ fn rejects_boot_profile_with_invalid_magic() {
 fn resolves_effective_stage0_for_device_override() {
     let profile = sample_profile();
     let resolved = resolve_effective_boot_profile_stage0(&profile, "oneplus-fajita");
-    assert_eq!(resolved.extra_modules, vec!["erofs", "qcom-foo"]);
+    assert_eq!(resolved.kernel_modules, vec!["erofs", "qcom-foo"]);
     assert_eq!(
         resolved.extra_cmdline,
         Some("selinux=0 console=ttyMSM0,115200n8".to_string())
     );
     assert_eq!(resolved.dt_overlays, vec![vec![0xAA], vec![0xBB]]);
+    assert_eq!(
+        resolved.inject_mac,
+        Some(InjectMac {
+            wifi: Some("qcom,wcn3990-wifi-device".to_string()),
+            bluetooth: Some("qcom,wcn3990-bt".to_string()),
+        })
+    );
 }
 
 #[test]
@@ -396,7 +403,11 @@ fn sample_profile() -> BootProfile {
             dt_overlays: vec![vec![0xBB]],
             extra_cmdline: Some("console=ttyMSM0,115200n8".to_string()),
             stage0: BootProfileDeviceStage0 {
-                extra_modules: vec!["qcom-foo".to_string()],
+                kernel_modules: vec!["qcom-foo".to_string()],
+                inject_mac: Some(InjectMac {
+                    wifi: Some("qcom,wcn3990-wifi-device".to_string()),
+                    bluetooth: None,
+                }),
             },
         },
     );
@@ -418,7 +429,11 @@ fn sample_profile() -> BootProfile {
         dt_overlays: vec![vec![0xAA]],
         extra_cmdline: Some("selinux=0".to_string()),
         stage0: BootProfileStage0 {
-            extra_modules: vec!["erofs".to_string()],
+            kernel_modules: vec!["erofs".to_string()],
+            inject_mac: Some(InjectMac {
+                wifi: Some("qcom,wcn3990-wifi".to_string()),
+                bluetooth: Some("qcom,wcn3990-bt".to_string()),
+            }),
             devices,
         },
     }

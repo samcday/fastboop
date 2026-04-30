@@ -33,7 +33,7 @@ rootfs:
       size_bytes: 123456789
 
 stage0:
-  extra_modules:
+  kernel_modules:
     - ff-memless
 ```
 
@@ -79,12 +79,39 @@ dtbs:
             size_bytes: 987654321
 
 extra_cmdline: console=ttyMSM0,115200n8
+
+stage0:
+  kernel_modules:
+    - dwc3
+    - dwc3-qcom
+  inject_mac:
+    bluetooth: qcom,wcn3990-bt
+    wifi: qcom,wcn3990-wifi
+  devices:
+    oneplus-fajita:
+      dt_overlays:
+        - |
+          /dts-v1/;
+          /plugin/;
+          / {
+            fragment@0 {
+              target-path = "/";
+              __overlay__ {
+                fastboop-example;
+              };
+            };
+          };
+      extra_cmdline: clk_ignore_unused
+      stage0:
+        kernel_modules:
+          - gcc-sdm845
 ```
 
 ## Validation Highlights
 
 - `rootfs` schema supports `erofs`, `ext4`, and `fat`.
 - Stage0 lower-root currently accepts `erofs` and `ext4`; use `fat` for kernel/dtbs source pipelines.
+- `stage0.kernel_modules` and `stage0.inject_mac` may be global or scoped under `stage0.devices.<device-profile-id>.stage0`; device-specific values append modules and override MAC injection fields.
 - Artifact pipeline validation/limits come from `gibblox-pipeline` (`MAX_PIPELINE_DEPTH=16`).
 - Terminal stages (`http`, `casync`, `file`) must include `content` metadata (`digest`, `size_bytes`). `bootprofile create` auto-populates `content` for bare local `file` sources by hashing the referenced path, so hand-authored manifests pointing at `pmbootstrap export` output (or any other local artifact) can omit it.
 - Wrapper stages (`xz`, `android_sparseimg`, `mbr`, `gpt`) may include optional `content` metadata.

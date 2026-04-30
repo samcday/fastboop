@@ -20,6 +20,3 @@ boot:
 
       kernel:
         encoding: image.gz+dtb
-
-stage0:
-  kernel_modules: []

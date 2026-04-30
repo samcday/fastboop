@@ -12,7 +12,7 @@ use crate::{
     BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileRootfsFilesystemSource,
     BootProfileRootfsOstreeSource, BootProfileStage0, DeviceProfile, ExistsFlag, FastbootGetvarEq,
     FastbootGetvarExists, FastbootGetvarNotEq, FastbootGetvarNotExists, FastbootGetvarStartsWith,
-    InjectMac, MatchRule, NotExistsFlag, ProbeStep, Stage0,
+    InjectMac, MatchRule, NotExistsFlag, ProbeStep,
 };
 
 // v0 wire formats are intentionally unstable while fastboop is unreleased.
@@ -68,7 +68,8 @@ pub enum BootProfileRootfsFilesystemBin {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BootProfileStage0Bin {
-    pub extra_modules: Vec<String>,
+    pub kernel_modules: Vec<String>,
+    pub inject_mac: Option<InjectMacBin>,
     pub devices: BTreeMap<String, BootProfileDeviceBin>,
 }
 
@@ -81,7 +82,8 @@ pub struct BootProfileDeviceBin {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BootProfileDeviceStage0Bin {
-    pub extra_modules: Vec<String>,
+    pub kernel_modules: Vec<String>,
+    pub inject_mac: Option<InjectMacBin>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -92,7 +94,6 @@ pub struct DeviceProfileBin {
     pub r#match: Vec<MatchRule>,
     pub probe: Vec<ProbeStepBin>,
     pub boot: Boot,
-    pub stage0: Stage0Bin,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -102,12 +103,6 @@ pub enum ProbeStepBin {
     FastbootGetvarNotEq { name: String, not_equals: String },
     FastbootGetvarExists { name: String },
     FastbootGetvarNotExists { name: String },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Stage0Bin {
-    pub kernel_modules: Vec<String>,
-    pub inject_mac: Option<InjectMacBin>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -125,7 +120,6 @@ impl From<DeviceProfile> for DeviceProfileBin {
             r#match: profile.r#match,
             probe: profile.probe.into_iter().map(ProbeStepBin::from).collect(),
             boot: profile.boot,
-            stage0: Stage0Bin::from(profile.stage0),
         }
     }
 }
@@ -139,7 +133,6 @@ impl From<DeviceProfileBin> for DeviceProfile {
             r#match: profile.r#match,
             probe: profile.probe.into_iter().map(ProbeStep::from).collect(),
             boot: profile.boot,
-            stage0: Stage0::from(profile.stage0),
         }
     }
 }
@@ -190,24 +183,6 @@ impl From<ProbeStepBin> for ProbeStep {
                     not_exists: Some(NotExistsFlag),
                 })
             }
-        }
-    }
-}
-
-impl From<Stage0> for Stage0Bin {
-    fn from(stage0: Stage0) -> Self {
-        Self {
-            kernel_modules: stage0.kernel_modules,
-            inject_mac: stage0.inject_mac.map(InjectMacBin::from),
-        }
-    }
-}
-
-impl From<Stage0Bin> for Stage0 {
-    fn from(stage0: Stage0Bin) -> Self {
-        Self {
-            kernel_modules: stage0.kernel_modules,
-            inject_mac: stage0.inject_mac.map(InjectMac::from),
         }
     }
 }
@@ -365,7 +340,8 @@ impl From<BootProfileRootfsFilesystemBin> for BootProfileRootfsFilesystemSource 
 impl From<BootProfileStage0> for BootProfileStage0Bin {
     fn from(stage0: BootProfileStage0) -> Self {
         Self {
-            extra_modules: stage0.extra_modules,
+            kernel_modules: stage0.kernel_modules,
+            inject_mac: stage0.inject_mac.map(InjectMacBin::from),
             devices: stage0
                 .devices
                 .into_iter()
@@ -378,7 +354,8 @@ impl From<BootProfileStage0> for BootProfileStage0Bin {
 impl From<BootProfileStage0Bin> for BootProfileStage0 {
     fn from(stage0: BootProfileStage0Bin) -> Self {
         Self {
-            extra_modules: stage0.extra_modules,
+            kernel_modules: stage0.kernel_modules,
+            inject_mac: stage0.inject_mac.map(InjectMac::from),
             devices: stage0
                 .devices
                 .into_iter()
@@ -411,7 +388,8 @@ impl From<BootProfileDeviceBin> for BootProfileDevice {
 impl From<BootProfileDeviceStage0> for BootProfileDeviceStage0Bin {
     fn from(stage0: BootProfileDeviceStage0) -> Self {
         Self {
-            extra_modules: stage0.extra_modules,
+            kernel_modules: stage0.kernel_modules,
+            inject_mac: stage0.inject_mac.map(InjectMacBin::from),
         }
     }
 }
@@ -419,7 +397,8 @@ impl From<BootProfileDeviceStage0> for BootProfileDeviceStage0Bin {
 impl From<BootProfileDeviceStage0Bin> for BootProfileDeviceStage0 {
     fn from(stage0: BootProfileDeviceStage0Bin) -> Self {
         Self {
-            extra_modules: stage0.extra_modules,
+            kernel_modules: stage0.kernel_modules,
+            inject_mac: stage0.inject_mac.map(InjectMac::from),
         }
     }
 }

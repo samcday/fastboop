@@ -9,7 +9,7 @@ At a high level, fastboop:
 1. Detects devices in supported vendor boot modes (currently fastboot flow in v0).
 2. Matches/probes them using DevPro (`docs/dev/DEVICE_PROFILES.md`).
 3. Consumes an unmodified rootfs artifact.
-4. Synthesizes stage0 (`/init`) with required kernel/modules glue.
+4. Synthesizes stage0 (`/init`) with BootProfile/CLI-provided kernel/module glue.
 5. Boots ephemerally into RAM via vendor bootloader.
 
 No flashing, no slot changes, no persistent writes.
@@ -37,6 +37,7 @@ If gadget runtime fails before handoff, stage0 fails loudly.
 ## DevPro and boot constraints
 
 - DevPro describes how to safely boot a device, not distro policy.
+- BootProfile describes image-specific stage0 requirements such as kernel modules and MAC injection.
 - Probe commands are read-only.
 - Non-mutating invariant is hard: no flash/erase/format/set_active/oem/unlock flows.
 - v0 supports one boot mechanism per profile.

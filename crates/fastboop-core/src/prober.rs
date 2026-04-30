@@ -120,7 +120,7 @@ mod tests {
     use crate::devpro::{
         AndroidBootImage, AndroidInitrd, AndroidKernel, Boot, BootLimits, BootPayload,
         DeviceProfile, FastbootGetvarEq, FastbootGetvarStartsWith, FastbootMatch, KernelEncoding,
-        MatchRule, ProbeStep, Stage0,
+        MatchRule, ProbeStep,
     };
     use crate::fastboot::{FastbootWire, Response};
     use alloc::collections::BTreeMap;
@@ -252,10 +252,6 @@ mod tests {
                         cmdline_append: None,
                     },
                 },
-            },
-            stage0: Stage0 {
-                kernel_modules: Vec::new(),
-                inject_mac: None,
             },
         }
     }
