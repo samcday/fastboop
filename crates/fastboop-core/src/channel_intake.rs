@@ -1512,6 +1512,9 @@ fn collect_boot_profile_pipeline_identities_from_source(
                 out,
             );
         }
+        BootProfileArtifactSource::Tar(source) => {
+            collect_boot_profile_pipeline_identities_from_source(source.tar.source.as_ref(), out);
+        }
         BootProfileArtifactSource::Mbr(source) => {
             collect_boot_profile_pipeline_identities_from_source(source.mbr.source.as_ref(), out);
         }

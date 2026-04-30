@@ -18,7 +18,9 @@ gibblox-core = { version = "0.0.2-rc.1", features = ["std"] }
 gibblox-file = { version = "0.0.2-rc.1" }
 gibblox-http = { version = "0.0.2-rc.1", default-features = false, features = ["native-client"] }
 gibblox-mbr = { version = "0.0.2-rc.1", features = ["std"] }
+gibblox-optimizer = { version = "0.0.2-rc.1" }
 gibblox-pipeline = { version = "0.0.2-rc.1", features = ["std"] }
+gibblox-tar = { version = "0.0.2-rc.1", features = ["std"] }
 gibblox-xz = { version = "0.0.2-rc.1", features = ["std"] }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true, default-features = true }

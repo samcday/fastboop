@@ -27,6 +27,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
+real_cargo="$(command -v cargo)"
+
 config_path="${temp_dir}/config.local.toml"
 {
   echo "[patch.crates-io]"
@@ -47,6 +49,15 @@ export FASTBOOP_STAGE0_CARGO="${repo_root}/tools/cargo-local.sh"
 # Pre-resolve workspace metadata with the local overlay before dx starts
 # watching the tree, so Cargo.lock churn doesn't immediately trigger a rebuild.
 "${repo_root}/tools/cargo-local.sh" metadata --format-version=1 --no-deps >/dev/null
+
+wrapper_dir="${temp_dir}/bin"
+mkdir -p "${wrapper_dir}"
+cat > "${wrapper_dir}/cargo" <<EOF
+#!/usr/bin/env bash
+exec "${real_cargo}" --config "${config_path}" "\$@"
+EOF
+chmod +x "${wrapper_dir}/cargo"
+export PATH="${wrapper_dir}:${PATH}"
 
 dx_args=("$@")
 

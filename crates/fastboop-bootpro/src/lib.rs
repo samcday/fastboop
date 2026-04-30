@@ -13,7 +13,7 @@ use fastboop_core::{
     BootProfile, BootProfileArtifactSource, BootProfileManifest, encode_boot_profile,
     encode_channel_pipeline_hints_record, validate_boot_profile,
 };
-use gibblox_android_sparse::{AndroidSparseBlockReader, AndroidSparseImageIndex};
+use gibblox_android_sparse::AndroidSparseBlockReader;
 use gibblox_cache::CachedBlockReader;
 use gibblox_cache_store_std::StdCacheOps;
 use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
@@ -28,11 +28,12 @@ use gibblox_core::{
 use gibblox_file::FileReader;
 use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
+use gibblox_optimizer::{PipelineOptimizeOptions, optimize_pipeline_hints};
 use gibblox_pipeline::{
-    PipelineAndroidSparseChunkIndexHint, PipelineAndroidSparseIndexHint, PipelineContentDigestHint,
-    PipelineHint, PipelineHintEntry, PipelineHints, PipelineSource, PipelineSourceContent,
-    pipeline_identity_string,
+    PipelineContentDigestHint, PipelineHint, PipelineHintEntry, PipelineHints, PipelineSource,
+    PipelineSourceContent, PipelineSourceFileSource, pipeline_identity_string,
 };
+use gibblox_tar::TarEntryByteReader;
 use gibblox_xz::XzBlockReader;
 use sha2::{Digest, Sha512};
 use tracing::info;
@@ -137,6 +138,9 @@ fn hydrate_pipeline_file_content(
         PipelineSource::AndroidSparseImg(source) => {
             hydrate_pipeline_file_content(source.android_sparseimg.source.as_mut(), cache)
         }
+        PipelineSource::Tar(source) => {
+            hydrate_pipeline_file_content(source.tar.source.as_mut(), cache)
+        }
         PipelineSource::Mbr(source) => {
             hydrate_pipeline_file_content(source.mbr.source.as_mut(), cache)
         }
@@ -166,6 +170,13 @@ async fn collect_profile_pipeline_hints(
     )
     .await
     .context("materializing rootfs pipeline hints")?;
+    collect_generic_pipeline_hints_from_artifact_source(
+        profile.rootfs.source(),
+        resolver,
+        &mut entries,
+    )
+    .await
+    .context("materializing rootfs generic pipeline hints")?;
 
     if let Some(kernel) = profile.kernel.as_ref() {
         collect_pipeline_hints_from_artifact_source(
@@ -178,6 +189,13 @@ async fn collect_profile_pipeline_hints(
         )
         .await
         .context("materializing kernel pipeline hints")?;
+        collect_generic_pipeline_hints_from_artifact_source(
+            kernel.artifact_source(),
+            resolver,
+            &mut entries,
+        )
+        .await
+        .context("materializing kernel generic pipeline hints")?;
     }
 
     if let Some(dtbs) = profile.dtbs.as_ref() {
@@ -191,11 +209,175 @@ async fn collect_profile_pipeline_hints(
         )
         .await
         .context("materializing dtbs pipeline hints")?;
+        collect_generic_pipeline_hints_from_artifact_source(
+            dtbs.artifact_source(),
+            resolver,
+            &mut entries,
+        )
+        .await
+        .context("materializing dtbs generic pipeline hints")?;
     }
 
     Ok(PipelineHints {
         entries: entries.into_values().collect(),
     })
+}
+
+async fn collect_generic_pipeline_hints_from_artifact_source(
+    source: &BootProfileArtifactSource,
+    resolver: &ArtifactReaderResolver,
+    entries: &mut BTreeMap<String, PipelineHintEntry>,
+) -> Result<()> {
+    let optimizer_source = optimizer_source_with_local_artifacts(source, resolver)?;
+    let mut identity_map = BTreeMap::new();
+    collect_optimizer_identity_map(source, &optimizer_source, &mut identity_map);
+    let hints = optimize_pipeline_hints(
+        &optimizer_source,
+        &PipelineOptimizeOptions {
+            image_block_size: DEFAULT_IMAGE_BLOCK_SIZE,
+            ..PipelineOptimizeOptions::default()
+        },
+    )
+    .await?;
+
+    for mut entry in hints.entries {
+        if let Some(original_identity) = identity_map.get(&entry.pipeline_identity).cloned() {
+            entry.pipeline_identity = original_identity;
+        }
+        let pipeline_identity = entry.pipeline_identity;
+        for hint in entry.hints {
+            insert_pipeline_hint(entries, pipeline_identity.clone(), hint);
+        }
+    }
+    Ok(())
+}
+
+fn optimizer_source_with_local_artifacts(
+    source: &PipelineSource,
+    resolver: &ArtifactReaderResolver,
+) -> Result<PipelineSource> {
+    if let Some(local_path) = resolver.match_local_artifact(source)? {
+        return Ok(PipelineSource::File(PipelineSourceFileSource {
+            file: local_path.to_string_lossy().into_owned(),
+            content: artifact_source_content(source).cloned(),
+        }));
+    }
+
+    Ok(match source {
+        PipelineSource::Http(_) | PipelineSource::File(_) | PipelineSource::Casync(_) => {
+            source.clone()
+        }
+        PipelineSource::Xz(source) => {
+            PipelineSource::Xz(gibblox_pipeline::PipelineSourceXzSource {
+                xz: Box::new(optimizer_source_with_local_artifacts(
+                    source.xz.as_ref(),
+                    resolver,
+                )?),
+                content: source.content.clone(),
+            })
+        }
+        PipelineSource::AndroidSparseImg(source) => PipelineSource::AndroidSparseImg(
+            gibblox_pipeline::PipelineSourceAndroidSparseImgSource {
+                android_sparseimg: gibblox_pipeline::PipelineSourceAndroidSparseImg {
+                    source: Box::new(optimizer_source_with_local_artifacts(
+                        source.android_sparseimg.source.as_ref(),
+                        resolver,
+                    )?),
+                    content: source.android_sparseimg.content.clone(),
+                },
+            },
+        ),
+        PipelineSource::Tar(source) => {
+            PipelineSource::Tar(gibblox_pipeline::PipelineSourceTarSource {
+                tar: gibblox_pipeline::PipelineSourceTar {
+                    entry: source.tar.entry.clone(),
+                    source: Box::new(optimizer_source_with_local_artifacts(
+                        source.tar.source.as_ref(),
+                        resolver,
+                    )?),
+                    content: source.tar.content.clone(),
+                },
+            })
+        }
+        PipelineSource::Mbr(source) => {
+            PipelineSource::Mbr(gibblox_pipeline::PipelineSourceMbrSource {
+                mbr: gibblox_pipeline::PipelineSourceMbr {
+                    partuuid: source.mbr.partuuid.clone(),
+                    index: source.mbr.index,
+                    lba_size: source.mbr.lba_size,
+                    source: Box::new(optimizer_source_with_local_artifacts(
+                        source.mbr.source.as_ref(),
+                        resolver,
+                    )?),
+                    content: source.mbr.content.clone(),
+                },
+            })
+        }
+        PipelineSource::Gpt(source) => {
+            PipelineSource::Gpt(gibblox_pipeline::PipelineSourceGptSource {
+                gpt: gibblox_pipeline::PipelineSourceGpt {
+                    partlabel: source.gpt.partlabel.clone(),
+                    partuuid: source.gpt.partuuid.clone(),
+                    index: source.gpt.index,
+                    lba_size: source.gpt.lba_size,
+                    source: Box::new(optimizer_source_with_local_artifacts(
+                        source.gpt.source.as_ref(),
+                        resolver,
+                    )?),
+                    content: source.gpt.content.clone(),
+                },
+            })
+        }
+    })
+}
+
+fn collect_optimizer_identity_map(
+    original: &PipelineSource,
+    optimizer_source: &PipelineSource,
+    out: &mut BTreeMap<String, String>,
+) {
+    out.insert(
+        pipeline_identity_string(optimizer_source),
+        pipeline_identity_string(original),
+    );
+
+    match (original, optimizer_source) {
+        (PipelineSource::Xz(original), PipelineSource::Xz(optimizer_source)) => {
+            collect_optimizer_identity_map(original.xz.as_ref(), optimizer_source.xz.as_ref(), out);
+        }
+        (
+            PipelineSource::AndroidSparseImg(original),
+            PipelineSource::AndroidSparseImg(optimizer_source),
+        ) => {
+            collect_optimizer_identity_map(
+                original.android_sparseimg.source.as_ref(),
+                optimizer_source.android_sparseimg.source.as_ref(),
+                out,
+            );
+        }
+        (PipelineSource::Tar(original), PipelineSource::Tar(optimizer_source)) => {
+            collect_optimizer_identity_map(
+                original.tar.source.as_ref(),
+                optimizer_source.tar.source.as_ref(),
+                out,
+            );
+        }
+        (PipelineSource::Mbr(original), PipelineSource::Mbr(optimizer_source)) => {
+            collect_optimizer_identity_map(
+                original.mbr.source.as_ref(),
+                optimizer_source.mbr.source.as_ref(),
+                out,
+            );
+        }
+        (PipelineSource::Gpt(original), PipelineSource::Gpt(optimizer_source)) => {
+            collect_optimizer_identity_map(
+                original.gpt.source.as_ref(),
+                optimizer_source.gpt.source.as_ref(),
+                out,
+            );
+        }
+        _ => {}
+    }
 }
 
 fn collect_pipeline_hints_from_artifact_source<'a>(
@@ -272,11 +454,6 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                     let reader = AndroidSparseBlockReader::new(upstream)
                         .await
                         .map_err(|err| anyhow!("open android sparse reader: {err}"))?;
-                    let index = reader
-                        .materialize_index()
-                        .await
-                        .map_err(|err| anyhow!("materialize android sparse index: {err}"))?;
-                    insert_android_sparse_hint(entries, pipeline_identity.clone(), index);
 
                     let reader: Arc<dyn BlockReader> = Arc::new(reader);
                     let materialized = digest_and_materialize_reader_content(
@@ -300,6 +477,38 @@ fn collect_pipeline_hints_from_artifact_source<'a>(
                 };
 
                 if android_sparse_source.android_sparseimg.content.is_none() {
+                    insert_pipeline_hint(
+                        entries,
+                        pipeline_identity,
+                        PipelineHint::ContentDigest(digest_hint),
+                    );
+                }
+                Ok(())
+            }
+            BootProfileArtifactSource::Tar(source) => {
+                let tar_source = source.clone();
+                collect_pipeline_hints_from_artifact_source(
+                    source.tar.source.as_ref(),
+                    resolver,
+                    entries,
+                    visited_wrappers,
+                    digest_cache,
+                    materialized_cache,
+                )
+                .await?;
+
+                let source = BootProfileArtifactSource::Tar(tar_source.clone());
+                let pipeline_identity = pipeline_identity_string(&source);
+                let digest_hint = ensure_wrapper_materialized(
+                    &source,
+                    pipeline_identity.as_str(),
+                    resolver,
+                    visited_wrappers,
+                    digest_cache,
+                    materialized_cache,
+                )
+                .await?;
+                if tar_source.tar.content.is_none() {
                     insert_pipeline_hint(
                         entries,
                         pipeline_identity,
@@ -425,42 +634,6 @@ async fn load_content_digest_hint(
     Ok(hint)
 }
 
-fn insert_android_sparse_hint(
-    entries: &mut BTreeMap<String, PipelineHintEntry>,
-    pipeline_identity: String,
-    index: AndroidSparseImageIndex,
-) {
-    insert_pipeline_hint(
-        entries,
-        pipeline_identity,
-        PipelineHint::AndroidSparseIndex(PipelineAndroidSparseIndexHint {
-            file_hdr_sz: index.file_hdr_sz,
-            chunk_hdr_sz: index.chunk_hdr_sz,
-            blk_sz: index.blk_sz,
-            total_blks: index.total_blks,
-            total_chunks: index.total_chunks,
-            image_checksum: index.image_checksum,
-            chunks: index
-                .chunks
-                .into_iter()
-                .map(|chunk| PipelineAndroidSparseChunkIndexHint {
-                    chunk_index: chunk.chunk_index,
-                    chunk_type: chunk.chunk_type,
-                    chunk_sz: chunk.chunk_sz,
-                    total_sz: chunk.total_sz,
-                    chunk_offset: chunk.chunk_offset,
-                    payload_offset: chunk.payload_offset,
-                    payload_size: chunk.payload_size,
-                    output_start: chunk.output_start,
-                    output_end: chunk.output_end,
-                    fill_pattern: chunk.fill_pattern,
-                    crc32: chunk.crc32,
-                })
-                .collect(),
-        }),
-    )
-}
-
 fn insert_pipeline_hint(
     entries: &mut BTreeMap<String, PipelineHintEntry>,
     pipeline_identity: String,
@@ -484,6 +657,7 @@ fn insert_pipeline_hint(
 fn hint_discriminant(hint: &PipelineHint) -> &'static str {
     match hint {
         PipelineHint::AndroidSparseIndex(_) => "android-sparse-index",
+        PipelineHint::TarEntryIndex(_) => "tar-entry-index",
         PipelineHint::ContentDigest(_) => "content-digest",
     }
 }
@@ -606,6 +780,21 @@ impl ArtifactReaderResolver {
                         .map_err(|err| anyhow!("open android sparse reader: {err}"))?;
                     Arc::new(reader)
                 }
+                BootProfileArtifactSource::Tar(source) => {
+                    let upstream = self
+                        .open_artifact_source(source.tar.source.as_ref())
+                        .await?;
+                    let upstream = AlignedByteReader::new(upstream)
+                        .await
+                        .map_err(|err| anyhow!("open aligned byte view for tar source: {err}"))?;
+                    let reader =
+                        TarEntryByteReader::new(source.tar.entry.as_str(), Arc::new(upstream))
+                            .await
+                            .map_err(|err| anyhow!("open tar entry reader: {err}"))?;
+                    let reader = BlockByteReader::new(reader, DEFAULT_IMAGE_BLOCK_SIZE)
+                        .map_err(|err| anyhow!("open tar entry block view: {err}"))?;
+                    Arc::new(reader)
+                }
                 BootProfileArtifactSource::Mbr(source) => {
                     let selector = if let Some(partuuid) = source.mbr.partuuid.as_deref() {
                         MbrPartitionSelector::part_uuid(partuuid)
@@ -666,6 +855,7 @@ fn artifact_source_content(source: &PipelineSource) -> Option<&PipelineSourceCon
         PipelineSource::Casync(source) => source.casync.content.as_ref(),
         PipelineSource::Xz(source) => source.content.as_ref(),
         PipelineSource::AndroidSparseImg(source) => source.android_sparseimg.content.as_ref(),
+        PipelineSource::Tar(source) => source.tar.content.as_ref(),
         PipelineSource::Mbr(source) => source.mbr.content.as_ref(),
         PipelineSource::Gpt(source) => source.gpt.content.as_ref(),
     }
@@ -691,6 +881,11 @@ fn artifact_source_cache_key(source: &BootProfileArtifactSource) -> Result<Strin
         BootProfileArtifactSource::AndroidSparseImg(source) => Ok(format!(
             "android_sparseimg:{}",
             artifact_source_cache_key(source.android_sparseimg.source.as_ref())?
+        )),
+        BootProfileArtifactSource::Tar(source) => Ok(format!(
+            "tar:entry={}:{}",
+            source.tar.entry,
+            artifact_source_cache_key(source.tar.source.as_ref())?
         )),
         BootProfileArtifactSource::Mbr(source) => {
             let selector = if let Some(partuuid) = source.mbr.partuuid.as_deref() {

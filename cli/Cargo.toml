@@ -47,8 +47,10 @@ gibblox-file = { version = "0.0.2-rc.1" }
 gibblox-http = { version = "0.0.2-rc.1", default-features = false, features = ["native-client"] }
 gibblox-cache = { version = "0.0.2-rc.1" }
 gibblox-cache-store-std = { version = "0.0.2-rc.1" }
+gibblox-optimizer = { version = "0.0.2-rc.1" }
 gibblox-pipeline = { version = "0.0.2-rc.1", features = ["std"] }
 gibblox-android-sparse = { version = "0.0.2-rc.1", features = ["std"] }
+gibblox-tar = { version = "0.0.2-rc.1", features = ["std"] }
 gibblox-xz = { version = "0.0.2-rc.1", features = ["std"] }
 gibblox-zip = { version = "0.0.2-rc.1", features = ["std"] }
 gobblytes-core = { version = "0.0.2-rc.1" }
