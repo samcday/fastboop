@@ -28,6 +28,7 @@ use schemars::JsonSchema;
 /// DevPro v0 schema root.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct DeviceProfile {
     pub id: String,
     pub display_name: Option<String>,
@@ -35,7 +36,6 @@ pub struct DeviceProfile {
     pub r#match: Vec<MatchRule>,
     pub probe: Vec<ProbeStep>,
     pub boot: Boot,
-    pub stage0: Stage0,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -131,16 +131,7 @@ pub struct BootPayload {
     pub android_bootimg: AndroidBootImage,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-pub struct Stage0 {
-    #[serde(default)]
-    pub kernel_modules: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inject_mac: Option<InjectMac>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct InjectMac {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -289,7 +280,8 @@ impl BootProfileManifest {
                     dt_overlays: device_overlays,
                     extra_cmdline: device.extra_cmdline.clone(),
                     stage0: BootProfileDeviceStage0 {
-                        extra_modules: device.stage0.extra_modules.clone(),
+                        kernel_modules: device.stage0.kernel_modules.clone(),
+                        inject_mac: device.stage0.inject_mac.clone(),
                     },
                 },
             );
@@ -304,7 +296,8 @@ impl BootProfileManifest {
             dt_overlays,
             extra_cmdline: self.extra_cmdline.clone(),
             stage0: BootProfileStage0 {
-                extra_modules: self.stage0.extra_modules.clone(),
+                kernel_modules: self.stage0.kernel_modules.clone(),
+                inject_mac: self.stage0.inject_mac.clone(),
                 devices,
             },
         })
@@ -316,14 +309,16 @@ impl BootProfileManifest {
 #[serde(deny_unknown_fields)]
 pub struct BootProfileManifestStage0 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extra_modules: Vec<String>,
+    pub kernel_modules: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inject_mac: Option<InjectMac>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub devices: BTreeMap<String, BootProfileManifestDevice>,
 }
 
 impl BootProfileManifestStage0 {
     pub fn is_empty(&self) -> bool {
-        self.extra_modules.is_empty() && self.devices.is_empty()
+        self.kernel_modules.is_empty() && self.inject_mac.is_none() && self.devices.is_empty()
     }
 }
 
@@ -347,12 +342,14 @@ pub struct BootProfileManifestDevice {
 #[serde(deny_unknown_fields)]
 pub struct BootProfileManifestDeviceStage0 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extra_modules: Vec<String>,
+    pub kernel_modules: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inject_mac: Option<InjectMac>,
 }
 
 impl BootProfileManifestDeviceStage0 {
     pub fn is_empty(&self) -> bool {
-        self.extra_modules.is_empty()
+        self.kernel_modules.is_empty() && self.inject_mac.is_none()
     }
 }
 
@@ -399,7 +396,8 @@ impl BootProfile {
                     dt_overlays: device_overlays,
                     extra_cmdline: device.extra_cmdline.clone(),
                     stage0: BootProfileManifestDeviceStage0 {
-                        extra_modules: device.stage0.extra_modules.clone(),
+                        kernel_modules: device.stage0.kernel_modules.clone(),
+                        inject_mac: device.stage0.inject_mac.clone(),
                     },
                 },
             );
@@ -414,7 +412,8 @@ impl BootProfile {
             dt_overlays,
             extra_cmdline: self.extra_cmdline.clone(),
             stage0: BootProfileManifestStage0 {
-                extra_modules: self.stage0.extra_modules.clone(),
+                kernel_modules: self.stage0.kernel_modules.clone(),
+                inject_mac: self.stage0.inject_mac.clone(),
                 devices,
             },
         })
@@ -426,14 +425,16 @@ impl BootProfile {
 #[serde(deny_unknown_fields)]
 pub struct BootProfileStage0 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extra_modules: Vec<String>,
+    pub kernel_modules: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inject_mac: Option<InjectMac>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub devices: BTreeMap<String, BootProfileDevice>,
 }
 
 impl BootProfileStage0 {
     pub fn is_empty(&self) -> bool {
-        self.extra_modules.is_empty() && self.devices.is_empty()
+        self.kernel_modules.is_empty() && self.inject_mac.is_none() && self.devices.is_empty()
     }
 }
 
@@ -454,12 +455,14 @@ pub struct BootProfileDevice {
 #[serde(deny_unknown_fields)]
 pub struct BootProfileDeviceStage0 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extra_modules: Vec<String>,
+    pub kernel_modules: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inject_mac: Option<InjectMac>,
 }
 
 impl BootProfileDeviceStage0 {
     pub fn is_empty(&self) -> bool {
-        self.extra_modules.is_empty()
+        self.kernel_modules.is_empty() && self.inject_mac.is_none()
     }
 }
 

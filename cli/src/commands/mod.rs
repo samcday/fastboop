@@ -2112,7 +2112,6 @@ boot:
       page_size: 4096
       kernel:
         encoding: image
-stage0: {}
 "#,
         );
 
@@ -2154,7 +2153,6 @@ boot:
       page_size: 4096
       kernel:
         encoding: image
-stage0: {}
 "#,
         );
 
@@ -2253,7 +2251,6 @@ boot:
       page_size: 4096
       kernel:
         encoding: image
-stage0: {}
 "#,
         );
         let first = compile_boot_profile(

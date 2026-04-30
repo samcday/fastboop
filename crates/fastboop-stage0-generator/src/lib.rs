@@ -43,7 +43,8 @@ pub enum Stage0Error {
 
 pub struct Stage0Options {
     pub switchroot_fs: Stage0SwitchrootFs,
-    pub extra_modules: Vec<String>,
+    pub kernel_modules: Vec<String>,
+    pub inject_mac: Option<InjectMac>,
     pub kernel_override: Option<Stage0KernelOverride>,
     pub dtb_override: Option<Vec<u8>>,
     pub dtbo_overlays: Vec<Vec<u8>>,
@@ -113,8 +114,7 @@ pub async fn build_stage0<P: Filesystem>(
     tracing::debug!(
         needs_modules,
         switchroot_fs = opts.switchroot_fs.as_stage0_value(),
-        profile_module_count = profile.stage0.kernel_modules.len(),
-        extra_module_count = opts.extra_modules.len(),
+        kernel_module_count = opts.kernel_modules.len(),
         dtb_override = opts.dtb_override.is_some(),
         "build_stage0: collecting rootfs artifacts"
     );
@@ -207,10 +207,10 @@ pub async fn build_stage0<P: Filesystem>(
 
     let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
     let dtb_bytes = apply_dtbo_overlays(&dtb_bytes, &opts.dtbo_overlays)?;
-    let dtb_bytes = apply_mac_injection(&dtb_bytes, &profile.stage0.inject_mac)?;
+    let dtb_bytes = apply_mac_injection(&dtb_bytes, &opts.inject_mac)?;
     let _dtb = Fdt::new(&dtb_bytes).map_err(|_| Stage0Error::ParseError("dtb"))?;
 
-    let required_modules = collect_required_modules(profile, opts, &modules_dep);
+    let required_modules = collect_required_modules(opts, &modules_dep);
     tracing::debug!(
         required_module_count = required_modules.len(),
         builtin_module_count = modules_builtin.len(),
@@ -1324,11 +1324,7 @@ mod tests {
     }
 }
 
-fn collect_required_modules(
-    profile: &DeviceProfile,
-    opts: &Stage0Options,
-    modules_dep: &ModulesDep,
-) -> Vec<String> {
+fn collect_required_modules(opts: &Stage0Options, modules_dep: &ModulesDep) -> Vec<String> {
     let mut required = Vec::new();
     let mut required_set = BTreeSet::new();
     for m in BASE_REQUIRED_MODULES {
@@ -1339,10 +1335,7 @@ fn collect_required_modules(
         &mut required_set,
         opts.switchroot_fs.module_name(),
     );
-    for m in &profile.stage0.kernel_modules {
-        push_module_unique(&mut required, &mut required_set, m);
-    }
-    for m in &opts.extra_modules {
+    for m in &opts.kernel_modules {
         push_module_unique(&mut required, &mut required_set, m);
     }
     if opts.enable_serial {

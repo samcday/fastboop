@@ -27,8 +27,8 @@ If gadget startup or handoff fails, stage0 fails loudly.
 
 ## Inputs
 
-- Device Profile (`stage0.kernel_modules`, `stage0.inject_mac`)
-- Boot Profile stage0 additions (extra modules, overlays, per-device cmdline)
+- Device Profile (device identity and bootloader payload constraints)
+- Boot Profile stage0 settings (kernel modules, MAC injection, overlays, per-device cmdline)
 - CLI overrides (`--dtb`, `--dtbo`, `--require-module`, `--cmdline-append`, `--serial`)
 - Rootfs artifact source (direct image or compiled Boot Profile)
 

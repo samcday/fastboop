@@ -278,7 +278,6 @@ boot:
       page_size: 4096
       kernel:
         encoding: image
-stage0: {}
 probe: []
 "#;
 
@@ -319,7 +318,6 @@ boot:
       page_size: 4096
       kernel:
         encoding: image
-stage0: {}
 "#;
 
         let profile: DeviceProfile = serde_yaml::from_str(yaml).expect("parse device profile");
@@ -333,6 +331,26 @@ stage0: {}
             }
             other => panic!("unexpected probe step: {other:?}"),
         }
+    }
+
+    #[test]
+    fn rejects_stage0_in_device_profile_yaml() {
+        let yaml = r#"
+id: dev-one
+devicetree_name: oneplus,enchilada
+match: []
+probe: []
+boot:
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 4096
+      kernel:
+        encoding: image
+stage0: {}
+"#;
+
+        serde_yaml::from_str::<DeviceProfile>(yaml).expect_err("stage0 belongs in boot profiles");
     }
 
     #[test]

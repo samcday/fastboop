@@ -7,7 +7,7 @@ use fastboop_schema::bin::{
 };
 use fastboop_schema::{
     BootProfile, BootProfileArtifactPathSource, BootProfileRootfs,
-    BootProfileRootfsFilesystemSource,
+    BootProfileRootfsFilesystemSource, InjectMac,
 };
 use gibblox_pipeline::{PipelineValidationError, validate_pipeline};
 
@@ -105,7 +105,8 @@ pub fn boot_profile_bin_header_version(bytes: &[u8]) -> Option<u16> {
 pub struct EffectiveBootProfileStage0 {
     pub dt_overlays: Vec<Vec<u8>>,
     pub extra_cmdline: Option<String>,
-    pub extra_modules: Vec<String>,
+    pub kernel_modules: Vec<String>,
+    pub inject_mac: Option<InjectMac>,
 }
 
 pub fn resolve_effective_boot_profile_stage0(
@@ -113,21 +114,40 @@ pub fn resolve_effective_boot_profile_stage0(
     device_profile_id: &str,
 ) -> EffectiveBootProfileStage0 {
     let mut dt_overlays = profile.dt_overlays.clone();
-    let mut extra_modules = profile.stage0.extra_modules.clone();
+    let mut kernel_modules = profile.stage0.kernel_modules.clone();
     let mut extra_cmdline = profile.extra_cmdline.clone();
+    let mut inject_mac = profile.stage0.inject_mac.clone();
 
     if let Some(device) = profile.stage0.devices.get(device_profile_id) {
         dt_overlays.extend(device.dt_overlays.iter().cloned());
-        extra_modules.extend(device.stage0.extra_modules.iter().cloned());
+        kernel_modules.extend(device.stage0.kernel_modules.iter().cloned());
         extra_cmdline =
             join_cmdline_parts(extra_cmdline.as_deref(), device.extra_cmdline.as_deref());
+        inject_mac = merge_inject_mac(inject_mac.as_ref(), device.stage0.inject_mac.as_ref());
     }
 
     EffectiveBootProfileStage0 {
         dt_overlays,
         extra_cmdline,
-        extra_modules,
+        kernel_modules,
+        inject_mac,
     }
+}
+
+fn merge_inject_mac(
+    primary: Option<&InjectMac>,
+    secondary: Option<&InjectMac>,
+) -> Option<InjectMac> {
+    let wifi = secondary
+        .and_then(|mac| mac.wifi.clone())
+        .or_else(|| primary.and_then(|mac| mac.wifi.clone()));
+    let bluetooth = secondary
+        .and_then(|mac| mac.bluetooth.clone())
+        .or_else(|| primary.and_then(|mac| mac.bluetooth.clone()));
+    if wifi.is_none() && bluetooth.is_none() {
+        return None;
+    }
+    Some(InjectMac { wifi, bluetooth })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -316,8 +316,8 @@ pub async fn boot_selected_device(
     let mut dtbo_overlays = dtbo_overlays;
     dtbo_overlays.extend(profile_stage0.dt_overlays);
 
-    let mut extra_modules = vec!["erofs".to_string()];
-    extra_modules.extend(profile_stage0.extra_modules);
+    let mut kernel_modules = vec!["erofs".to_string()];
+    kernel_modules.extend(profile_stage0.kernel_modules);
 
     boot_config.extra_kargs = join_cmdline(
         profile_stage0.extra_cmdline.as_deref(),
@@ -326,7 +326,8 @@ pub async fn boot_selected_device(
 
     let stage0_opts = Stage0Options {
         switchroot_fs: Stage0SwitchrootFs::Erofs,
-        extra_modules,
+        kernel_modules,
+        inject_mac: profile_stage0.inject_mac,
         kernel_override: None,
         dtb_override: None,
         dtbo_overlays,

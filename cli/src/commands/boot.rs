@@ -287,7 +287,7 @@ async fn run_boot_inner(
 
     let cli_dtbo_overlays = read_dtbo_overlays(&args.stage0.dtbo)?;
     let ostree_arg = parse_ostree_arg(args.stage0.ostree.as_ref())?;
-    let cli_extra_modules = args.stage0.require_modules;
+    let cli_kernel_modules = args.stage0.require_modules;
     let serial_enabled = args.stage0.serial;
     let impersonate_fastboot = args.stage0.impersonate_fastboot;
     let personalization = args.systemd_firstboot.then(personalization_from_host);
@@ -341,8 +341,8 @@ async fn run_boot_inner(
         let image_identity = block_identity_string(reader.as_ref());
         let provider = Stage0CoalescingFilesystem::open(stage0_readers).await?;
 
-        let mut extra_modules = profile_stage0.extra_modules;
-        extra_modules.extend(cli_extra_modules.iter().cloned());
+        let mut kernel_modules = profile_stage0.kernel_modules;
+        kernel_modules.extend(cli_kernel_modules.iter().cloned());
 
         let mut dtbo_overlays = profile_stage0.dt_overlays;
         dtbo_overlays.extend(cli_dtbo_overlays.iter().cloned());
@@ -354,7 +354,8 @@ async fn run_boot_inner(
 
         let opts = Stage0Options {
             switchroot_fs: provider.switchroot_fs(),
-            extra_modules,
+            kernel_modules,
+            inject_mac: profile_stage0.inject_mac,
             kernel_override: profile_source_overrides.kernel_override,
             dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
             dtbo_overlays,
