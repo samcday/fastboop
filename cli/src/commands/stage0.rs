@@ -191,6 +191,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                 profile,
                 &provider,
                 &opts,
+                None,
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )
@@ -200,6 +201,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                 profile,
                 &provider,
                 &opts,
+                None,
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )

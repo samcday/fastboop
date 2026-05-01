@@ -39,6 +39,7 @@ pub enum Stage0Error {
     InvalidCpio(&'static str),
     KernelFormat(&'static str),
     KernelDecode(&'static str),
+    MissingStage0Binary,
 }
 
 pub struct Stage0Options {
@@ -106,6 +107,7 @@ pub async fn build_stage0<P: Filesystem>(
     profile: &DeviceProfile,
     rootfs: &P,
     opts: &Stage0Options,
+    stage0_binary: Option<&[u8]>,
     extra_cmdline: Option<&str>,
     existing_cpio: Option<&[u8]>,
 ) -> Result<Stage0Build, Stage0Error> {
@@ -235,7 +237,10 @@ pub async fn build_stage0<P: Filesystem>(
     image.ensure_dir("lib/modules")?;
 
     if !image.has_path(INIT_BIN_PATH) {
-        image.ensure_file(INIT_BIN_PATH, 0o100755, embedded_stage0_binary())?;
+        let Some(stage0_binary) = stage0_binary.filter(|data| !data.is_empty()) else {
+            return Err(Stage0Error::MissingStage0Binary);
+        };
+        image.ensure_file(INIT_BIN_PATH, 0o100755, stage0_binary)?;
     }
 
     if !required_modules.is_empty() {
@@ -355,10 +360,6 @@ pub async fn build_stage0<P: Filesystem>(
         dtb: dtb_bytes,
         kernel_cmdline_append: cmdline,
     })
-}
-
-fn embedded_stage0_binary() -> &'static [u8] {
-    include_bytes!(env!("FASTBOOP_STAGE0_EMBED_PATH"))
 }
 
 fn split_extra_cmdline(extra: &str) -> (BTreeMap<String, String>, Vec<String>) {

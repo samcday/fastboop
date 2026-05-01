@@ -409,6 +409,7 @@ async fn run_boot_inner(
                 &profile,
                 &provider,
                 &opts,
+                None,
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )
@@ -418,6 +419,7 @@ async fn run_boot_inner(
                 &profile,
                 &provider,
                 &opts,
+                None,
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )
