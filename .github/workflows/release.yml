@@ -168,28 +168,6 @@ jobs:
           fi
 
       - if: needs.gate.outputs.mode == 'tag'
-        uses: actions/download-artifact@v4
-        with:
-          name: fastboop-stage0-aarch64
-          path: stage0-provenance/fastboop-stage0-aarch64
-
-      - if: needs.gate.outputs.mode == 'tag'
-        name: Bake stage0 provenance sidecar
-        run: |
-          set -euo pipefail
-
-          stage0_bin="stage0-provenance/fastboop-stage0-aarch64/fastboop-stage0-aarch64-unknown-linux-musl"
-          sidecar="crates/fastboop-stage0-generator/stage0-aarch64.sha256sum"
-
-          test -s "$stage0_bin"
-
-          checksum_line="$(sha256sum "$stage0_bin")"
-          checksum="${checksum_line%% *}"
-          test "${#checksum}" -eq 64
-
-          printf '%s\n' "$checksum" > "$sidecar"
-
-      - if: needs.gate.outputs.mode == 'tag'
         name: Publish crates to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

@@ -16,29 +16,19 @@ For tag `vX.Y.Z` (or `vX.Y.Z-rc.N`), assets are published alongside other releas
 
 Checksums are recorded in release `SHA256SUMS`.
 
-## Embed Modes
+## Generator Input
 
-`crates/fastboop-stage0-generator/build.rs` supports three embed modes:
+`crates/fastboop-stage0-generator` does not build, download, or embed stage0 at Cargo build time.
 
-1. `FASTBOOP_STAGE0_EMBED_PATH` set: copy the provided prebuilt stage0 binary and embed it.
-2. `FASTBOOP_STAGE0_EMBED_PATH` unset: run the local nested stage0 sub-build only when source-repo layout includes `stage0/Cargo.toml` (contributor convenience).
-3. `FASTBOOP_STAGE0_EMBED_PATH` unset and no local `stage0/Cargo.toml`: for `aarch64-unknown-linux-musl`, download `fastboop-stage0-aarch64-unknown-linux-musl` from release tag `v${CARGO_PKG_VERSION}` and verify its checksum from sidecar `stage0-aarch64.sha256sum`.
+Callers supply the target-device `fastboop-stage0` bytes when synthesizing an initrd. If an existing initrd already contains `/init`, the supplied stage0 bytes are optional. Otherwise, generation fails fast instead of silently producing an initrd without PID1.
 
-If none of these modes apply, build.rs fails fast and requires an explicit prebuilt stage0 path.
-
-Optional knobs for nested sub-builds:
-
-- `FASTBOOP_STAGE0_TARGET` (default `aarch64-unknown-linux-musl`)
-- `FASTBOOP_STAGE0_CARGO` (default inherited `cargo`)
-
-This preserves local `cargo build -p fastboop-cli` round-trips while allowing distro/release flows to consume prebuilt stage0 assets.
+This keeps Cargo builds policy-friendly and avoids nested Cargo invocations from library build scripts.
 
 ## CI and Release Flow
 
 - `.github/workflows/ci.yml` builds stage0 static artifacts in a dedicated `stage0-static` matrix.
 - `.github/workflows/release.yml` runs `stage0-preflight` before downstream packaging jobs.
 - `stage0-preflight` verifies both required stage0 artifacts exist and are static/static-pie linked.
-- `.github/workflows/release.yml` tag mode bakes `crates/fastboop-stage0-generator/stage0-aarch64.sha256sum` from CI stage0 artifacts immediately before `just publish`.
 - Release asset fan-in includes stage0 binaries and `SHA256SUMS`.
 
 ## Downstream Packaging

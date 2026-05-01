@@ -72,8 +72,7 @@ resolves from crates.io as usual). Workspace manifests and `Cargo.lock` are not
 mutated.
 
 For Dioxus commands that shell out to cargo, use `./tools/dx-local.sh ...` so
-`dx` receives the overlay too (it also exports `FASTBOOP_STAGE0_CARGO` so the
-stage0 nested build inherits the same patches).
+`dx` receives the overlay too.
 
 For IDE integrations or direct invocations that want a static file, pass
 `--config .cargo/config.local.toml` to cargo. Keep that file in sync with the

@@ -323,7 +323,14 @@ async fn build_stage0_artifacts(
                     let provider = ErofsRootfs::new(provider_reader.clone(), provider_size_bytes).await?;
                     info!(profile = %profile.id, "building stage0 payload");
                     let build =
-                        build_stage0(&profile, &provider, &stage0_opts, nonempty(&extra_kargs), None)
+                        build_stage0(
+                            &profile,
+                            &provider,
+                            &stage0_opts,
+                            None,
+                            nonempty(&extra_kargs),
+                            None,
+                        )
                             .await
                             .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
                     let provider_identity = block_identity_string(provider_reader.as_ref());

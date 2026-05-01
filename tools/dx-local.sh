@@ -44,8 +44,6 @@ config_path="${temp_dir}/config.local.toml"
   done
 } > "${config_path}"
 
-export FASTBOOP_STAGE0_CARGO="${repo_root}/tools/cargo-local.sh"
-
 # Pre-resolve workspace metadata with the local overlay before dx starts
 # watching the tree, so Cargo.lock churn doesn't immediately trigger a rebuild.
 "${repo_root}/tools/cargo-local.sh" metadata --format-version=1 --no-deps >/dev/null

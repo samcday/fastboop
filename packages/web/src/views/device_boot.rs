@@ -609,6 +609,7 @@ async fn build_stage0_artifacts(
                         &profile,
                         &provider,
                         &stage0_opts,
+                        None,
                         extra_cmdline.as_deref(),
                         None,
                     )
@@ -618,6 +619,7 @@ async fn build_stage0_artifacts(
                         &profile,
                         &provider,
                         &stage0_opts,
+                        None,
                         extra_cmdline.as_deref(),
                         None,
                     )
@@ -627,7 +629,14 @@ async fn build_stage0_artifacts(
             .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?;
 
             #[cfg(not(target_arch = "wasm32"))]
-            let build = build_stage0(&profile, &provider, &stage0_opts, nonempty(&extra_kargs), None)
+            let build = build_stage0(
+                &profile,
+                &provider,
+                &stage0_opts,
+                None,
+                nonempty(&extra_kargs),
+                None,
+            )
                 .await
                 .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?;
 
