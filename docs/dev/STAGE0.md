@@ -54,6 +54,9 @@ Notable keys include:
 ## How To Bang On It
 
 ```sh
+# build the stage0 PID1 binary first; CLI commands discover this local artifact
+cargo build --release --target aarch64-unknown-linux-musl -p fastboop-stage0
+
 # build stage0 initrd only
 cargo run -p fastboop-cli -- stage0 <rootfs-or-bootprofile> --device-profile <id> > /tmp/stage0.cpio
 

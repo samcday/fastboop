@@ -24,6 +24,7 @@ use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
 use crate::devpros::{channel_matching_pool, resolve_devpro_dirs, resolve_profile_in_pool};
 use crate::personalization::personalization_from_host;
 use crate::smoo_host::run_host_daemon;
+use crate::stage0_binary::load_stage0_binary_for_initrd;
 #[cfg(feature = "tui")]
 use crate::tui::{TuiOutcome, run_boot_tui};
 
@@ -71,6 +72,9 @@ pub struct BootStage0Args {
     /// Existing initrd (cpio newc) to augment.
     #[arg(long)]
     pub augment: Option<PathBuf>,
+    /// Stage0 binary to inject as /init (defaults to FASTBOOP_STAGE0_PATH or local/package paths).
+    #[arg(long, value_name = "PATH")]
+    pub stage0: Option<PathBuf>,
     /// Extra required modules (repeatable).
     #[arg(long = "require-module")]
     pub require_modules: Vec<String>,
@@ -287,12 +291,13 @@ async fn run_boot_inner(
 
     let cli_dtbo_overlays = read_dtbo_overlays(&args.stage0.dtbo)?;
     let ostree_arg = parse_ostree_arg(args.stage0.ostree.as_ref())?;
-    let cli_kernel_modules = args.stage0.require_modules;
     let serial_enabled = args.stage0.serial;
     let impersonate_fastboot = args.stage0.impersonate_fastboot;
     let personalization = args.systemd_firstboot.then(personalization_from_host);
 
     let existing = read_existing_initrd(&args.stage0.augment)?;
+    let stage0_binary =
+        load_stage0_binary_for_initrd(args.stage0.stage0.as_deref(), existing.as_deref())?;
     let cli_cmdline_append = args
         .stage0
         .cmdline_append
@@ -300,6 +305,7 @@ async fn run_boot_inner(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let cli_kernel_modules = args.stage0.require_modules;
     let system_time_part = if args.system_time {
         Some(system_time_cmdline()?)
     } else {
@@ -409,7 +415,7 @@ async fn run_boot_inner(
                 &profile,
                 &provider,
                 &opts,
-                None,
+                stage0_binary.as_deref(),
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )
@@ -419,7 +425,7 @@ async fn run_boot_inner(
                 &profile,
                 &provider,
                 &opts,
-                None,
+                stage0_binary.as_deref(),
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )
