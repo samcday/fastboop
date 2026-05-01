@@ -9,6 +9,7 @@ use gobblytes_core::OstreeFs as OstreeRootfs;
 use tracing::debug;
 
 use crate::devpros::{channel_matching_pool, resolve_devpro_dirs, resolve_profile_in_pool};
+use crate::stage0_binary::load_stage0_binary_for_initrd;
 
 use super::{
     ArtifactReaderResolver, OstreeArg, Stage0CoalescingFilesystem,
@@ -41,6 +42,9 @@ pub struct Stage0Args {
     /// Existing initrd (cpio newc) to augment.
     #[arg(long)]
     pub augment: Option<PathBuf>,
+    /// Stage0 binary to inject as /init (defaults to FASTBOOP_STAGE0_PATH or local/package paths).
+    #[arg(long, value_name = "PATH")]
+    pub stage0: Option<PathBuf>,
     /// Extra required modules (repeatable).
     #[arg(long = "require-module")]
     pub require_modules: Vec<String>,
@@ -93,16 +97,17 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
 
     let cli_dtbo_overlays = read_dtbo_overlays(&args.dtbo)?;
     let ostree_arg = parse_ostree_arg(args.ostree.as_ref())?;
-    let cli_kernel_modules = args.require_modules;
     let serial_enabled = args.serial;
 
     let existing = read_existing_initrd(&args.augment)?;
+    let stage0_binary = load_stage0_binary_for_initrd(args.stage0.as_deref(), existing.as_deref())?;
     let cli_cmdline_append = args
         .cmdline_append
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let cli_kernel_modules = args.require_modules;
 
     let build = {
         let input = artifact_resolver
@@ -191,7 +196,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                 profile,
                 &provider,
                 &opts,
-                None,
+                stage0_binary.as_deref(),
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )
@@ -201,7 +206,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                 profile,
                 &provider,
                 &opts,
-                None,
+                stage0_binary.as_deref(),
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )

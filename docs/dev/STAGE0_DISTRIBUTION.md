@@ -24,6 +24,30 @@ Callers supply the target-device `fastboop-stage0` bytes when synthesizing an in
 
 This keeps Cargo builds policy-friendly and avoids nested Cargo invocations from library build scripts.
 
+## CLI Loading
+
+The CLI loads stage0 at runtime before calling the generator.
+
+Explicit controls:
+
+- `--stage0 <PATH>` on `fastboop boot` and `fastboop stage0`
+- `FASTBOOP_STAGE0_PATH=/path/to/fastboop-stage0`
+
+Local development fallback paths include:
+
+- `target/aarch64-unknown-linux-musl/release/fastboop-stage0`
+- `target/aarch64-unknown-linux-gnu/release/fastboop-stage0`
+- `target/release/fastboop-stage0`
+- `target/debug/fastboop-stage0`
+
+Package-style sidecar paths include target-device payload locations under:
+
+- `/usr/lib/fastboop/stage0/`
+- `/usr/local/lib/fastboop/stage0/`
+- `/app/lib/fastboop/stage0/`
+
+Release tarballs may also place `fastboop-stage0-*` beside `fastboop` or under a sibling `stage0/` directory.
+
 ## CI and Release Flow
 
 - `.github/workflows/ci.yml` builds stage0 static artifacts in a dedicated `stage0-static` matrix.
@@ -33,13 +57,16 @@ This keeps Cargo builds policy-friendly and avoids nested Cargo invocations from
 
 ## Downstream Packaging
 
-- **Debian workflow**: downloads `fastboop-stage0-aarch64` artifact and exports `FASTBOOP_STAGE0_EMBED_PATH` before package build.
-- **Alpine workflow**: same release-mode artifact flow via `FASTBOOP_STAGE0_EMBED_PATH`.
-- **RPM spec**: exports `FASTBOOP_STAGE0_EMBED_PATH` when either:
-  - `--define 'fastboop_stage0_embed_path /path/to/fastboop-stage0-aarch64-unknown-linux-musl'` is passed, or
-  - `%{_sourcedir}/fastboop-stage0-aarch64-unknown-linux-musl` exists.
+Strict package builds should install stage0 as a data payload for target devices, not as a host executable helper.
 
-If no prebuilt stage0 path is provided, packaging falls back to nested sub-build behavior only when the local source repo includes the stage0 workspace sources.
+Preferred sidecar layout:
+
+- `/usr/lib/fastboop/stage0/fastboop-stage0-aarch64-unknown-linux-musl`
+- `/usr/lib/fastboop/stage0/fastboop-stage0-aarch64-unknown-linux-gnu` when a distro build intentionally produces a GNU-linked payload
+
+Flatpak builds use the same layout under `/app/lib/fastboop/stage0/`.
+
+The sidecar payload target does not need to match the host package architecture.
 
 ## Armv7 Status
 
