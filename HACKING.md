@@ -18,7 +18,7 @@ No flashing, no slot changes, no persistent writes.
 
 - Core traits/types live in `crates/fastboop-core` and are allocator-aware and cancellation-safe.
 - Device/profile/state-machine logic stays platform-agnostic.
-- Transport/adapters live in platform crates (`fastboot-rusb`, `fastboot-webusb`, desktop/web packages).
+- Transport/adapters live in platform crates (`fastboot-rusb`, `fastboot-webusb`, web packages).
 - Stage0 assembly lives in std crates; `fastboop-stage0` embeds `smoo-gadget-app` and launches it during PID1 flow.
 - Protocol/type behavior must remain aligned with smoo invariants.
 
@@ -50,7 +50,7 @@ See `docs/dev/DEVICE_PROFILES.md` for schema and semantics.
 - `stage0/`: stage0 PID1 runtime binary.
 - `crates/fastboop-stage0-generator/`: stage0 image synthesis.
 - `crates/fastboop-core/`: core model/state-machine traits.
-- `packages/*`: desktop/web/mobile/ui frontends.
+- `packages/*`: web/mobile/ui frontends. Desktop is descoped for 0.0.1 and excluded from the workspace.
 - `devprofiles.d/`: device profile definitions.
 - `smoo-*` crates: consumed from crates.io (see upstream smoo docs for internals).
 - `gibblox-*` crates: consumed from crates.io (see upstream gibblox docs for internals).
@@ -105,7 +105,6 @@ Use cheap checks continuously and reserve broad gates for the end of substantial
 Run checks based on changed paths:
 
 - `packages/web/**` -> `dx build -p fastboop-web` (required)
-- `packages/desktop/**` -> `dx build -p fastboop-desktop`
 - `packages/mobile/**` or `packages/ui/**` -> run relevant package build/check
 - `stage0/**` or `crates/fastboop-stage0-generator/**` -> targeted `cargo check` + relevant tests
 - `cli/**` -> targeted `cargo check` + relevant tests
@@ -120,7 +119,6 @@ cargo fmt
 cargo check --workspace
 cargo clippy --workspace
 cargo test --workspace
-dx build -p fastboop-desktop
 ```
 
 Also run `dx build -p fastboop-web` if `packages/web` was touched.
