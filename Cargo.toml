@@ -27,7 +27,7 @@ repository = "https://github.com/samcday/fastboop"
 dioxus = { version = "0.7.1" }
 ui = { path = "packages/ui" }
 fastboop-core = { path = "crates/fastboop-core" }
-fastboop-bootpro = { path = "crates/fastboop-bootpro" }
+fastboop-bootpro = { path = "crates/fastboop-bootpro", version = "0.0.1-rc.19" }
 fastboop-schema = { path = "crates/fastboop-schema", default-features = false }
 anyhow = "1.0.100"
 async-trait = "0.1.89"
