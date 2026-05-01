@@ -8,12 +8,12 @@ members = [
     "crates/fastboop-stage0-generator",
     "crates/fastboop-fastboot-rusb",
     "crates/fastboop-fastboot-webusb",
-    "packages/desktop",
     "packages/mobile",
     "packages/ui",
     "packages/web",
     "xtask",
 ]
+exclude = ["packages/desktop"]
 resolver = "2"
 
 [workspace.package]
