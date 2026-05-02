@@ -1,5 +1,8 @@
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg=web_sys_unstable_apis"]
 
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+
 [alias]
 xtask = "run --package xtask --"
