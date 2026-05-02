@@ -24,6 +24,7 @@ path = "src/main.rs"
 
 [features]
 default = []
+embed-stage0 = []
 tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]

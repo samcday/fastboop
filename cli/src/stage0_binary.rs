@@ -11,6 +11,9 @@ const STAGE0_FILE_NAMES: &[&str] = &[
     "fastboop-stage0",
 ];
 
+#[cfg(feature = "embed-stage0")]
+const EMBEDDED_STAGE0_BINARY: &[u8] = include_bytes!(env!("FASTBOOP_STAGE0_EMBED_PATH"));
+
 pub(crate) fn load_stage0_binary_for_initrd(
     explicit_path: Option<&Path>,
     existing_cpio: Option<&[u8]>,
@@ -39,7 +42,24 @@ fn load_stage0_binary(explicit_path: Option<&Path>, env_path: Option<PathBuf>) -
         }
     }
 
+    if let Some(data) = embedded_stage0_binary() {
+        if data.is_empty() {
+            bail!("embedded stage0 binary is empty");
+        }
+        return Ok(data.to_vec());
+    }
+
     bail!(missing_stage0_message(&candidates))
+}
+
+#[cfg(feature = "embed-stage0")]
+fn embedded_stage0_binary() -> Option<&'static [u8]> {
+    Some(EMBEDDED_STAGE0_BINARY)
+}
+
+#[cfg(not(feature = "embed-stage0"))]
+fn embedded_stage0_binary() -> Option<&'static [u8]> {
+    None
 }
 
 fn existing_cpio_has_init(existing_cpio: Option<&[u8]>) -> Result<bool> {
