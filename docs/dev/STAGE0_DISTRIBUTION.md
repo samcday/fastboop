@@ -33,6 +33,8 @@ Explicit controls:
 - `--stage0 <PATH>` on `fastboop boot` and `fastboop stage0`
 - `FASTBOOP_STAGE0_PATH=/path/to/fastboop-stage0`
 
+Prebuilt CLI release binaries include the AArch64 musl stage0 as a final fallback so `cargo binstall fastboop-cli` works without a sidecar file. Source builds keep this fallback disabled unless `fastboop-cli` is built with `--features embed-stage0` and `FASTBOOP_STAGE0_EMBED_PATH` points at the stage0 binary during compilation.
+
 Local development fallback paths include:
 
 - `target/aarch64-unknown-linux-musl/release/fastboop-stage0`

@@ -126,7 +126,7 @@ jobs:
 
   build:
     runs-on: ${{ matrix.runner }}
-    needs: check
+    needs: [check, stage0-static]
 
     strategy:
       fail-fast: false
@@ -181,10 +181,24 @@ jobs:
           cache: ${{ steps.local-deps.outputs.using_local != 'true' }}
           rustflags: "--cfg=web_sys_unstable_apis"
 
+      - name: Download stage0 embed artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fastboop-stage0-aarch64
+          path: stage0-artifacts
+
+      - name: Export stage0 embed path
+        run: |
+          set -euo pipefail
+          stage0_path="$GITHUB_WORKSPACE/stage0-artifacts/fastboop-stage0-aarch64-unknown-linux-musl"
+          test -s "$stage0_path"
+          echo "FASTBOOP_STAGE0_EMBED_PATH=$stage0_path" >> "$GITHUB_ENV"
+
       - name: Build CLI (static musl)
         run: |
           $FASTBOOP_CARGO build \
             -p fastboop-cli \
+            --features embed-stage0 \
             --release \
             --target ${{ matrix.target }}
 
