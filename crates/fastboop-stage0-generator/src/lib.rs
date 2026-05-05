@@ -209,7 +209,13 @@ pub async fn build_stage0<P: Filesystem>(
 
     let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
     let dtb_bytes = apply_dtbo_overlays(&dtb_bytes, &opts.dtbo_overlays)?;
-    let dtb_bytes = apply_mac_injection(&dtb_bytes, &opts.inject_mac)?;
+    let mac_seed = opts
+        .smoo_serial
+        .as_deref()
+        .map(str::trim)
+        .filter(|serial| !serial.is_empty())
+        .unwrap_or("0");
+    let dtb_bytes = apply_mac_injection(&dtb_bytes, &opts.inject_mac, mac_seed)?;
     let _dtb = Fdt::new(&dtb_bytes).map_err(|_| Stage0Error::ParseError("dtb"))?;
 
     let required_modules = collect_required_modules(opts, &modules_dep);
@@ -1116,7 +1122,11 @@ fn parse_fixup_offsets(bytes: &[u8]) -> Result<Vec<u32>, Stage0Error> {
     Ok(out)
 }
 
-fn apply_mac_injection(dtb: &[u8], inject: &Option<InjectMac>) -> Result<Vec<u8>, Stage0Error> {
+fn apply_mac_injection(
+    dtb: &[u8],
+    inject: &Option<InjectMac>,
+    seed: &str,
+) -> Result<Vec<u8>, Stage0Error> {
     let Some(inject) = inject else {
         return Ok(dtb.to_vec());
     };
@@ -1126,8 +1136,6 @@ fn apply_mac_injection(dtb: &[u8], inject: &Option<InjectMac>) -> Result<Vec<u8>
 
     let fdt = Fdt::new(dtb).map_err(|_| Stage0Error::ParseError("dtb"))?;
     let mut tree = DeviceTree::from_fdt(&fdt).map_err(|_| Stage0Error::ParseError("dtb"))?;
-    let seed = 0u64;
-
     if let Some(compat) = inject.wifi.as_deref() {
         let mac = mac_from_seed(seed, "wifi", compat);
         let node = find_node_by_compatible_mut(&mut tree.root, compat).ok_or_else(|| {
@@ -1151,8 +1159,8 @@ fn apply_mac_injection(dtb: &[u8], inject: &Option<InjectMac>) -> Result<Vec<u8>
     Ok(tree.to_dtb())
 }
 
-fn mac_from_seed(seed: u64, kind: &str, compat: &str) -> [u8; 6] {
-    let mut hash = fnv1a64(seed.to_le_bytes().iter().copied());
+fn mac_from_seed(seed: &str, kind: &str, compat: &str) -> [u8; 6] {
+    let mut hash = fnv1a64(seed.as_bytes().iter().copied());
     hash = fnv1a64_with_seed(hash, kind.as_bytes().iter().copied());
     hash = fnv1a64_with_seed(hash, compat.as_bytes().iter().copied());
     let mut mac = [0u8; 6];
@@ -1233,9 +1241,16 @@ mod tests {
 
     #[test]
     fn mac_from_seed_sets_local_admin() {
-        let mac = mac_from_seed(0, "wifi", "qcom,wcn3990-wifi");
+        let mac = mac_from_seed("serial-1", "wifi", "qcom,wcn3990-wifi");
         assert_eq!(mac[0] & 0x01, 0);
         assert_eq!(mac[0] & 0x02, 0x02);
+    }
+
+    #[test]
+    fn mac_from_seed_uses_serial_seed() {
+        let first = mac_from_seed("serial-1", "wifi", "qcom,wcn3990-wifi");
+        let second = mac_from_seed("serial-2", "wifi", "qcom,wcn3990-wifi");
+        assert_ne!(first, second);
     }
 
     #[test]
@@ -1253,17 +1268,17 @@ mod tests {
             wifi: Some("qcom,wcn3990-wifi".to_string()),
             bluetooth: Some("qcom,wcn3990-bt".to_string()),
         };
-        let out = apply_mac_injection(&dtb, &Some(inject)).unwrap();
+        let out = apply_mac_injection(&dtb, &Some(inject), "serial-1").unwrap();
         let fdt = Fdt::new(&out).unwrap();
 
         let wifi_node = fdt.find_node(wifi_path).unwrap();
         let wifi_prop = wifi_node.property("local-mac-address").unwrap();
-        let expected_wifi = mac_from_seed(0, "wifi", "qcom,wcn3990-wifi");
+        let expected_wifi = mac_from_seed("serial-1", "wifi", "qcom,wcn3990-wifi");
         assert_eq!(wifi_prop.value(), expected_wifi);
 
         let bt_node = fdt.find_node(bt_path).unwrap();
         let bt_prop = bt_node.property("local-bd-address").unwrap();
-        let mut expected_bt = mac_from_seed(0, "bluetooth", "qcom,wcn3990-bt");
+        let mut expected_bt = mac_from_seed("serial-1", "bluetooth", "qcom,wcn3990-bt");
         expected_bt.reverse();
         assert_eq!(bt_prop.value(), expected_bt);
     }
