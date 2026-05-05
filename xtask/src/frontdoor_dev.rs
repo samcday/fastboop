@@ -1,12 +1,13 @@
 use notify::{RecursiveMode, Watcher};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-const DEFAULT_ADDR: &str = "127.0.0.1:38080";
+const WEB_ADDR: &str = "127.0.0.1:38080";
+const DOCS_ADDR: &str = "127.0.0.1:38081";
 
 pub fn run() {
     let live_version = fs::read_to_string("infra/k8s/live-version.txt")
@@ -27,12 +28,8 @@ pub fn run() {
         std::process::exit(1);
     }
 
-    let mut child = serve(
-        &live_version,
-        &cache_dir.to_string_lossy(),
-        wasm_path,
-        DEFAULT_ADDR,
-    );
+    let cache_dir = cache_dir.to_string_lossy().to_string();
+    let mut children = serve_all(&live_version, &cache_dir, wasm_path);
 
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -78,21 +75,14 @@ pub fn run() {
 
         if build() {
             eprintln!("build succeeded, restarting wasmtime...");
-            let _ = child.kill();
-            let _ = child.wait();
-            child = serve(
-                &live_version,
-                &cache_dir.to_string_lossy(),
-                wasm_path,
-                DEFAULT_ADDR,
-            );
+            stop_all(&mut children);
+            children = serve_all(&live_version, &cache_dir, wasm_path);
         } else {
             eprintln!("build failed, keeping previous version running");
         }
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
+    stop_all(&mut children);
 }
 
 fn build() -> bool {
@@ -110,9 +100,25 @@ fn build() -> bool {
     status.success()
 }
 
-fn serve(live_version: &str, cache_dir: &str, wasm_path: &str, addr: &str) -> Child {
+fn serve_all(live_version: &str, cache_dir: &str, wasm_path: &str) -> Vec<Child> {
+    vec![
+        serve("web", live_version, cache_dir, wasm_path, WEB_ADDR),
+        serve("docs", live_version, cache_dir, wasm_path, DOCS_ADDR),
+    ]
+}
+
+fn stop_all(children: &mut [Child]) {
+    for child in children.iter_mut() {
+        let _ = child.kill();
+    }
+    for child in children.iter_mut() {
+        let _ = child.wait();
+    }
+}
+
+fn serve(site: &str, live_version: &str, cache_dir: &str, wasm_path: &str, addr: &str) -> Child {
     let dir_arg = format!("{cache_dir}::/cache");
-    eprintln!("starting wasmtime serve on http://{addr}/");
+    eprintln!("starting frontdoor-edge {site} on http://{addr}/");
     let mut child = Command::new("wasmtime")
         .args([
             "serve",
@@ -128,6 +134,8 @@ fn serve(live_version: &str, cache_dir: &str, wasm_path: &str, addr: &str) -> Ch
                 std::env::var("RUST_LOG").as_deref().unwrap_or("info")
             ),
             "--env",
+            &format!("FRONTDOOR_DEV_SITE={site}"),
+            "--env",
             &format!("LIVE_VERSION={live_version}"),
             "--env",
             "GITHUB_OWNER=samcday",
@@ -135,6 +143,8 @@ fn serve(live_version: &str, cache_dir: &str, wasm_path: &str, addr: &str) -> Ch
             "GITHUB_REPO=fastboop",
             "--env",
             "ASSET_NAME_TEMPLATE=fastboop-web-{version}.tar.gz",
+            "--env",
+            "DOCS_ASSET_NAME_TEMPLATE=fastboop-docs-{version}.tar.gz",
             "--env",
             "MATRIX_SERVER_NAME=matrix.fastboop.win:443",
             "--env",
@@ -149,25 +159,25 @@ fn serve(live_version: &str, cache_dir: &str, wasm_path: &str, addr: &str) -> Ch
         .expect("failed to start wasmtime serve");
 
     if let Some(stdout) = child.stdout.take() {
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    eprintln!("{line}");
-                }
-            }
-        });
+        forward_output(site, "stdout", stdout);
     }
     if let Some(stderr) = child.stderr.take() {
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    eprintln!("{line}");
-                }
-            }
-        });
+        forward_output(site, "stderr", stderr);
     }
 
     child
+}
+
+fn forward_output<R>(site: &str, stream_name: &str, stream: R)
+where
+    R: Read + Send + 'static,
+{
+    let site = site.to_string();
+    let stream_name = stream_name.to_string();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stream);
+        for line in reader.lines().map_while(Result::ok) {
+            eprintln!("[{site}:{stream_name}] {line}");
+        }
+    });
 }

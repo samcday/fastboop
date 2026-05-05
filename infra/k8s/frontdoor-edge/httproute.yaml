@@ -7,6 +7,7 @@ metadata:
 spec:
   hostnames:
     - www.fastboop.win
+    - docs.fastboop.win
   parentRefs:
     - group: gateway.networking.k8s.io
       kind: Gateway

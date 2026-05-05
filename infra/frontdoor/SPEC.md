@@ -1,19 +1,22 @@
 # Milestone 4: Wasm edge component (frontdoor-edge)
 
-Build a WASI Preview 2 HTTP component that serves fastboop web releases with disk-based caching. This is the wasmCloud edge vertical slice — same web release serving logic as frontdoor-server, but running as a wasm component.
+Build a WASI Preview 2 HTTP component that serves fastboop release sites with disk-based caching. This is the wasmCloud edge vertical slice: web and docs release artifacts are lazy-fetched from GitHub releases and served by the same wasm component.
 
 Working directory: `/var/home/sam/src/fastboop/infra/frontdoor`
 
 ## Architecture
 
-The edge component is a simple caching reverse proxy:
+The edge component is a simple release-site materializer:
 1. Receive HTTP request
-2. Parse version + file path from URL
-3. Check local disk cache for the file
-4. **Cache hit**: serve from disk with correct headers
-5. **Cache miss**: fetch from origin (`https://www.fastboop.win/...`), write to disk cache, serve response
+2. Pick the release site from the Host header
+3. Parse version + file path from URL
+4. Check local disk cache for the file
+5. **Cache hit**: serve from disk with correct headers
+6. **Cache miss**: fetch the matching GitHub release tarball, extract it into the site cache, then serve the resolved file
 
 Uses `wstd` crate for ergonomic async HTTP handling and `std::fs` for disk caching (which maps to WASI filesystem on the wasm32-wasip2 target).
+
+Local development via `cargo xtask frontdoor-dev` runs two wasmtime servers against the same component: web on `127.0.0.1:38080` and docs on `127.0.0.1:38081`. The command sets `FRONTDOOR_DEV_SITE` so localhost traffic can exercise each virtual host without editing `/etc/hosts`.
 
 ## Files to create
 

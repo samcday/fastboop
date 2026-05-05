@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, Once, OnceLock};
+use std::sync::{Once, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use flate2::read::GzDecoder;
@@ -10,10 +9,13 @@ use frontdoor_core::content_type::{cache_control_for_ext, content_type_for_ext};
 use tar::EntryType;
 use tracing::{debug, error, info, trace, warn};
 use wstd::http::{Body, BodyExt, Client, Request, Response, StatusCode};
+use wstd::time::Duration as WasiDuration;
 
 static TRACING_INIT: Once = Once::new();
 static CONFIG: OnceLock<Config> = OnceLock::new();
-static VERSION_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+const MATERIALIZATION_LOCK_SLEEP_MS: u64 = 100;
+const MATERIALIZATION_LOCK_ATTEMPTS: usize = 3_000;
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -21,17 +23,63 @@ struct Config {
     cache_dir: String,
     github_owner: String,
     github_repo: String,
-    asset_name_template: String,
+    web_asset_name_template: String,
+    docs_asset_name_template: String,
     max_cache_bytes: u64,
     max_download_bytes: u64,
     matrix_server_name: String,
     matrix_client_base_url: String,
+    local_site_override: Option<SiteKind>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SiteKind {
+    Web,
+    Docs,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostRoute {
+    Site(SiteKind),
+    ApexRedirect,
+}
+
+impl SiteKind {
+    fn cache_dir_name(self) -> &'static str {
+        match self {
+            Self::Web => "web",
+            Self::Docs => "docs",
+        }
+    }
+
+    fn allows_spa_fallback(self) -> bool {
+        matches!(self, Self::Web)
+    }
+
+    fn from_env_value(name: &str, value: &str) -> Self {
+        match value {
+            "web" => Self::Web,
+            "docs" => Self::Docs,
+            _ => panic!("{name} must be 'web' or 'docs'"),
+        }
+    }
 }
 
 #[derive(Debug)]
 struct EdgeError {
     status: StatusCode,
     message: String,
+}
+
+#[derive(Debug)]
+struct MaterializationLock {
+    path: PathBuf,
+}
+
+impl Drop for MaterializationLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 impl EdgeError {
@@ -45,7 +93,10 @@ impl EdgeError {
 
 impl Config {
     fn from_env() -> Self {
-        let live_version = std::env::var("LIVE_VERSION").expect("LIVE_VERSION env var must be set").trim().to_string();
+        let live_version = std::env::var("LIVE_VERSION")
+            .expect("LIVE_VERSION env var must be set")
+            .trim()
+            .to_string();
         if !frontdoor_core::version::is_valid_version(&live_version) {
             panic!("LIVE_VERSION must match vX.Y.Z or vX.Y.Z-rc.N");
         }
@@ -55,16 +106,28 @@ impl Config {
             cache_dir: env_or("CACHE_DIR", "/cache"),
             github_owner: env_or("GITHUB_OWNER", "samcday"),
             github_repo: env_or("GITHUB_REPO", "fastboop"),
-            asset_name_template: env_or("ASSET_NAME_TEMPLATE", "fastboop-web-{version}.tar.gz"),
+            web_asset_name_template: env_or("ASSET_NAME_TEMPLATE", "fastboop-web-{version}.tar.gz"),
+            docs_asset_name_template: env_or(
+                "DOCS_ASSET_NAME_TEMPLATE",
+                "fastboop-docs-{version}.tar.gz",
+            ),
             max_cache_bytes: env_u64("MAX_CACHE_BYTES", 0),
             max_download_bytes: env_u64("MAX_DOWNLOAD_BYTES", 100_000_000),
             matrix_server_name: env_or("MATRIX_SERVER_NAME", "matrix.fastboop.win:443"),
             matrix_client_base_url: env_or("MATRIX_CLIENT_BASE_URL", "https://matrix.fastboop.win"),
+            local_site_override: env_optional_site("FRONTDOOR_DEV_SITE"),
         }
     }
 
-    fn web_cache_dir(&self) -> PathBuf {
-        PathBuf::from(&self.cache_dir).join("web")
+    fn site_cache_dir(&self, site: SiteKind) -> PathBuf {
+        PathBuf::from(&self.cache_dir).join(site.cache_dir_name())
+    }
+
+    fn asset_template(&self, site: SiteKind) -> (&'static str, &str) {
+        match site {
+            SiteKind::Web => ("ASSET_NAME_TEMPLATE", &self.web_asset_name_template),
+            SiteKind::Docs => ("DOCS_ASSET_NAME_TEMPLATE", &self.docs_asset_name_template),
+        }
     }
 }
 
@@ -81,6 +144,15 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or_else(|_| panic!("{name} must be an integer"))
 }
 
+fn env_optional_site(name: &str) -> Option<SiteKind> {
+    let raw = env_or(name, "");
+    if raw.is_empty() {
+        None
+    } else {
+        Some(SiteKind::from_env_value(name, &raw))
+    }
+}
+
 fn config() -> &'static Config {
     CONFIG.get_or_init(|| {
         let cfg = Config::from_env();
@@ -89,23 +161,13 @@ fn config() -> &'static Config {
             github_owner = %cfg.github_owner,
             github_repo = %cfg.github_repo,
             cache_dir = %cfg.cache_dir,
+            local_site_override = cfg.local_site_override.map(SiteKind::cache_dir_name).unwrap_or("host"),
             max_cache_bytes = cfg.max_cache_bytes,
             max_download_bytes = cfg.max_download_bytes,
             "config loaded"
         );
         cfg
     })
-}
-
-fn version_lock(version: &str) -> Arc<Mutex<()>> {
-    let locks = VERSION_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = locks
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    guard
-        .entry(version.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
 }
 
 fn ensure_tracing() {
@@ -116,6 +178,37 @@ fn ensure_tracing() {
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .init();
     });
+}
+
+fn route_host(host: &str, local_site_override: Option<SiteKind>) -> HostRoute {
+    let host = hostname_without_port(host);
+    if is_local_host(host) {
+        return HostRoute::Site(local_site_override.unwrap_or(SiteKind::Web));
+    }
+
+    if host.starts_with("www.") || host.starts_with("edge.") {
+        return HostRoute::Site(SiteKind::Web);
+    }
+
+    if host.starts_with("docs.") {
+        return HostRoute::Site(SiteKind::Docs);
+    }
+
+    HostRoute::ApexRedirect
+}
+
+fn hostname_without_port(host: &str) -> &str {
+    let host = host.trim();
+    if let Some(rest) = host.strip_prefix('[')
+        && let Some((addr, _)) = rest.split_once(']')
+    {
+        return addr;
+    }
+    host.split(':').next().unwrap_or(host)
+}
+
+fn is_local_host(host: &str) -> bool {
+    host.is_empty() || host == "localhost" || host.starts_with("127.") || host == "::1"
 }
 
 #[wstd::http_server]
@@ -129,18 +222,15 @@ async fn main(request: Request<Body>) -> Result<Response<Body>, wstd::http::Erro
         .get("host")
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
+    let site = match route_host(host, cfg.local_site_override) {
+        HostRoute::Site(site) => site,
+        HostRoute::ApexRedirect => {
+            debug!(handler = "apex_redirect", path = %path, "route matched");
+            return Ok(apex_redirect(path, request.uri().query()));
+        }
+    };
 
-    info!(method = %method, path = %path, host = %host, "incoming request");
-
-    if !host.is_empty()
-        && !host.starts_with("www.")
-        && !host.starts_with("edge.")
-        && !host.starts_with("localhost")
-        && !host.starts_with("127.")
-    {
-        debug!(handler = "apex_redirect", path = %path, "route matched");
-        return Ok(apex_redirect(path, request.uri().query()));
-    }
+    info!(method = %method, path = %path, host = %host, site = site.cache_dir_name(), "incoming request");
 
     match path {
         "/healthz" => {
@@ -162,7 +252,9 @@ async fn main(request: Request<Body>) -> Result<Response<Body>, wstd::http::Erro
                 &format!("{}\n", cfg.live_version),
             ))
         }
-        p if p == "/device-permissions" || p.starts_with("/device-permissions/") => {
+        p if site == SiteKind::Web
+            && (p == "/device-permissions" || p.starts_with("/device-permissions/")) =>
+        {
             debug!(handler = "device_permissions_redirect", path = %path, "route matched");
             Ok(device_permissions_redirect(path))
         }
@@ -179,7 +271,7 @@ async fn main(request: Request<Body>) -> Result<Response<Body>, wstd::http::Erro
                     relative = %relative,
                     "route matched"
                 );
-                serve_versioned(cfg, version, relative).await
+                serve_versioned(cfg, site, version, relative).await
             }
             None => {
                 // Bare version path without trailing slash (e.g. /v0.0.1-rc.13)
@@ -195,6 +287,10 @@ async fn main(request: Request<Body>) -> Result<Response<Body>, wstd::http::Erro
                         .body(Body::empty())
                         .expect("version redirect response should build"));
                 }
+                if site == SiteKind::Docs {
+                    debug!(handler = "docs_live_redirect", path = %path, "route matched");
+                    return Ok(docs_live_redirect(cfg, path, request.uri().query()));
+                }
                 debug!(handler = "not_found", path = %path, "route matched");
                 Ok(text_response(StatusCode::NOT_FOUND, "not found\n"))
             }
@@ -204,6 +300,7 @@ async fn main(request: Request<Body>) -> Result<Response<Body>, wstd::http::Erro
 
 async fn serve_versioned(
     cfg: &Config,
+    site: SiteKind,
     version: &str,
     relative: &str,
 ) -> Result<Response<Body>, wstd::http::Error> {
@@ -235,12 +332,13 @@ async fn serve_versioned(
         return Ok(text_response(StatusCode::NOT_FOUND, "not found\n"));
     }
 
-    let version_dir = cfg.web_cache_dir().join(version);
+    let version_dir = cfg.site_cache_dir(site).join(version);
     let ready = version_dir.join(".ready");
     if fs::metadata(&ready).is_err()
-        && let Err(err) = materialize_version(cfg, version).await
+        && let Err(err) = materialize_version(cfg, site, version).await
     {
         error!(
+            site = site.cache_dir_name(),
             version = %version,
             error = %err.message.as_str(),
             "materialization failed"
@@ -248,7 +346,7 @@ async fn serve_versioned(
         return Ok(text_response(err.status, &format!("{}\n", err.message)));
     }
 
-    let path = match resolve_file_path(&version_dir, &decoded) {
+    let path = match resolve_file_path(&version_dir, &decoded, site.allows_spa_fallback()) {
         Ok(path) => path,
         Err(err) => return Ok(text_response(err.status, &format!("{}\n", err.message))),
     };
@@ -289,44 +387,46 @@ async fn serve_versioned(
         .expect("asset response should build"))
 }
 
-async fn materialize_version(cfg: &Config, version: &str) -> Result<(), EdgeError> {
-    let web_dir = cfg.web_cache_dir();
-    let target_dir = web_dir.join(version);
+async fn materialize_version(cfg: &Config, site: SiteKind, version: &str) -> Result<(), EdgeError> {
+    let site_dir = cfg.site_cache_dir(site);
+    let target_dir = site_dir.join(version);
     let ready = target_dir.join(".ready");
 
     if fs::metadata(&ready).is_ok() {
-        info!(version = %version, "version already materialized");
+        info!(site = site.cache_dir_name(), version = %version, "version already materialized");
         return Ok(());
     }
 
-    fs::create_dir_all(&web_dir).map_err(io_500)?;
+    fs::create_dir_all(&site_dir).map_err(io_500)?;
 
-    let lock = version_lock(version);
-    let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock_path = site_dir.join(format!(".lock-{version}"));
+    let Some(_lock) = acquire_materialization_lock(site, version, &lock_path, &ready).await? else {
+        return Ok(());
+    };
 
     if fs::metadata(&ready).is_ok() {
-        info!(version = %version, "version already materialized");
+        info!(site = site.cache_dir_name(), version = %version, "version already materialized");
         return Ok(());
     }
 
-    info!(version = %version, "materialization started");
+    info!(site = site.cache_dir_name(), version = %version, "materialization started");
     let start = Instant::now();
 
-    let tmp_dir = create_temp_dir(&web_dir, version)?;
+    let tmp_dir = create_temp_dir(site, &site_dir, version)?;
     let tarball_path = tmp_dir.join("release.tar.gz");
     let extract_root = tmp_dir.join("extract");
-    let staged_root = tmp_dir.join("site");
 
     let result: Result<(), EdgeError> = async {
         fs::create_dir_all(&extract_root).map_err(io_500)?;
 
-        let bytes_downloaded = download_release_tarball(cfg, version, &tarball_path).await?;
-        info!(version = %version, bytes = bytes_downloaded, "download completed");
+        let bytes_downloaded = download_release_tarball(cfg, site, version, &tarball_path).await?;
+        info!(site = site.cache_dir_name(), version = %version, bytes = bytes_downloaded, "download completed");
 
         let extracted_entries = match extract_release_tarball(&tarball_path, &extract_root) {
             Ok(count) => count,
             Err(err) => {
                 error!(
+                    site = site.cache_dir_name(),
                     version = %version,
                     error = %err.message.as_str(),
                     "extraction failed"
@@ -335,6 +435,7 @@ async fn materialize_version(cfg: &Config, version: &str) -> Result<(), EdgeErro
             }
         };
         info!(
+            site = site.cache_dir_name(),
             version = %version,
             entry_count = extracted_entries,
             "extraction completed"
@@ -342,34 +443,33 @@ async fn materialize_version(cfg: &Config, version: &str) -> Result<(), EdgeErro
 
         let site_root = resolve_extracted_site_root(&extract_root)?;
         debug!(version = %version, path = ?site_root, "site root resolved");
-        copy_dir_recursive(&site_root, &staged_root)?;
-        fs::write(staged_root.join(".ready"), b"").map_err(io_500)?;
+        fs::write(site_root.join(".ready"), b"").map_err(io_500)?;
 
         if fs::metadata(&target_dir).is_ok() {
-            fs::remove_dir_all(&target_dir).map_err(io_500)?;
+            return Err(EdgeError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("cache directory for {version} exists but is not ready"),
+            ));
         }
-        fs::rename(&staged_root, &target_dir).map_err(io_500)?;
+        fs::rename(&site_root, &target_dir).map_err(io_500)?;
 
         Ok(())
     }
     .await;
 
     if let Err(err) = result {
-        if let Err(cleanup_err) = fs::remove_dir_all(&tmp_dir) {
-            warn!(path = ?tmp_dir, error = %cleanup_err, "failed to clean temp dir");
-        }
+        cleanup_temp_dir(&tmp_dir, &tarball_path, &extract_root);
         return Err(err);
     }
 
-    if let Err(cleanup_err) = fs::remove_dir_all(&tmp_dir) {
-        warn!(path = ?tmp_dir, error = %cleanup_err, "failed to clean temp dir");
-    }
+    cleanup_temp_dir(&tmp_dir, &tarball_path, &extract_root);
 
     if cfg.max_cache_bytes > 0 {
-        enforce_cache_limit(cfg);
+        enforce_cache_limit(cfg, site);
     }
 
     info!(
+        site = site.cache_dir_name(),
         version = %version,
         duration = ?start.elapsed(),
         "materialization completed"
@@ -378,17 +478,74 @@ async fn materialize_version(cfg: &Config, version: &str) -> Result<(), EdgeErro
     Ok(())
 }
 
+fn cleanup_temp_dir(tmp_dir: &Path, tarball_path: &Path, extract_root: &Path) {
+    if let Err(err) = fs::remove_file(tarball_path)
+        && err.kind() != io::ErrorKind::NotFound
+    {
+        warn!(path = ?tarball_path, error = %err, "failed to remove downloaded tarball");
+    }
+
+    for dir in [extract_root, tmp_dir] {
+        match fs::remove_dir(dir) {
+            Ok(()) => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                ) => {}
+            Err(err) => warn!(path = ?dir, error = %err, "failed to remove temp dir"),
+        }
+    }
+}
+
+async fn acquire_materialization_lock(
+    site: SiteKind,
+    version: &str,
+    lock_path: &Path,
+    ready: &Path,
+) -> Result<Option<MaterializationLock>, EdgeError> {
+    for attempt in 0..MATERIALIZATION_LOCK_ATTEMPTS {
+        if fs::metadata(ready).is_ok() {
+            info!(site = site.cache_dir_name(), version = %version, "version materialized while waiting");
+            return Ok(None);
+        }
+
+        match fs::create_dir(lock_path) {
+            Ok(()) => {
+                debug!(site = site.cache_dir_name(), version = %version, path = ?lock_path, "materialization lock acquired");
+                return Ok(Some(MaterializationLock {
+                    path: lock_path.to_path_buf(),
+                }));
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                if attempt % 50 == 0 {
+                    debug!(site = site.cache_dir_name(), version = %version, path = ?lock_path, attempt, "waiting for materialization lock");
+                }
+                wstd::task::sleep(WasiDuration::from_millis(MATERIALIZATION_LOCK_SLEEP_MS)).await;
+            }
+            Err(err) => return Err(io_500(err)),
+        }
+    }
+
+    Err(EdgeError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        format!("release site materialization for {version} is already in progress"),
+    ))
+}
+
 async fn download_release_tarball(
     cfg: &Config,
+    site: SiteKind,
     version: &str,
     dest: &Path,
 ) -> Result<u64, EdgeError> {
-    let asset_name = release_asset_name(&cfg.asset_name_template, version)?;
+    let (template_name, template) = cfg.asset_template(site);
+    let asset_name = release_asset_name(template_name, template, version)?;
     let start_url = format!(
         "https://github.com/{}/{}/releases/download/{}/{}",
         cfg.github_owner, cfg.github_repo, version, asset_name
     );
-    debug!(version = %version, url = %start_url, "constructed github download url");
+    debug!(site = site.cache_dir_name(), version = %version, url = %start_url, "constructed github download url");
 
     let mut temp_path = dest.as_os_str().to_owned();
     temp_path.push(".downloading");
@@ -407,6 +564,7 @@ async fn download_release_tarball(
 
         let response = client.send(request).await.map_err(|err| {
             error!(
+                site = site.cache_dir_name(),
                 version = %version,
                 status = %"request_error",
                 url = %url,
@@ -423,7 +581,7 @@ async fn download_release_tarball(
         if is_redirect_status(status) {
             redirects += 1;
             if redirects > 5 {
-                error!(version = %version, status = %status, url = %url, "download failed");
+                error!(site = site.cache_dir_name(), version = %version, status = %status, url = %url, "download failed");
                 return Err(EdgeError::new(
                     StatusCode::BAD_GATEWAY,
                     "too many redirects while downloading release asset",
@@ -435,7 +593,7 @@ async fn download_release_tarball(
                 .get("location")
                 .and_then(|value| value.to_str().ok())
             else {
-                error!(version = %version, status = %status, url = %url, "download failed");
+                error!(site = site.cache_dir_name(), version = %version, status = %status, url = %url, "download failed");
                 return Err(EdgeError::new(
                     StatusCode::BAD_GATEWAY,
                     "redirect response missing location header",
@@ -453,7 +611,7 @@ async fn download_release_tarball(
         }
 
         if status == StatusCode::NOT_FOUND {
-            error!(version = %version, status = %status, url = %url, "download failed");
+            error!(site = site.cache_dir_name(), version = %version, status = %status, url = %url, "download failed");
             return Err(EdgeError::new(
                 StatusCode::NOT_FOUND,
                 format!("release asset '{asset_name}' for {version} was not found"),
@@ -461,7 +619,7 @@ async fn download_release_tarball(
         }
 
         if !status.is_success() {
-            error!(version = %version, status = %status, url = %url, "download failed");
+            error!(site = site.cache_dir_name(), version = %version, status = %status, url = %url, "download failed");
             return Err(EdgeError::new(
                 StatusCode::BAD_GATEWAY,
                 format!("failed to download release asset for {version}: {status}"),
@@ -477,6 +635,7 @@ async fn download_release_tarball(
             && len > cfg.max_download_bytes
         {
             error!(
+                site = site.cache_dir_name(),
                 version = %version,
                 status = %status,
                 url = %url,
@@ -502,6 +661,7 @@ async fn download_release_tarball(
                         total_bytes = total_bytes.saturating_add(data.len() as u64);
                         if cfg.max_download_bytes > 0 && total_bytes > cfg.max_download_bytes {
                             error!(
+                                site = site.cache_dir_name(),
                                 version = %version,
                                 status = %status,
                                 url = %url,
@@ -523,6 +683,7 @@ async fn download_release_tarball(
                 }
                 Some(Err(err)) => {
                     error!(
+                        site = site.cache_dir_name(),
                         version = %version,
                         status = %status,
                         url = %url,
@@ -562,7 +723,7 @@ fn extract_release_tarball(tarball: &Path, extract_root: &Path) -> Result<usize,
 
     let decoder = GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
-    let mut entries = archive.entries().map_err(|err| {
+    let entries = archive.entries().map_err(|err| {
         EdgeError::new(
             StatusCode::BAD_GATEWAY,
             format!("release archive is invalid: {err}"),
@@ -570,7 +731,7 @@ fn extract_release_tarball(tarball: &Path, extract_root: &Path) -> Result<usize,
     })?;
     let mut extracted_entries = 0_usize;
 
-    while let Some(entry) = entries.next() {
+    for entry in entries {
         let mut entry = entry.map_err(|err| {
             EdgeError::new(
                 StatusCode::BAD_GATEWAY,
@@ -701,7 +862,11 @@ fn resolve_extracted_site_root(extract_root: &Path) -> Result<PathBuf, EdgeError
     ))
 }
 
-fn resolve_file_path(site_root: &Path, request_path: &str) -> Result<PathBuf, EdgeError> {
+fn resolve_file_path(
+    site_root: &Path,
+    request_path: &str,
+    allow_spa_fallback: bool,
+) -> Result<PathBuf, EdgeError> {
     let candidate = safe_join_under(site_root, Path::new(request_path)).map_err(|_| {
         EdgeError::new(
             StatusCode::NOT_FOUND,
@@ -729,6 +894,10 @@ fn resolve_file_path(site_root: &Path, request_path: &str) -> Result<PathBuf, Ed
         }
     }
 
+    if !allow_spa_fallback {
+        return Err(EdgeError::new(StatusCode::NOT_FOUND, "not found"));
+    }
+
     let basename = Path::new(request_path)
         .file_name()
         .and_then(|value| value.to_str())
@@ -748,7 +917,11 @@ fn resolve_file_path(site_root: &Path, request_path: &str) -> Result<PathBuf, Ed
     Err(EdgeError::new(StatusCode::NOT_FOUND, "not found"))
 }
 
-fn release_asset_name(template: &str, version: &str) -> Result<String, EdgeError> {
+fn release_asset_name(
+    template_name: &str,
+    template: &str,
+    version: &str,
+) -> Result<String, EdgeError> {
     if template.contains('{') {
         let mut i = 0usize;
         while let Some(rel) = template[i..].find('{') {
@@ -756,7 +929,7 @@ fn release_asset_name(template: &str, version: &str) -> Result<String, EdgeError
             let Some(end_rel) = template[start..].find('}') else {
                 return Err(EdgeError::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "ASSET_NAME_TEMPLATE may only use {version} placeholders",
+                    format!("{template_name} may only use {{version}} placeholders"),
                 ));
             };
             let end = start + end_rel;
@@ -764,7 +937,7 @@ fn release_asset_name(template: &str, version: &str) -> Result<String, EdgeError
             if key != "version" {
                 return Err(EdgeError::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "ASSET_NAME_TEMPLATE may only use {version} placeholders",
+                    format!("{template_name} may only use {{version}} placeholders"),
                 ));
             }
             i = end + 1;
@@ -774,7 +947,7 @@ fn release_asset_name(template: &str, version: &str) -> Result<String, EdgeError
     Ok(template.replace("{version}", version))
 }
 
-fn create_temp_dir(web_dir: &Path, version: &str) -> Result<PathBuf, EdgeError> {
+fn create_temp_dir(site: SiteKind, site_dir: &Path, version: &str) -> Result<PathBuf, EdgeError> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| {
@@ -786,7 +959,10 @@ fn create_temp_dir(web_dir: &Path, version: &str) -> Result<PathBuf, EdgeError> 
         .as_nanos();
 
     for attempt in 0_u32..100 {
-        let candidate = web_dir.join(format!(".web-{version}-{nanos}-{attempt}"));
+        let candidate = site_dir.join(format!(
+            ".{}-{version}-{nanos}-{attempt}",
+            site.cache_dir_name()
+        ));
         match fs::create_dir(&candidate) {
             Ok(()) => {
                 debug!(path = ?candidate, "temp dir created");
@@ -808,39 +984,21 @@ fn create_temp_dir(web_dir: &Path, version: &str) -> Result<PathBuf, EdgeError> 
     ))
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), EdgeError> {
-    fs::create_dir_all(dst).map_err(io_500)?;
-    for entry in fs::read_dir(src).map_err(io_500)? {
-        let entry = entry.map_err(io_500)?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        let file_type = entry.file_type().map_err(io_500)?;
-
-        if file_type.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else if file_type.is_file() {
-            trace!(from = ?from, to = ?to, "copying file");
-            fs::copy(&from, &to).map_err(io_500)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn enforce_cache_limit(cfg: &Config) {
+fn enforce_cache_limit(cfg: &Config, site: SiteKind) {
     if cfg.max_cache_bytes == 0 {
         return;
     }
 
-    let web_dir = cfg.web_cache_dir();
-    let mut total_bytes = match dir_size_recursive(&web_dir) {
+    let site_dir = cfg.site_cache_dir(site);
+    let mut total_bytes = match dir_size_recursive(&site_dir) {
         Ok(total) => total,
         Err(err) => {
-            warn!(path = ?web_dir, error = %err, "failed to compute cache size");
+            warn!(site = site.cache_dir_name(), path = ?site_dir, error = %err, "failed to compute cache size");
             return;
         }
     };
     debug!(
+        site = site.cache_dir_name(),
         total_bytes = total_bytes,
         max_bytes = cfg.max_cache_bytes,
         "cache limit check"
@@ -851,7 +1009,7 @@ fn enforce_cache_limit(cfg: &Config) {
     }
 
     let mut candidates: Vec<(SystemTime, PathBuf, u64)> = Vec::new();
-    let read_dir = match fs::read_dir(&web_dir) {
+    let read_dir = match fs::read_dir(&site_dir) {
         Ok(entries) => entries,
         Err(_) => return,
     };
@@ -907,13 +1065,13 @@ fn enforce_cache_limit(cfg: &Config) {
             break;
         }
 
-        info!(version = %name, bytes_freed = size, path = ?version_dir, "cache eviction");
+        info!(site = site.cache_dir_name(), version = %name, bytes_freed = size, path = ?version_dir, "cache eviction");
         match fs::remove_dir_all(&version_dir) {
             Ok(()) => {
                 total_bytes = total_bytes.saturating_sub(size);
             }
             Err(err) => {
-                warn!(path = ?version_dir, error = %err, "failed to evict cached web version");
+                warn!(site = site.cache_dir_name(), path = ?version_dir, error = %err, "failed to evict cached site version");
             }
         }
     }
@@ -1017,6 +1175,29 @@ fn root_redirect(cfg: &Config, query: Option<&str>) -> Response<Body> {
         .header("content-length", "0")
         .body(Body::empty())
         .expect("root redirect response should build")
+}
+
+fn docs_live_redirect(cfg: &Config, path: &str, query: Option<&str>) -> Response<Body> {
+    let mut from = path.to_string();
+    if let Some(query) = query {
+        from.push('?');
+        from.push_str(query);
+    }
+
+    let mut location = format!("/{}{}", cfg.live_version, path);
+    if let Some(query) = query {
+        location.push('?');
+        location.push_str(query);
+    }
+    debug!(from = %from, to = %location, "issuing redirect");
+
+    Response::builder()
+        .status(StatusCode::TEMPORARY_REDIRECT)
+        .header("location", location)
+        .header("cache-control", "no-store")
+        .header("content-length", "0")
+        .body(Body::empty())
+        .expect("docs live redirect response should build")
 }
 
 fn device_permissions_redirect(from_path: &str) -> Response<Body> {

@@ -58,26 +58,31 @@ ingress_dns_tls:
     current_hostnames:
       - fastboop.win
       - www.fastboop.win
+      - docs.fastboop.win
       - flux.fastboop.win
       - matrix.fastboop.win
   tls:
     managed_by: foundational cert-manager
     issuer: ClusterIssuer/letsencrypt (pre-existing)
-  web_release_app:
+  release_site_app:
     component: infra/k8s/frontdoor-edge
     workload: fastboop/frontdoor-edge
     gateway_service: wasmcloud/runtime-gateway
     hosts:
       - www.fastboop.win
+      - docs.fastboop.win
     route_contract:
-      - / serves the configured live release version.
-      - /vX.Y.Z(-rc.N)/ serves that explicit tagged release.
+      - www.fastboop.win / redirects to the configured live release version.
+      - docs.fastboop.win / redirects to the configured live release version.
+      - docs.fastboop.win unversioned paths redirect under /vX.Y.Z(-rc.N)/.
+      - /vX.Y.Z(-rc.N)/ serves that explicit tagged release for the requested host.
       - release bundles are lazy-fetched and extracted from GitHub release assets.
-    release_asset:
+    release_assets:
       source_repo: samcday/fastboop
-      name_template: fastboop-web-{version}.tar.gz
+      web_name_template: fastboop-web-{version}.tar.gz
+      docs_name_template: fastboop-docs-{version}.tar.gz
       live_version_file: "infra/k8s/live-version.txt (env-file format: LIVE_VERSION=vX.Y.Z[-rc.N])"
-      live_version_source: .github/workflows/ci.yml release event pushes this pin to main
+      live_version_source: .github/workflows/release.yml release event pushes this pin to main
 
 gha_proxy:
   namespace: fastboop
@@ -110,7 +115,7 @@ layout_and_conventions:
   - Store secrets in infra/k8s as SOPS-encrypted manifests.
   - Keep external DNS behavior explicit via annotations on routed entry resources (HTTPRoute/Service).
   - Keep public host/path routing explicit in HTTPRoutes plus frontdoor Caddyfile rules.
-  - Keep web release live version pin in infra/k8s/live-version.txt as an env-file entry named LIVE_VERSION.
+  - Keep release-site live version pin in infra/k8s/live-version.txt as an env-file entry named LIVE_VERSION.
 
 secrets_and_encryption:
   sops_config: infra/k8s/.sops.yaml
