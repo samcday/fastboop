@@ -69,7 +69,6 @@ pub enum BootProfileRootfsFilesystemBin {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BootProfileStage0Bin {
     pub kernel_modules: Vec<String>,
-    pub inject_mac: Option<InjectMacBin>,
     pub devices: BTreeMap<String, BootProfileDeviceBin>,
 }
 
@@ -341,7 +340,6 @@ impl From<BootProfileStage0> for BootProfileStage0Bin {
     fn from(stage0: BootProfileStage0) -> Self {
         Self {
             kernel_modules: stage0.kernel_modules,
-            inject_mac: stage0.inject_mac.map(InjectMacBin::from),
             devices: stage0
                 .devices
                 .into_iter()
@@ -355,7 +353,6 @@ impl From<BootProfileStage0Bin> for BootProfileStage0 {
     fn from(stage0: BootProfileStage0Bin) -> Self {
         Self {
             kernel_modules: stage0.kernel_modules,
-            inject_mac: stage0.inject_mac.map(InjectMac::from),
             devices: stage0
                 .devices
                 .into_iter()

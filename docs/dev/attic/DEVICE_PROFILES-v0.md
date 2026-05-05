@@ -121,12 +121,12 @@ Those belong elsewhere.
 
 ## Stage0 MAC injection
 
-Stage0 MAC injection now belongs to Boot Profiles. Optional `stage0.inject_mac` entries there identify target nodes by `compatible` string and inject deterministic addresses into the DTB used by stage0:
+Stage0 MAC injection now belongs to Boot Profiles. Optional `stage0.devices.<device-profile-id>.stage0.inject_mac` entries identify target nodes by `compatible` string and inject deterministic addresses into the DTB used by stage0:
 
 - `wifi` writes `local-mac-address` using MSB order
 - `bluetooth` writes `local-bd-address` using LSB order
 
-Both fields are optional; omit BootProfile `stage0.inject_mac` entirely if no injection is needed.
+Both fields are optional; omit the per-device BootProfile `stage0.devices.<device-profile-id>.stage0.inject_mac` entirely if no injection is needed.
 
 ---
 

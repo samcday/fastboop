@@ -116,14 +116,14 @@ pub fn resolve_effective_boot_profile_stage0(
     let mut dt_overlays = profile.dt_overlays.clone();
     let mut kernel_modules = profile.stage0.kernel_modules.clone();
     let mut extra_cmdline = profile.extra_cmdline.clone();
-    let mut inject_mac = profile.stage0.inject_mac.clone();
+    let mut inject_mac = None;
 
     if let Some(device) = profile.stage0.devices.get(device_profile_id) {
         dt_overlays.extend(device.dt_overlays.iter().cloned());
         kernel_modules.extend(device.stage0.kernel_modules.iter().cloned());
         extra_cmdline =
             join_cmdline_parts(extra_cmdline.as_deref(), device.extra_cmdline.as_deref());
-        inject_mac = merge_inject_mac(inject_mac.as_ref(), device.stage0.inject_mac.as_ref());
+        inject_mac = device.stage0.inject_mac.clone();
     }
 
     EffectiveBootProfileStage0 {
@@ -132,22 +132,6 @@ pub fn resolve_effective_boot_profile_stage0(
         kernel_modules,
         inject_mac,
     }
-}
-
-fn merge_inject_mac(
-    primary: Option<&InjectMac>,
-    secondary: Option<&InjectMac>,
-) -> Option<InjectMac> {
-    let wifi = secondary
-        .and_then(|mac| mac.wifi.clone())
-        .or_else(|| primary.and_then(|mac| mac.wifi.clone()));
-    let bluetooth = secondary
-        .and_then(|mac| mac.bluetooth.clone())
-        .or_else(|| primary.and_then(|mac| mac.bluetooth.clone()));
-    if wifi.is_none() && bluetooth.is_none() {
-        return None;
-    }
-    Some(InjectMac { wifi, bluetooth })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
