@@ -97,6 +97,13 @@ jobs:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
 
+  docs:
+    needs: [gate, release]
+    if: needs.gate.outputs.enabled == 'true'
+    uses: ./.github/workflows/docs.yml
+    with:
+      release_tag: ${{ needs.gate.outputs.tag }}
+
   stage0-preflight:
     needs: [gate, release, ci]
     if: needs.gate.outputs.enabled == 'true'
@@ -176,7 +183,7 @@ jobs:
           just publish
 
   publish-assets:
-    needs: [gate, release, ci, stage0-preflight, debian, alpine]
+    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine]
     if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -230,6 +237,11 @@ jobs:
           name: fastboop-web
           path: release-artifacts/fastboop-web
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: fastboop-docs
+          path: release-artifacts/fastboop-docs
+
       - name: Prepare release assets
         run: |
           set -euo pipefail
@@ -249,6 +261,7 @@ jobs:
           cp release-artifacts/packages-aarch64/*.apk release-assets/
 
           tar -C release-artifacts/fastboop-web -czf "release-assets/fastboop-web-${{ needs.gate.outputs.tag }}.tar.gz" .
+          tar -C release-artifacts/fastboop-docs -czf "release-assets/fastboop-docs-${{ needs.gate.outputs.tag }}.tar.gz" .
 
           (
             cd release-assets
@@ -269,6 +282,7 @@ jobs:
           compgen -G 'release-assets/*.deb' >/dev/null
           compgen -G 'release-assets/*.apk' >/dev/null
           compgen -G 'release-assets/fastboop-web-*.tar.gz' >/dev/null
+          compgen -G 'release-assets/fastboop-docs-*.tar.gz' >/dev/null
 
       - if: needs.gate.outputs.mode == 'tag'
         name: Require release automation token
@@ -296,11 +310,12 @@ jobs:
             release-assets/APKBUILD
             release-assets/*.apk
             release-assets/fastboop-web-*.tar.gz
+            release-assets/fastboop-docs-*.tar.gz
             release-assets/SHA256SUMS
 
   pass:
     name: "✅ Pass"
-    needs: [gate, release, ci, stage0-preflight, debian, alpine, publish-assets, publish-release, publish-crates, bump-web-version]
+    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine, publish-assets, publish-release, publish-crates, bump-web-version]
     runs-on: ubuntu-latest
     if: always() && needs.gate.outputs.enabled == 'true'
     steps:

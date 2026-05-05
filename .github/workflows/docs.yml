@@ -1,7 +1,21 @@
 name: docs
 
 on:
+  workflow_call:
+    inputs:
+      release_tag:
+        required: false
+        type: string
+        default: ""
   push:
+    branches:
+      - main
+    paths:
+      - mkdocs.yml
+      - docs/**
+      - requirements-docs.txt
+      - .github/workflows/docs.yml
+  pull_request:
     branches:
       - main
     paths:
@@ -12,10 +26,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -29,16 +43,45 @@ jobs:
       - name: Install docs dependencies
         run: pip install -r requirements-docs.txt
 
+      - name: Resolve docs site URL
+        id: docs-site
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [[ -n "$RELEASE_TAG" ]]; then
+            echo "site_url=https://docs.fastboop.win/${RELEASE_TAG}/" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" =~ ^v[0-9] ]]; then
+            echo "site_url=https://docs.fastboop.win/${{ github.ref_name }}/" >> "$GITHUB_OUTPUT"
+          else
+            echo "site_url=https://docs.fastboop.win/" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write release docs config
+        env:
+          DOCS_SITE_URL: ${{ steps.docs-site.outputs.site_url }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          lines = Path("mkdocs.yml").read_text(encoding="utf-8").splitlines()
+          site_url = f"site_url: {os.environ['DOCS_SITE_URL']}"
+
+          for index, line in enumerate(lines):
+              if line.startswith("site_url:"):
+                  lines[index] = site_url
+                  break
+          else:
+              lines.insert(1, site_url)
+
+          Path(".mkdocs.generated.yml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
       - name: Build docs site
-        run: mkdocs build --strict
+        run: mkdocs build --strict --config-file .mkdocs.generated.yml
 
-      - name: Set Pages CNAME
-        run: echo "docs.fastboop.win" > site/CNAME
-
-      - name: Deploy to gh-pages
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Upload docs build artifact
+        uses: actions/upload-artifact@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: ./site
-          force_orphan: true
+          name: fastboop-docs
+          path: site
