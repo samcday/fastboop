@@ -84,9 +84,6 @@ stage0:
   kernel_modules:
     - dwc3
     - dwc3-qcom
-  inject_mac:
-    bluetooth: qcom,wcn3990-bt
-    wifi: qcom,wcn3990-wifi
   devices:
     oneplus-fajita:
       dt_overlays:
@@ -105,13 +102,17 @@ stage0:
       stage0:
         kernel_modules:
           - gcc-sdm845
+        inject_mac:
+          bluetooth: qcom,wcn3990-bt
+          wifi: qcom,wcn3990-wifi
 ```
 
 ## Validation Highlights
 
 - `rootfs` schema supports `erofs`, `ext4`, and `fat`.
 - Stage0 lower-root currently accepts `erofs` and `ext4`; use `fat` for kernel/dtbs source pipelines.
-- `stage0.kernel_modules` and `stage0.inject_mac` may be global or scoped under `stage0.devices.<device-profile-id>.stage0`; device-specific values append modules and override MAC injection fields.
+- `stage0.kernel_modules` may be global or scoped under `stage0.devices.<device-profile-id>.stage0`; device-specific modules append to global modules.
+- `stage0.devices.<device-profile-id>.stage0.inject_mac` is device-scoped only. It identifies target nodes by `compatible` string for the selected device DTB.
 - Artifact pipeline validation/limits come from `gibblox-pipeline` (`MAX_PIPELINE_DEPTH=16`).
 - Terminal stages (`http`, `casync`, `file`) must include `content` metadata (`digest`, `size_bytes`). `bootprofile create` auto-populates `content` for bare local `file` sources by hashing the referenced path, so hand-authored manifests pointing at `pmbootstrap export` output (or any other local artifact) can omit it.
 - Wrapper stages (`xz`, `android_sparseimg`, `mbr`, `gpt`) may include optional `content` metadata.

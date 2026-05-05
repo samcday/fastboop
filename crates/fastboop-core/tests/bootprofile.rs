@@ -406,7 +406,7 @@ fn sample_profile() -> BootProfile {
                 kernel_modules: vec!["qcom-foo".to_string()],
                 inject_mac: Some(InjectMac {
                     wifi: Some("qcom,wcn3990-wifi-device".to_string()),
-                    bluetooth: None,
+                    bluetooth: Some("qcom,wcn3990-bt".to_string()),
                 }),
             },
         },
@@ -430,10 +430,6 @@ fn sample_profile() -> BootProfile {
         extra_cmdline: Some("selinux=0".to_string()),
         stage0: BootProfileStage0 {
             kernel_modules: vec!["erofs".to_string()],
-            inject_mac: Some(InjectMac {
-                wifi: Some("qcom,wcn3990-wifi".to_string()),
-                bluetooth: Some("qcom,wcn3990-bt".to_string()),
-            }),
             devices,
         },
     }

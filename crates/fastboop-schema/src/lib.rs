@@ -297,7 +297,6 @@ impl BootProfileManifest {
             extra_cmdline: self.extra_cmdline.clone(),
             stage0: BootProfileStage0 {
                 kernel_modules: self.stage0.kernel_modules.clone(),
-                inject_mac: self.stage0.inject_mac.clone(),
                 devices,
             },
         })
@@ -310,15 +309,13 @@ impl BootProfileManifest {
 pub struct BootProfileManifestStage0 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kernel_modules: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inject_mac: Option<InjectMac>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub devices: BTreeMap<String, BootProfileManifestDevice>,
 }
 
 impl BootProfileManifestStage0 {
     pub fn is_empty(&self) -> bool {
-        self.kernel_modules.is_empty() && self.inject_mac.is_none() && self.devices.is_empty()
+        self.kernel_modules.is_empty() && self.devices.is_empty()
     }
 }
 
@@ -413,7 +410,6 @@ impl BootProfile {
             extra_cmdline: self.extra_cmdline.clone(),
             stage0: BootProfileManifestStage0 {
                 kernel_modules: self.stage0.kernel_modules.clone(),
-                inject_mac: self.stage0.inject_mac.clone(),
                 devices,
             },
         })
@@ -426,15 +422,13 @@ impl BootProfile {
 pub struct BootProfileStage0 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kernel_modules: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inject_mac: Option<InjectMac>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub devices: BTreeMap<String, BootProfileDevice>,
 }
 
 impl BootProfileStage0 {
     pub fn is_empty(&self) -> bool {
-        self.kernel_modules.is_empty() && self.inject_mac.is_none() && self.devices.is_empty()
+        self.kernel_modules.is_empty() && self.devices.is_empty()
     }
 }
 

@@ -405,7 +405,7 @@ rootfs:
     }
 
     #[test]
-    fn parses_stage0_kernel_modules_and_inject_mac_yaml() {
+    fn parses_stage0_kernel_modules_and_device_inject_mac_yaml() {
         let manifest: BootProfileManifest = serde_yaml::from_str(
             r#"
 id: pmos-fajita
@@ -415,28 +415,19 @@ rootfs:
 stage0:
   kernel_modules:
     - dwc3
-  inject_mac:
-    bluetooth: qcom,wcn3990-bt
   devices:
     oneplus-fajita:
       stage0:
         kernel_modules:
           - gcc-sdm845
         inject_mac:
+          bluetooth: qcom,wcn3990-bt
           wifi: qcom,wcn3990-wifi
 "#,
         )
         .expect("parse manifest");
 
         assert_eq!(manifest.stage0.kernel_modules, vec!["dwc3".to_string()]);
-        assert_eq!(
-            manifest
-                .stage0
-                .inject_mac
-                .as_ref()
-                .and_then(|mac| mac.bluetooth.as_deref()),
-            Some("qcom,wcn3990-bt")
-        );
         let device = manifest
             .stage0
             .devices
@@ -451,6 +442,32 @@ stage0:
                 .and_then(|mac| mac.wifi.as_deref()),
             Some("qcom,wcn3990-wifi")
         );
+        assert_eq!(
+            device
+                .stage0
+                .inject_mac
+                .as_ref()
+                .and_then(|mac| mac.bluetooth.as_deref()),
+            Some("qcom,wcn3990-bt")
+        );
+    }
+
+    #[test]
+    fn rejects_global_stage0_inject_mac_yaml() {
+        let err = serde_yaml::from_str::<BootProfileManifest>(
+            r#"
+id: pmos-fajita
+rootfs:
+  erofs:
+    file: ./images/rootfs.ero
+stage0:
+  inject_mac:
+    bluetooth: qcom,wcn3990-bt
+"#,
+        )
+        .expect_err("global inject_mac should be rejected");
+
+        assert!(err.to_string().contains("inject_mac"));
     }
 
     #[test]
