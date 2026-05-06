@@ -17,7 +17,7 @@ cleanup:
   - /libexec/stage0
   # in current stetup, stage0 binary is embedded into the fastboop binary
   # after embedding it's being cleaned up from disk
-  # TODO: stop embedding it and keep it as a separte file
+  # TODO: stop embedding it and keep it as a separate file
 add-build-extensions:
   org.freedesktop.Sdk.Extension.rust-stable:
     # required by both fastboop and stage0

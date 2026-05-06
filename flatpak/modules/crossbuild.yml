@@ -5,7 +5,7 @@
 # including that extension in the manifest breaks build for aarch64
 #
 # since 25.05 both following extension was removed for unclear reasons:
-# - org.freedesktop.Sdk.Compat.aarch64 and
+# - org.freedesktop.Sdk.Compat.aarch64
 # - org.freedesktop.Sdk.Extension.toolchain-aarch64
 #
 # https://gitlab.com/freedesktop-sdk/freedesktop-sdk/-/commit/1437fab
