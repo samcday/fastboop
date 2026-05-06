@@ -1,5 +1,5 @@
 app-id: win.fastboop.fastboop
-runtime-version: '49'
+runtime-version: '50'
 runtime: org.gnome.Platform
 sdk: org.gnome.Sdk
 # gnome runtime/sdk required for webkitgtk
