@@ -66,7 +66,9 @@ ingress_dns_tls:
     issuer: ClusterIssuer/letsencrypt (pre-existing)
   release_site_app:
     component: infra/k8s/frontdoor-edge
-    workload: fastboop/frontdoor-edge
+    workloads:
+      - fastboop/frontdoor-edge
+      - fastboop/frontdoor-edge-docs
     gateway_service: wasmcloud/runtime-gateway
     hosts:
       - www.fastboop.win

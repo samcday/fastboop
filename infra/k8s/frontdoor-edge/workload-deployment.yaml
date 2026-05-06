@@ -13,6 +13,10 @@ spec:
           image: ghcr.io/samcday/fastboop-frontdoor-edge:1778041479 # {"$imagepolicy": "fastboop:frontdoor-edge"}
           localResources:
             environment:
+              config:
+                # Pin split workloads to their site instead of relying on
+                # the Host value forwarded through the wasmCloud runtime.
+                FRONTDOOR_DEV_SITE: web
               configFrom:
                 - name: live-version
             allowedHosts:
@@ -49,6 +53,10 @@ spec:
           image: ghcr.io/samcday/fastboop-frontdoor-edge:1778041479 # {"$imagepolicy": "fastboop:frontdoor-edge"}
           localResources:
             environment:
+              config:
+                # Pin split workloads to their site instead of relying on
+                # the Host value forwarded through the wasmCloud runtime.
+                FRONTDOOR_DEV_SITE: docs
               configFrom:
                 - name: live-version
             allowedHosts:
