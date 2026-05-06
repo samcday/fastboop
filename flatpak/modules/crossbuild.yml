@@ -20,18 +20,38 @@ sources:
     url: https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/os/Packages/b/binutils-aarch64-linux-gnu-2.45-1.fc43.x86_64.rpm
     sha256: ada6dfaf5169aeee6afd80d138169f2f53293b6104d4d132e438cef55ca01589
     dest: binutils-aarch64-linux-gnu
+    x-checker-data:
+      type: json
+      url: https://mdapi.fedoraproject.org/f44/pkg/binutils-aarch64-linux-gnu
+      version-query: '"\(.version)-\(.release)"'
+      url-query: '"https://kojipkgs.fedoraproject.org/packages/cross-binutils/\(.version)/\(.release)/\(.arch)/\(.basename)-\(.version)-\(.release).\(.arch).rpm"'
   - type: archive
     url: https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/os/Packages/g/gcc-aarch64-linux-gnu-15.2.1-1.fc43.x86_64.rpm
     sha256: 6496695ab47fb166e07b15c4d200edd6a735d1c93d7b24bfdd3d6c5ce3ecac87
     dest: gcc-aarch64-linux-gnu
+    x-checker-data:
+      type: json
+      url: https://mdapi.fedoraproject.org/f44/pkg/gcc-aarch64-linux-gnu
+      version-query: '"\(.version)-\(.release)"'
+      url-query: '"https://kojipkgs.fedoraproject.org/packages/cross-gcc/\(.version)/\(.release)/\(.arch)/\(.basename)-\(.version)-\(.release).\(.arch).rpm"'
   - type: archive
     url: https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/os/Packages/c/cross-gcc-common-15.2.1-1.fc43.noarch.rpm
     sha256: 83285f13f9a391ba661fa31875e05f6d42382fada1d564ba43d804390c6350b1
     dest: cross-gcc-common
+    x-checker-data:
+      type: json
+      url: https://mdapi.fedoraproject.org/f44/pkg/cross-gcc-common
+      version-query: '"\(.version)-\(.release)"'
+      url-query: '"https://kojipkgs.fedoraproject.org/packages/cross-gcc/\(.version)/\(.release)/\(.arch)/\(.basename)-\(.version)-\(.release).\(.arch).rpm"'
   - type: archive
     url: https://static.rust-lang.org/dist/rust-std-1.94.0-aarch64-unknown-linux-gnu.tar.xz
     sha256: c781b3ef4fefa5508fbe05820eddc95e46351d905a30921cc020febd9c596a2e
     dest: rust
+    x-checker-data:
+      type: rust
+      package: rust-std
+      channel: stable
+      target: aarch64-unknown-linux-gnu
 build-commands:
   - mkdir -p /app/crossbuild/rust
   - mkdir -p /app/usr/lib/
