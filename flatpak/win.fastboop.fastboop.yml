@@ -55,9 +55,8 @@ modules:
       - type: dir
         path: ..
     build-commands:
-      - cargo build --locked --release -p fastboop-cli -p fastboop-desktop
+      - cargo build --locked --release -p fastboop-cli
       - install -Dm755 target/release/fastboop /app/bin/fastboop
-      - install -Dm755 target/release/fastboop-desktop /app/bin/fastboop-desktop
       - install -Dm644 packages/desktop/assets/main.css /app/bin/assets/main.css
       - install -Dm644 packages/ui/assets/styling/hero.css /app/bin/assets/styling/hero.css
       - install -Dm644 packages/ui/assets/styling/smoo_stats.css /app/bin/assets/styling/smoo_stats.css
