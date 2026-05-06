@@ -69,7 +69,9 @@ ingress_dns_tls:
     workloads:
       - fastboop/frontdoor-edge
       - fastboop/frontdoor-edge-docs
-    gateway_service: wasmcloud/runtime-gateway
+    route_services:
+      - fastboop/frontdoor-edge
+      - fastboop/frontdoor-edge-docs
     hosts:
       - www.fastboop.win
       - docs.fastboop.win

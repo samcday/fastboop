@@ -4,6 +4,9 @@ metadata:
   name: frontdoor-edge
 spec:
   replicas: 1
+  kubernetes:
+    service:
+      name: frontdoor-edge
   template:
     spec:
       hostSelector:
@@ -44,6 +47,9 @@ metadata:
   name: frontdoor-edge-docs
 spec:
   replicas: 1
+  kubernetes:
+    service:
+      name: frontdoor-edge-docs
   template:
     spec:
       hostSelector:
