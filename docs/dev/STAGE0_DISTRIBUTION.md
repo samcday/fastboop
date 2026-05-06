@@ -44,9 +44,9 @@ Local development fallback paths include:
 
 Package-style sidecar paths include target-device payload locations under:
 
-- `/usr/lib/fastboop/stage0/`
-- `/usr/local/lib/fastboop/stage0/`
-- `/app/lib/fastboop/stage0/`
+- `/usr/lib/fastboop/stage0/stage0-aarch64`
+- `/usr/local/lib/fastboop/stage0/stage0-aarch64`
+- `/app/lib/fastboop/stage0/stage0-aarch64`
 
 Release tarballs may also place `fastboop-stage0-*` beside `fastboop` or under a sibling `stage0/` directory.
 
@@ -61,10 +61,13 @@ Release tarballs may also place `fastboop-stage0-*` beside `fastboop` or under a
 
 Strict package builds should install stage0 as a data payload for target devices, not as a host executable helper.
 
+Installed sidecar payloads must be statically linked. Official fastboop release
+assets use musl; downstream or Flatpak builds may use glibc only if the installed
+sidecar remains static or static-pie linked.
+
 Preferred sidecar layout:
 
-- `/usr/lib/fastboop/stage0/fastboop-stage0-aarch64-unknown-linux-musl`
-- `/usr/lib/fastboop/stage0/fastboop-stage0-aarch64-unknown-linux-gnu` when a distro build intentionally produces a GNU-linked payload
+- `/usr/lib/fastboop/stage0/stage0-aarch64`
 
 Flatpak builds use the same layout under `/app/lib/fastboop/stage0/`.
 
