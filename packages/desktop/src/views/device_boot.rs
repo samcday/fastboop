@@ -245,6 +245,7 @@ async fn build_stage0_artifacts(
         nonempty(boot_config.extra_kargs.as_str()),
         Some(SMOO_MAX_IO_BYTES_KARG),
     );
+    let stage0_binary = crate::stage0_binary::load_stage0_binary().context("load stage0 binary")?;
 
     let (tx, rx) = oneshot::channel();
     std::thread::Builder::new()
@@ -328,7 +329,7 @@ async fn build_stage0_artifacts(
                         &profile,
                         &provider,
                         &stage0_opts,
-                        stage0_binary_ready(None),
+                        stage0_binary_ready(Some(stage0_binary)),
                         nonempty(&extra_kargs),
                         None,
                     )

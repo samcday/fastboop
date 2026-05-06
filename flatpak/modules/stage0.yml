@@ -17,16 +17,17 @@ build-options:
       prepend-path: /app/crossbuild/bin:/app/lib/sdk/rust-stable/bin:/app/lib/sdk/llvm21/bin
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: /app/lib/sdk/llvm21/bin/clang
-        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "--sysroot=/app/crossbuild/rust -C link-arg=--target=aarch64-linux-gnu -C link-arg=--sysroot=/app -C link-arg=--gcc-toolchain=/app/crossbuild -C link-arg=-fuse-ld=lld -C link-arg=-L/app/usr/lib/aarch64-linux-gnu"
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-feature=+crt-static --sysroot=/app/crossbuild/rust -C link-arg=--target=aarch64-linux-gnu -C link-arg=--sysroot=/app -C link-arg=--gcc-toolchain=/app/crossbuild -C link-arg=-fuse-ld=lld -C link-arg=-L/app/usr/lib/aarch64-linux-gnu"
         BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include/x86_64-linux-gnu
     aarch64:
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: gcc
-        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "--sysroot=/app/lib/sdk/rust-stable"
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-feature=+crt-static --sysroot=/app/lib/sdk/rust-stable"
         BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include/aarch64-linux-gnu
 sources:
   - type: dir
     path: ../..
 build-commands:
   - cargo build --locked --release --target aarch64-unknown-linux-gnu -p fastboop-stage0
-  - install -Dm755 target/aarch64-unknown-linux-gnu/release/fastboop-stage0 /app/libexec/stage0
+  - install -Dm755 target/aarch64-unknown-linux-gnu/release/fastboop-stage0 /app/lib/fastboop/stage0/stage0-aarch64
+  - sh -c 'llvm-readelf -l /app/lib/fastboop/stage0/stage0-aarch64 > /tmp/fastboop-stage0-headers && ! grep -q INTERP /tmp/fastboop-stage0-headers'
