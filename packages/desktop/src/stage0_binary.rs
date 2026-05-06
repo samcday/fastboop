@@ -1,8 +1,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
-use fastboop_stage0_generator::cpio_contains_path;
+use anyhow::{bail, Context, Result};
 
 const STAGE0_PATH_ENV: &str = "FASTBOOP_STAGE0_PATH";
 const STAGE0_FILE_NAME: &str = "stage0-aarch64";
@@ -13,27 +12,8 @@ const SIBLING_STAGE0_FILE_NAMES: &[&str] = &[
     "fastboop-stage0",
 ];
 
-#[cfg(feature = "embed-stage0")]
-const EMBEDDED_STAGE0_BINARY: &[u8] = include_bytes!(env!("FASTBOOP_STAGE0_EMBED_PATH"));
-
-pub(crate) fn load_stage0_binary_for_initrd(
-    explicit_path: Option<&Path>,
-    existing_cpio: Option<&[u8]>,
-) -> Result<Option<Vec<u8>>> {
-    let env_path = env_stage0_path();
-    if explicit_path.is_none() && env_path.is_none() && existing_cpio_has_init(existing_cpio)? {
-        return Ok(None);
-    }
-
-    load_stage0_binary(explicit_path, env_path).map(Some)
-}
-
-fn load_stage0_binary(explicit_path: Option<&Path>, env_path: Option<PathBuf>) -> Result<Vec<u8>> {
-    if let Some(path) = explicit_path {
-        return read_stage0_binary(path, "--stage0");
-    }
-
-    if let Some(path) = env_path {
+pub(crate) fn load_stage0_binary() -> Result<Vec<u8>> {
+    if let Some(path) = env_stage0_path() {
         return read_stage0_binary(&path, STAGE0_PATH_ENV);
     }
 
@@ -44,32 +24,7 @@ fn load_stage0_binary(explicit_path: Option<&Path>, env_path: Option<PathBuf>) -
         }
     }
 
-    if let Some(data) = embedded_stage0_binary() {
-        if data.is_empty() {
-            bail!("embedded stage0 binary is empty");
-        }
-        return Ok(data.to_vec());
-    }
-
     bail!(missing_stage0_message(&candidates))
-}
-
-#[cfg(feature = "embed-stage0")]
-fn embedded_stage0_binary() -> Option<&'static [u8]> {
-    Some(EMBEDDED_STAGE0_BINARY)
-}
-
-#[cfg(not(feature = "embed-stage0"))]
-fn embedded_stage0_binary() -> Option<&'static [u8]> {
-    None
-}
-
-fn existing_cpio_has_init(existing_cpio: Option<&[u8]>) -> Result<bool> {
-    let Some(existing_cpio) = existing_cpio else {
-        return Ok(false);
-    };
-    cpio_contains_path(existing_cpio, "init")
-        .map_err(|err| anyhow::anyhow!("inspect existing initrd for /init: {err:?}"))
 }
 
 fn env_stage0_path() -> Option<PathBuf> {
@@ -96,11 +51,11 @@ fn default_stage0_candidates() -> Vec<PathBuf> {
         push_workspace_candidates_from(&mut out, &cwd);
     }
 
-    if let Ok(exe) = env::current_exe()
-        && let Some(exe_dir) = exe.parent()
-    {
-        push_sibling_candidates(&mut out, exe_dir);
-        push_workspace_candidates_from(&mut out, exe_dir);
+    if let Ok(exe) = env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            push_sibling_candidates(&mut out, exe_dir);
+            push_workspace_candidates_from(&mut out, exe_dir);
+        }
     }
 
     push_package_candidates(&mut out);
@@ -152,7 +107,7 @@ fn push_unique(out: &mut Vec<PathBuf>, path: PathBuf) {
 
 fn missing_stage0_message(candidates: &[PathBuf]) -> String {
     let mut message = format!(
-        "stage0 binary not found; build it first with `cargo build --release --target aarch64-unknown-linux-musl -p fastboop-stage0`, pass `--stage0 <PATH>`, or set `{STAGE0_PATH_ENV}`"
+        "stage0 binary not found; build it first with `cargo build --release --target aarch64-unknown-linux-musl -p fastboop-stage0`, install it to `/app/lib/fastboop/stage0/{STAGE0_FILE_NAME}`, or set `{STAGE0_PATH_ENV}`"
     );
     if !candidates.is_empty() {
         message.push_str("; searched: ");

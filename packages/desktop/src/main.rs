@@ -30,6 +30,7 @@ impl StartupChannelIntake {
 
 use views::{DevicePage, Home, SessionStore};
 
+mod stage0_binary;
 mod views;
 
 #[derive(Debug, Clone, Routable, PartialEq)]
