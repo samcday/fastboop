@@ -2,8 +2,9 @@
 Type=Application
 Name=fastboop
 Comment=Ephemeral Linux boot over USB bootloaders
-Exec=fastboop-desktop
+Exec=fastboop-desktop %u
 Icon=win.fastboop.fastboop
 Terminal=false
 Categories=Utility;System;
 Keywords=fastboot;usb;boot;linux;
+MimeType=x-scheme-handler/fastboop;
