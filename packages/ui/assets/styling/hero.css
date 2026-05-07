@@ -177,6 +177,42 @@
   font-size: 0.84rem;
 }
 
+.startup-channel-picker {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: grid;
+  gap: 10px;
+}
+
+.startup-channel-picker__label {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.startup-channel-picker__button {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.startup-channel-picker__button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.startup-channel-picker__hint {
+  margin: 0;
+  color: var(--color-text-subtle);
+  font-size: 0.84rem;
+}
+
 @keyframes startup-channel-spin {
   to {
     transform: rotate(360deg);
@@ -307,6 +343,10 @@
   }
 
   .startup-channel-url__button {
+    width: 100%;
+  }
+
+  .startup-channel-picker__button {
     width: 100%;
   }
 

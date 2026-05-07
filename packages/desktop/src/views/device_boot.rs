@@ -18,10 +18,10 @@ use fastboop_stage0_generator::{
     build_stage0, stage0_binary_ready, Stage0Options, Stage0SwitchrootFs,
 };
 use gibblox_core::{
-    block_identity_string, AlignedByteReader, BlockByteReader, BlockReader, GibbloxError,
-    GibbloxErrorKind, GibbloxResult, ReadContext,
+    block_identity_string, AlignedByteReader, BlockReader, GibbloxError, GibbloxErrorKind,
+    GibbloxResult, ReadContext,
 };
-use gibblox_http::HttpReader;
+use gibblox_pipeline::{open_pipeline, OpenPipelineOptions};
 use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_erofs::ErofsRootfs;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
@@ -38,7 +38,6 @@ use tracing::{error, info, warn};
 use ui::{
     apply_transport_counters, oneplus_fajita_dtbo_overlays, SmooStatsHandle, SmooTransportCounters,
 };
-use url::Url;
 
 use super::session::{
     update_session_phase, BootConfig, BootRuntime, DeviceSession, SessionChannelIntake,
@@ -260,9 +259,11 @@ async fn build_stage0_artifacts(
                     info!(profile = %profile.id, channel = %channel, "opening channel for desktop boot");
                     let (provider_reader, provider_size_bytes) = if channel_intake.has_artifact_payload
                     {
-                        let url = Url::parse(&channel)
-                            .map_err(|err| anyhow!("parse channel URL {channel}: {err}"))?;
-                        let (reader, exact_size_bytes) = open_uncached_http_reader(&url).await?;
+                        let opened = crate::open_desktop_channel(&channel)
+                            .await
+                            .map_err(|err| anyhow!("open channel {}: {}", channel, err.details))?;
+                        let reader = opened.reader;
+                        let exact_size_bytes = opened.exact_total_bytes;
 
                         if exact_size_bytes != channel_intake.exact_total_bytes {
                             warn!(
@@ -273,7 +274,7 @@ async fn build_stage0_artifacts(
                             );
                         }
 
-                        if let Some(entry_name) = zip_entry_name_from_url(&url)? {
+                        if let Some(entry_name) = zip_entry_name_from_channel_location(&opened.location)? {
                             let source_reader: Arc<dyn BlockReader> =
                                 if channel_intake.consumed_bytes == 0 {
                                     reader.clone()
@@ -304,23 +305,7 @@ async fn build_stage0_artifacts(
                                 "channel has no trailing artifact payload and no compatible boot profile selected"
                             )
                         })?;
-                        let rootfs_channel = boot_profile_http_source_url(boot_profile)?;
-                        let rootfs_url = Url::parse(&rootfs_channel).map_err(|err| {
-                            anyhow!("parse boot profile rootfs URL {rootfs_channel}: {err}")
-                        })?;
-                        let (reader, _exact_size_bytes) =
-                            open_uncached_http_reader(&rootfs_url).await?;
-                        if let Some(entry_name) = zip_entry_name_from_url(&rootfs_url)? {
-                            let zip_reader = ZipEntryBlockReader::new(&entry_name, reader.clone())
-                                .await
-                                .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
-                            let zip_reader = Arc::new(zip_reader);
-                            let zip_size_bytes = reader_size_bytes(zip_reader.as_ref()).await?;
-                            (zip_reader as Arc<dyn BlockReader>, zip_size_bytes)
-                        } else {
-                            let size_bytes = reader_size_bytes(reader.as_ref()).await?;
-                            (reader as Arc<dyn BlockReader>, size_bytes)
-                        }
+                        open_boot_profile_rootfs_reader(boot_profile).await?
                     };
 
                     let provider = ErofsRootfs::new(provider_reader.clone(), provider_size_bytes).await?;
@@ -391,38 +376,38 @@ fn select_boot_profile_for_session(session: &DeviceSession) -> Result<Option<Boo
     )
 }
 
-fn boot_profile_http_source_url(boot_profile: &BootProfile) -> Result<String> {
-    match boot_profile.rootfs.source() {
-        BootProfileArtifactSource::Http(source) => {
-            let source = source.http.trim();
-            if source.is_empty() {
-                bail!("boot profile '{}' rootfs.http is empty", boot_profile.id);
-            }
-            Url::parse(source)
-                .map(|url| url.to_string())
-                .map_err(|err| {
-                    anyhow!(
-                        "parse boot profile '{}' rootfs HTTP source {}: {err}",
-                        boot_profile.id,
-                        source
-                    )
-                })
-        }
-        _ => bail!(
-            "boot profile '{}' rootfs source is not supported in fastboop-desktop yet; expected HTTP source",
+async fn open_boot_profile_rootfs_reader(
+    boot_profile: &BootProfile,
+) -> Result<(Arc<dyn BlockReader>, u64)> {
+    let source = boot_profile.rootfs.source();
+    let opts = OpenPipelineOptions {
+        image_block_size: gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
+        ..OpenPipelineOptions::default()
+    };
+    let reader = open_pipeline(source, &opts).await.map_err(|err| {
+        anyhow!(
+            "open boot profile '{}' rootfs source: {err}",
             boot_profile.id
-        ),
-    }
+        )
+    })?;
+    let reader =
+        maybe_zip_entry_reader(reader, zip_entry_name_from_artifact_source(source)?).await?;
+    let size_bytes = reader_size_bytes(reader.as_ref()).await?;
+    Ok((reader, size_bytes))
 }
 
-async fn open_uncached_http_reader(url: &Url) -> Result<(Arc<dyn BlockReader>, u64)> {
-    let http_reader = HttpReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+async fn maybe_zip_entry_reader(
+    reader: Arc<dyn BlockReader>,
+    entry_name: Option<String>,
+) -> Result<Arc<dyn BlockReader>> {
+    let Some(entry_name) = entry_name else {
+        return Ok(reader);
+    };
+
+    let zip_reader = ZipEntryBlockReader::new(&entry_name, reader.clone())
         .await
-        .map_err(|err| anyhow!("open HTTP reader {url}: {err}"))?;
-    let exact_size_bytes = http_reader.size_bytes();
-    let block_reader = BlockByteReader::new(http_reader, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-        .map_err(|err| anyhow!("open HTTP block view {url}: {err}"))?;
-    Ok((Arc::new(block_reader), exact_size_bytes))
+        .map_err(|err| anyhow!("open ZIP entry {entry_name}: {err}"))?;
+    Ok(Arc::new(zip_reader))
 }
 
 fn offset_tail_reader(
@@ -539,11 +524,36 @@ impl gibblox_core::BlockReader for OffsetChannelBlockReader {
     }
 }
 
-fn zip_entry_name_from_url(url: &Url) -> Result<Option<String>> {
-    let file_name = url
-        .path_segments()
-        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back());
-    zip_entry_name_from_file_name(file_name)
+fn zip_entry_name_from_channel_location(
+    location: &crate::DesktopChannelLocation,
+) -> Result<Option<String>> {
+    let file_name = location.file_name();
+    zip_entry_name_from_file_name(file_name.as_deref())
+}
+
+fn zip_entry_name_from_artifact_source(
+    source: &BootProfileArtifactSource,
+) -> Result<Option<String>> {
+    let file_name = match source {
+        BootProfileArtifactSource::Http(source) => {
+            let url = url::Url::parse(source.http.trim()).map_err(|err| {
+                anyhow!(
+                    "parse boot profile rootfs HTTP source {}: {err}",
+                    source.http
+                )
+            })?;
+            url.path_segments()
+                .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())
+                .map(str::to_string)
+        }
+        BootProfileArtifactSource::File(source) => Path::new(source.file.as_str())
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string),
+        _ => None,
+    };
+
+    zip_entry_name_from_file_name(file_name.as_deref())
 }
 
 fn zip_entry_name_from_file_name(file_name: Option<&str>) -> Result<Option<String>> {
