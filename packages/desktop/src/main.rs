@@ -90,7 +90,15 @@ fn main() {
     }
     let _ = STARTUP_CHANNEL.set(startup_channel);
 
-    dioxus::launch(App);
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(
+            dioxus::desktop::Config::new().with_window(
+                dioxus::desktop::WindowBuilder::new()
+                    .with_title("fastboop")
+                    .with_inner_size(dioxus::desktop::LogicalSize::new(1180.0, 820.0)),
+            ),
+        )
+        .launch(App);
 }
 
 pub(crate) fn startup_channel() -> Result<Option<String>, StartupChannelError> {
