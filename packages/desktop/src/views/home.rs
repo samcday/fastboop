@@ -284,6 +284,8 @@ pub fn Home() -> Element {
                     consumed_bytes: intake.stream_head.consumed_bytes,
                     warning_count: intake.stream_head.warning_count,
                     has_artifact_payload: intake.has_artifact_payload(),
+                    pipeline_hints: intake.stream_head.pipeline_hints.clone(),
+                    pipeline_hint_records: intake.stream_head.pipeline_hint_records.clone(),
                     compatible_boot_profiles,
                 },
                 boot_config: BootConfig::new(
