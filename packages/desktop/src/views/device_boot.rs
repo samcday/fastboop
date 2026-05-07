@@ -11,19 +11,23 @@ use fastboop_core::device::DeviceHandle as _;
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::Personalization;
 use fastboop_core::{
-    bootimg::build_android_bootimg, resolve_effective_boot_profile_stage0, BootProfile,
-    BootProfileArtifactSource,
+    bootimg::build_android_bootimg, read_channel_pipeline_hints_for_boot_profile,
+    resolve_effective_boot_profile_stage0, BootProfile, BootProfileArtifactSource,
+    BootProfileRootfs, BootProfileRootfsFilesystemSource, ChannelStreamHead,
 };
 use fastboop_stage0_generator::{
-    build_stage0, stage0_binary_ready, Stage0Options, Stage0SwitchrootFs,
+    build_stage0, stage0_binary_ready, Stage0KernelOverride, Stage0Options, Stage0SwitchrootFs,
 };
 use gibblox_core::{
     block_identity_string, AlignedByteReader, BlockReader, GibbloxError, GibbloxErrorKind,
     GibbloxResult, ReadContext,
 };
-use gibblox_pipeline::{open_pipeline, OpenPipelineOptions};
+use gibblox_ext4::{Ext4EntryType, Ext4Fs};
+use gibblox_pipeline::{open_pipeline, OpenPipelineOptions, PipelineHints};
 use gibblox_zip::ZipEntryBlockReader;
-use gobblytes_erofs::ErofsRootfs;
+use gobblytes_core::{Filesystem, FilesystemEntryType};
+use gobblytes_erofs::{ErofsRootfs, DEFAULT_IMAGE_BLOCK_SIZE};
+use gobblytes_fat::FatFs;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{
     register_export, BlockSource, BlockSourceHandle, CountingTransport, TransportCounterSnapshot,
@@ -54,6 +58,186 @@ const DISCOVERY_RETRY: Duration = Duration::from_millis(500);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 const SMOO_MAX_IO_BYTES_KARG: &str = "smoo.max_io_bytes=1048576";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RootfsKind {
+    Erofs,
+    Ext4,
+    Fat,
+}
+
+#[derive(Clone)]
+struct Ext4Rootfs {
+    fs: Ext4Fs,
+}
+
+impl Ext4Rootfs {
+    async fn open(reader: Arc<dyn BlockReader>) -> Result<Self> {
+        let fs = Ext4Fs::open(reader)
+            .await
+            .map_err(|err| anyhow!("open ext4 rootfs: {err}"))?;
+        Ok(Self { fs })
+    }
+}
+
+impl Filesystem for Ext4Rootfs {
+    type Error = anyhow::Error;
+
+    async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
+        self.fs
+            .read_all(path)
+            .await
+            .map_err(|err| anyhow!("read ext4 path {path}: {err}"))
+    }
+
+    async fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        self.fs
+            .read_range(path, offset, len)
+            .await
+            .map_err(|err| anyhow!("read ext4 path range {path}@{offset}+{len}: {err}"))
+    }
+
+    async fn read_dir(&self, path: &str) -> Result<Vec<String>> {
+        self.fs
+            .read_dir(path)
+            .await
+            .map_err(|err| anyhow!("read ext4 directory {path}: {err}"))
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>> {
+        let ty = self
+            .fs
+            .entry_type(path)
+            .await
+            .map_err(|err| anyhow!("read ext4 entry type {path}: {err}"))?;
+        Ok(ty.map(|entry| match entry {
+            Ext4EntryType::File => FilesystemEntryType::File,
+            Ext4EntryType::Directory => FilesystemEntryType::Directory,
+            Ext4EntryType::Symlink => FilesystemEntryType::Symlink,
+            Ext4EntryType::Other => FilesystemEntryType::Other,
+        }))
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String> {
+        self.fs
+            .read_link(path)
+            .await
+            .map_err(|err| anyhow!("read ext4 symlink target {path}: {err}"))
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool> {
+        self.fs
+            .exists(path)
+            .await
+            .map_err(|err| anyhow!("check ext4 path {path}: {err}"))
+    }
+}
+
+enum RootfsProvider {
+    Erofs(ErofsRootfs),
+    Ext4(Ext4Rootfs),
+    Fat(FatFs),
+}
+
+impl RootfsProvider {
+    async fn open(kind: RootfsKind, reader: Arc<dyn BlockReader>, size_bytes: u64) -> Result<Self> {
+        match kind {
+            RootfsKind::Erofs => {
+                let rootfs = ErofsRootfs::new(reader, size_bytes)
+                    .await
+                    .map_err(|err| anyhow!("open erofs rootfs: {err}"))?;
+                Ok(Self::Erofs(rootfs))
+            }
+            RootfsKind::Ext4 => {
+                let rootfs = Ext4Rootfs::open(reader).await?;
+                Ok(Self::Ext4(rootfs))
+            }
+            RootfsKind::Fat => {
+                let rootfs = FatFs::open(reader)
+                    .await
+                    .map_err(|err| anyhow!("open fat rootfs: {err}"))?;
+                Ok(Self::Fat(rootfs))
+            }
+        }
+    }
+
+    fn switchroot_fs(&self) -> Option<Stage0SwitchrootFs> {
+        match self {
+            Self::Erofs(_) => Some(Stage0SwitchrootFs::Erofs),
+            Self::Ext4(_) => Some(Stage0SwitchrootFs::Ext4),
+            Self::Fat(_) => None,
+        }
+    }
+}
+
+impl Filesystem for RootfsProvider {
+    type Error = anyhow::Error;
+
+    async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_all(path).await,
+            Self::Ext4(rootfs) => rootfs.read_all(path).await,
+            Self::Fat(rootfs) => rootfs
+                .read_all(path)
+                .await
+                .map_err(|err| anyhow!("read fat path {path}: {err}")),
+        }
+    }
+
+    async fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_range(path, offset, len).await,
+            Self::Ext4(rootfs) => rootfs.read_range(path, offset, len).await,
+            Self::Fat(rootfs) => rootfs
+                .read_range(path, offset, len)
+                .await
+                .map_err(|err| anyhow!("read fat path range {path}@{offset}+{len}: {err}")),
+        }
+    }
+
+    async fn read_dir(&self, path: &str) -> Result<Vec<String>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_dir(path).await,
+            Self::Ext4(rootfs) => rootfs.read_dir(path).await,
+            Self::Fat(rootfs) => rootfs
+                .read_dir(path)
+                .await
+                .map_err(|err| anyhow!("read fat directory {path}: {err}")),
+        }
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.entry_type(path).await,
+            Self::Ext4(rootfs) => rootfs.entry_type(path).await,
+            Self::Fat(rootfs) => <FatFs as Filesystem>::entry_type(rootfs, path)
+                .await
+                .map_err(|err| anyhow!("read fat entry type {path}: {err}")),
+        }
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.read_link(path).await,
+            Self::Ext4(rootfs) => rootfs.read_link(path).await,
+            Self::Fat(rootfs) => rootfs
+                .read_link(path)
+                .await
+                .map_err(|err| anyhow!("read fat symlink target {path}: {err}")),
+        }
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool> {
+        match self {
+            Self::Erofs(rootfs) => rootfs.exists(path).await,
+            Self::Ext4(rootfs) => rootfs.exists(path).await,
+            Self::Fat(rootfs) => rootfs
+                .exists(path)
+                .await
+                .map_err(|err| anyhow!("check fat path {path}: {err}")),
+        }
+    }
+}
 
 pub async fn boot_selected_device(
     sessions: &mut SessionStore,
@@ -256,8 +440,20 @@ async fn build_stage0_artifacts(
                     .build()
                     .context("create tokio runtime for stage0 build")?;
                 runtime.block_on(async move {
+                    let mut stage0_opts = stage0_opts;
                     info!(profile = %profile.id, channel = %channel, "opening channel for desktop boot");
-                    let (provider_reader, provider_size_bytes) = if channel_intake.has_artifact_payload
+                    let pipeline_hints = if let Some(boot_profile) = selected_boot_profile.as_ref() {
+                        load_pipeline_hints_for_boot_profile(
+                            channel.as_str(),
+                            &channel_intake,
+                            boot_profile,
+                        )
+                        .await?
+                    } else {
+                        PipelineHints::default()
+                    };
+                    let (provider_reader, provider_size_bytes, rootfs_kind) = if channel_intake
+                        .has_artifact_payload
                     {
                         let opened = crate::open_desktop_channel(&channel)
                             .await
@@ -274,7 +470,9 @@ async fn build_stage0_artifacts(
                             );
                         }
 
-                        if let Some(entry_name) = zip_entry_name_from_channel_location(&opened.location)? {
+                        let (provider_reader, provider_size_bytes) = if let Some(entry_name) =
+                            zip_entry_name_from_channel_location(&opened.location)?
+                        {
                             let source_reader: Arc<dyn BlockReader> =
                                 if channel_intake.consumed_bytes == 0 {
                                     reader.clone()
@@ -298,17 +496,38 @@ async fn build_stage0_artifacts(
                                 exact_size_bytes,
                             )
                             .map_err(|err| anyhow!("channel stream requires trailing artifact: {err}"))?
-                        }
+                        };
+                        let rootfs_kind = detect_stage0_rootfs_kind(provider_reader.as_ref()).await?;
+                        (provider_reader, provider_size_bytes, rootfs_kind)
                     } else {
                         let boot_profile = selected_boot_profile.as_ref().ok_or_else(|| {
                             anyhow!(
                                 "channel has no trailing artifact payload and no compatible boot profile selected"
                             )
                         })?;
-                        open_boot_profile_rootfs_reader(boot_profile).await?
+                        let (reader, size_bytes) =
+                            open_boot_profile_rootfs_reader(boot_profile, &pipeline_hints).await?;
+                        let rootfs_kind = rootfs_kind_for_boot_profile(boot_profile)?;
+                        (reader, size_bytes, rootfs_kind)
                     };
 
-                    let provider = ErofsRootfs::new(provider_reader.clone(), provider_size_bytes).await?;
+                    if let Some(boot_profile) = selected_boot_profile.as_ref() {
+                        let (kernel_override, dtb_override) = resolve_boot_profile_source_overrides(
+                            boot_profile,
+                            &profile,
+                            &pipeline_hints,
+                        )
+                        .await?;
+                        stage0_opts.kernel_override = kernel_override;
+                        stage0_opts.dtb_override = dtb_override;
+                    }
+
+                    let provider =
+                        RootfsProvider::open(rootfs_kind, provider_reader.clone(), provider_size_bytes)
+                            .await?;
+                    stage0_opts.switchroot_fs = provider.switchroot_fs().ok_or_else(|| {
+                        anyhow!("rootfs image is not a bootable stage0 filesystem (erofs/ext4)")
+                    })?;
                     info!(profile = %profile.id, "building stage0 payload");
                     let build = build_stage0(
                         &profile,
@@ -378,22 +597,250 @@ fn select_boot_profile_for_session(session: &DeviceSession) -> Result<Option<Boo
 
 async fn open_boot_profile_rootfs_reader(
     boot_profile: &BootProfile,
+    pipeline_hints: &PipelineHints,
 ) -> Result<(Arc<dyn BlockReader>, u64)> {
     let source = boot_profile.rootfs.source();
-    let opts = OpenPipelineOptions {
-        image_block_size: gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE,
-        ..OpenPipelineOptions::default()
-    };
-    let reader = open_pipeline(source, &opts).await.map_err(|err| {
-        anyhow!(
-            "open boot profile '{}' rootfs source: {err}",
-            boot_profile.id
-        )
-    })?;
-    let reader =
-        maybe_zip_entry_reader(reader, zip_entry_name_from_artifact_source(source)?).await?;
+    let reader = open_boot_profile_artifact_source(source, pipeline_hints)
+        .await
+        .map_err(|err| {
+            anyhow!(
+                "open boot profile '{}' rootfs source: {err}",
+                boot_profile.id
+            )
+        })?;
     let size_bytes = reader_size_bytes(reader.as_ref()).await?;
     Ok((reader, size_bytes))
+}
+
+async fn load_pipeline_hints_for_boot_profile(
+    channel: &str,
+    channel_intake: &SessionChannelIntake,
+    boot_profile: &BootProfile,
+) -> Result<PipelineHints> {
+    if channel_intake.pipeline_hint_records.is_empty() {
+        return Ok(channel_intake.pipeline_hints.clone());
+    }
+
+    let opened = crate::open_desktop_channel(channel).await.map_err(|err| {
+        anyhow!(
+            "open channel for pipeline hints {}: {}",
+            channel,
+            err.details
+        )
+    })?;
+    let stream_head = ChannelStreamHead {
+        pipeline_hints: channel_intake.pipeline_hints.clone(),
+        pipeline_hint_records: channel_intake.pipeline_hint_records.clone(),
+        ..ChannelStreamHead::default()
+    };
+    read_channel_pipeline_hints_for_boot_profile(opened.reader.as_ref(), &stream_head, boot_profile)
+        .await
+        .map_err(|err| anyhow!("read channel pipeline hints: {err}"))
+}
+
+async fn resolve_boot_profile_source_overrides(
+    boot_profile: &BootProfile,
+    device_profile: &fastboop_core::DeviceProfile,
+    pipeline_hints: &PipelineHints,
+) -> Result<(Option<Stage0KernelOverride>, Option<Vec<u8>>)> {
+    let kernel_override = if let Some(kernel_source) = boot_profile.kernel.as_ref() {
+        let kernel_path = non_empty_profile_path(kernel_source.path.as_str(), "kernel.path")?;
+        let source_reader =
+            open_boot_profile_artifact_source(kernel_source.artifact_source(), pipeline_hints)
+                .await?;
+        let source_rootfs =
+            open_profile_source_rootfs(&kernel_source.source, source_reader).await?;
+        let kernel_image = source_rootfs.read_all(kernel_path).await?;
+        Some(Stage0KernelOverride {
+            path: kernel_path.to_string(),
+            image: kernel_image,
+        })
+    } else {
+        None
+    };
+
+    let dtb_override = if let Some(dtbs_source) = boot_profile.dtbs.as_ref() {
+        let dtbs_base = non_empty_profile_path(dtbs_source.path.as_str(), "dtbs.path")?;
+        let source_reader =
+            open_boot_profile_artifact_source(dtbs_source.artifact_source(), pipeline_hints)
+                .await?;
+        let source_rootfs = open_profile_source_rootfs(&dtbs_source.source, source_reader).await?;
+        let dtb_path = resolve_dtb_path_candidate(
+            &source_rootfs,
+            dtbs_base,
+            device_profile.devicetree_name.as_str(),
+        )
+        .await?;
+        Some(source_rootfs.read_all(dtb_path.as_str()).await?)
+    } else {
+        None
+    };
+
+    Ok((kernel_override, dtb_override))
+}
+
+async fn open_profile_source_rootfs(
+    source: &BootProfileRootfs,
+    reader: Arc<dyn BlockReader>,
+) -> Result<RootfsProvider> {
+    let kind = rootfs_kind_for_profile_source(source);
+    let image_size_bytes = reader_size_bytes(reader.as_ref()).await?;
+    RootfsProvider::open(kind, reader, image_size_bytes).await
+}
+
+fn non_empty_profile_path<'a>(path: &'a str, field: &str) -> Result<&'a str> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        bail!("boot profile {field} must not be empty");
+    }
+    Ok(trimmed)
+}
+
+async fn resolve_dtb_path_candidate(
+    source_rootfs: &RootfsProvider,
+    dtbs_base: &str,
+    devicetree_name: &str,
+) -> Result<String> {
+    let devicetree_name = devicetree_name.trim().trim_start_matches('/');
+    if devicetree_name.is_empty() {
+        bail!("device profile devicetree_name is empty");
+    }
+
+    let mut candidates = Vec::new();
+    if dtbs_base.ends_with(".dtb") {
+        candidates.push(dtbs_base.to_string());
+    } else {
+        let dtb_file = format!("{devicetree_name}.dtb");
+        candidates.push(join_profile_path(dtbs_base, dtb_file.as_str()));
+        candidates.push(join_profile_path(dtbs_base, devicetree_name));
+        candidates.push(dtbs_base.to_string());
+    }
+
+    for candidate in candidates {
+        if source_rootfs.exists(candidate.as_str()).await? {
+            return Ok(candidate);
+        }
+    }
+
+    bail!("boot profile dtbs path {dtbs_base} does not contain dtb for {devicetree_name}")
+}
+
+fn join_profile_path(base: &str, suffix: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let suffix = suffix.trim_start_matches('/');
+    if base.is_empty() {
+        format!("/{suffix}")
+    } else {
+        format!("{base}/{suffix}")
+    }
+}
+
+async fn open_boot_profile_artifact_source(
+    source: &BootProfileArtifactSource,
+    pipeline_hints: &PipelineHints,
+) -> Result<Arc<dyn BlockReader>> {
+    let opts = OpenPipelineOptions {
+        image_block_size: DEFAULT_IMAGE_BLOCK_SIZE,
+        pipeline_hints: Some(pipeline_hints.clone()),
+        ..OpenPipelineOptions::default()
+    };
+    let reader = open_pipeline(source, &opts)
+        .await
+        .map_err(|err| anyhow!("open boot profile artifact source: {err}"))?;
+    maybe_zip_entry_reader(reader, zip_entry_name_from_artifact_source(source)?).await
+}
+
+fn rootfs_kind_for_boot_profile(boot_profile: &BootProfile) -> Result<RootfsKind> {
+    let kind = rootfs_kind_for_profile_source(&boot_profile.rootfs);
+    if kind == RootfsKind::Fat {
+        bail!("desktop stage0 build does not support FAT rootfs providers");
+    }
+    Ok(kind)
+}
+
+fn rootfs_kind_for_profile_source(source: &BootProfileRootfs) -> RootfsKind {
+    match source {
+        BootProfileRootfs::Erofs(_) => RootfsKind::Erofs,
+        BootProfileRootfs::Ext4(_) => RootfsKind::Ext4,
+        BootProfileRootfs::Fat(_) => RootfsKind::Fat,
+        BootProfileRootfs::Ostree(source) => match &source.ostree {
+            BootProfileRootfsFilesystemSource::Erofs(_) => RootfsKind::Erofs,
+            BootProfileRootfsFilesystemSource::Ext4(_) => RootfsKind::Ext4,
+            BootProfileRootfsFilesystemSource::Fat(_) => RootfsKind::Fat,
+        },
+    }
+}
+
+async fn detect_stage0_rootfs_kind<R: BlockReader + ?Sized>(reader: &R) -> Result<RootfsKind> {
+    if reader_has_erofs_magic(reader).await? {
+        return Ok(RootfsKind::Erofs);
+    }
+    if reader_has_ext4_magic(reader).await? {
+        return Ok(RootfsKind::Ext4);
+    }
+    bail!("rootfs image is not a supported stage0 switchroot filesystem (erofs/ext4)")
+}
+
+async fn reader_has_erofs_magic<R: BlockReader + ?Sized>(reader: &R) -> Result<bool> {
+    const EROFS_SUPER_OFFSET: u64 = 1024;
+    const EROFS_SUPER_MAGIC: u32 = 0xe0f5_e1e2;
+
+    let Some(bytes) = read_magic_bytes(reader, EROFS_SUPER_OFFSET, 4).await? else {
+        return Ok(false);
+    };
+    let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    Ok(magic == EROFS_SUPER_MAGIC)
+}
+
+async fn reader_has_ext4_magic<R: BlockReader + ?Sized>(reader: &R) -> Result<bool> {
+    const EXT4_MAGIC_OFFSET: u64 = 1024 + 0x38;
+    const EXT4_MAGIC: u16 = 0xef53;
+
+    let Some(bytes) = read_magic_bytes(reader, EXT4_MAGIC_OFFSET, 2).await? else {
+        return Ok(false);
+    };
+    let magic = u16::from_le_bytes([bytes[0], bytes[1]]);
+    Ok(magic == EXT4_MAGIC)
+}
+
+async fn read_magic_bytes<R: BlockReader + ?Sized>(
+    reader: &R,
+    offset: u64,
+    len: usize,
+) -> Result<Option<Vec<u8>>> {
+    if len == 0 {
+        return Ok(Some(Vec::new()));
+    }
+
+    let block_size = reader.block_size() as u64;
+    if block_size == 0 {
+        bail!("channel reader block size is zero");
+    }
+    let total_blocks = reader.total_blocks().await?;
+    let total_bytes = total_blocks
+        .checked_mul(block_size)
+        .ok_or_else(|| anyhow!("channel blob size overflow"))?;
+    let required_end = offset
+        .checked_add(len as u64)
+        .ok_or_else(|| anyhow!("channel magic offset overflow"))?;
+    if total_bytes < required_end {
+        return Ok(None);
+    }
+
+    let super_lba = offset / block_size;
+    let within_block = (offset % block_size) as usize;
+    let block_size_usize = block_size as usize;
+    let required = within_block + len;
+    let blocks_to_read = required.div_ceil(block_size_usize);
+    let mut scratch = vec![0u8; blocks_to_read * block_size_usize];
+    let read = reader
+        .read_blocks(super_lba, &mut scratch, ReadContext::FOREGROUND)
+        .await?;
+    if read < required {
+        return Ok(None);
+    }
+
+    Ok(Some(scratch[within_block..within_block + len].to_vec()))
 }
 
 async fn maybe_zip_entry_reader(
