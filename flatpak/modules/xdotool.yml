@@ -2,8 +2,8 @@ name: xdotool
 buildsystem: simple
 sources:
   - type: archive
-    url: https://github.com/jordansissel/xdotool/archive/refs/tags/v3.20160805.1.tar.gz
-    sha256: ddafca1239075c203769c17a5a184587731e56fbe0438c09d08f8af1704e117a
+    url: https://github.com/jordansissel/xdotool/archive/refs/tags/v4.20260303.1.tar.gz
+    sha256: c1f971a384da588eb99ca0755fc4300316d49c1e612537e3f1de52215e104fa3
     x-checker-data:
       type: anitya
       project-id: 8648
