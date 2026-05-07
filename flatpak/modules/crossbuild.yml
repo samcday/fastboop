@@ -29,16 +29,33 @@ sources:
     sha256: 83285f13f9a391ba661fa31875e05f6d42382fada1d564ba43d804390c6350b1
     dest: cross-gcc-common
   - type: archive
-    url: https://static.rust-lang.org/dist/rust-std-1.94.0-aarch64-unknown-linux-gnu.tar.xz
-    sha256: c781b3ef4fefa5508fbe05820eddc95e46351d905a30921cc020febd9c596a2e
+    url: https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/aarch64/os/Packages/g/glibc-devel-2.42-4.fc43.aarch64.rpm
+    sha256: 9fa1e701a22922eb3fa0ad7cce919dd9e8fb3feb013a68ccafd2e5a8eb79500a
+    dest: glibc-devel-aarch64
+  - type: archive
+    url: https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/aarch64/os/Packages/g/glibc-static-2.42-4.fc43.aarch64.rpm
+    sha256: 1bbba046265f40f37ac49808266763540888907b500a35565f502ec8d79c0b09
+    dest: glibc-static-aarch64
+  - type: archive
+    url: https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/aarch64/os/Packages/g/gcc-15.2.1-2.fc43.aarch64.rpm
+    sha256: eb928ca3492bf9b837152842313389a0e77702516a3fad2ccaace8e3b29109c5
+    dest: gcc-aarch64-runtime
+  - type: archive
+    url: https://static.rust-lang.org/dist/rust-std-1.95.0-aarch64-unknown-linux-gnu.tar.xz
+    sha256: 3a21b271b1ff973b94d69b25e7a39992f9fbcae1ab6d9475844a23e6ad3908ac
     dest: rust
 build-commands:
   - mkdir -p /app/crossbuild/rust
   - mkdir -p /app/usr/lib/
-  - cp -a */bin/ /app/crossbuild/
-  - cp -a */lib/ /app/crossbuild/
-  - cp -a */libexec/ /app/crossbuild/
+  - mkdir -p /app/usr/lib64
+  - cp -a binutils-aarch64-linux-gnu/bin/ gcc-aarch64-linux-gnu/bin/ /app/crossbuild/
+  - cp -a binutils-aarch64-linux-gnu/lib/ gcc-aarch64-linux-gnu/lib/ /app/crossbuild/
+  - cp -a gcc-aarch64-linux-gnu/libexec/ /app/crossbuild/
+  - cp -a binutils-aarch64-linux-gnu/aarch64-linux-gnu/ gcc-aarch64-linux-gnu/aarch64-linux-gnu/ /app/crossbuild/
   - ln -sfn /app/lib/aarch64-linux-gnu /app/usr/lib/aarch64-linux-gnu
   - ln -sfn /app/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 /app/lib/ld-linux-aarch64.so.1
-  - cp -a /app/lib/sdk/rust-stable/. /app/crossbuild/rust/
+  - cp -a glibc-devel-aarch64/lib64/*.a glibc-devel-aarch64/lib64/*.o glibc-static-aarch64/lib64/*.a /app/crossbuild/lib/gcc/aarch64-linux-gnu/15/
+  - cp -a glibc-devel-aarch64/lib64/*.a glibc-devel-aarch64/lib64/*.o glibc-static-aarch64/lib64/*.a /app/usr/lib64/
+  - cp -a gcc-aarch64-runtime/lib/gcc/aarch64-redhat-linux/15/libgcc_eh.a /app/crossbuild/lib/gcc/aarch64-linux-gnu/15/
+  - cp -a /usr/lib/sdk/rust-stable/. /app/crossbuild/rust/
   - sh rust/install.sh --prefix=/app/crossbuild/rust/ --disable-ldconfig

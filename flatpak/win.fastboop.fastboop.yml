@@ -3,7 +3,7 @@ runtime-version: '49'
 runtime: org.gnome.Platform
 sdk: org.gnome.Sdk
 # gnome runtime/sdk required for webkitgtk
-command: fastboop
+command: fastboop-desktop
 finish-args:
   - --share=network
   - --device=all
@@ -12,19 +12,15 @@ finish-args:
   - --share=ipc
 cleanup:
   - /usr/lib/aarch64-linux-gnu
+  - /usr/lib64
   - /lib/ld-linux-aarch64.so.1
   - /crossbuild
+sdk-extensions:
+  # required by both fastboop and stage0
+  - org.freedesktop.Sdk.Extension.rust-stable
+  # required by stage0 bindgen and aarch64 linking
+  - org.freedesktop.Sdk.Extension.llvm21
 add-build-extensions:
-  org.freedesktop.Sdk.Extension.rust-stable:
-    # required by both fastboop and stage0
-    directory: lib/sdk/rust-stable
-    version: '25.08'
-    remove-after-build: true
-  org.freedesktop.Sdk.Extension.llvm21:
-    # required by both fastboop and stage0
-    directory: lib/sdk/llvm21
-    version: '25.08'
-    remove-after-build: true
   org.freedesktop.Sdk.Compat.aarch64:
     # required by stage0
     directory: lib/aarch64-linux-gnu
@@ -42,7 +38,7 @@ modules:
         - --share=network
         # network shared only for development builds
         # should not be shared when manifest submitted to flathub
-      prepend-path: /app/lib/sdk/rust-stable/bin
+      prepend-path: /usr/lib/sdk/rust-stable/bin
       env:
         CARGO_HOME: /run/build/fastboop/cargo
         RUSTFLAGS: -L/app/lib
