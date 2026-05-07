@@ -15,8 +15,11 @@ fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-rusb = { path = "../../crates/fastboop-fastboot-rusb" }
 gobblytes-erofs = { version = "0.0.2-rc.1" }
 gibblox-core = { version = "0.0.2-rc.1", features = ["std"] }
+gibblox-file = { version = "0.0.2-rc.1" }
 gibblox-http = { version = "0.0.2-rc.1", default-features = false, features = ["native-client"] }
+gibblox-pipeline = { version = "0.0.2-rc.1", features = ["std"] }
 gibblox-zip = { version = "0.0.2-rc.1", features = ["std"] }
+rfd = "0.17.2"
 smoo-host-core = { version = "0.0.2-rc.5" }
 smoo-host-session = { version = "0.0.2-rc.5" }
 smoo-host-transport-rusb = { version = "0.0.2-rc.5" }

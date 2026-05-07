@@ -25,28 +25,108 @@ pub fn Home() -> Element {
     let sessions = use_context::<SessionStore>();
     let navigator = use_navigator();
 
-    let startup_channel = match crate::startup_channel() {
-        Ok(channel) => channel,
-        Err(err) => {
-            return rsx! {
-                StartupError {
-                    title: err.title.to_string(),
-                    details: err.details,
-                    launch_hint: err.launch_hint,
-                    channel_url_value: None,
-                    on_channel_url_input: None,
-                    on_submit_channel_url: None,
-                    submit_channel_url_pending: None,
-                }
-            };
+    let initial_startup_channel = crate::startup_channel();
+    let startup_channel = use_signal({
+        let initial_startup_channel = initial_startup_channel.clone();
+        move || initial_startup_channel.clone().ok().flatten()
+    });
+    let startup_channel_prompt_error = use_signal({
+        let initial_startup_channel = initial_startup_channel.clone();
+        move || initial_startup_channel.clone().err()
+    });
+    let startup_channel_url_value = use_signal({
+        let initial_startup_channel = initial_startup_channel.clone();
+        move || {
+            initial_startup_channel
+                .clone()
+                .ok()
+                .flatten()
+                .unwrap_or_default()
         }
+    });
+    let startup_channel_url_submit_pending = use_signal(|| false);
+
+    let channel_url_input_handler: Option<EventHandler<FormEvent>> = {
+        let mut startup_channel_url_value = startup_channel_url_value;
+        Some(EventHandler::new(move |evt: FormEvent| {
+            startup_channel_url_value.set(evt.value());
+        }))
+    };
+
+    let submit_channel_url_handler: Option<EventHandler<MouseEvent>> = {
+        let startup_channel = startup_channel;
+        let startup_channel_prompt_error = startup_channel_prompt_error;
+        let startup_channel_url_value = startup_channel_url_value;
+        let startup_channel_url_submit_pending = startup_channel_url_submit_pending;
+        Some(EventHandler::new(move |_evt: MouseEvent| {
+            if startup_channel_url_submit_pending() {
+                return;
+            }
+
+            let channel = startup_channel_url_value().trim().to_string();
+            start_desktop_channel_preflight(
+                channel,
+                startup_channel,
+                startup_channel_prompt_error,
+                startup_channel_url_value,
+                startup_channel_url_submit_pending,
+            );
+        }))
+    };
+
+    let pick_channel_file_handler: EventHandler<MouseEvent> = {
+        let startup_channel = startup_channel;
+        let startup_channel_prompt_error = startup_channel_prompt_error;
+        let startup_channel_url_value = startup_channel_url_value;
+        let startup_channel_url_submit_pending = startup_channel_url_submit_pending;
+        EventHandler::new(move |_evt: MouseEvent| {
+            if startup_channel_url_submit_pending() {
+                return;
+            }
+
+            let mut startup_channel_prompt_error = startup_channel_prompt_error;
+            let mut startup_channel_url_submit_pending = startup_channel_url_submit_pending;
+            startup_channel_url_submit_pending.set(true);
+            startup_channel_prompt_error.set(Some(crate::StartupChannelError {
+                title: "Choose launch channel",
+                details: "Waiting for a file from the desktop file picker.".to_string(),
+                launch_hint: "Select a local channel file; fastboop will validate it immediately."
+                    .to_string(),
+            }));
+
+            spawn(async move {
+                let Some(file) = rfd::AsyncFileDialog::new()
+                    .set_title("Choose fastboop channel")
+                    .pick_file()
+                    .await
+                else {
+                    startup_channel_prompt_error.set(None);
+                    startup_channel_url_submit_pending.set(false);
+                    return;
+                };
+
+                start_desktop_channel_preflight(
+                    file.path().to_string_lossy().into_owned(),
+                    startup_channel,
+                    startup_channel_prompt_error,
+                    startup_channel_url_value,
+                    startup_channel_url_submit_pending,
+                );
+            });
+        })
     };
 
     let startup_channel_intake = {
-        let startup_channel = startup_channel.clone();
+        let startup_channel = startup_channel;
         use_resource(move || {
-            let startup_channel = startup_channel.clone();
-            async move { crate::load_startup_channel_intake(&startup_channel).await }
+            let startup_channel = startup_channel();
+            async move {
+                let Some(startup_channel) = startup_channel else {
+                    return Err(missing_desktop_channel_prompt());
+                };
+
+                crate::load_startup_channel_intake(&startup_channel).await
+            }
         })
     };
     let startup_channel_ready = matches!(startup_channel_intake.read().as_ref(), Some(Ok(_)));
@@ -153,7 +233,7 @@ pub fn Home() -> Element {
         ))
     };
 
-    let startup_channel_for_boot = startup_channel.clone();
+    let startup_channel_for_boot = startup_channel;
     let on_boot = {
         let mut sessions = sessions;
         let devices = snapshot.devices.clone();
@@ -173,6 +253,10 @@ pub fn Home() -> Element {
                 selected_profile_option(&device, &selections).cloned()
             };
             let Some(profile) = profile else {
+                return;
+            };
+
+            let Some(startup_channel_for_boot) = startup_channel_for_boot() else {
                 return;
             };
 
@@ -203,7 +287,7 @@ pub fn Home() -> Element {
                     compatible_boot_profiles,
                 },
                 boot_config: BootConfig::new(
-                    startup_channel_for_boot.clone(),
+                    startup_channel_for_boot,
                     selected_boot_profile_id,
                     "",
                     DEFAULT_ENABLE_SERIAL,
@@ -215,18 +299,25 @@ pub fn Home() -> Element {
     };
 
     if !startup_channel_ready {
-        let (title, details, launch_hint) = match startup_channel_intake.read().as_ref() {
-            Some(Err(err)) => (
-                err.title.to_string(),
-                err.details.clone(),
-                err.launch_hint.clone(),
-            ),
-            _ => (
+        let active_channel = startup_channel();
+        let prompt_error = startup_channel_prompt_error().or_else(|| {
+            startup_channel_intake
+                .read()
+                .as_ref()
+                .and_then(|result| result.as_ref().err().cloned())
+        });
+        let (title, details, launch_hint) = match (prompt_error, active_channel) {
+            (Some(err), _) => (err.title.to_string(), err.details, err.launch_hint),
+            (None, Some(channel)) => (
                 "Validating launch channel".to_string(),
                 "Checking channel reachability and stream shape before enabling device boot."
                     .to_string(),
-                format!("Validating channel: {startup_channel}"),
+                format!("Validating channel: {channel}"),
             ),
+            (None, None) => {
+                let err = missing_desktop_channel_prompt();
+                (err.title.to_string(), err.details, err.launch_hint)
+            }
         };
 
         return rsx! {
@@ -234,10 +325,39 @@ pub fn Home() -> Element {
                 title,
                 details,
                 launch_hint,
-                channel_url_value: None,
-                on_channel_url_input: None,
-                on_submit_channel_url: None,
-                submit_channel_url_pending: None,
+                eyebrow: Some("Startup channel".to_string()),
+                channel_url_value: Some(startup_channel_url_value()),
+                on_channel_url_input: channel_url_input_handler.clone(),
+                on_submit_channel_url: submit_channel_url_handler.clone(),
+                submit_channel_url_pending: Some(startup_channel_url_submit_pending()),
+                channel_input_label: Some("or enter a channel URL or local path".to_string()),
+                channel_input_placeholder: Some("https://example.invalid/channel.ero or /path/to/channel.ero".to_string()),
+                channel_input_hint: Some("HTTP(S), file://, and local filesystem paths are supported on desktop.".to_string()),
+                channel_picker: rsx! {
+                    div { class: "startup-channel-picker",
+                        p { class: "startup-channel-picker__label", "or choose a local channel file" }
+                        button {
+                            class: "cta__button startup-channel-picker__button",
+                            disabled: startup_channel_url_submit_pending(),
+                            onclick: move |evt| {
+                                evt.prevent_default();
+                                pick_channel_file_handler.call(evt);
+                            },
+                            if startup_channel_url_submit_pending() {
+                                span {
+                                    class: "startup-channel-url__spinner",
+                                    aria_hidden: "true",
+                                }
+                                span { "Checking..." }
+                            } else {
+                                "Choose file"
+                            }
+                        }
+                        p { class: "startup-channel-picker__hint",
+                            "Uses the desktop file picker portal and validates the selected file immediately."
+                        }
+                    }
+                },
             }
         };
     }
@@ -250,6 +370,58 @@ pub fn Home() -> Element {
             on_select_profile,
         }
     }
+}
+
+fn missing_desktop_channel_prompt() -> crate::StartupChannelError {
+    crate::StartupChannelError {
+        title: "Choose launch channel",
+        details: "No launch channel is configured yet.".to_string(),
+        launch_hint: "Choose a local channel file, enter a channel URL/path, or launch with --channel=<url-or-path>."
+            .to_string(),
+    }
+}
+
+fn start_desktop_channel_preflight(
+    channel: String,
+    mut startup_channel: Signal<Option<String>>,
+    mut startup_channel_prompt_error: Signal<Option<crate::StartupChannelError>>,
+    mut startup_channel_url_value: Signal<String>,
+    mut startup_channel_url_submit_pending: Signal<bool>,
+) {
+    let channel = channel.trim().to_string();
+    startup_channel_url_value.set(channel.clone());
+    if channel.is_empty() {
+        startup_channel.set(None);
+        startup_channel_prompt_error.set(Some(crate::StartupChannelError {
+            title: "Invalid launch channel",
+            details: "channel URL/path is empty".to_string(),
+            launch_hint: "Enter an HTTP(S) URL, file:// URL, or local channel path.".to_string(),
+        }));
+        startup_channel_url_submit_pending.set(false);
+        return;
+    }
+
+    startup_channel_url_submit_pending.set(true);
+    startup_channel_prompt_error.set(Some(crate::StartupChannelError {
+        title: "Validating launch channel",
+        details: format!("Checking channel: {channel}"),
+        launch_hint: "Waiting for channel validation to complete.".to_string(),
+    }));
+
+    spawn(async move {
+        match crate::preflight_startup_channel(&channel).await {
+            Ok(()) => {
+                startup_channel_prompt_error.set(None);
+                startup_channel.set(Some(channel));
+                startup_channel_url_submit_pending.set(false);
+            }
+            Err(err) => {
+                startup_channel.set(None);
+                startup_channel_prompt_error.set(Some(err));
+                startup_channel_url_submit_pending.set(false);
+            }
+        }
+    });
 }
 
 async fn probe_fastboot_devices(

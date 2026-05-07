@@ -1,13 +1,15 @@
 use dioxus::prelude::*;
 use fastboop_core::read_channel_stream_head_from_reader;
 use gibblox_core::{BlockByteReader, BlockReader};
+use gibblox_file::FileReader;
 use gibblox_http::HttpReader;
 use std::env;
-use std::sync::OnceLock;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
-static STARTUP_CHANNEL: OnceLock<Result<String, StartupChannelError>> = OnceLock::new();
+static STARTUP_CHANNEL: OnceLock<Result<Option<String>, StartupChannelError>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub(crate) struct StartupChannelError {
@@ -20,6 +22,33 @@ pub(crate) struct StartupChannelError {
 pub(crate) struct StartupChannelIntake {
     pub(crate) exact_total_bytes: u64,
     pub(crate) stream_head: fastboop_core::ChannelStreamHead,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum DesktopChannelLocation {
+    Http(Url),
+    File(PathBuf),
+}
+
+impl DesktopChannelLocation {
+    pub(crate) fn file_name(&self) -> Option<String> {
+        match self {
+            Self::Http(url) => url
+                .path_segments()
+                .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())
+                .map(str::to_string),
+            Self::File(path) => path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string),
+        }
+    }
+}
+
+pub(crate) struct OpenedDesktopChannel {
+    pub(crate) reader: Arc<dyn BlockReader>,
+    pub(crate) exact_total_bytes: u64,
+    pub(crate) location: DesktopChannelLocation,
 }
 
 impl StartupChannelIntake {
@@ -64,7 +93,7 @@ fn main() {
     dioxus::launch(App);
 }
 
-pub(crate) fn startup_channel() -> Result<String, StartupChannelError> {
+pub(crate) fn startup_channel() -> Result<Option<String>, StartupChannelError> {
     STARTUP_CHANNEL.get().cloned().unwrap_or_else(|| {
         Err(missing_desktop_channel_error(
             "desktop startup channel state was not initialized",
@@ -72,27 +101,59 @@ pub(crate) fn startup_channel() -> Result<String, StartupChannelError> {
     })
 }
 
+pub(crate) async fn preflight_startup_channel(channel: &str) -> Result<(), StartupChannelError> {
+    load_startup_channel_intake(channel).await.map(|_| ())
+}
+
 pub(crate) async fn load_startup_channel_intake(
     channel: &str,
 ) -> Result<StartupChannelIntake, StartupChannelError> {
-    let url = Url::parse(channel)
-        .map_err(|err| invalid_desktop_channel_error(channel, &err.to_string()))?;
+    let opened = open_desktop_channel(channel).await?;
+    read_startup_channel_intake(channel, opened.reader.as_ref(), opened.exact_total_bytes).await
+}
 
-    let reader = HttpReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-        .await
-        .map_err(|err| {
-            invalid_desktop_channel_error(channel, &format!("open HTTP reader for {url}: {err}"))
-        })?;
-    let exact_total_bytes = reader.size_bytes();
-    let reader =
-        BlockByteReader::new(reader, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE).map_err(|err| {
-            invalid_desktop_channel_error(
-                channel,
-                &format!("open HTTP block view for {url}: {err}"),
-            )
-        })?;
+pub(crate) async fn open_desktop_channel(
+    channel: &str,
+) -> Result<OpenedDesktopChannel, StartupChannelError> {
+    let location = parse_desktop_channel_location(channel)?;
+    let (reader, exact_total_bytes) = match &location {
+        DesktopChannelLocation::Http(url) => {
+            let reader = HttpReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+                .await
+                .map_err(|err| {
+                    invalid_desktop_channel_error(
+                        channel,
+                        &format!("open HTTP reader for {url}: {err}"),
+                    )
+                })?;
+            let exact_total_bytes = reader.size_bytes();
+            let reader = BlockByteReader::new(reader, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+                .map_err(|err| {
+                    invalid_desktop_channel_error(
+                        channel,
+                        &format!("open HTTP block view for {url}: {err}"),
+                    )
+                })?;
+            (Arc::new(reader) as Arc<dyn BlockReader>, exact_total_bytes)
+        }
+        DesktopChannelLocation::File(path) => {
+            let reader = FileReader::open(path, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
+                .map_err(|err| {
+                    invalid_desktop_channel_error(
+                        channel,
+                        &format!("open file reader for {}: {err}", path.display()),
+                    )
+                })?;
+            let exact_total_bytes = reader.size_bytes();
+            (Arc::new(reader) as Arc<dyn BlockReader>, exact_total_bytes)
+        }
+    };
 
-    read_startup_channel_intake(channel, &reader, exact_total_bytes).await
+    Ok(OpenedDesktopChannel {
+        reader,
+        exact_total_bytes,
+        location,
+    })
 }
 
 async fn read_startup_channel_intake<R>(
@@ -131,7 +192,7 @@ where
     Ok(intake)
 }
 
-fn parse_channel_from_args() -> Result<String, StartupChannelError> {
+fn parse_channel_from_args() -> Result<Option<String>, StartupChannelError> {
     let args = env::args().collect::<Vec<_>>();
     let mut index = 1;
     while index < args.len() {
@@ -141,45 +202,74 @@ fn parse_channel_from_args() -> Result<String, StartupChannelError> {
             let value = value.trim();
             if value.is_empty() {
                 return Err(missing_desktop_channel_error(
-                    "--channel=<url> value is empty",
+                    "--channel=<url-or-path> value is empty",
                 ));
             }
-            return validate_desktop_channel_url(value);
+            return validate_desktop_channel(value).map(Some);
         }
 
         if arg == "--channel" {
             let value = args.get(index + 1).ok_or_else(|| {
                 missing_desktop_channel_error(
-                    "--channel requires a URL argument: --channel=<url> or --channel <url>",
+                    "--channel requires a channel argument: --channel=<url-or-path> or --channel <url-or-path>",
                 )
             })?;
             let value = value.trim();
             if value.is_empty() {
                 return Err(missing_desktop_channel_error("--channel value is empty"));
             }
-            return validate_desktop_channel_url(value);
+            return validate_desktop_channel(value).map(Some);
         }
 
         index += 1;
     }
 
-    Err(missing_desktop_channel_error(
-        "fastboop-desktop requires --channel=<url> or --channel <url>",
-    ))
+    Ok(None)
 }
 
-fn validate_desktop_channel_url(channel: &str) -> Result<String, StartupChannelError> {
-    Url::parse(channel).map_err(|err| invalid_desktop_channel_error(channel, &err.to_string()))?;
-    Ok(channel.to_string())
+fn validate_desktop_channel(channel: &str) -> Result<String, StartupChannelError> {
+    parse_desktop_channel_location(channel)?;
+    Ok(channel.trim().to_string())
+}
+
+fn parse_desktop_channel_location(
+    channel: &str,
+) -> Result<DesktopChannelLocation, StartupChannelError> {
+    let channel = channel.trim();
+    if channel.is_empty() {
+        return Err(missing_desktop_channel_error("channel location is empty"));
+    }
+
+    if let Ok(url) = Url::parse(channel) {
+        return match url.scheme() {
+            "http" | "https" => Ok(DesktopChannelLocation::Http(url)),
+            "file" => url
+                .to_file_path()
+                .map(DesktopChannelLocation::File)
+                .map_err(|_| {
+                    invalid_desktop_channel_error(
+                        channel,
+                        "file:// URL is not a valid local file path",
+                    )
+                }),
+            scheme => Err(invalid_desktop_channel_error(
+                channel,
+                &format!(
+                    "unsupported channel scheme '{scheme}'; use HTTP(S), file://, or a local path"
+                ),
+            )),
+        };
+    }
+
+    Ok(DesktopChannelLocation::File(PathBuf::from(channel)))
 }
 
 fn missing_desktop_channel_error(details: &str) -> StartupChannelError {
     StartupChannelError {
         title: "Missing launch channel",
         details: details.to_string(),
-        launch_hint:
-            "Launch with --channel=<url> (or --channel <url>) so fastboop can boot from an explicit channel."
-                .to_string(),
+        launch_hint: "Choose a local channel file, enter a channel URL/path, or launch with --channel=<url-or-path>."
+            .to_string(),
     }
 }
 
@@ -187,8 +277,7 @@ fn invalid_desktop_channel_error(channel: &str, reason: &str) -> StartupChannelE
     StartupChannelError {
         title: "Invalid launch channel",
         details: format!("channel '{channel}' is invalid or unreadable: {reason}"),
-        launch_hint: "Launch with a full URL like --channel=https://example.invalid/path.ero"
-            .to_string(),
+        launch_hint: "Use an HTTP(S) URL, file:// URL, or local channel path.".to_string(),
     }
 }
 

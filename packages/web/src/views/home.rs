@@ -112,10 +112,15 @@ pub fn Home(channel: Option<String>) -> Element {
                         title: display_error.title.to_string(),
                         details: display_error.details,
                         launch_hint: display_error.launch_hint,
+                        eyebrow: None,
                         channel_url_value: Some(startup_channel_url_value()),
                         on_channel_url_input: channel_url_input_handler.clone(),
                         on_submit_channel_url: submit_channel_url_handler.clone(),
                         submit_channel_url_pending: Some(startup_channel_url_submit_pending()),
+                        channel_input_label: Some("or enter a channel URL".to_string()),
+                        channel_input_placeholder: Some("https://example.invalid/channel.ero".to_string()),
+                        channel_input_hint: Some("HTTP(S) URLs are supported. The channel remains in your address bar.".to_string()),
+                        channel_picker: rsx! {},
                     }
                 };
             }
@@ -419,10 +424,15 @@ pub fn Home(channel: Option<String>) -> Element {
                 title,
                 details,
                 launch_hint,
+                eyebrow: None,
                 channel_url_value: Some(startup_channel_url_value()),
                 on_channel_url_input: channel_url_input_handler.clone(),
                 on_submit_channel_url: submit_channel_url_handler.clone(),
                 submit_channel_url_pending: Some(startup_channel_url_submit_pending()),
+                channel_input_label: Some("or enter a channel URL".to_string()),
+                channel_input_placeholder: Some("https://example.invalid/channel.ero".to_string()),
+                channel_input_hint: Some("HTTP(S) URLs are supported. The channel remains in your address bar.".to_string()),
+                channel_picker: rsx! {},
             }
         };
     }
