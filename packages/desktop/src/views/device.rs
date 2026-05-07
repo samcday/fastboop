@@ -177,13 +177,16 @@ fn BootingDevice(session_id: String, step: String) -> Element {
                         host_started: false,
                     },
                 ),
-                Err(err) => update_session_phase(
-                    &mut sessions,
-                    &session_id,
-                    SessionPhase::Error {
-                        summary: err.to_string(),
-                    },
-                ),
+                Err(err) => {
+                    log_boot_error(&err);
+                    update_session_phase(
+                        &mut sessions,
+                        &session_id,
+                        SessionPhase::Error {
+                            summary: err.to_string(),
+                        },
+                    )
+                }
             }
         });
     });
@@ -197,6 +200,12 @@ fn BootingDevice(session_id: String, step: String) -> Element {
             }
         }
     }
+}
+
+fn log_boot_error(err: &anyhow::Error) {
+    let error = format!("{err:#}");
+    error!(error = %error, "desktop boot failed");
+    println!("desktop boot failed:\n{error}");
 }
 
 #[component]
