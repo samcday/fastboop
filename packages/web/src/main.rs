@@ -17,6 +17,8 @@ use views::{DevicePage, Home, SessionStore};
 mod channel_source;
 mod gibblox_worker;
 mod views;
+#[cfg(target_arch = "wasm32")]
+mod wasm_utils;
 
 const LOG_LEVEL_HINT_KEY: &str = "__FASTBOOP_LOG_LEVEL";
 const CHANNEL_QUERY_KEY: &str = "channel";

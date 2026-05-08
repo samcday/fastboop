@@ -1,5 +1,6 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm {
+    use crate::wasm_utils::js_value_to_string;
     use anyhow::{anyhow, Result};
     use gibblox_web_worker::GibbloxWebWorker;
     use wasm_bindgen::JsCast;
@@ -24,7 +25,7 @@ mod wasm {
         opts.set_name(WORKER_NAME);
 
         let worker = Worker::new_with_options(&script_url, &opts)
-            .map_err(|err| anyhow!("start gibblox worker: {}", js_value_to_string(err)))?;
+            .map_err(|err| anyhow!("start gibblox worker: {}", js_value_to_string(&err)))?;
         GibbloxWebWorker::new(worker)
             .await
             .map_err(|err| anyhow!("initialize gibblox worker: {err}"))
@@ -80,13 +81,6 @@ mod wasm {
         }
         script_url.push_str(&search);
         script_url
-    }
-
-    fn js_value_to_string(value: wasm_bindgen::JsValue) -> String {
-        js_sys::JSON::stringify(&value)
-            .ok()
-            .and_then(|s| s.as_string())
-            .unwrap_or_else(|| format!("{value:?}"))
     }
 }
 

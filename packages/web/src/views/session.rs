@@ -19,6 +19,9 @@ use ui::SmooStatsHandle;
 #[cfg(target_arch = "wasm32")]
 use web_sys::MessageChannel;
 
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_utils::js_value_to_string;
+
 #[derive(Clone)]
 pub struct ProbedDevice {
     pub handle: WebUsbDeviceHandle,
@@ -83,7 +86,7 @@ impl LocalReaderBridge {
         let channel = MessageChannel::new().map_err(|err| {
             anyhow::anyhow!(
                 "create local channel reader bridge message channel: {}",
-                js_value_to_string(err)
+                js_value_to_string(&err)
             )
         })?;
         let server = MessagePortBlockReaderServer::serve(channel.port2(), self.reader.clone())
@@ -95,14 +98,6 @@ impl LocalReaderBridge {
         self.servers.borrow_mut().push(server);
         Ok(client)
     }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn js_value_to_string(value: wasm_bindgen::JsValue) -> String {
-    js_sys::JSON::stringify(&value)
-        .ok()
-        .and_then(|s| s.as_string())
-        .unwrap_or_else(|| format!("{value:?}"))
 }
 
 #[allow(dead_code)]
