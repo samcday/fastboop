@@ -25,6 +25,8 @@ use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs}
 use futures_util::StreamExt;
 #[cfg(not(target_arch = "wasm32"))]
 use gibblox_core::BlockByteReader;
+#[cfg(target_arch = "wasm32")]
+use gibblox_core::WindowBlockReader;
 use gibblox_core::{block_identity_string, BlockReader};
 #[cfg(target_arch = "wasm32")]
 use gibblox_ext4::{Ext4EntryType, Ext4Fs};
@@ -42,6 +44,8 @@ use gloo_timers::future::sleep;
 #[cfg(target_arch = "wasm32")]
 use gobblytes_core::{Filesystem, FilesystemEntryType, OstreeFs as OstreeRootfs};
 use gobblytes_erofs::ErofsRootfs;
+#[cfg(target_arch = "wasm32")]
+use gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE;
 #[cfg(target_arch = "wasm32")]
 use gobblytes_fat::FatFs;
 #[cfg(target_arch = "wasm32")]
@@ -1100,7 +1104,30 @@ async fn open_boot_profile_artifact_source(
         );
     }
 
-    open_artifact_source_via_worker(gibblox_worker, source, pipeline_hints).await
+    let reader = open_artifact_source_via_worker(gibblox_worker, source, pipeline_hints).await?;
+    normalize_partition_reader_block_size(source, reader).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn normalize_partition_reader_block_size(
+    source: &BootProfileArtifactSource,
+    reader: Arc<dyn BlockReader>,
+) -> anyhow::Result<Arc<dyn BlockReader>> {
+    if !matches!(
+        source,
+        BootProfileArtifactSource::Mbr(_) | BootProfileArtifactSource::Gpt(_)
+    ) || reader.block_size() == DEFAULT_IMAGE_BLOCK_SIZE
+    {
+        return Ok(reader);
+    }
+
+    // Match the std pipeline materializer: partition views are exported at the
+    // configured image block size, even when the wrapped sparse image is 4K.
+    let size_bytes = reader_size_bytes(reader.as_ref()).await?;
+    let reader = WindowBlockReader::new(reader, 0, size_bytes, DEFAULT_IMAGE_BLOCK_SIZE)
+        .await
+        .map_err(|err| anyhow::anyhow!("normalize partition reader block size: {err}"))?;
+    Ok(Arc::new(reader))
 }
 
 #[cfg(target_arch = "wasm32")]
