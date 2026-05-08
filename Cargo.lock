@@ -1986,6 +1986,7 @@ dependencies = [
  "gobblytes-core",
  "gobblytes-erofs",
  "gobblytes-fat",
+ "hyper 0.14.32",
  "ratatui",
  "rustix 1.1.4",
  "serde",

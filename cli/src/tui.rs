@@ -186,8 +186,12 @@ fn draw_smoo_panel(frame: &mut Frame<'_>, area: ratatui::layout::Rect, state: &T
         Span::raw("  "),
         Span::styled(
             format!(
-                "exports={} sid={}",
-                state.smoo_export_count, state.smoo_session_id
+                "exports={} sid={} io={} up={} down={}",
+                state.smoo_export_count,
+                state.smoo_session_id,
+                state.smoo_ios_up.saturating_add(state.smoo_ios_down),
+                state.smoo_bytes_up,
+                state.smoo_bytes_down,
             ),
             Style::default().fg(Color::Gray),
         ),
@@ -265,6 +269,10 @@ struct TuiState {
     smoo_active: bool,
     smoo_export_count: u32,
     smoo_session_id: u64,
+    smoo_ios_up: u64,
+    smoo_ios_down: u64,
+    smoo_bytes_up: u64,
+    smoo_bytes_down: u64,
     smoo_history: VecDeque<u64>,
     gibblox_available: bool,
     gibblox_hit_rate: u64,
@@ -291,11 +299,24 @@ impl TuiState {
                 active,
                 export_count,
                 session_id,
+                ios_up,
+                ios_down,
+                bytes_up,
+                bytes_down,
             } => {
+                let previous_ios = self.smoo_ios_up.saturating_add(self.smoo_ios_down);
                 self.smoo_active = active;
                 self.smoo_export_count = export_count;
                 self.smoo_session_id = session_id;
-                Self::push_history(&mut self.smoo_history, if active { 100 } else { 0 });
+                self.smoo_ios_up = ios_up;
+                self.smoo_ios_down = ios_down;
+                self.smoo_bytes_up = bytes_up;
+                self.smoo_bytes_down = bytes_down;
+                let total_ios = ios_up.saturating_add(ios_down);
+                Self::push_history(
+                    &mut self.smoo_history,
+                    total_ios.saturating_sub(previous_ios),
+                );
             }
             BootEvent::GibbloxStats {
                 hit_rate_pct,
