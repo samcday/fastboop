@@ -25,7 +25,19 @@ pub fn Home() -> Element {
     let sessions = use_context::<SessionStore>();
     let navigator = use_navigator();
 
-    let initial_startup_channel = crate::startup_channel();
+    let initial_startup_options = crate::startup_options();
+    let initial_startup_channel = initial_startup_options
+        .clone()
+        .map(|options| options.channel);
+    let startup_boot_profile_id = initial_startup_options
+        .clone()
+        .ok()
+        .and_then(|options| options.boot_profile);
+    let startup_extra_kargs = initial_startup_options
+        .clone()
+        .ok()
+        .and_then(|options| options.extra_kargs)
+        .unwrap_or_default();
     let startup_channel = use_signal({
         let initial_startup_channel = initial_startup_channel.clone();
         move || initial_startup_channel.clone().ok().flatten()
@@ -234,6 +246,8 @@ pub fn Home() -> Element {
     };
 
     let startup_channel_for_boot = startup_channel;
+    let startup_boot_profile_id_for_boot = startup_boot_profile_id.clone();
+    let startup_extra_kargs_for_boot = startup_extra_kargs.clone();
     let on_boot = {
         let mut sessions = sessions;
         let devices = snapshot.devices.clone();
@@ -262,11 +276,11 @@ pub fn Home() -> Element {
 
             let compatible_boot_profiles =
                 compatible_boot_profiles_for_device(&intake, profile.profile.id.as_str());
-            let selected_boot_profile_id = if compatible_boot_profiles.len() == 1 {
-                Some(compatible_boot_profiles[0].id.clone())
-            } else {
-                None
-            };
+            let selected_boot_profile_id = initial_boot_profile_id(
+                &compatible_boot_profiles,
+                startup_boot_profile_id_for_boot.as_deref(),
+                profile.profile.id.as_str(),
+            );
 
             let session_id = next_session_id();
             sessions.write().push(DeviceSession {
@@ -291,7 +305,7 @@ pub fn Home() -> Element {
                 boot_config: BootConfig::new(
                     startup_channel_for_boot,
                     selected_boot_profile_id,
-                    "",
+                    startup_extra_kargs_for_boot.clone(),
                     DEFAULT_ENABLE_SERIAL,
                 ),
                 phase: SessionPhase::Configuring,
@@ -496,4 +510,32 @@ fn compatible_boot_profiles_for_device(
         })
         .cloned()
         .collect()
+}
+
+fn initial_boot_profile_id(
+    compatible_boot_profiles: &[BootProfile],
+    requested_boot_profile_id: Option<&str>,
+    device_profile_id: &str,
+) -> Option<String> {
+    if let Some(requested_boot_profile_id) = requested_boot_profile_id {
+        if compatible_boot_profiles
+            .iter()
+            .any(|profile| profile.id == requested_boot_profile_id)
+        {
+            return Some(requested_boot_profile_id.to_string());
+        }
+
+        info!(
+            boot_profile = requested_boot_profile_id,
+            device_profile = device_profile_id,
+            "startup boot profile is not compatible with selected device"
+        );
+        return None;
+    }
+
+    if compatible_boot_profiles.len() == 1 {
+        Some(compatible_boot_profiles[0].id.clone())
+    } else {
+        None
+    }
 }

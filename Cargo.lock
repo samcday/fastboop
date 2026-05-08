@@ -2225,6 +2225,7 @@ version = "0.0.1-rc.21"
 dependencies = [
  "anyhow",
  "async-trait",
+ "clap",
  "dioxus",
  "fastboop-core",
  "fastboop-fastboot-rusb",

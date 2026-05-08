@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+clap = { workspace = true }
 dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }

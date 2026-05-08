@@ -1,3 +1,4 @@
+use clap::Parser;
 use dioxus::prelude::*;
 use fastboop_core::read_channel_stream_head_from_reader;
 use gibblox_core::{BlockByteReader, BlockReader};
@@ -9,13 +10,20 @@ use std::sync::{Arc, OnceLock};
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
-static STARTUP_CHANNEL: OnceLock<Result<Option<String>, StartupChannelError>> = OnceLock::new();
+static STARTUP_OPTIONS: OnceLock<Result<StartupOptions, StartupChannelError>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub(crate) struct StartupChannelError {
     pub(crate) title: &'static str,
     pub(crate) details: String,
     pub(crate) launch_hint: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StartupOptions {
+    pub(crate) channel: Option<String>,
+    pub(crate) boot_profile: Option<String>,
+    pub(crate) extra_kargs: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +83,20 @@ const MAIN_CSS: Asset = asset!("/assets/main.css");
 const NATIVE_HANDLER_SCHEME: &str = "fastboop";
 const NATIVE_HANDLER_BOOT_AUTHORITY: &str = "boot";
 
+#[derive(Clone, Debug, Parser)]
+#[command(author, version, about = "fastboop desktop app")]
+struct DesktopArgs {
+    /// Path, file:// URL, or HTTP(S) URL to a channel artifact.
+    #[arg(long, value_name = "URL_OR_PATH")]
+    channel: Option<String>,
+    /// Boot profile id to preselect when a channel contains compatible profiles.
+    #[arg(long, value_name = "ID")]
+    boot_profile: Option<String>,
+    /// Extra kernel cmdline arguments to seed the boot config with.
+    #[arg(long, alias = "cmdline", value_name = "ARGS")]
+    extra_kargs: Option<String>,
+}
+
 fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
     if std::env::var_os("FLATPAK_ID").is_some() {
         flatpak_path.to_string()
@@ -86,11 +108,11 @@ fn stylesheet_href(asset: &Asset, flatpak_path: &str) -> String {
 fn main() {
     init_tracing();
 
-    let startup_channel = parse_channel_from_args();
-    if let Err(err) = &startup_channel {
+    let startup_options = parse_startup_options_from_args();
+    if let Err(err) = &startup_options {
         eprintln!("{}", err.details);
     }
-    let _ = STARTUP_CHANNEL.set(startup_channel);
+    let _ = STARTUP_OPTIONS.set(startup_options);
 
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
@@ -103,10 +125,10 @@ fn main() {
         .launch(App);
 }
 
-pub(crate) fn startup_channel() -> Result<Option<String>, StartupChannelError> {
-    STARTUP_CHANNEL.get().cloned().unwrap_or_else(|| {
+pub(crate) fn startup_options() -> Result<StartupOptions, StartupChannelError> {
+    STARTUP_OPTIONS.get().cloned().unwrap_or_else(|| {
         Err(missing_desktop_channel_error(
-            "desktop startup channel state was not initialized",
+            "desktop startup options were not initialized",
         ))
     })
 }
@@ -202,58 +224,46 @@ where
     Ok(intake)
 }
 
-fn parse_channel_from_args() -> Result<Option<String>, StartupChannelError> {
+fn parse_startup_options_from_args() -> Result<StartupOptions, StartupChannelError> {
     let args = env::args().collect::<Vec<_>>();
-    parse_channel_from_arg_slice(&args[1..])
+    parse_startup_options_from_arg_slice(&args[1..])
 }
 
-fn parse_channel_from_arg_slice(args: &[String]) -> Result<Option<String>, StartupChannelError> {
-    let mut index = 0;
-    while index < args.len() {
-        let arg = args[index].as_str();
-
-        if let Some(value) = arg.strip_prefix("--channel=") {
-            let value = value.trim();
-            if value.is_empty() {
-                return Err(missing_desktop_channel_error(
-                    "--channel=<url-or-path> value is empty",
-                ));
-            }
-            return parse_startup_channel_value(value).map(Some);
-        }
-
-        if arg == "--channel" {
-            let value = args.get(index + 1).ok_or_else(|| {
-                missing_desktop_channel_error(
-                    "--channel requires a channel argument: --channel=<url-or-path> or --channel <url-or-path>",
-                )
-            })?;
-            let value = value.trim();
-            if value.is_empty() {
-                return Err(missing_desktop_channel_error("--channel value is empty"));
-            }
-            return parse_startup_channel_value(value).map(Some);
-        }
-
-        if is_native_handler_url(arg.trim()) {
-            return parse_startup_channel_value(arg.trim()).map(Some);
-        }
-
-        index += 1;
+fn parse_startup_options_from_arg_slice(
+    args: &[String],
+) -> Result<StartupOptions, StartupChannelError> {
+    let mut normalized = Vec::with_capacity(args.len() + 1);
+    normalized.push("fastboop-desktop".to_string());
+    for arg in args {
+        push_normalized_startup_arg(arg, &mut normalized)?;
     }
 
-    Ok(None)
-}
+    let args = match DesktopArgs::try_parse_from(normalized) {
+        Ok(args) => args,
+        Err(err)
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            err.exit();
+        }
+        Err(err) => return Err(invalid_desktop_args_error(&err.to_string())),
+    };
 
-fn parse_startup_channel_value(value: &str) -> Result<String, StartupChannelError> {
-    let value = value.trim();
-    if is_native_handler_url(value) {
-        let url = Url::parse(value)
-            .map_err(|err| invalid_native_handler_url_error(value, &err.to_string()))?;
-        return extract_native_handler_channel(value, &url);
-    }
+    let channel = args
+        .channel
+        .as_deref()
+        .map(validate_desktop_channel)
+        .transpose()?;
+    let boot_profile = optional_nonempty_startup_arg(args.boot_profile, "--boot-profile")?;
+    let extra_kargs = optional_trimmed_startup_arg(args.extra_kargs);
 
-    validate_desktop_channel(value)
+    Ok(StartupOptions {
+        channel,
+        boot_profile,
+        extra_kargs,
+    })
 }
 
 fn validate_desktop_channel(channel: &str) -> Result<String, StartupChannelError> {
@@ -293,29 +303,60 @@ fn parse_desktop_channel_location(
     Ok(DesktopChannelLocation::File(PathBuf::from(channel)))
 }
 
-fn extract_native_handler_channel(source: &str, url: &Url) -> Result<String, StartupChannelError> {
+fn push_normalized_startup_arg(
+    arg: &str,
+    normalized: &mut Vec<String>,
+) -> Result<(), StartupChannelError> {
+    let trimmed = arg.trim();
+    if !is_native_handler_url(trimmed) {
+        normalized.push(arg.to_string());
+        return Ok(());
+    }
+
+    let url = Url::parse(trimmed)
+        .map_err(|err| invalid_native_handler_url_error(trimmed, &err.to_string()))?;
+    normalized.extend(native_handler_args(trimmed, &url)?);
+    Ok(())
+}
+
+fn native_handler_args(source: &str, url: &Url) -> Result<Vec<String>, StartupChannelError> {
     if url.host_str() != Some(NATIVE_HANDLER_BOOT_AUTHORITY) {
         return Err(invalid_native_handler_url_error(
             source,
-            "expected fastboop://boot?channel=<url>",
+            "expected fastboop://boot?<launch-options>",
         ));
     }
 
-    let channel = url
-        .query_pairs()
-        .find_map(|(name, value)| (name == "channel").then(|| value.into_owned()))
-        .ok_or_else(|| {
-            invalid_native_handler_url_error(source, "missing channel query parameter")
-        })?;
-    let channel = channel.trim();
-    if channel.is_empty() {
+    if url.query().is_none() {
         return Err(invalid_native_handler_url_error(
             source,
-            "channel query parameter is empty",
+            "missing launch option query parameters",
         ));
     }
 
-    validate_desktop_channel(channel)
+    let mut args = Vec::new();
+    for (name, value) in url.query_pairs() {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(invalid_native_handler_url_error(
+                source,
+                "launch option name is empty",
+            ));
+        }
+        args.push(format!("--{name}"));
+        if !value.is_empty() {
+            args.push(value.into_owned());
+        }
+    }
+
+    if args.is_empty() {
+        return Err(invalid_native_handler_url_error(
+            source,
+            "missing launch option query parameters",
+        ));
+    }
+
+    Ok(args)
 }
 
 fn is_native_handler_url(value: &str) -> bool {
@@ -341,66 +382,127 @@ fn invalid_desktop_channel_error(channel: &str, reason: &str) -> StartupChannelE
     }
 }
 
+fn invalid_desktop_args_error(reason: &str) -> StartupChannelError {
+    StartupChannelError {
+        title: "Invalid launch options",
+        details: format!("desktop launch options are invalid: {reason}"),
+        launch_hint: "Use --channel=<url-or-path>, or open fastboop://boot?channel=<url-or-path>."
+            .to_string(),
+    }
+}
+
 fn invalid_native_handler_url_error(link: &str, reason: &str) -> StartupChannelError {
     StartupChannelError {
         title: "Invalid fastboop link",
         details: format!("fastboop link '{link}' is invalid: {reason}"),
         launch_hint:
-            "Open fastboop links like fastboop://boot?channel=https%3A%2F%2Fexample.invalid%2Fpath.ero"
+            "Open fastboop links like fastboop://boot?channel=https%3A%2F%2Fexample.invalid%2Fpath.ero&boot-profile=profile-id"
                 .to_string(),
     }
+}
+
+fn optional_nonempty_startup_arg(
+    value: Option<String>,
+    name: &str,
+) -> Result<Option<String>, StartupChannelError> {
+    value
+        .map(|value| {
+            let value = value.trim();
+            if value.is_empty() {
+                Err(invalid_desktop_args_error(&format!(
+                    "{name} value is empty"
+                )))
+            } else {
+                Ok(value.to_string())
+            }
+        })
+        .transpose()
+}
+
+fn optional_trimmed_startup_arg(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse_args(args: &[&str]) -> Result<Option<String>, StartupChannelError> {
+    fn parse_args(args: &[&str]) -> Result<StartupOptions, StartupChannelError> {
         let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
-        parse_channel_from_arg_slice(&args)
+        parse_startup_options_from_arg_slice(&args)
     }
 
     #[test]
     fn allows_missing_startup_channel() {
-        let channel = parse_args(&[]).unwrap();
+        let options = parse_args(&[]).unwrap();
 
-        assert_eq!(channel, None);
+        assert_eq!(options, StartupOptions::default());
     }
 
     #[test]
     fn parses_channel_flag() {
-        let channel = parse_args(&["--channel", "https://example.invalid/channel.ero"]).unwrap();
+        let options = parse_args(&["--channel", "https://example.invalid/channel.ero"]).unwrap();
 
         assert_eq!(
-            channel,
+            options.channel,
             Some("https://example.invalid/channel.ero".to_string())
         );
     }
 
     #[test]
     fn parses_local_channel_path() {
-        let channel = parse_args(&["--channel", "/tmp/channel.ero"]).unwrap();
+        let options = parse_args(&["--channel", "/tmp/channel.ero"]).unwrap();
 
-        assert_eq!(channel, Some("/tmp/channel.ero".to_string()));
+        assert_eq!(options.channel, Some("/tmp/channel.ero".to_string()));
     }
 
     #[test]
-    fn parses_native_handler_url() {
-        let channel =
-            parse_args(&["fastboop://boot?channel=https%3A%2F%2Fexample.invalid%2Fchannel.ero"])
-                .unwrap();
+    fn parses_boot_profile_flag() {
+        let options = parse_args(&["--boot-profile", "postmarketos-edge"]).unwrap();
+
+        assert_eq!(options.boot_profile, Some("postmarketos-edge".to_string()));
+    }
+
+    #[test]
+    fn parses_native_handler_query_as_flags() {
+        let options = parse_args(&[
+            "fastboop://boot?channel=https%3A%2F%2Fexample.invalid%2Fchannel.ero&boot-profile=postmarketos-edge&cmdline=console%3DttyMSM0%2C115200n8+clk_ignore_unused",
+        ])
+        .unwrap();
 
         assert_eq!(
-            channel,
+            options.channel,
             Some("https://example.invalid/channel.ero".to_string())
+        );
+        assert_eq!(options.boot_profile, Some("postmarketos-edge".to_string()));
+        assert_eq!(
+            options.extra_kargs,
+            Some("console=ttyMSM0,115200n8 clk_ignore_unused".to_string())
         );
     }
 
     #[test]
-    fn rejects_native_handler_url_without_channel() {
+    fn parses_native_handler_without_channel() {
+        let options = parse_args(&["fastboop://boot?boot-profile=postmarketos-edge"]).unwrap();
+
+        assert_eq!(options.channel, None);
+        assert_eq!(options.boot_profile, Some("postmarketos-edge".to_string()));
+    }
+
+    #[test]
+    fn rejects_native_handler_url_without_query() {
         let err = parse_args(&["fastboop://boot"]).unwrap_err();
 
         assert_eq!(err.title, "Invalid fastboop link");
+    }
+
+    #[test]
+    fn rejects_unknown_native_handler_query_arg() {
+        let err = parse_args(&["fastboop://boot?smoo-max-io=1M"]).unwrap_err();
+
+        assert_eq!(err.title, "Invalid launch options");
     }
 }
 
