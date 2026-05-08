@@ -80,6 +80,8 @@ use super::session::{
 };
 #[cfg(target_arch = "wasm32")]
 use crate::gibblox_worker::spawn_gibblox_worker;
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_utils::js_value_to_string;
 
 #[cfg(target_arch = "wasm32")]
 const STATUS_RETRY_INTERVAL: Duration = Duration::from_millis(200);
@@ -1358,14 +1360,6 @@ async fn load_stage0_binary_sidecar() -> Result<Option<Vec<u8>>, Stage0Error> {
     }
     tracing::debug!(%url, size_bytes = bytes.len(), "loaded stage0 sidecar asset");
     Ok(Some(bytes))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn js_value_to_string(value: &JsValue) -> String {
-    js_sys::JSON::stringify(value)
-        .ok()
-        .and_then(|s| s.as_string())
-        .unwrap_or_else(|| format!("{value:?}"))
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -27,6 +27,8 @@ use super::serial_logs::SerialLogPanel;
 use super::session::{
     update_session_boot_config, update_session_phase, SessionPhase, SessionStore,
 };
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_utils::js_value_to_string;
 
 #[cfg(target_arch = "wasm32")]
 const CACHE_STATS_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -523,14 +525,6 @@ fn document_hidden() -> bool {
         .and_then(|window| window.document())
         .map(|document| document.hidden())
         .unwrap_or(false)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn js_value_to_string(value: &JsValue) -> String {
-    js_sys::JSON::stringify(value)
-        .ok()
-        .and_then(|s| s.as_string())
-        .unwrap_or_else(|| format!("{value:?}"))
 }
 
 #[component]
