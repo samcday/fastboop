@@ -12,11 +12,13 @@ use std::time::Duration;
 use ui::run_smoo_stats_view_loop;
 use ui::{BootConfigCard, BootProfileOptionView, SmooStatsPanel, SmooStatsViewModel};
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::JsFuture;
+#[cfg(target_arch = "wasm32")]
+use web_sys::{WakeLockSentinel, WakeLockType};
 
 #[cfg(target_arch = "wasm32")]
 use super::device_boot::run_web_host_daemon;
@@ -396,37 +398,49 @@ fn BootedDevice(session_id: String) -> Element {
 
 #[cfg(target_arch = "wasm32")]
 fn use_screen_wake_lock() {
-    let mut sentinel = use_signal(|| Option::<JsValue>::None);
+    let mut sentinel = use_signal(|| Option::<WakeLockSentinel>::None);
     let cancelled = use_signal(|| Rc::new(Cell::new(false)));
+    let request_pending = use_signal(|| Rc::new(Cell::new(false)));
+    let mut visibility_listener = use_signal(|| Option::<Closure<dyn FnMut(JsValue)>>::None);
 
     use_effect(move || {
-        if sentinel().is_some() || cancelled().get() {
+        acquire_screen_wake_lock(sentinel, cancelled(), request_pending());
+    });
+
+    use_effect(move || {
+        if visibility_listener.read().is_some() {
             return;
         }
 
-        let mut sentinel = sentinel;
-        let cancelled = cancelled();
-        spawn_detached(async move {
-            match request_screen_wake_lock().await {
-                Ok(lock) if cancelled.get() => {
-                    release_screen_wake_lock(lock).await;
-                }
-                Ok(lock) => {
-                    tracing::info!("screen wake lock acquired");
-                    sentinel.set(Some(lock));
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        error = %js_value_to_string(&err),
-                        "screen wake lock request failed"
-                    );
-                }
-            }
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+
+        let listener = Closure::<dyn FnMut(JsValue)>::new(move |_| {
+            acquire_screen_wake_lock(sentinel, cancelled(), request_pending());
         });
+        if let Err(err) = document
+            .add_event_listener_with_callback("visibilitychange", listener.as_ref().unchecked_ref())
+        {
+            tracing::warn!(
+                error = %js_value_to_string(&err),
+                "screen wake lock visibility listener registration failed"
+            );
+            return;
+        }
+        visibility_listener.set(Some(listener));
     });
 
     use_drop(move || {
         cancelled().set(true);
+        if let Some(listener) = visibility_listener.write().take() {
+            if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+                let _ = document.remove_event_listener_with_callback(
+                    "visibilitychange",
+                    listener.as_ref().unchecked_ref(),
+                );
+            }
+        }
         if let Some(lock) = sentinel.write().take() {
             spawn_detached(async move {
                 release_screen_wake_lock(lock).await;
@@ -436,7 +450,47 @@ fn use_screen_wake_lock() {
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn request_screen_wake_lock() -> Result<JsValue, JsValue> {
+fn acquire_screen_wake_lock(
+    mut sentinel: Signal<Option<WakeLockSentinel>>,
+    cancelled: Rc<Cell<bool>>,
+    request_pending: Rc<Cell<bool>>,
+) {
+    if cancelled.get() || request_pending.get() || document_hidden() {
+        return;
+    }
+
+    if let Some(lock) = sentinel() {
+        if !lock.released() {
+            return;
+        }
+        sentinel.write().take();
+    }
+
+    request_pending.set(true);
+    spawn_detached(async move {
+        match request_screen_wake_lock().await {
+            Ok(lock) if cancelled.get() => {
+                request_pending.set(false);
+                release_screen_wake_lock(lock).await;
+            }
+            Ok(lock) => {
+                request_pending.set(false);
+                tracing::info!("screen wake lock acquired");
+                sentinel.set(Some(lock));
+            }
+            Err(err) => {
+                request_pending.set(false);
+                tracing::warn!(
+                    error = %js_value_to_string(&err),
+                    "screen wake lock request failed"
+                );
+            }
+        }
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn request_screen_wake_lock() -> Result<WakeLockSentinel, JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("window unavailable"))?;
     let navigator = window.navigator();
     let wake_lock = Reflect::get(navigator.as_ref(), &JsValue::from_str("wakeLock"))?;
@@ -444,35 +498,31 @@ async fn request_screen_wake_lock() -> Result<JsValue, JsValue> {
         return Err(JsValue::from_str("Screen Wake Lock API unavailable"));
     }
 
-    let request =
-        Reflect::get(&wake_lock, &JsValue::from_str("request"))?.dyn_into::<js_sys::Function>()?;
-    let promise = request
-        .call1(&wake_lock, &JsValue::from_str("screen"))?
-        .dyn_into::<js_sys::Promise>()?;
-    JsFuture::from(promise).await
+    let wake_lock = navigator.wake_lock();
+    let sentinel = JsFuture::from(wake_lock.request(WakeLockType::Screen)).await?;
+    Ok(sentinel.unchecked_into::<WakeLockSentinel>())
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn release_screen_wake_lock(sentinel: JsValue) {
-    let Ok(release) = Reflect::get(&sentinel, &JsValue::from_str("release")) else {
+async fn release_screen_wake_lock(sentinel: WakeLockSentinel) {
+    if sentinel.released() {
         return;
-    };
-    let Ok(release) = release.dyn_into::<js_sys::Function>() else {
-        return;
-    };
-    let Ok(promise) = release.call0(&sentinel) else {
-        return;
-    };
-    let Ok(promise) = promise.dyn_into::<js_sys::Promise>() else {
-        return;
-    };
+    }
 
-    if let Err(err) = JsFuture::from(promise).await {
+    if let Err(err) = JsFuture::from(sentinel.release()).await {
         tracing::debug!(
             error = %js_value_to_string(&err),
             "screen wake lock release failed"
         );
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn document_hidden() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .map(|document| document.hidden())
+        .unwrap_or(false)
 }
 
 #[cfg(target_arch = "wasm32")]
