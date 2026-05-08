@@ -12,7 +12,11 @@ use std::time::Duration;
 use ui::run_smoo_stats_view_loop;
 use ui::{BootConfigCard, BootProfileOptionView, SmooStatsPanel, SmooStatsViewModel};
 #[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
 
 #[cfg(target_arch = "wasm32")]
 use super::device_boot::run_web_host_daemon;
@@ -174,6 +178,9 @@ fn BootConfigDevice(session_id: String) -> Element {
 
 #[component]
 fn BootingDevice(session_id: String, step: String) -> Element {
+    #[cfg(target_arch = "wasm32")]
+    use_screen_wake_lock();
+
     let sessions = use_context::<SessionStore>();
     let mut started = use_signal(|| false);
 
@@ -248,6 +255,9 @@ fn BootedDevice(session_id: String) -> Element {
     else {
         return rsx! {};
     };
+
+    #[cfg(target_arch = "wasm32")]
+    use_screen_wake_lock();
 
     let mut kickoff = use_signal(|| false);
     let smoo_stats = use_signal(|| Option::<SmooStatsViewModel>::None);
@@ -382,6 +392,95 @@ fn BootedDevice(session_id: String) -> Element {
             }
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn use_screen_wake_lock() {
+    let mut sentinel = use_signal(|| Option::<JsValue>::None);
+    let cancelled = use_signal(|| Rc::new(Cell::new(false)));
+
+    use_effect(move || {
+        if sentinel().is_some() || cancelled().get() {
+            return;
+        }
+
+        let mut sentinel = sentinel;
+        let cancelled = cancelled();
+        spawn_detached(async move {
+            match request_screen_wake_lock().await {
+                Ok(lock) if cancelled.get() => {
+                    release_screen_wake_lock(lock).await;
+                }
+                Ok(lock) => {
+                    tracing::info!("screen wake lock acquired");
+                    sentinel.set(Some(lock));
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %js_value_to_string(&err),
+                        "screen wake lock request failed"
+                    );
+                }
+            }
+        });
+    });
+
+    use_drop(move || {
+        cancelled().set(true);
+        if let Some(lock) = sentinel.write().take() {
+            spawn_detached(async move {
+                release_screen_wake_lock(lock).await;
+            });
+        }
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn request_screen_wake_lock() -> Result<JsValue, JsValue> {
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("window unavailable"))?;
+    let navigator = window.navigator();
+    let wake_lock = Reflect::get(navigator.as_ref(), &JsValue::from_str("wakeLock"))?;
+    if wake_lock.is_null() || wake_lock.is_undefined() {
+        return Err(JsValue::from_str("Screen Wake Lock API unavailable"));
+    }
+
+    let request =
+        Reflect::get(&wake_lock, &JsValue::from_str("request"))?.dyn_into::<js_sys::Function>()?;
+    let promise = request
+        .call1(&wake_lock, &JsValue::from_str("screen"))?
+        .dyn_into::<js_sys::Promise>()?;
+    JsFuture::from(promise).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn release_screen_wake_lock(sentinel: JsValue) {
+    let Ok(release) = Reflect::get(&sentinel, &JsValue::from_str("release")) else {
+        return;
+    };
+    let Ok(release) = release.dyn_into::<js_sys::Function>() else {
+        return;
+    };
+    let Ok(promise) = release.call0(&sentinel) else {
+        return;
+    };
+    let Ok(promise) = promise.dyn_into::<js_sys::Promise>() else {
+        return;
+    };
+
+    if let Err(err) = JsFuture::from(promise).await {
+        tracing::debug!(
+            error = %js_value_to_string(&err),
+            "screen wake lock release failed"
+        );
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_value_to_string(value: &JsValue) -> String {
+    js_sys::JSON::stringify(value)
+        .ok()
+        .and_then(|s| s.as_string())
+        .unwrap_or_else(|| format!("{value:?}"))
 }
 
 #[component]
