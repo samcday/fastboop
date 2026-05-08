@@ -2029,6 +2029,10 @@ name = "fastboop-mobile"
 version = "0.0.1-rc.20"
 dependencies = [
  "dioxus",
+ "jni 0.21.1",
+ "ndk-context",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "ui",

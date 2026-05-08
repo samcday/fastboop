@@ -3,6 +3,7 @@ use tracing_subscriber::EnvFilter;
 
 use views::Home;
 
+mod android_usb;
 mod views;
 
 #[derive(Debug, Clone, Routable, PartialEq)]

@@ -1,0 +1,20 @@
+[application]
+name = "fastboop-mobile"
+asset_dir = "assets"
+android_manifest = "android/AndroidManifest.xml"
+android_main_activity = "android/MainActivity.kt"
+android_min_sdk_version = 24
+
+[web.app]
+title = "fastboop mobile"
+
+[web.watcher]
+index_on_404 = true
+watch_path = ["src", "assets", "../ui/src", "../ui/assets"]
+
+[bundle]
+identifier = "win.fastboop.mobile"
+publisher = "fastboop"
+category = "DeveloperTool"
+short_description = "Zero-flash Linux boot for pocket hardware."
+long_description = "fastboop-mobile is the Android host app for ephemeral fastboot RAM boot sessions."

@@ -28,3 +28,139 @@ body {
 a {
     color: inherit;
 }
+
+.mobile-home {
+    min-height: 100vh;
+}
+
+.android-usb {
+    width: min(92vw, 880px);
+    margin: -72px auto 96px;
+    padding: 28px;
+    border-radius: 24px;
+    background: rgba(10, 14, 18, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+    backdrop-filter: blur(14px);
+}
+
+.android-usb__header {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    align-items: start;
+}
+
+.android-usb__eyebrow {
+    margin: 0 0 8px;
+    color: var(--color-accent);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+}
+
+.android-usb h2 {
+    margin: 0;
+    font-size: clamp(1.5rem, 3vw, 2rem);
+}
+
+.android-usb__copy,
+.android-usb__empty,
+.android-usb__permission,
+.android-usb__status {
+    color: var(--color-text-muted);
+    line-height: 1.55;
+}
+
+.android-usb__status {
+    margin: 18px 0;
+    padding: 12px 14px;
+    border-radius: 14px;
+    color: var(--color-text);
+    background: rgba(105, 189, 176, 0.1);
+    border: 1px solid rgba(105, 189, 176, 0.24);
+}
+
+.android-usb__devices {
+    list-style: none;
+    margin: 20px 0;
+    padding: 0;
+    display: grid;
+    gap: 12px;
+}
+
+.android-usb-device {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    gap: 12px;
+    align-items: center;
+    padding: 14px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.045);
+}
+
+.android-usb-device__main {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.android-usb-device__id,
+.android-usb-device__name {
+    overflow-wrap: anywhere;
+}
+
+.android-usb-device__id {
+    font-family: var(--font-mono);
+    color: var(--color-text);
+}
+
+.android-usb-device__name,
+.android-usb-device__meta,
+.android-usb-device__permission,
+.android-usb__permission {
+    color: var(--color-text-subtle);
+    font-size: 0.88rem;
+}
+
+.android-usb-device__permission {
+    white-space: nowrap;
+}
+
+.android-usb__button {
+    border: 1px solid rgba(105, 189, 176, 0.46);
+    border-radius: 999px;
+    padding: 9px 16px;
+    color: #081014;
+    background: var(--color-accent);
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.android-usb__button--secondary {
+    color: var(--color-text);
+    background: rgba(105, 189, 176, 0.12);
+}
+
+.android-usb__button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+@media (max-width: 720px) {
+    .android-usb {
+        margin-top: -56px;
+        padding: 22px;
+    }
+
+    .android-usb__header,
+    .android-usb-device {
+        grid-template-columns: 1fr;
+    }
+
+    .android-usb__button {
+        width: 100%;
+    }
+}
