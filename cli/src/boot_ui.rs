@@ -47,6 +47,10 @@ pub enum BootEvent {
         active: bool,
         export_count: u32,
         session_id: u64,
+        ios_up: u64,
+        ios_down: u64,
+        bytes_up: u64,
+        bytes_down: u64,
     },
     #[allow(dead_code)]
     GibbloxStats {

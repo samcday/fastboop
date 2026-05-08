@@ -35,7 +35,7 @@ use super::{
 };
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const SMOO_MAX_IO_BYTES_KARG: &str = "smoo.max_io_bytes=1048576";
+const DEFAULT_SMOO_MAX_IO_BYTES: usize = 1024 * 1024;
 
 struct DetectedFastbootDevice {
     fastboot: FastbootRusb,
@@ -88,6 +88,15 @@ pub struct BootStage0Args {
     /// (use --impersonate-fastboot=false to disable).
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub impersonate_fastboot: bool,
+    /// Number of smoo/ublk queues to configure in stage0 (default: 1).
+    #[arg(long = "smoo-queue-count", value_name = "N", value_parser = parse_nonzero_u16)]
+    pub smoo_queue_count: Option<u16>,
+    /// Depth of each smoo/ublk queue configured in stage0 (default: 16).
+    #[arg(long = "smoo-queue-depth", value_name = "N", value_parser = parse_nonzero_u16)]
+    pub smoo_queue_depth: Option<u16>,
+    /// Maximum per-I/O size advertised by smoo in stage0 (default: 1 MiB).
+    #[arg(long = "smoo-max-io", value_name = "BYTES", value_parser = parse_byte_size)]
+    pub smoo_max_io: Option<usize>,
     /// Local artifact file to short-circuit matching pipeline stages (repeatable).
     #[arg(long = "local-artifact", value_name = "PATH")]
     pub local_artifact: Vec<PathBuf>,
@@ -109,6 +118,9 @@ pub struct BootArgs {
     /// Wait up to N seconds for a matching device (0 = infinite).
     #[arg(long, default_value_t = 0)]
     pub wait: u64,
+    /// Expose fastboop's smoo host metrics on this TCP port (0 disables).
+    #[arg(long = "smoo-metrics-port", default_value_t = 0)]
+    pub smoo_metrics_port: u16,
     #[cfg(feature = "tui")]
     /// Use plain line-oriented logs (disable TUI view).
     #[arg(long, default_value_t = false)]
@@ -293,6 +305,9 @@ async fn run_boot_inner(
     let ostree_arg = parse_ostree_arg(args.stage0.ostree.as_ref())?;
     let serial_enabled = args.stage0.serial;
     let impersonate_fastboot = args.stage0.impersonate_fastboot;
+    let smoo_queue_count = args.stage0.smoo_queue_count;
+    let smoo_queue_depth = args.stage0.smoo_queue_depth;
+    let smoo_max_io = args.stage0.smoo_max_io.unwrap_or(DEFAULT_SMOO_MAX_IO_BYTES);
     let personalization = args.systemd_firstboot.then(personalization_from_host);
 
     let existing = read_existing_initrd(&args.stage0.augment)?;
@@ -397,7 +412,13 @@ async fn run_boot_inner(
         if let Some(system_time) = system_time_part.as_deref() {
             extra_parts.push(system_time.to_string());
         }
-        extra_parts.push(SMOO_MAX_IO_BYTES_KARG.to_string());
+        if let Some(queue_count) = smoo_queue_count {
+            extra_parts.push(format!("smoo.queue_count={queue_count}"));
+        }
+        if let Some(queue_depth) = smoo_queue_depth {
+            extra_parts.push(format!("smoo.queue_depth={queue_depth}"));
+        }
+        extra_parts.push(format!("smoo.max_io_bytes={smoo_max_io}"));
         let extra_cmdline = if extra_parts.is_empty() {
             None
         } else {
@@ -517,7 +538,10 @@ async fn run_boot_inner(
         block_reader,
         image_size_bytes,
         image_identity,
-        impersonate_fastboot,
+        crate::smoo_host::SmooHostOptions {
+            impersonate_fastboot,
+            metrics_port: args.smoo_metrics_port,
+        },
         events,
         shutdown,
     )
@@ -795,14 +819,21 @@ fn print_plain_event(event: BootEvent) {
             active,
             export_count,
             session_id,
+            ios_up,
+            ios_down,
+            bytes_up,
+            bytes_down,
         } => {
             let status = if active { "up" } else { "down" };
             eprintln!(
-                "[{}] smoo status={} exports={} sid={}",
+                "[{}] smoo status={} exports={} sid={} ios={} up_bytes={} down_bytes={}",
                 timestamp_hms(),
                 status,
                 export_count,
-                session_id
+                session_id,
+                ios_up.saturating_add(ios_down),
+                bytes_up,
+                bytes_down,
             );
         }
         BootEvent::GibbloxStats {
@@ -866,4 +897,70 @@ fn system_time_cmdline() -> Result<String> {
         .try_into()
         .context("system time exceeds u64 microseconds")?;
     Ok(format!("systemd.clock_usec={usec}"))
+}
+
+fn parse_nonzero_u16(input: &str) -> std::result::Result<u16, String> {
+    let value = input.parse::<u16>().map_err(|err| err.to_string())?;
+    if value == 0 {
+        return Err("value must be non-zero".to_string());
+    }
+    Ok(value)
+}
+
+fn parse_byte_size(input: &str) -> std::result::Result<usize, String> {
+    let input = input.trim();
+    let digits = input
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(input.len());
+    if digits == 0 {
+        return Err("byte size must start with a number".to_string());
+    }
+
+    let value = input[..digits]
+        .parse::<usize>()
+        .map_err(|err| err.to_string())?;
+    if value == 0 {
+        return Err("byte size must be non-zero".to_string());
+    }
+
+    let suffix = input[digits..].trim().to_ascii_lowercase();
+    let multiplier = match suffix.as_str() {
+        "" | "b" => 1usize,
+        "k" | "kb" | "kib" => 1024,
+        "m" | "mb" | "mib" => 1024 * 1024,
+        "g" | "gb" | "gib" => 1024 * 1024 * 1024,
+        _ => {
+            return Err(format!(
+                "unsupported byte-size suffix {suffix:?}; use B, KiB, MiB, or GiB"
+            ));
+        }
+    };
+
+    value
+        .checked_mul(multiplier)
+        .ok_or_else(|| "byte size overflows usize".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_byte_size_accepts_raw_and_binary_suffixes() {
+        assert_eq!(parse_byte_size("4096").unwrap(), 4096);
+        assert_eq!(parse_byte_size("256KiB").unwrap(), 256 * 1024);
+        assert_eq!(parse_byte_size("1 MiB").unwrap(), 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_byte_size_rejects_zero_and_unknown_suffixes() {
+        assert!(parse_byte_size("0").is_err());
+        assert!(parse_byte_size("1TiB").is_err());
+    }
+
+    #[test]
+    fn parse_nonzero_u16_rejects_zero() {
+        assert_eq!(parse_nonzero_u16("1").unwrap(), 1);
+        assert!(parse_nonzero_u16("0").is_err());
+    }
 }
