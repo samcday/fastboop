@@ -20,7 +20,7 @@ Checksums are recorded in release `SHA256SUMS`.
 
 `crates/fastboop-stage0-generator` does not build, download, or embed stage0 at Cargo build time.
 
-Callers supply the target-device `fastboop-stage0` bytes when synthesizing an initrd. If an existing initrd already contains `/init`, the supplied stage0 bytes are optional. Otherwise, generation fails fast instead of silently producing an initrd without PID1.
+Callers supply an async source for the target-device `fastboop-stage0` bytes when synthesizing an initrd. The generator polls that source while it reads kernel, DTB, and module payloads from the rootfs pipeline. If an existing initrd already contains `/init`, the supplied stage0 bytes are optional. Otherwise, generation fails fast instead of silently producing an initrd without PID1.
 
 This keeps Cargo builds policy-friendly and avoids nested Cargo invocations from library build scripts.
 
