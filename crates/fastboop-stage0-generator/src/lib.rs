@@ -8,11 +8,12 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::future::Future;
 use dtoolkit::fdt::Fdt;
 use dtoolkit::model::{DeviceTree, DeviceTreeNode, DeviceTreeProperty};
 use dtoolkit::{Node, Property};
 use fastboop_core::{DeviceProfile, InjectMac, Personalization};
-use futures_util::future::{join, join_all};
+use futures_util::future::{join, join_all, try_join};
 use gobblytes_core::Filesystem;
 
 const MODULES_LOAD_PATH: &str = "etc/modules-load.d/fastboop-stage0.conf";
@@ -40,6 +41,7 @@ pub enum Stage0Error {
     KernelFormat(&'static str),
     KernelDecode(&'static str),
     MissingStage0Binary,
+    Stage0Binary(String),
 }
 
 pub struct Stage0Options {
@@ -91,6 +93,14 @@ pub struct Stage0Build {
     pub kernel_cmdline_append: String,
 }
 
+struct Stage0BuildState {
+    kernel_image: Vec<u8>,
+    kernel_path: String,
+    dtb: Vec<u8>,
+    kernel_cmdline_append: String,
+    image: CpioImage,
+}
+
 pub fn cpio_contains_path(data: &[u8], path: &str) -> Result<bool, Stage0Error> {
     let entries = parse_cpio_newc(data)?;
     Ok(entries.iter().any(|e| e.path == path))
@@ -103,14 +113,21 @@ struct ModulesDir {
 }
 
 /// Build a minimal stage0 initrd containing fastboop stage0 as PID1 plus modules.
-pub async fn build_stage0<P: Filesystem>(
+///
+/// `stage0_binary` is polled concurrently with rootfs artifact reads and may
+/// return `None` only when `existing_cpio` already contains `/init`.
+pub async fn build_stage0<P, F>(
     profile: &DeviceProfile,
     rootfs: &P,
     opts: &Stage0Options,
-    stage0_binary: Option<&[u8]>,
+    stage0_binary: F,
     extra_cmdline: Option<&str>,
     existing_cpio: Option<&[u8]>,
-) -> Result<Stage0Build, Stage0Error> {
+) -> Result<Stage0Build, Stage0Error>
+where
+    P: Filesystem,
+    F: Future<Output = Result<Option<Vec<u8>>, Stage0Error>>,
+{
     let init_path = INIT_BIN_PATH.to_string();
     let needs_modules = true;
     let (extra_stage0_settings, extra_cmdline_passthrough): (
@@ -129,118 +146,6 @@ pub async fn build_stage0<P: Filesystem>(
         "build_stage0: collecting rootfs artifacts"
     );
 
-    let kernel_future = async {
-        if let Some(kernel_override) = opts.kernel_override.as_ref() {
-            let kernel_path = trim_leading_slash(kernel_override.path.as_str())?.to_string();
-            tracing::debug!(
-                kernel_path = %kernel_path,
-                kernel_bytes = kernel_override.image.len(),
-                "build_stage0: using kernel override"
-            );
-            return Ok::<(String, Vec<u8>), Stage0Error>((
-                kernel_path,
-                kernel_override.image.clone(),
-            ));
-        }
-
-        tracing::debug!("build_stage0: detecting kernel");
-        let kernel_path = detect_kernel(rootfs).await?;
-        tracing::debug!(kernel_path = %kernel_path, "build_stage0: kernel detected");
-        let kernel_image = rootfs
-            .read_all(&kernel_path)
-            .await
-            .map_err(|_| Stage0Error::MissingFile(kernel_path.clone()))?;
-        tracing::debug!(
-            kernel_path = %kernel_path,
-            kernel_bytes = kernel_image.len(),
-            "build_stage0: kernel image loaded"
-        );
-        Ok::<(String, Vec<u8>), Stage0Error>((kernel_path, kernel_image))
-    };
-
-    let modules_future = async {
-        if !needs_modules {
-            return Ok::<
-                Option<(ModulesDir, ModulesDep, ModulePaths, BTreeSet<String>)>,
-                Stage0Error,
-            >(None);
-        }
-        tracing::debug!("build_stage0: detecting module metadata");
-        let dir = detect_modules_dir(rootfs).await?;
-        let (dep, paths, builtin) = load_modules_metadata(rootfs, &dir).await?;
-        tracing::debug!(
-            kernel_release = %dir.kver,
-            source_root = %dir.source_root,
-            modules_dep_entries = dep.len(),
-            module_path_entries = paths.len(),
-            builtin_module_entries = builtin.len(),
-            "build_stage0: module metadata loaded"
-        );
-        Ok(Some((dir, dep, paths, builtin)))
-    };
-
-    let dtb_future = async {
-        if let Some(override_bytes) = &opts.dtb_override {
-            tracing::debug!(
-                dtb_override_bytes = override_bytes.len(),
-                "build_stage0: using dtb override"
-            );
-            return Ok::<Vec<u8>, Stage0Error>(override_bytes.clone());
-        }
-        tracing::debug!(
-            devicetree = %profile.devicetree_name,
-            "build_stage0: selecting dtb"
-        );
-        let dtb_path = select_dtb(profile, rootfs).await?;
-        tracing::debug!(dtb_path = %dtb_path, "build_stage0: dtb selected");
-        let dtb_bytes = rootfs
-            .read_all(&dtb_path)
-            .await
-            .map_err(|_| Stage0Error::MissingFile(dtb_path.clone()))?;
-        tracing::debug!(
-            dtb_bytes = dtb_bytes.len(),
-            dtbo_overlay_count = opts.dtbo_overlays.len(),
-            "build_stage0: dtb bytes loaded"
-        );
-        Ok(dtb_bytes)
-    };
-
-    let ((kernel_result, modules_result), dtb_result) =
-        join(join(kernel_future, modules_future), dtb_future).await;
-
-    let (kernel_path, kernel_image) = kernel_result?;
-    let (modules_dir, modules_dep, module_paths, modules_builtin) = match modules_result? {
-        Some((dir, dep, paths, builtin)) => (Some(dir), dep, paths, builtin),
-        None => (None, ModulesDep::new(), ModulePaths::new(), BTreeSet::new()),
-    };
-    let dtb_bytes = dtb_result?;
-
-    let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
-    let dtb_bytes = apply_dtbo_overlays(&dtb_bytes, &opts.dtbo_overlays)?;
-    let mac_seed = extra_stage0_settings
-        .get("stage0.serial")
-        .map(String::as_str)
-        .or_else(|| {
-            opts.stage0_serial
-                .as_deref()
-                .map(str::trim)
-                .filter(|serial| !serial.is_empty())
-        })
-        .unwrap_or("0");
-    let dtb_bytes = apply_mac_injection(&dtb_bytes, &opts.inject_mac, mac_seed)?;
-    let _dtb = Fdt::new(&dtb_bytes).map_err(|_| Stage0Error::ParseError("dtb"))?;
-
-    let required_modules = collect_required_modules(opts, &modules_dep);
-    tracing::debug!(
-        required_module_count = required_modules.len(),
-        builtin_module_count = modules_builtin.len(),
-        "build_stage0: resolved required modules"
-    );
-    tracing::trace!(
-        required_modules = ?required_modules,
-        "build_stage0: required module order"
-    );
-
     let mut image = if let Some(data) = existing_cpio {
         CpioImage::from_bytes(data)?
     } else {
@@ -254,124 +159,269 @@ pub async fn build_stage0<P: Filesystem>(
     image.ensure_dir("lib")?;
     image.ensure_dir("lib/modules")?;
 
-    if !image.has_path(INIT_BIN_PATH) {
-        let Some(stage0_binary) = stage0_binary.filter(|data| !data.is_empty()) else {
+    let needs_stage0_binary = !image.has_path(INIT_BIN_PATH);
+    let stage0_binary_future = async move {
+        if !needs_stage0_binary {
+            return Ok(None);
+        }
+        let Some(stage0_binary) = stage0_binary.await?.filter(|data| !data.is_empty()) else {
             return Err(Stage0Error::MissingStage0Binary);
         };
-        image.ensure_file(INIT_BIN_PATH, 0o100755, stage0_binary)?;
-    }
-
-    if !required_modules.is_empty() {
-        let modules_dir = modules_dir
-            .ok_or_else(|| Stage0Error::MissingFile("/lib/modules (modules directory)".into()))?;
-        copy_module_indexes(rootfs, &modules_dir, &mut image).await?;
-
-        let module_plans = collect_module_read_plans(
-            &required_modules,
-            &modules_builtin,
-            &module_paths,
-            &modules_dir,
-        )?;
         tracing::debug!(
-            modules = module_plans.len(),
-            fanout = MODULE_READ_FANOUT,
-            "build_stage0: reading module payloads"
+            stage0_binary_bytes = stage0_binary.len(),
+            "build_stage0: stage0 binary loaded"
         );
-        let module_files = read_modules_in_parallel(rootfs, &module_plans).await?;
-        for (cpio_path, data) in module_files {
-            tracing::trace!(
-                destination_path = %cpio_path,
-                module_bytes = data.len(),
-                "build_stage0: writing module to initrd"
+        Ok(Some(stage0_binary))
+    };
+
+    let rootfs_future = async move {
+        let kernel_future = async {
+            if let Some(kernel_override) = opts.kernel_override.as_ref() {
+                let kernel_path = trim_leading_slash(kernel_override.path.as_str())?.to_string();
+                tracing::debug!(
+                    kernel_path = %kernel_path,
+                    kernel_bytes = kernel_override.image.len(),
+                    "build_stage0: using kernel override"
+                );
+                return Ok::<(String, Vec<u8>), Stage0Error>((
+                    kernel_path,
+                    kernel_override.image.clone(),
+                ));
+            }
+
+            tracing::debug!("build_stage0: detecting kernel");
+            let kernel_path = detect_kernel(rootfs).await?;
+            tracing::debug!(kernel_path = %kernel_path, "build_stage0: kernel detected");
+            let kernel_image = rootfs
+                .read_all(&kernel_path)
+                .await
+                .map_err(|_| Stage0Error::MissingFile(kernel_path.clone()))?;
+            tracing::debug!(
+                kernel_path = %kernel_path,
+                kernel_bytes = kernel_image.len(),
+                "build_stage0: kernel image loaded"
             );
-            image.ensure_file(cpio_path.as_str(), 0o100644, &data)?;
-        }
-    }
+            Ok::<(String, Vec<u8>), Stage0Error>((kernel_path, kernel_image))
+        };
 
-    let module_load_list: Vec<String> = required_modules
-        .iter()
-        .filter(|m| !modules_builtin.contains(*m))
-        .cloned()
-        .collect();
-    tracing::debug!(
-        module_load_count = module_load_list.len(),
-        "build_stage0: writing module load list"
-    );
-    tracing::trace!(
-        module_load_list = ?module_load_list,
-        "build_stage0: module load entries"
-    );
-    let module_load_bytes = serialize_module_load(&module_load_list);
-    image.ensure_file(MODULES_LOAD_PATH, 0o100644, &module_load_bytes)?;
+        let modules_future = async {
+            if !needs_modules {
+                return Ok::<
+                    Option<(ModulesDir, ModulesDep, ModulePaths, BTreeSet<String>)>,
+                    Stage0Error,
+                >(None);
+            }
+            tracing::debug!("build_stage0: detecting module metadata");
+            let dir = detect_modules_dir(rootfs).await?;
+            let (dep, paths, builtin) = load_modules_metadata(rootfs, &dir).await?;
+            tracing::debug!(
+                kernel_release = %dir.kver,
+                source_root = %dir.source_root,
+                modules_dep_entries = dep.len(),
+                module_path_entries = paths.len(),
+                builtin_module_entries = builtin.len(),
+                "build_stage0: module metadata loaded"
+            );
+            Ok(Some((dir, dep, paths, builtin)))
+        };
 
-    let mut cmdline_parts: Vec<String> = Vec::new();
-    let mut stage0_settings = BTreeMap::new();
-    if opts.enable_serial {
-        stage0_settings.insert("smoo.acm".to_string(), "1".to_string());
-        cmdline_parts.push("plymouth.ignore-serial-consoles".to_string());
-    }
-    if opts.mimic_fastboot {
-        stage0_settings.insert("smoo.mimic_fastboot".to_string(), "1".to_string());
-    }
-    if let Some(vendor) = opts.smoo_vendor {
-        stage0_settings.insert("smoo.vendor".to_string(), format!("0x{vendor:04x}"));
-    }
-    if let Some(product) = opts.smoo_product {
-        stage0_settings.insert("smoo.product".to_string(), format!("0x{product:04x}"));
-    }
-    if let Some(serial) = opts.stage0_serial.as_ref() {
-        let serial = serial.trim();
-        if !serial.is_empty() {
-            stage0_settings.insert("stage0.serial".to_string(), serial.to_string());
+        let dtb_future = async {
+            if let Some(override_bytes) = &opts.dtb_override {
+                tracing::debug!(
+                    dtb_override_bytes = override_bytes.len(),
+                    "build_stage0: using dtb override"
+                );
+                return Ok::<Vec<u8>, Stage0Error>(override_bytes.clone());
+            }
+            tracing::debug!(
+                devicetree = %profile.devicetree_name,
+                "build_stage0: selecting dtb"
+            );
+            let dtb_path = select_dtb(profile, rootfs).await?;
+            tracing::debug!(dtb_path = %dtb_path, "build_stage0: dtb selected");
+            let dtb_bytes = rootfs
+                .read_all(&dtb_path)
+                .await
+                .map_err(|_| Stage0Error::MissingFile(dtb_path.clone()))?;
+            tracing::debug!(
+                dtb_bytes = dtb_bytes.len(),
+                dtbo_overlay_count = opts.dtbo_overlays.len(),
+                "build_stage0: dtb bytes loaded"
+            );
+            Ok(dtb_bytes)
+        };
+
+        let ((kernel_result, modules_result), dtb_result) =
+            join(join(kernel_future, modules_future), dtb_future).await;
+
+        let (kernel_path, kernel_image) = kernel_result?;
+        let (modules_dir, modules_dep, module_paths, modules_builtin) = match modules_result? {
+            Some((dir, dep, paths, builtin)) => (Some(dir), dep, paths, builtin),
+            None => (None, ModulesDep::new(), ModulePaths::new(), BTreeSet::new()),
+        };
+        let dtb_bytes = dtb_result?;
+
+        let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
+        let dtb_bytes = apply_dtbo_overlays(&dtb_bytes, &opts.dtbo_overlays)?;
+        let mac_seed = extra_stage0_settings
+            .get("stage0.serial")
+            .map(String::as_str)
+            .or_else(|| {
+                opts.stage0_serial
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|serial| !serial.is_empty())
+            })
+            .unwrap_or("0");
+        let dtb_bytes = apply_mac_injection(&dtb_bytes, &opts.inject_mac, mac_seed)?;
+        let _dtb = Fdt::new(&dtb_bytes).map_err(|_| Stage0Error::ParseError("dtb"))?;
+
+        let required_modules = collect_required_modules(opts, &modules_dep);
+        tracing::debug!(
+            required_module_count = required_modules.len(),
+            builtin_module_count = modules_builtin.len(),
+            "build_stage0: resolved required modules"
+        );
+        tracing::trace!(
+            required_modules = ?required_modules,
+            "build_stage0: required module order"
+        );
+
+        if !required_modules.is_empty() {
+            let modules_dir = modules_dir.ok_or_else(|| {
+                Stage0Error::MissingFile("/lib/modules (modules directory)".into())
+            })?;
+            copy_module_indexes(rootfs, &modules_dir, &mut image).await?;
+
+            let module_plans = collect_module_read_plans(
+                &required_modules,
+                &modules_builtin,
+                &module_paths,
+                &modules_dir,
+            )?;
+            tracing::debug!(
+                modules = module_plans.len(),
+                fanout = MODULE_READ_FANOUT,
+                "build_stage0: reading module payloads"
+            );
+            let module_files = read_modules_in_parallel(rootfs, &module_plans).await?;
+            for (cpio_path, data) in module_files {
+                tracing::trace!(
+                    destination_path = %cpio_path,
+                    module_bytes = data.len(),
+                    "build_stage0: writing module to initrd"
+                );
+                image.ensure_file(cpio_path.as_str(), 0o100644, &data)?;
+            }
         }
-    }
-    if let Some(personalization) = &opts.personalization {
-        for (key, value) in personalization.stage0_entries() {
+
+        let module_load_list: Vec<String> = required_modules
+            .iter()
+            .filter(|m| !modules_builtin.contains(*m))
+            .cloned()
+            .collect();
+        tracing::debug!(
+            module_load_count = module_load_list.len(),
+            "build_stage0: writing module load list"
+        );
+        tracing::trace!(
+            module_load_list = ?module_load_list,
+            "build_stage0: module load entries"
+        );
+        let module_load_bytes = serialize_module_load(&module_load_list);
+        image.ensure_file(MODULES_LOAD_PATH, 0o100644, &module_load_bytes)?;
+
+        let mut cmdline_parts: Vec<String> = Vec::new();
+        let mut stage0_settings = BTreeMap::new();
+        if opts.enable_serial {
+            stage0_settings.insert("smoo.acm".to_string(), "1".to_string());
+            cmdline_parts.push("plymouth.ignore-serial-consoles".to_string());
+        }
+        if opts.mimic_fastboot {
+            stage0_settings.insert("smoo.mimic_fastboot".to_string(), "1".to_string());
+        }
+        if let Some(vendor) = opts.smoo_vendor {
+            stage0_settings.insert("smoo.vendor".to_string(), format!("0x{vendor:04x}"));
+        }
+        if let Some(product) = opts.smoo_product {
+            stage0_settings.insert("smoo.product".to_string(), format!("0x{product:04x}"));
+        }
+        if let Some(serial) = opts.stage0_serial.as_ref() {
+            let serial = serial.trim();
+            if !serial.is_empty() {
+                stage0_settings.insert("stage0.serial".to_string(), serial.to_string());
+            }
+        }
+        if let Some(personalization) = &opts.personalization {
+            for (key, value) in personalization.stage0_entries() {
+                stage0_settings.insert(key, value);
+            }
+        }
+        for (key, value) in extra_stage0_settings {
             stage0_settings.insert(key, value);
         }
-    }
-    for (key, value) in extra_stage0_settings {
-        stage0_settings.insert(key, value);
-    }
-    cmdline_parts.extend(extra_cmdline_passthrough);
-    stage0_settings.insert(
-        "stage0.rootfs".to_string(),
-        opts.switchroot_fs.as_stage0_value().to_string(),
-    );
-    tracing::debug!(
-        stage0_setting_count = stage0_settings.len(),
-        cmdline_passthrough_count = cmdline_parts.len(),
-        "build_stage0: writing stage0 settings"
-    );
-    tracing::trace!(
-        stage0_settings = ?stage0_settings,
-        "build_stage0: stage0 settings entries"
-    );
-    write_stage0_settings(&mut image, &stage0_settings)?;
-    let cmdline = if cmdline_parts.is_empty() {
-        String::new()
-    } else {
-        cmdline_parts.join(" ")
+        cmdline_parts.extend(extra_cmdline_passthrough);
+        stage0_settings.insert(
+            "stage0.rootfs".to_string(),
+            opts.switchroot_fs.as_stage0_value().to_string(),
+        );
+        tracing::debug!(
+            stage0_setting_count = stage0_settings.len(),
+            cmdline_passthrough_count = cmdline_parts.len(),
+            "build_stage0: writing stage0 settings"
+        );
+        tracing::trace!(
+            stage0_settings = ?stage0_settings,
+            "build_stage0: stage0 settings entries"
+        );
+        write_stage0_settings(&mut image, &stage0_settings)?;
+        let cmdline = if cmdline_parts.is_empty() {
+            String::new()
+        } else {
+            cmdline_parts.join(" ")
+        };
+
+        Ok(Stage0BuildState {
+            kernel_image,
+            kernel_path,
+            dtb: dtb_bytes,
+            kernel_cmdline_append: cmdline,
+            image,
+        })
     };
-    let initrd = image.finish()?;
+
+    let (mut state, stage0_binary) = try_join(rootfs_future, stage0_binary_future).await?;
+    if let Some(stage0_binary) = stage0_binary {
+        state
+            .image
+            .ensure_file(INIT_BIN_PATH, 0o100755, &stage0_binary)?;
+    }
+
+    let initrd = state.image.finish()?;
     tracing::debug!(
         initrd_bytes = initrd.len(),
-        cmdline_append_bytes = cmdline.len(),
+        cmdline_append_bytes = state.kernel_cmdline_append.len(),
         "build_stage0: build complete"
     );
     tracing::trace!(
-        kernel_cmdline_append = %cmdline,
+        kernel_cmdline_append = %state.kernel_cmdline_append,
         "build_stage0: kernel cmdline append"
     );
 
     Ok(Stage0Build {
-        kernel_image,
-        kernel_path,
+        kernel_image: state.kernel_image,
+        kernel_path: state.kernel_path,
         init_path,
         initrd,
-        dtb: dtb_bytes,
-        kernel_cmdline_append: cmdline,
+        dtb: state.dtb,
+        kernel_cmdline_append: state.kernel_cmdline_append,
     })
+}
+
+pub fn stage0_binary_ready(
+    stage0_binary: Option<Vec<u8>>,
+) -> impl Future<Output = Result<Option<Vec<u8>>, Stage0Error>> {
+    core::future::ready(Ok(stage0_binary))
 }
 
 fn split_extra_cmdline(extra: &str) -> (BTreeMap<String, String>, Vec<String>) {

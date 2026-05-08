@@ -14,7 +14,9 @@ use fastboop_core::{
     bootimg::build_android_bootimg, resolve_effective_boot_profile_stage0, BootProfile,
     BootProfileArtifactSource,
 };
-use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
+use fastboop_stage0_generator::{
+    build_stage0, stage0_binary_ready, Stage0Options, Stage0SwitchrootFs,
+};
 use gibblox_core::{
     block_identity_string, AlignedByteReader, BlockByteReader, BlockReader, GibbloxError,
     GibbloxErrorKind, GibbloxResult, ReadContext,
@@ -322,17 +324,16 @@ async fn build_stage0_artifacts(
 
                     let provider = ErofsRootfs::new(provider_reader.clone(), provider_size_bytes).await?;
                     info!(profile = %profile.id, "building stage0 payload");
-                    let build =
-                        build_stage0(
-                            &profile,
-                            &provider,
-                            &stage0_opts,
-                            None,
-                            nonempty(&extra_kargs),
-                            None,
-                        )
-                            .await
-                            .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
+                    let build = build_stage0(
+                        &profile,
+                        &provider,
+                        &stage0_opts,
+                        stage0_binary_ready(None),
+                        nonempty(&extra_kargs),
+                        None,
+                    )
+                    .await
+                    .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
                     let provider_identity = block_identity_string(provider_reader.as_ref());
                     Ok((
                         build,

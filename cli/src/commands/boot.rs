@@ -14,7 +14,7 @@ use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::{DeviceProfile, resolve_effective_boot_profile_stage0};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
-use fastboop_stage0_generator::{Stage0Options, build_stage0};
+use fastboop_stage0_generator::{Stage0Options, build_stage0, stage0_binary_ready};
 use gibblox_core::{BlockReader, block_identity_string};
 use gobblytes_core::OstreeFs as OstreeRootfs;
 use tokio_util::sync::CancellationToken;
@@ -415,7 +415,7 @@ async fn run_boot_inner(
                 &profile,
                 &provider,
                 &opts,
-                stage0_binary.as_deref(),
+                stage0_binary_ready(stage0_binary.clone()),
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )
@@ -425,7 +425,7 @@ async fn run_boot_inner(
                 &profile,
                 &provider,
                 &opts,
-                stage0_binary.as_deref(),
+                stage0_binary_ready(stage0_binary.clone()),
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )

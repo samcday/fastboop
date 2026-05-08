@@ -14,6 +14,10 @@ use fastboop_core::{
 use fastboop_core::{resolve_effective_boot_profile_stage0, BootProfile};
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::{BootProfileRootfs, BootProfileRootfsFilesystemSource};
+#[cfg(not(target_arch = "wasm32"))]
+use fastboop_stage0_generator::stage0_binary_ready;
+#[cfg(target_arch = "wasm32")]
+use fastboop_stage0_generator::Stage0Error;
 #[cfg(target_arch = "wasm32")]
 use fastboop_stage0_generator::Stage0KernelOverride;
 use fastboop_stage0_generator::{build_stage0, Stage0Options, Stage0SwitchrootFs};
@@ -564,7 +568,6 @@ async fn build_stage0_artifacts(
 
             #[cfg(target_arch = "wasm32")]
             let build = {
-                let stage0_binary = load_stage0_binary_sidecar().await?;
                 let rootfs_kind = if using_boot_profile_rootfs {
                     let boot_profile = selected_boot_profile.as_ref().ok_or_else(|| {
                         anyhow::anyhow!("selected boot profile is missing for web rootfs build")
@@ -615,7 +618,7 @@ async fn build_stage0_artifacts(
                         &profile,
                         &provider,
                         &stage0_opts,
-                        Some(stage0_binary.as_slice()),
+                        load_stage0_binary_sidecar(),
                         extra_cmdline.as_deref(),
                         None,
                     )
@@ -625,7 +628,7 @@ async fn build_stage0_artifacts(
                         &profile,
                         &provider,
                         &stage0_opts,
-                        Some(stage0_binary.as_slice()),
+                        load_stage0_binary_sidecar(),
                         extra_cmdline.as_deref(),
                         None,
                     )
@@ -639,12 +642,12 @@ async fn build_stage0_artifacts(
                 &profile,
                 &provider,
                 &stage0_opts,
-                None,
+                stage0_binary_ready(None),
                 nonempty(&extra_kargs),
                 None,
             )
-                .await
-                .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?;
+            .await
+            .map_err(|err| anyhow::anyhow!("stage0 build failed: {err:?}"))?;
 
             Ok((
                 build,
@@ -1271,53 +1274,63 @@ pub async fn run_web_host_daemon(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn load_stage0_binary_sidecar() -> anyhow::Result<Vec<u8>> {
+async fn load_stage0_binary_sidecar() -> Result<Option<Vec<u8>>, Stage0Error> {
     let asset = STAGE0_BINARY_ASSET.ok_or_else(|| {
-        anyhow::anyhow!(
+        Stage0Error::Stage0Binary(
             "web build does not include the stage0 sidecar asset at assets/stage0/fastboop-stage0-aarch64-unknown-linux-musl"
+                .to_string(),
         )
     })?;
     let url = asset.to_string();
     tracing::debug!(%url, "loading stage0 sidecar asset");
-    let window = web_sys::window().ok_or_else(|| anyhow::anyhow!("window unavailable"))?;
+    let window = web_sys::window()
+        .ok_or_else(|| Stage0Error::Stage0Binary("window unavailable".to_string()))?;
     let response = JsFuture::from(window.fetch_with_str(&url))
         .await
         .map_err(|err| {
-            anyhow::anyhow!("fetch stage0 sidecar {url}: {}", js_value_to_string(&err))
+            Stage0Error::Stage0Binary(format!(
+                "fetch stage0 sidecar {url}: {}",
+                js_value_to_string(&err)
+            ))
         })?;
     let response = response.dyn_into::<web_sys::Response>().map_err(|err| {
-        anyhow::anyhow!(
+        Stage0Error::Stage0Binary(format!(
             "fetch stage0 sidecar {url}: response object expected: {}",
             js_value_to_string(&err)
-        )
+        ))
     })?;
     if !response.ok() {
-        anyhow::bail!(
+        return Err(Stage0Error::Stage0Binary(format!(
             "fetch stage0 sidecar {url} failed: HTTP {}",
             response.status()
-        );
+        )));
     }
 
     let buffer = response.array_buffer().map_err(|err| {
-        anyhow::anyhow!(
+        Stage0Error::Stage0Binary(format!(
             "read stage0 sidecar {url} response body: {}",
             js_value_to_string(&err)
-        )
+        ))
     })?;
     let buffer = JsFuture::from(buffer).await.map_err(|err| {
-        anyhow::anyhow!("read stage0 sidecar {url}: {}", js_value_to_string(&err))
+        Stage0Error::Stage0Binary(format!(
+            "read stage0 sidecar {url}: {}",
+            js_value_to_string(&err)
+        ))
     })?;
     let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
     if bytes.is_empty() {
-        anyhow::bail!("stage0 sidecar {url} is empty");
+        return Err(Stage0Error::Stage0Binary(format!(
+            "stage0 sidecar {url} is empty"
+        )));
     }
     if !bytes.starts_with(b"\x7fELF") {
-        anyhow::bail!(
+        return Err(Stage0Error::Stage0Binary(format!(
             "stage0 sidecar {url} is not an ELF binary; rebuild fastboop-web with the real stage0 sidecar asset"
-        );
+        )));
     }
     tracing::debug!(%url, size_bytes = bytes.len(), "loaded stage0 sidecar asset");
-    Ok(bytes)
+    Ok(Some(bytes))
 }
 
 #[cfg(target_arch = "wasm32")]

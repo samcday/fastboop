@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use fastboop_core::resolve_effective_boot_profile_stage0;
-use fastboop_stage0_generator::{Stage0Options, build_stage0};
+use fastboop_stage0_generator::{Stage0Options, build_stage0, stage0_binary_ready};
 use gobblytes_core::OstreeFs as OstreeRootfs;
 use tracing::debug;
 
@@ -196,7 +196,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                 profile,
                 &provider,
                 &opts,
-                stage0_binary.as_deref(),
+                stage0_binary_ready(stage0_binary.clone()),
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )
@@ -206,7 +206,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
                 profile,
                 &provider,
                 &opts,
-                stage0_binary.as_deref(),
+                stage0_binary_ready(stage0_binary.clone()),
                 extra_cmdline.as_deref(),
                 existing.as_deref(),
             )
