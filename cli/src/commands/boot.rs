@@ -369,7 +369,7 @@ async fn run_boot_inner(
             mimic_fastboot: impersonate_fastboot,
             smoo_vendor: detected_device.as_ref().map(|device| device.vid),
             smoo_product: detected_device.as_ref().map(|device| device.pid),
-            smoo_serial: detected_device
+            stage0_serial: detected_device
                 .as_ref()
                 .and_then(|device| device.serial.clone()),
             personalization,

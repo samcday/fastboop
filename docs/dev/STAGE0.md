@@ -20,7 +20,7 @@ Stage0 PID1 (`fastboop-stage0`) does this in order:
 3. configure configfs/FunctionFS and spawn embedded `smoo-gadget-app`
 4. wait for exported block device (`/dev/ublkb0`)
 5. mount lower root (`erofs` or `ext4`) + tmpfs upper overlay
-6. seed an ephemeral `/etc/machine-id` for this boot
+6. seed `/etc/machine-id` from `stage0.serial`, or ephemerally when no serial seed is available
 7. switch root and `exec` init (`/lib/systemd/systemd`, `/usr/lib/systemd/systemd`, or `/sbin/init`)
 
 If gadget startup or handoff fails, stage0 fails loudly.
@@ -39,6 +39,7 @@ Stage0 reads runtime settings from files under `/etc/stage0` in the generated in
 Notable keys include:
 
 - `stage0.rootfs` (required)
+- `stage0.serial` (optional; generic serial seed used for deterministic machine identity and gadget USB serial)
 - `stage0.yeetfstab` (default `1`; set `0` to preserve `/etc/fstab`)
 - `ostree`
 - `smoo.acm`, `smoo.queue_count`, `smoo.queue_depth`, `smoo.max_io_bytes`

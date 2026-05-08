@@ -64,6 +64,9 @@ const STAGE0_ROLE_KMSG_CHILD: &str = "kmsg-child";
 const STAGE0_ROLE_FRAMEBUFFER_CHILD: &str = "framebuffer-child";
 const STAGE0_CONFIG_DIR: &str = "/etc/stage0";
 const STAGE0_CREDSTORE_DIR: &str = "/run/credstore";
+const MACHINE_ID_SERIAL_DOMAIN: &str = "fastboop-stage0-machine-id-v1";
+const FNV1A64_OFFSET: u64 = 0xcbf29ce484222325;
+const FNV1A64_PRIME: u64 = 0x100000001b3;
 
 static STAGE0_CONFIG: OnceLock<HashMap<String, String>> = OnceLock::new();
 
@@ -531,7 +534,7 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
     }
     ensure_serial_getty().ok();
     if let Err(err) = stage_machine_id() {
-        warn!(error = ?err, "pid1: failed to stage ephemeral /etc/machine-id");
+        warn!(error = ?err, "pid1: failed to stage /etc/machine-id");
     }
     stage_firstboot_credentials().context("stage firstboot credentials")?;
 
@@ -573,6 +576,12 @@ fn stage0_yeet_fstab_enabled() -> bool {
 
 fn cmdline_value(key: &str) -> Option<String> {
     stage0_config().get(key).cloned()
+}
+
+fn stage0_serial() -> Option<String> {
+    cmdline_value("stage0.serial")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn ensure_serial_getty() -> Result<()> {
@@ -731,17 +740,46 @@ fn stage_machine_id() -> Result<()> {
     let mut contents = machine_id.into_bytes();
     contents.push(b'\n');
     std::fs::write(path, contents).context("write /etc/machine-id")?;
-    info!("pid1: staged ephemeral /etc/machine-id");
+    info!("pid1: staged /etc/machine-id");
     Ok(())
 }
 
 fn generate_machine_id() -> Result<String> {
+    if let Some(serial) = stage0_serial() {
+        return Ok(machine_id_from_serial(&serial));
+    }
+
     let mut bytes = [0u8; 16];
     let mut urandom = File::open("/dev/urandom").context("open /dev/urandom")?;
     urandom
         .read_exact(&mut bytes)
         .context("read /dev/urandom")?;
     Ok(machine_id_from_bytes(bytes))
+}
+
+fn machine_id_from_serial(serial: &str) -> String {
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&machine_id_seed_hash(serial, 0).to_be_bytes());
+    bytes[8..].copy_from_slice(&machine_id_seed_hash(serial, 1).to_be_bytes());
+    machine_id_from_bytes(bytes)
+}
+
+fn machine_id_seed_hash(serial: &str, round: u8) -> u64 {
+    let mut hash = FNV1A64_OFFSET;
+    hash = fnv1a64_with_seed(hash, MACHINE_ID_SERIAL_DOMAIN.as_bytes().iter().copied());
+    hash = fnv1a64_with_seed(hash, [0]);
+    hash = fnv1a64_with_seed(hash, serial.as_bytes().iter().copied());
+    hash = fnv1a64_with_seed(hash, [0]);
+    fnv1a64_with_seed(hash, [round])
+}
+
+fn fnv1a64_with_seed<I: IntoIterator<Item = u8>>(seed: u64, bytes: I) -> u64 {
+    let mut hash = seed;
+    for byte in bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV1A64_PRIME);
+    }
+    hash
 }
 
 fn machine_id_from_bytes(mut bytes: [u8; 16]) -> String {
@@ -1203,13 +1241,10 @@ fn spawn_gadget_child(
         child_args.push(OsStr::new(&format!("0x{product_id:04x}")).to_os_string());
         info!("pid1: using product id 0x{product_id:04x} from stage0 config");
     }
-    if let Some(serial) = cmdline_value("smoo.serial") {
-        let serial = serial.trim();
-        if !serial.is_empty() {
-            child_args.push(OsStr::new("--serial").to_os_string());
-            child_args.push(OsStr::new(serial).to_os_string());
-            info!("pid1: using USB serial from stage0 config");
-        }
+    if let Some(serial) = stage0_serial() {
+        child_args.push(OsStr::new("--serial").to_os_string());
+        child_args.push(OsStr::new(&serial).to_os_string());
+        info!("pid1: using USB serial from stage0 config");
     }
     if cmdline_bool("smoo.mimic_fastboot") {
         child_args.push(OsStr::new("--mimic-fastboot").to_os_string());
@@ -1696,10 +1731,7 @@ fn gadget_usb_identity(args: &Args) -> (u16, u16, String) {
     let product_id = cmdline_u16_flexible("smoo.product")
         .or_else(|| cmdline_u16_flexible("smoo.product_id"))
         .unwrap_or(args.product_id);
-    let serial = cmdline_value("smoo.serial")
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| args.serial.clone());
+    let serial = stage0_serial().unwrap_or_else(|| args.serial.clone());
     (vendor_id, product_id, serial)
 }
 
@@ -1866,6 +1898,24 @@ mod tests {
     fn machine_id_from_bytes_rejects_all_zero_identity() {
         let id = machine_id_from_bytes([0; 16]);
         assert_eq!(id, "01000000000000000000000000000000");
+    }
+
+    #[test]
+    fn machine_id_from_serial_is_stable_lowercase_hex() {
+        let id = machine_id_from_serial("serial-1");
+
+        assert_eq!(id, machine_id_from_serial("serial-1"));
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(id, id.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn machine_id_from_serial_uses_serial_seed() {
+        let first = machine_id_from_serial("serial-1");
+        let second = machine_id_from_serial("serial-2");
+
+        assert_ne!(first, second);
     }
 
     #[test]

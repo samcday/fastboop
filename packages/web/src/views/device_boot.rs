@@ -316,7 +316,7 @@ pub async fn boot_selected_device(
         mimic_fastboot: true,
         smoo_vendor: Some(session.device.vid),
         smoo_product: Some(session.device.pid),
-        smoo_serial: webusb_serial_number(&session.device.handle),
+        stage0_serial: webusb_serial_number(&session.device.handle),
         personalization: Some(personalization_from_browser()),
     };
     let profile_id = session.device.profile.id.clone();
