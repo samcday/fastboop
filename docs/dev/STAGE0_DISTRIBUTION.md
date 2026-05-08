@@ -35,6 +35,8 @@ Explicit controls:
 
 Prebuilt CLI release binaries include the AArch64 musl stage0 as a final fallback so `cargo binstall fastboop-cli` works without a sidecar file. Source builds keep this fallback disabled unless `fastboop-cli` is built with `--features embed-stage0` and `FASTBOOP_STAGE0_EMBED_PATH` points at the stage0 binary during compilation.
 
+Release web builds bundle the AArch64 musl stage0 as a Dioxus sidecar asset under `assets/stage0/` before `dx build`; the web app fetches that sidecar when synthesizing an initrd. Local web builds may replace `packages/web/assets/stage0/fastboop-stage0-aarch64-unknown-linux-musl` with a real stage0 binary.
+
 Local development fallback paths include:
 
 - `target/aarch64-unknown-linux-musl/release/fastboop-stage0`

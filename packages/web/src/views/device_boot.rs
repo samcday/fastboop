@@ -58,7 +58,9 @@ use ui::SmooStatsHandle;
 use ui::{apply_transport_counters, SmooTransportCounters};
 use url::Url;
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
 
 #[cfg(target_arch = "wasm32")]
 use super::session::update_session_active_host_state;
@@ -78,6 +80,9 @@ const STATUS_RETRY_ATTEMPTS: usize = 5;
 #[cfg(target_arch = "wasm32")]
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const SMOO_MAX_IO_BYTES_KARG: &str = "smoo.max_io_bytes=1048576";
+#[cfg(target_arch = "wasm32")]
+const STAGE0_BINARY_ASSET: Option<Asset> =
+    option_asset!("/assets/stage0/fastboop-stage0-aarch64-unknown-linux-musl");
 
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -559,6 +564,7 @@ async fn build_stage0_artifacts(
 
             #[cfg(target_arch = "wasm32")]
             let build = {
+                let stage0_binary = load_stage0_binary_sidecar().await?;
                 let rootfs_kind = if using_boot_profile_rootfs {
                     let boot_profile = selected_boot_profile.as_ref().ok_or_else(|| {
                         anyhow::anyhow!("selected boot profile is missing for web rootfs build")
@@ -609,7 +615,7 @@ async fn build_stage0_artifacts(
                         &profile,
                         &provider,
                         &stage0_opts,
-                        None,
+                        Some(stage0_binary.as_slice()),
                         extra_cmdline.as_deref(),
                         None,
                     )
@@ -619,7 +625,7 @@ async fn build_stage0_artifacts(
                         &profile,
                         &provider,
                         &stage0_opts,
-                        None,
+                        Some(stage0_binary.as_slice()),
                         extra_cmdline.as_deref(),
                         None,
                     )
@@ -1262,6 +1268,64 @@ pub async fn run_web_host_daemon(
             }
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn load_stage0_binary_sidecar() -> anyhow::Result<Vec<u8>> {
+    let asset = STAGE0_BINARY_ASSET.ok_or_else(|| {
+        anyhow::anyhow!(
+            "web build does not include the stage0 sidecar asset at assets/stage0/fastboop-stage0-aarch64-unknown-linux-musl"
+        )
+    })?;
+    let url = asset.to_string();
+    tracing::debug!(%url, "loading stage0 sidecar asset");
+    let window = web_sys::window().ok_or_else(|| anyhow::anyhow!("window unavailable"))?;
+    let response = JsFuture::from(window.fetch_with_str(&url))
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!("fetch stage0 sidecar {url}: {}", js_value_to_string(&err))
+        })?;
+    let response = response.dyn_into::<web_sys::Response>().map_err(|err| {
+        anyhow::anyhow!(
+            "fetch stage0 sidecar {url}: response object expected: {}",
+            js_value_to_string(&err)
+        )
+    })?;
+    if !response.ok() {
+        anyhow::bail!(
+            "fetch stage0 sidecar {url} failed: HTTP {}",
+            response.status()
+        );
+    }
+
+    let buffer = response.array_buffer().map_err(|err| {
+        anyhow::anyhow!(
+            "read stage0 sidecar {url} response body: {}",
+            js_value_to_string(&err)
+        )
+    })?;
+    let buffer = JsFuture::from(buffer).await.map_err(|err| {
+        anyhow::anyhow!("read stage0 sidecar {url}: {}", js_value_to_string(&err))
+    })?;
+    let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+    if bytes.is_empty() {
+        anyhow::bail!("stage0 sidecar {url} is empty");
+    }
+    if !bytes.starts_with(b"\x7fELF") {
+        anyhow::bail!(
+            "stage0 sidecar {url} is not an ELF binary; rebuild fastboop-web with the real stage0 sidecar asset"
+        );
+    }
+    tracing::debug!(%url, size_bytes = bytes.len(), "loaded stage0 sidecar asset");
+    Ok(bytes)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_value_to_string(value: &JsValue) -> String {
+    js_sys::JSON::stringify(value)
+        .ok()
+        .and_then(|s| s.as_string())
+        .unwrap_or_else(|| format!("{value:?}"))
 }
 
 #[cfg(target_arch = "wasm32")]

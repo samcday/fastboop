@@ -57,6 +57,7 @@ jobs:
 
   web-build:
     runs-on: ubuntu-latest
+    needs: stage0-static
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -90,6 +91,20 @@ jobs:
 
       - name: Install Dioxus CLI
         run: cargo binstall dioxus-cli --force --no-confirm
+
+      - name: Download stage0 sidecar artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fastboop-stage0-aarch64
+          path: stage0-artifacts
+
+      - name: Stage web stage0 sidecar asset
+        run: |
+          set -euo pipefail
+          stage0_path="$GITHUB_WORKSPACE/stage0-artifacts/fastboop-stage0-aarch64-unknown-linux-musl"
+          test -s "$stage0_path"
+          mkdir -p packages/web/assets/stage0
+          cp "$stage0_path" packages/web/assets/stage0/fastboop-stage0-aarch64-unknown-linux-musl
 
       - name: Resolve web base path
         id: web-base
