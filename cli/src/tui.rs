@@ -186,10 +186,12 @@ fn draw_smoo_panel(frame: &mut Frame<'_>, area: ratatui::layout::Rect, state: &T
         Span::raw("  "),
         Span::styled(
             format!(
-                "exports={} sid={} io={} up={} down={}",
+                "exports={} sid={} io={} inflight={}/{} up={} down={}",
                 state.smoo_export_count,
                 state.smoo_session_id,
                 state.smoo_ios_up.saturating_add(state.smoo_ios_down),
+                state.smoo_inflight_requests,
+                state.smoo_max_inflight_requests,
                 state.smoo_bytes_up,
                 state.smoo_bytes_down,
             ),
@@ -273,6 +275,8 @@ struct TuiState {
     smoo_ios_down: u64,
     smoo_bytes_up: u64,
     smoo_bytes_down: u64,
+    smoo_inflight_requests: u64,
+    smoo_max_inflight_requests: u64,
     smoo_history: VecDeque<u64>,
     gibblox_available: bool,
     gibblox_hit_rate: u64,
@@ -303,6 +307,8 @@ impl TuiState {
                 ios_down,
                 bytes_up,
                 bytes_down,
+                inflight_requests,
+                max_inflight_requests,
             } => {
                 let previous_ios = self.smoo_ios_up.saturating_add(self.smoo_ios_down);
                 self.smoo_active = active;
@@ -312,6 +318,8 @@ impl TuiState {
                 self.smoo_ios_down = ios_down;
                 self.smoo_bytes_up = bytes_up;
                 self.smoo_bytes_down = bytes_down;
+                self.smoo_inflight_requests = inflight_requests;
+                self.smoo_max_inflight_requests = max_inflight_requests;
                 let total_ios = ios_up.saturating_add(ios_down);
                 Self::push_history(
                     &mut self.smoo_history,

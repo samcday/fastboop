@@ -823,15 +823,19 @@ fn print_plain_event(event: BootEvent) {
             ios_down,
             bytes_up,
             bytes_down,
+            inflight_requests,
+            max_inflight_requests,
         } => {
             let status = if active { "up" } else { "down" };
             eprintln!(
-                "[{}] smoo status={} exports={} sid={} ios={} up_bytes={} down_bytes={}",
+                "[{}] smoo status={} exports={} sid={} ios={} inflight={}/{} up_bytes={} down_bytes={}",
                 timestamp_hms(),
                 status,
                 export_count,
                 session_id,
                 ios_up.saturating_add(ios_down),
+                inflight_requests,
+                max_inflight_requests,
                 bytes_up,
                 bytes_down,
             );

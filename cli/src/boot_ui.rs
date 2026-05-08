@@ -51,6 +51,8 @@ pub enum BootEvent {
         ios_down: u64,
         bytes_up: u64,
         bytes_down: u64,
+        inflight_requests: u64,
+        max_inflight_requests: u64,
     },
     #[allow(dead_code)]
     GibbloxStats {

@@ -7,12 +7,14 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, ensure};
+use async_trait::async_trait;
 use gibblox_core::BlockReader;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{
-    BlockSource, BlockSourceHandle, CountingTransport, TransportCounterSnapshot, register_export,
+    BlockSource, BlockSourceHandle, ControlTransport, CountingTransport, Transport,
+    TransportCounterSnapshot, TransportResult, register_export,
 };
 use smoo_host_session::{
     HostSession, HostSessionConfig, HostSessionDriveConfig, HostSessionDriveEvent,
@@ -197,6 +199,7 @@ async fn run_session(
 ) -> Result<SessionEnd> {
     let transport = CountingTransport::new(transport);
     let counters = transport.counters();
+    let transport = InflightTransport::new(transport, runtime.metrics.clone());
 
     let source = GibbloxBlockSource::new(reader, identity.clone());
     let block_size = source.block_size();
@@ -272,6 +275,8 @@ async fn run_session(
                         ios_down: snapshot.ios_down,
                         bytes_up: snapshot.bytes_up,
                         bytes_down: snapshot.bytes_down,
+                        inflight_requests: snapshot.inflight_requests,
+                        max_inflight_requests: snapshot.max_inflight_requests,
                     },
                 );
             }
@@ -334,6 +339,72 @@ fn emit(events: &Sender<BootEvent>, event: BootEvent) {
     let _ = events.send(event);
 }
 
+#[derive(Clone)]
+struct InflightTransport<T> {
+    inner: T,
+    metrics: SmooMetricsRegistry,
+}
+
+impl<T> InflightTransport<T> {
+    fn new(inner: T, metrics: SmooMetricsRegistry) -> Self {
+        Self { inner, metrics }
+    }
+}
+
+#[async_trait]
+impl<T> ControlTransport for InflightTransport<T>
+where
+    T: ControlTransport + Send + Sync,
+{
+    async fn control_in(
+        &self,
+        request_type: u8,
+        request: u8,
+        buf: &mut [u8],
+    ) -> TransportResult<usize> {
+        self.inner.control_in(request_type, request, buf).await
+    }
+
+    async fn control_out(
+        &self,
+        request_type: u8,
+        request: u8,
+        data: &[u8],
+    ) -> TransportResult<usize> {
+        self.inner.control_out(request_type, request, data).await
+    }
+}
+
+#[async_trait]
+impl<T> Transport for InflightTransport<T>
+where
+    T: Transport + Clone + Send + Sync,
+{
+    async fn read_interrupt(&self, buf: &mut [u8]) -> TransportResult<usize> {
+        let result = self.inner.read_interrupt(buf).await;
+        if matches!(result, Ok(len) if len == buf.len()) {
+            self.metrics.request_started();
+        }
+        result
+    }
+
+    async fn write_interrupt(&self, buf: &[u8]) -> TransportResult<usize> {
+        let result = self.inner.write_interrupt(buf).await;
+        if matches!(result, Ok(len) if len == buf.len()) {
+            self.metrics.request_finished();
+        }
+        result
+    }
+
+    async fn read_bulk(&self, buf: &mut [u8]) -> TransportResult<usize> {
+        self.inner.read_bulk(buf).await
+    }
+
+    async fn write_bulk(&self, buf: &[u8]) -> TransportResult<usize> {
+        self.inner.write_bulk(buf).await
+    }
+}
+
 #[derive(Clone, Default)]
 struct SmooMetricsRegistry {
     inner: Arc<RwLock<SmooMetricsState>>,
@@ -349,6 +420,8 @@ struct SmooMetricsSnapshot {
     ios_down: u64,
     bytes_up: u64,
     bytes_down: u64,
+    inflight_requests: u64,
+    max_inflight_requests: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -367,6 +440,8 @@ struct SmooMetricsState {
     session_id: u64,
     totals: SmooCounterTotals,
     last_transport: Option<SmooCounterTotals>,
+    inflight_requests: u64,
+    max_inflight_requests: u64,
 }
 
 impl SmooMetricsRegistry {
@@ -374,6 +449,7 @@ impl SmooMetricsRegistry {
         let mut state = self.inner.write().expect("smoo metrics lock poisoned");
         state.connected = true;
         state.active = false;
+        state.inflight_requests = 0;
         state.last_transport = Some(SmooCounterTotals::default());
         state.snapshot()
     }
@@ -400,11 +476,25 @@ impl SmooMetricsRegistry {
         state.snapshot()
     }
 
+    fn request_started(&self) -> SmooMetricsSnapshot {
+        let mut state = self.inner.write().expect("smoo metrics lock poisoned");
+        state.inflight_requests = state.inflight_requests.saturating_add(1);
+        state.max_inflight_requests = state.max_inflight_requests.max(state.inflight_requests);
+        state.snapshot()
+    }
+
+    fn request_finished(&self) -> SmooMetricsSnapshot {
+        let mut state = self.inner.write().expect("smoo metrics lock poisoned");
+        state.inflight_requests = state.inflight_requests.saturating_sub(1);
+        state.snapshot()
+    }
+
     fn end_session(&self, counters: TransportCounterSnapshot) -> SmooMetricsSnapshot {
         let mut state = self.inner.write().expect("smoo metrics lock poisoned");
         state.accumulate(counters);
         state.connected = false;
         state.active = false;
+        state.inflight_requests = 0;
         state.last_transport = None;
         state.snapshot()
     }
@@ -450,6 +540,8 @@ impl SmooMetricsState {
             ios_down: self.totals.ios_down,
             bytes_up: self.totals.bytes_up,
             bytes_down: self.totals.bytes_down,
+            inflight_requests: self.inflight_requests,
+            max_inflight_requests: self.max_inflight_requests,
         }
     }
 }
@@ -543,12 +635,20 @@ fn render_prometheus(snapshot: SmooMetricsSnapshot) -> String {
          fastboop_smoo_host_bytes_up_total {bytes_up}\n\
          # HELP fastboop_smoo_host_bytes_down_total Gadget-to-host smoo transport bytes.\n\
          # TYPE fastboop_smoo_host_bytes_down_total counter\n\
-         fastboop_smoo_host_bytes_down_total {bytes_down}\n",
+         fastboop_smoo_host_bytes_down_total {bytes_down}\n\
+         # HELP fastboop_smoo_host_inflight_requests Requests read from the smoo interrupt endpoint and not yet answered.\n\
+         # TYPE fastboop_smoo_host_inflight_requests gauge\n\
+         fastboop_smoo_host_inflight_requests {inflight_requests}\n\
+         # HELP fastboop_smoo_host_max_inflight_requests Maximum observed host-side in-flight smoo requests.\n\
+         # TYPE fastboop_smoo_host_max_inflight_requests gauge\n\
+         fastboop_smoo_host_max_inflight_requests {max_inflight_requests}\n",
         export_count = snapshot.export_count,
         session_id = snapshot.session_id,
         ios_up = snapshot.ios_up,
         ios_down = snapshot.ios_down,
         bytes_up = snapshot.bytes_up,
         bytes_down = snapshot.bytes_down,
+        inflight_requests = snapshot.inflight_requests,
+        max_inflight_requests = snapshot.max_inflight_requests,
     )
 }
