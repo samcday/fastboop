@@ -53,7 +53,7 @@ pub struct Stage0Options {
     pub mimic_fastboot: bool,
     pub smoo_vendor: Option<u16>,
     pub smoo_product: Option<u16>,
-    pub smoo_serial: Option<String>,
+    pub stage0_serial: Option<String>,
     pub personalization: Option<Personalization>,
 }
 
@@ -113,6 +113,14 @@ pub async fn build_stage0<P: Filesystem>(
 ) -> Result<Stage0Build, Stage0Error> {
     let init_path = INIT_BIN_PATH.to_string();
     let needs_modules = true;
+    let (extra_stage0_settings, extra_cmdline_passthrough): (
+        BTreeMap<String, String>,
+        Vec<String>,
+    ) = extra_cmdline
+        .map(str::trim)
+        .filter(|extra| !extra.is_empty())
+        .map(split_extra_cmdline)
+        .unwrap_or_default();
     tracing::debug!(
         needs_modules,
         switchroot_fs = opts.switchroot_fs.as_stage0_value(),
@@ -209,11 +217,15 @@ pub async fn build_stage0<P: Filesystem>(
 
     let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
     let dtb_bytes = apply_dtbo_overlays(&dtb_bytes, &opts.dtbo_overlays)?;
-    let mac_seed = opts
-        .smoo_serial
-        .as_deref()
-        .map(str::trim)
-        .filter(|serial| !serial.is_empty())
+    let mac_seed = extra_stage0_settings
+        .get("stage0.serial")
+        .map(String::as_str)
+        .or_else(|| {
+            opts.stage0_serial
+                .as_deref()
+                .map(str::trim)
+                .filter(|serial| !serial.is_empty())
+        })
         .unwrap_or("0");
     let dtb_bytes = apply_mac_injection(&dtb_bytes, &opts.inject_mac, mac_seed)?;
     let _dtb = Fdt::new(&dtb_bytes).map_err(|_| Stage0Error::ParseError("dtb"))?;
@@ -307,10 +319,10 @@ pub async fn build_stage0<P: Filesystem>(
     if let Some(product) = opts.smoo_product {
         stage0_settings.insert("smoo.product".to_string(), format!("0x{product:04x}"));
     }
-    if let Some(serial) = opts.smoo_serial.as_ref() {
+    if let Some(serial) = opts.stage0_serial.as_ref() {
         let serial = serial.trim();
         if !serial.is_empty() {
-            stage0_settings.insert("smoo.serial".to_string(), serial.to_string());
+            stage0_settings.insert("stage0.serial".to_string(), serial.to_string());
         }
     }
     if let Some(personalization) = &opts.personalization {
@@ -318,16 +330,10 @@ pub async fn build_stage0<P: Filesystem>(
             stage0_settings.insert(key, value);
         }
     }
-    if let Some(extra) = extra_cmdline {
-        let extra = extra.trim();
-        if !extra.is_empty() {
-            let (from_extra, passthrough) = split_extra_cmdline(extra);
-            for (key, value) in from_extra {
-                stage0_settings.insert(key, value);
-            }
-            cmdline_parts.extend(passthrough);
-        }
+    for (key, value) in extra_stage0_settings {
+        stage0_settings.insert(key, value);
     }
+    cmdline_parts.extend(extra_cmdline_passthrough);
     stage0_settings.insert(
         "stage0.rootfs".to_string(),
         opts.switchroot_fs.as_stage0_value().to_string(),
@@ -432,6 +438,7 @@ fn is_stage0_config_key(key: &str) -> bool {
         key,
         "ostree"
             | "stage0.fb"
+            | "stage0.serial"
             | "stage0.yeetfstab"
             | "stage0.rootfs"
             | "smoo.acm"
@@ -445,7 +452,6 @@ fn is_stage0_config_key(key: &str) -> bool {
             | "smoo.vendor_id"
             | "smoo.product"
             | "smoo.product_id"
-            | "smoo.serial"
             | "smoo.mimic_fastboot"
             | "smoo.log"
             | "firstboot.locale"
@@ -1286,11 +1292,15 @@ mod tests {
     #[test]
     fn split_extra_cmdline_extracts_stage0_tokens() {
         let (stage0_settings, passthrough) = split_extra_cmdline(
-            "quiet smoo.log=trace smoo.acm stage0.yeetfstab=0 ostree=/ostree/boot.1/fedora/deadbeef/0",
+            "quiet smoo.log=trace smoo.acm stage0.serial=abc123 stage0.yeetfstab=0 ostree=/ostree/boot.1/fedora/deadbeef/0",
         );
 
         assert_eq!(stage0_settings.get("smoo.log"), Some(&"trace".to_string()));
         assert_eq!(stage0_settings.get("smoo.acm"), Some(&"1".to_string()));
+        assert_eq!(
+            stage0_settings.get("stage0.serial"),
+            Some(&"abc123".to_string())
+        );
         assert_eq!(
             stage0_settings.get("stage0.yeetfstab"),
             Some(&"0".to_string())

@@ -155,7 +155,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
             mimic_fastboot: args.impersonate_fastboot,
             smoo_vendor: None,
             smoo_product: None,
-            smoo_serial: None,
+            stage0_serial: None,
             personalization: None,
         };
 

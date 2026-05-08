@@ -132,7 +132,7 @@ pub async fn boot_selected_device(
         mimic_fastboot: true,
         smoo_vendor: Some(session.device.vid),
         smoo_product: Some(session.device.pid),
-        smoo_serial: session.device.serial.clone(),
+        stage0_serial: session.device.serial.clone(),
         personalization: Some(personalization_from_host()),
     };
     let (build, runtime) = build_stage0_artifacts(
