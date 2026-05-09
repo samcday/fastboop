@@ -1992,16 +1992,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "endian-num"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b4a54dfedecb1dc004776a597db0c858cf6c31579296734511309291b8399ce"
-dependencies = [
- "bytemuck",
- "bytemuck_derive",
-]
-
-[[package]]
 name = "enumset"
 version = "1.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2106,9 +2096,9 @@ dependencies = [
 
 [[package]]
 name = "ext4plus"
-version = "0.1.0-beta.4"
+version = "0.1.0-alpha.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5c547ae17a36e85c24321eb151a6dfd4818829973f90937f3b07259dd181a08"
+checksum = "9dc277b4b40b9c396d5519685fa08c9feada784011646ce7f40fa8ec68baf8e5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3377,12 +3367,11 @@ dependencies = [
 
 [[package]]
 name = "hadris-part"
-version = "1.1.2"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cb3607019e2e71d3ea1705432f1b48757ad1e3cfd3b4b76f234af0372dd1539"
+checksum = "1955de1ac95fb0b4db1a1758e08d1f6347a7c4404cd3dcf96990ab628d483148"
 dependencies = [
  "bytemuck",
- "endian-num",
  "hadris-io",
  "hadris-macros",
 ]
