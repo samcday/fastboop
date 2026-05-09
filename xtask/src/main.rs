@@ -1,7 +1,10 @@
+mod desktop_dev;
 mod frontdoor_dev;
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
+        Some("desktop-dev-install") => desktop_dev::install(),
+        Some("desktop-dev-uninstall") => desktop_dev::uninstall(),
         Some("frontdoor-dev") => frontdoor_dev::run(),
         Some(cmd) => {
             eprintln!("unknown command: {cmd}");
@@ -9,7 +12,7 @@ fn main() {
         }
         None => {
             eprintln!("usage: cargo xtask <command>");
-            eprintln!("commands: frontdoor-dev");
+            eprintln!("commands: desktop-dev-install, desktop-dev-uninstall, frontdoor-dev");
             std::process::exit(1);
         }
     }
