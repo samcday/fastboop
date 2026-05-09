@@ -25,7 +25,7 @@ use gibblox_core::{
 use gibblox_ext4::{Ext4EntryType, Ext4Fs};
 use gibblox_pipeline::{open_pipeline, OpenPipelineOptions, PipelineHints};
 use gibblox_zip::ZipEntryBlockReader;
-use gobblytes_core::{Filesystem, FilesystemEntryType};
+use gobblytes_core::{Filesystem, FilesystemEntryType, OstreeFs as OstreeRootfs};
 use gobblytes_erofs::{ErofsRootfs, DEFAULT_IMAGE_BLOCK_SIZE};
 use gobblytes_fat::FatFs;
 use smoo_host_blocksource_gibblox::GibbloxBlockSource;
@@ -38,7 +38,7 @@ use smoo_host_session::{
 };
 use smoo_host_transport_rusb::RusbTransport;
 use tokio::sync::oneshot;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use ui::{
     apply_transport_counters, oneplus_fajita_dtbo_overlays, SmooStatsHandle, SmooTransportCounters,
 };
@@ -528,16 +528,51 @@ async fn build_stage0_artifacts(
                     stage0_opts.switchroot_fs = provider.switchroot_fs().ok_or_else(|| {
                         anyhow!("rootfs image is not a bootable stage0 filesystem (erofs/ext4)")
                     })?;
+                    let selected_ostree = if selected_boot_profile
+                        .as_ref()
+                        .is_some_and(|boot_profile| boot_profile.rootfs.is_ostree())
+                    {
+                        let detected = auto_detect_ostree_deployment_path(&provider).await?;
+                        debug!(ostree = %detected, "auto-detected ostree deployment path");
+                        Some(detected)
+                    } else {
+                        None
+                    };
+                    let ostree_cmdline = selected_ostree
+                        .as_ref()
+                        .map(|ostree| format!("ostree=/{ostree}"));
+                    let stage0_extra_kargs = join_cmdline(
+                        ostree_cmdline.as_deref(),
+                        nonempty(extra_kargs.as_str()),
+                    );
                     info!(profile = %profile.id, "building stage0 payload");
-                    let build = build_stage0(
-                        &profile,
-                        &provider,
-                        &stage0_opts,
-                        stage0_binary_ready(Some(stage0_binary)),
-                        nonempty(&extra_kargs),
-                        None,
-                    )
-                    .await
+                    let build = if let Some(ostree) = selected_ostree.as_deref() {
+                        let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree)
+                            .await
+                            .map_err(|err| anyhow!("resolve ostree deployment path {ostree}: {err}"))?;
+                        debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
+                        let provider = OstreeRootfs::new(provider, &resolved_ostree)
+                            .map_err(|err| anyhow!("initialize ostree filesystem view: {err}"))?;
+                        build_stage0(
+                            &profile,
+                            &provider,
+                            &stage0_opts,
+                            stage0_binary_ready(Some(stage0_binary)),
+                            nonempty(&stage0_extra_kargs),
+                            None,
+                        )
+                        .await
+                    } else {
+                        build_stage0(
+                            &profile,
+                            &provider,
+                            &stage0_opts,
+                            stage0_binary_ready(Some(stage0_binary)),
+                            nonempty(&stage0_extra_kargs),
+                            None,
+                        )
+                        .await
+                    }
                     .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
                     let provider_identity = block_identity_string(provider_reader.as_ref());
                     Ok((
@@ -1026,6 +1061,88 @@ async fn reader_size_bytes(reader: &dyn BlockReader) -> Result<u64> {
     total_blocks
         .checked_mul(reader.block_size() as u64)
         .ok_or_else(|| anyhow!("channel size overflow"))
+}
+
+async fn auto_detect_ostree_deployment_path<P>(rootfs: &P) -> Result<String>
+where
+    P: Filesystem,
+    P::Error: core::fmt::Display,
+{
+    const OSTREE_ROOT: &str = "/ostree";
+
+    if !is_directory(rootfs, OSTREE_ROOT).await? {
+        bail!("auto-detect ostree deployment failed: {OSTREE_ROOT} is not a directory");
+    }
+
+    for boot_dir in sorted_dir_entries(rootfs, OSTREE_ROOT).await? {
+        if !boot_dir.starts_with("boot.") {
+            continue;
+        }
+        let boot_path = format!("{OSTREE_ROOT}/{boot_dir}");
+        if !is_directory(rootfs, &boot_path).await? {
+            continue;
+        }
+
+        for stateroot in sorted_dir_entries(rootfs, &boot_path).await? {
+            let stateroot_path = format!("{boot_path}/{stateroot}");
+            if !is_directory(rootfs, &stateroot_path).await? {
+                continue;
+            }
+
+            for checksum in sorted_dir_entries(rootfs, &stateroot_path).await? {
+                let checksum_path = format!("{stateroot_path}/{checksum}");
+                if !is_directory(rootfs, &checksum_path).await? {
+                    continue;
+                }
+
+                for deploy_index in sorted_dir_entries(rootfs, &checksum_path).await? {
+                    let candidate_path = format!("{checksum_path}/{deploy_index}");
+                    if is_symlink(rootfs, &candidate_path).await? {
+                        return Ok(candidate_path.trim_start_matches('/').to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    bail!("auto-detect ostree deployment failed: no deployment symlink found under /ostree/boot.*")
+}
+
+async fn sorted_dir_entries<P>(rootfs: &P, path: &str) -> Result<Vec<String>>
+where
+    P: Filesystem,
+    P::Error: core::fmt::Display,
+{
+    let mut entries = rootfs
+        .read_dir(path)
+        .await
+        .map_err(|err| anyhow!("read directory {path}: {err}"))?;
+    entries.sort();
+    Ok(entries)
+}
+
+async fn is_directory<P>(rootfs: &P, path: &str) -> Result<bool>
+where
+    P: Filesystem,
+    P::Error: core::fmt::Display,
+{
+    let ty = rootfs
+        .entry_type(path)
+        .await
+        .map_err(|err| anyhow!("read entry type {path}: {err}"))?;
+    Ok(matches!(ty, Some(FilesystemEntryType::Directory)))
+}
+
+async fn is_symlink<P>(rootfs: &P, path: &str) -> Result<bool>
+where
+    P: Filesystem,
+    P::Error: core::fmt::Display,
+{
+    let ty = rootfs
+        .entry_type(path)
+        .await
+        .map_err(|err| anyhow!("read entry type {path}: {err}"))?;
+    Ok(matches!(ty, Some(FilesystemEntryType::Symlink)))
 }
 
 pub fn run_rusb_host_daemon(
