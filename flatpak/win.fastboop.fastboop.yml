@@ -3,7 +3,7 @@ runtime-version: '50'
 runtime: org.gnome.Platform
 sdk: org.gnome.Sdk
 # gnome runtime/sdk required for webkitgtk
-command: fastboop
+command: fastboop-desktop
 finish-args:
   - --share=network
   - --device=all
