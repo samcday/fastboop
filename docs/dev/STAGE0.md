@@ -21,9 +21,12 @@ Stage0 PID1 (`fastboop-stage0`) does this in order:
 4. wait for exported block device (`/dev/ublkb0`)
 5. mount lower root (`erofs` or `ext4`) + tmpfs upper overlay
 6. seed `/etc/machine-id` from `stage0.serial`, or ephemerally when no serial seed is available
-7. switch root and `exec` init (`/lib/systemd/systemd`, `/usr/lib/systemd/systemd`, or `/sbin/init`)
+7. request target-root Plymouth units when they exist
+8. switch root and `exec` init (`/lib/systemd/systemd`, `/usr/lib/systemd/systemd`, or `/sbin/init`)
 
 If gadget startup or handoff fails, stage0 fails loudly.
+
+Plymouth startup is opportunistic: stage0 requests target-root Plymouth units only when they are present, and the target distro's unit conditions/kernel command line (`splash`, `plymouth.graphical=`, etc.) decide whether Plymouth actually starts.
 
 ## Inputs
 

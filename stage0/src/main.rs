@@ -533,6 +533,9 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
         warn!("pid1: /run/systemd/system missing before exec");
     }
     ensure_serial_getty().ok();
+    if let Err(err) = request_plymouth_units() {
+        warn!(error = ?err, "pid1: failed to request Plymouth startup");
+    }
     if let Err(err) = stage_machine_id() {
         warn!(error = ?err, "pid1: failed to stage /etc/machine-id");
     }
@@ -609,6 +612,62 @@ fn ensure_serial_getty() -> Result<()> {
         info!("pid1: enabled serial-getty@ttyGS0");
     }
     Ok(())
+}
+
+fn request_plymouth_units() -> Result<()> {
+    let mut requested_any = false;
+    for (target, unit) in [
+        ("sysinit.target", "plymouth-start.service"),
+        ("sysinit.target", "plymouth-read-write.service"),
+    ] {
+        requested_any |= request_systemd_unit(Path::new("/"), target, unit)?;
+    }
+
+    if requested_any {
+        info!("pid1: requested target Plymouth units");
+    } else {
+        debug!("pid1: no target Plymouth units found; skipping startup request");
+    }
+
+    Ok(())
+}
+
+fn request_systemd_unit(root: &Path, target: &str, unit: &str) -> Result<bool> {
+    let Some(unit_path) = find_systemd_unit(root, unit) else {
+        debug!(unit, "pid1: systemd unit not found; skipping request");
+        return Ok(false);
+    };
+
+    let wants_dir = root
+        .join("run/systemd/system")
+        .join(format!("{target}.wants"));
+    std::fs::create_dir_all(&wants_dir)
+        .with_context(|| format!("create {}", wants_dir.display()))?;
+    let link_path = wants_dir.join(unit);
+    match std::fs::symlink_metadata(&link_path) {
+        Ok(_) => {
+            info!(unit, target, "pid1: systemd unit already requested");
+            return Ok(true);
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err).with_context(|| format!("stat {}", link_path.display())),
+    }
+
+    symlink(&unit_path, &link_path)
+        .with_context(|| format!("symlink {} -> {}", link_path.display(), unit_path))?;
+    info!(unit, target, "pid1: requested systemd unit");
+    Ok(true)
+}
+
+fn find_systemd_unit(root: &Path, unit: &str) -> Option<String> {
+    [
+        "/etc/systemd/system",
+        "/usr/lib/systemd/system",
+        "/lib/systemd/system",
+    ]
+    .into_iter()
+    .map(|dir| format!("{dir}/{unit}"))
+    .find(|path| root.join(path.trim_start_matches('/')).exists())
 }
 
 fn parse_bool_value(raw: &str) -> Option<bool> {
@@ -1883,6 +1942,72 @@ mod tests {
     fn parse_bool_value_rejects_unknown_literals() {
         assert_eq!(parse_bool_value("nah"), None);
         assert_eq!(parse_bool_value("TRUE"), None);
+    }
+
+    #[test]
+    fn finds_systemd_units_in_target_root_order() {
+        let root = temp_root();
+        let etc_units = root.join("etc/systemd/system");
+        let usr_units = root.join("usr/lib/systemd/system");
+        std::fs::create_dir_all(&etc_units).expect("create etc systemd units");
+        std::fs::create_dir_all(&usr_units).expect("create usr systemd units");
+        std::fs::write(usr_units.join("plymouth-start.service"), b"[Service]\n")
+            .expect("write usr unit");
+        std::fs::write(etc_units.join("plymouth-start.service"), b"[Service]\n")
+            .expect("write etc unit");
+
+        assert_eq!(
+            find_systemd_unit(&root, "plymouth-start.service"),
+            Some("/etc/systemd/system/plymouth-start.service".to_string())
+        );
+
+        std::fs::remove_dir_all(&root).expect("remove temp root");
+    }
+
+    #[test]
+    fn request_systemd_unit_creates_runtime_wants_symlink() {
+        let root = temp_root();
+        let unit_dir = root.join("usr/lib/systemd/system");
+        std::fs::create_dir_all(&unit_dir).expect("create systemd unit dir");
+        std::fs::write(unit_dir.join("plymouth-start.service"), b"[Service]\n")
+            .expect("write unit");
+
+        let requested = request_systemd_unit(&root, "sysinit.target", "plymouth-start.service")
+            .expect("request systemd unit");
+
+        assert!(requested);
+        let link_path = root
+            .join("run/systemd/system/sysinit.target.wants")
+            .join("plymouth-start.service");
+        assert!(
+            std::fs::symlink_metadata(&link_path)
+                .expect("stat wants symlink")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_link(&link_path).expect("read wants symlink"),
+            PathBuf::from("/usr/lib/systemd/system/plymouth-start.service")
+        );
+
+        std::fs::remove_dir_all(&root).expect("remove temp root");
+    }
+
+    #[test]
+    fn request_systemd_unit_skips_missing_unit() {
+        let root = temp_root();
+
+        let requested = request_systemd_unit(&root, "sysinit.target", "plymouth-start.service")
+            .expect("skip missing unit");
+
+        assert!(!requested);
+        assert!(
+            !root
+                .join("run/systemd/system/sysinit.target.wants")
+                .exists()
+        );
+
+        std::fs::remove_dir_all(&root).expect("remove temp root");
     }
 
     #[test]
