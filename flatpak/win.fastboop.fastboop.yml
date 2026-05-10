@@ -10,10 +10,6 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --share=ipc
-cleanup:
-  - /usr/lib/aarch64-linux-gnu
-  - /lib/ld-linux-aarch64.so.1
-  - /crossbuild
 add-build-extensions:
   org.freedesktop.Sdk.Extension.rust-stable:
     # required by both fastboop and stage0
@@ -25,15 +21,9 @@ add-build-extensions:
     directory: lib/sdk/llvm21
     version: '25.08'
     remove-after-build: true
-  org.freedesktop.Sdk.Compat.aarch64:
-    # required by stage0
-    directory: lib/aarch64-linux-gnu
-    version: '24.08'
-    remove-after-build: true
 modules:
   - modules/xdotool.yml
   - modules/dtc.yml
-  - modules/crossbuild.yml
   - modules/stage0.yml
   - name: fastboop
     buildsystem: simple
