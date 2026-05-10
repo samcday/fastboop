@@ -14,20 +14,20 @@ ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-rusb = { path = "../../crates/fastboop-fastboot-rusb" }
-gobblytes-core = { version = "0.0.2-rc.1" }
-gobblytes-erofs = { version = "0.0.2-rc.1" }
-gobblytes-fat = { version = "0.0.2-rc.1" }
-gibblox-core = { version = "0.0.2-rc.1", features = ["std"] }
-gibblox-ext4 = { version = "0.0.2-rc.1" }
-gibblox-file = { version = "0.0.2-rc.1" }
-gibblox-http = { version = "0.0.2-rc.1", default-features = false, features = ["native-client"] }
-gibblox-pipeline = { version = "0.0.2-rc.1", features = ["std"] }
-gibblox-zip = { version = "0.0.2-rc.1", features = ["std"] }
+gobblytes-core = { version = "0.0.2-rc.3" }
+gobblytes-erofs = { version = "0.0.2-rc.3" }
+gobblytes-fat = { version = "0.0.2-rc.3" }
+gibblox-core = { version = "0.0.2-rc.3", features = ["std"] }
+gibblox-ext4 = { version = "0.0.2-rc.3" }
+gibblox-file = { version = "0.0.2-rc.3" }
+gibblox-http = { version = "0.0.2-rc.3", default-features = false, features = ["native-client"] }
+gibblox-pipeline = { version = "0.0.2-rc.3", features = ["std"] }
+gibblox-zip = { version = "0.0.2-rc.3", features = ["std"] }
 rfd = "0.17.2"
-smoo-host-core = { version = "0.0.2-rc.5" }
-smoo-host-session = { version = "0.0.2-rc.5" }
-smoo-host-transport-rusb = { version = "0.0.2-rc.5" }
-smoo-host-blocksource-gibblox = { version = "0.0.2-rc.5" }
+smoo-host-core = { version = "0.0.2-rc.6" }
+smoo-host-session = { version = "0.0.2-rc.6" }
+smoo-host-transport-rusb = { version = "0.0.2-rc.6" }
+smoo-host-blocksource-gibblox = { version = "0.0.2-rc.6" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
