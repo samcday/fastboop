@@ -16,7 +16,7 @@ on:
 
 jobs:
   build:
-    if: inputs.release_mode == 'pr' || inputs.release_mode == 'tag' || github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'debs')
+    if: inputs.release_mode == 'pr' || inputs.release_mode == 'tag' || github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'debs') && !startsWith(github.event.pull_request.head.ref || '', 'release/v'))
     name: Build .debs
     runs-on: ${{ matrix.runner }}
     container: debian:unstable
