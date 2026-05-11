@@ -6,20 +6,26 @@ pkgdesc="Ephemeral Linux boot tool for USB-enabled pocket computers"
 url=https://github.com/samcday/fastboop
 arch="x86_64 aarch64"
 license="GPL-3.0-only"
-depends="$pkgname-cli"
+depends="$pkgname-cli $pkgname-desktop"
 makedepends="
 	binutils
 	cargo
 	clang-dev
+	gtk+3.0-dev
+	libayatana-appindicator-dev
 	libusb-dev
+	librsvg-dev
 	linux-headers
+	openssl-dev
 	pkgconf
-	rust"
+	rust
+	webkit2gtk-4.1-dev
+	xdotool-dev"
 
 _gitrev=main
 source="https://github.com/samcday/fastboop/archive/$_gitrev/fastboop-$_gitrev.tar.gz"
 builddir="$srcdir/fastboop-${_gitrev#v}"
-subpackages="$pkgname-stage0 $pkgname-cli"
+subpackages="$pkgname-stage0 $pkgname-cli $pkgname-desktop"
 options="net"
 
 export RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$builddir=/build/"
@@ -45,7 +51,10 @@ prepare() {
 }
 
 build() {
-	cargo build --release --locked --frozen -p fastboop-cli $_cargo_target_arg
+	cargo build --release --locked --frozen \
+		-p fastboop-cli \
+		-p fastboop-desktop \
+		$_cargo_target_arg
 	"$_stage0_cargo" build --release --locked --frozen \
 		--target "$_stage0_target" \
 		-p fastboop-stage0
@@ -60,6 +69,18 @@ package() {
 	local stage0_bin="$_stage0_target_dir/release/fastboop-stage0"
 
 	install -Dm755 "$target_dir"/fastboop "$pkgdir"/usr/bin/fastboop
+	install -Dm755 "$target_dir"/fastboop-desktop "$pkgdir"/usr/bin/fastboop-desktop
+	install -Dm644 packages/desktop/assets/main.css "$pkgdir"/usr/bin/assets/main.css
+	install -Dm644 packages/ui/assets/styling/hero.css \
+		"$pkgdir"/usr/bin/assets/styling/hero.css
+	install -Dm644 packages/ui/assets/styling/smoo_stats.css \
+		"$pkgdir"/usr/bin/assets/styling/smoo_stats.css
+	install -Dm644 assets/win.fastboop.fastboop.desktop \
+		"$pkgdir"/usr/share/applications/win.fastboop.fastboop.desktop
+	install -Dm644 assets/win.fastboop.fastboop.metainfo.xml \
+		"$pkgdir"/usr/share/metainfo/win.fastboop.fastboop.metainfo.xml
+	install -Dm644 assets/win.fastboop.fastboop.svg \
+		"$pkgdir"/usr/share/icons/hicolor/scalable/apps/win.fastboop.fastboop.svg
 	install -Dm755 "$stage0_bin" "$pkgdir"/usr/lib/fastboop/stage0/stage0-aarch64
 
 	if readelf -l "$pkgdir"/usr/lib/fastboop/stage0/stage0-aarch64 | grep -q INTERP; then
@@ -78,6 +99,16 @@ cli() {
 	pkgdesc="fastboop CLI"
 	depends="$pkgname-stage0 libusb"
 	amove usr/bin/fastboop
+}
+
+desktop() {
+	pkgdesc="fastboop desktop app"
+	depends="$pkgname-stage0 desktop-file-utils hicolor-icon-theme libusb shared-mime-info"
+	amove usr/bin/fastboop-desktop
+	amove usr/bin/assets
+	amove usr/share/applications/win.fastboop.fastboop.desktop
+	amove usr/share/metainfo/win.fastboop.fastboop.metainfo.xml
+	amove usr/share/icons/hicolor/scalable/apps/win.fastboop.fastboop.svg
 }
 
 sha512sums=""
