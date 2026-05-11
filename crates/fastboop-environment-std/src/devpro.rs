@@ -3,9 +3,11 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use fastboop_core::DeviceProfile;
-use fastboop_core::builtin::builtin_profiles;
+use fastboop_session::{
+    build_device_profile_pool, resolve_profile_in_pool as resolve_profile_in_pool_core,
+};
 use tracing::warn;
 
 pub fn resolve_devpro_dirs() -> Result<Vec<PathBuf>> {
@@ -84,17 +86,9 @@ pub fn channel_matching_pool(
     channel_dev_profiles: &[DeviceProfile],
     devpro_dirs: &[PathBuf],
 ) -> Result<Vec<DeviceProfile>> {
-    let mut profiles: HashMap<String, DeviceProfile> = HashMap::new();
-    for profile in builtin_profiles().context("loading builtin device profiles")? {
-        profiles.insert(profile.id.clone(), profile);
-    }
-    for profile in channel_dev_profiles {
-        profiles.insert(profile.id.clone(), profile.clone());
-    }
-    for (id, profile) in load_local_device_profiles(devpro_dirs)? {
-        profiles.insert(id, profile);
-    }
-    Ok(profiles.into_values().collect())
+    let local_profiles = load_local_device_profiles(devpro_dirs)?;
+    build_device_profile_pool(channel_dev_profiles, local_profiles.into_values())
+        .map_err(|err| anyhow!(err.to_string()))
 }
 
 pub fn resolve_profile_in_pool(
@@ -102,16 +96,6 @@ pub fn resolve_profile_in_pool(
     devpro_dirs: &[PathBuf],
     requested: &str,
 ) -> Result<DeviceProfile> {
-    if let Some(profile) = pool.iter().find(|profile| profile.id == requested) {
-        return Ok(profile.clone());
-    }
-
-    let mut ids: Vec<_> = pool.iter().map(|profile| profile.id.clone()).collect();
-    ids.sort();
-    bail!(
-        "device profile '{}' not found; available ids: [{}]; checked dirs: {:?}",
-        requested,
-        ids.join(", "),
-        devpro_dirs
-    );
+    resolve_profile_in_pool_core(pool, requested)
+        .map_err(|err| anyhow!("{err}; checked dirs: {devpro_dirs:?}"))
 }

@@ -4,7 +4,10 @@ members = [
     "stage0",
     "crates/fastboop-core",
     "crates/fastboop-bootpro",
+    "crates/fastboop-environment-std",
+    "crates/fastboop-environment-web",
     "crates/fastboop-schema",
+    "crates/fastboop-session",
     "crates/fastboop-stage0-generator",
     "crates/fastboop-fastboot-rusb",
     "crates/fastboop-fastboot-webusb",
@@ -28,7 +31,10 @@ dioxus = { version = "0.7.1" }
 ui = { path = "packages/ui" }
 fastboop-core = { path = "crates/fastboop-core" }
 fastboop-bootpro = { path = "crates/fastboop-bootpro", version = "0.0.1-rc.19" }
+fastboop-environment-std = { path = "crates/fastboop-environment-std" }
+fastboop-environment-web = { path = "crates/fastboop-environment-web" }
 fastboop-schema = { path = "crates/fastboop-schema", default-features = false }
+fastboop-session = { path = "crates/fastboop-session" }
 gibblox-android-sparse = "0.0.2-rc.4"
 gibblox-blockreader-messageport = "0.0.2-rc.4"
 gibblox-cache = "0.0.2-rc.4"

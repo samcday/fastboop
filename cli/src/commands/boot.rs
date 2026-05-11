@@ -1,55 +1,21 @@
 #[cfg(feature = "tui")]
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
-use std::task::Poll;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use clap::Args;
-use fastboop_core::bootimg::build_android_bootimg;
-use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, profile_filters};
-use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
-use fastboop_core::fastboot::{boot, download};
-use fastboop_core::{DeviceProfile, resolve_effective_boot_profile_stage0};
-use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
-use fastboop_stage0_generator::{
-    Stage0AblExorcist, Stage0Options, build_stage0, stage0_binary_ready,
+use fastboop_environment_std::{
+    NativeBootConfig, NativeBootEnvironment, NativeBootStage0Config, parse_ostree_arg,
 };
-use gibblox_core::{BlockReader, block_identity_string};
-use gobblytes_core::OstreeFs as OstreeRootfs;
+use fastboop_session::{FastboopSession as BootSession, SessionEvent, SessionEventPhase};
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
 
 use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
-use crate::devpros::{channel_matching_pool, resolve_devpro_dirs, resolve_profile_in_pool};
-use crate::personalization::personalization_from_host;
-use crate::smoo_host::run_host_daemon;
-use crate::stage0_binary::load_stage0_binary_for_initrd;
 #[cfg(feature = "tui")]
 use crate::tui::{TuiOutcome, run_boot_tui};
-
-use super::{
-    ArtifactReaderResolver, OstreeArg, Stage0CoalescingFilesystem,
-    auto_detect_ostree_deployment_path, format_probe_error, parse_ostree_arg, read_dtbo_overlays,
-    read_existing_initrd, resolve_boot_profile_source_overrides, resolve_effective_ostree_arg,
-};
-
-const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const DEFAULT_SMOO_MAX_IO_BYTES: usize = 1024 * 1024;
-
-struct DetectedFastbootDevice {
-    fastboot: FastbootRusb,
-    vid: u16,
-    pid: u16,
-    serial: Option<String>,
-}
-
-struct ResolvedDetectedFastbootDevice {
-    profile: DeviceProfile,
-    device: DetectedFastbootDevice,
-}
 
 #[derive(Args)]
 pub struct BootStage0Args {
@@ -126,6 +92,9 @@ pub struct BootArgs {
     /// Expose fastboop's smoo host metrics on this TCP port (0 disables).
     #[arg(long = "smoo-metrics-port", default_value_t = 0)]
     pub smoo_metrics_port: u16,
+    /// Write serialized session state after durable state transitions.
+    #[arg(long = "session-state", value_name = "PATH")]
+    pub session_state: Option<PathBuf>,
     #[cfg(feature = "tui")]
     /// Use plain line-oriented logs (disable TUI view).
     #[arg(long, default_value_t = false)]
@@ -180,13 +149,6 @@ fn run_boot_worker(
     shutdown: CancellationToken,
     runtime: tokio::runtime::Handle,
 ) -> Result<()> {
-    emit(
-        &events,
-        BootEvent::Phase {
-            phase: BootPhase::Preparing,
-            detail: "loading profiles".to_string(),
-        },
-    );
     let result = runtime.block_on(run_boot_inner(args, events.clone(), shutdown));
     match &result {
         Ok(()) => emit(&events, BootEvent::Finished),
@@ -209,607 +171,110 @@ async fn run_boot_inner(
     events: Sender<BootEvent>,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    let devpro_dirs = resolve_devpro_dirs()?;
-    let mut artifact_resolver =
-        ArtifactReaderResolver::with_local_artifacts(args.stage0.local_artifact.as_slice())?;
-    let channel_head = artifact_resolver
-        .read_channel_stream_head(&args.stage0.channel)
-        .await
-        .with_context(|| {
-            format!(
-                "read channel profile stream head for {}",
-                args.stage0.channel.display()
-            )
-        })?;
+    let output = args.output.clone();
+    let config = native_boot_config_from_args(&args)?;
+    let request = config.boot_request()?;
+    let session = BootSession::new(request);
+    let (session_tx, session_rx) = std::sync::mpsc::channel::<SessionEvent>();
+    let forward_events = events.clone();
+    let forwarder = thread::spawn(move || forward_session_events(&session_rx, &forward_events));
 
-    if channel_head.warning_count > 0 {
-        emit(
-            &events,
-            BootEvent::Log(format!(
-                "channel stream has {} warning(s) while reading profile head; using {} bytes of leading records",
-                channel_head.warning_count, channel_head.consumed_bytes
-            )),
-        );
-    }
-
-    let matching_pool = channel_matching_pool(&channel_head.dev_profiles, &devpro_dirs)?;
-
-    let mut profile = match args.stage0.device_profile.as_deref() {
-        Some(requested) => Some(resolve_profile_in_pool(
-            &matching_pool,
-            &devpro_dirs,
-            requested,
-        )?),
-        None => None,
-    };
-
-    if args.output.is_some() && profile.is_none() {
-        bail!(
-            "--device-profile is required when using --output; profile auto-detection needs a connected device"
-        );
-    }
-
-    let mut detected_device = if args.output.is_none() {
-        let wait = Duration::from_secs(args.wait);
-        if let Some(selected_profile) = profile.as_ref() {
+    let result = {
+        let mut env = NativeBootEnvironment::new(config, session_tx.clone(), shutdown);
+        if let Some(path) = output {
+            let prepared = session.prepare(&mut env).await?;
+            std::fs::write(&path, &prepared.boot_image)
+                .with_context(|| format!("writing bootimg to {}", path.display()))?;
             emit(
                 &events,
-                BootEvent::Phase {
-                    phase: BootPhase::WaitingForDevice,
-                    detail: format!("profile={}", selected_profile.id),
-                },
+                BootEvent::Log(format!("Wrote boot image to {}", path.display())),
             );
-            Some(wait_for_fastboot_device(selected_profile, wait, &events).await?)
+            Ok(())
         } else {
-            emit(
-                &events,
-                BootEvent::Phase {
-                    phase: BootPhase::WaitingForDevice,
-                    detail: "profile=auto".to_string(),
-                },
-            );
-            let resolved = wait_for_fastboot_device_auto(&matching_pool, wait, &events).await?;
-            profile = Some(resolved.profile);
-            Some(resolved.device)
+            session.run(&mut env).await.map_err(|err| anyhow!("{err}"))
         }
-    } else {
-        None
     };
 
-    let profile = profile.expect("profile resolved before build");
+    drop(session_tx);
+    let _ = forwarder.join();
+    result
+}
 
-    if let Some(device) = &detected_device {
-        let profile_detail = format!("profile={}", profile.id);
-        emit(
-            &events,
-            BootEvent::Phase {
-                phase: BootPhase::DeviceDetected,
-                detail: format!(
-                    "{:04x}:{:04x} {} {}",
-                    device.vid,
-                    device.pid,
-                    device
-                        .serial
-                        .as_deref()
-                        .map(|s| format!("serial={s}"))
-                        .unwrap_or_else(|| "serial=unknown".to_string()),
-                    profile_detail,
-                ),
+fn native_boot_config_from_args(args: &BootArgs) -> Result<NativeBootConfig> {
+    Ok(NativeBootConfig {
+        stage0: NativeBootStage0Config {
+            channel: args.stage0.channel.clone(),
+            ostree: parse_ostree_arg(args.stage0.ostree.as_ref())?,
+            device_profile: args.stage0.device_profile.clone(),
+            boot_profile: args.stage0.boot_profile.clone(),
+            dtb: args.stage0.dtb.clone(),
+            dtbo: args.stage0.dtbo.clone(),
+            augment: args.stage0.augment.clone(),
+            stage0: args.stage0.stage0.clone(),
+            require_modules: args.stage0.require_modules.clone(),
+            cmdline_append: args.stage0.cmdline_append.clone(),
+            serial: args.stage0.serial,
+            impersonate_fastboot: args.stage0.impersonate_fastboot,
+            smoo_queue_count: args.stage0.smoo_queue_count,
+            smoo_queue_depth: args.stage0.smoo_queue_depth,
+            smoo_max_io: args.stage0.smoo_max_io,
+            abl_exorcist: args.abl_exorcist.clone(),
+            local_artifact: args.stage0.local_artifact.clone(),
+        },
+        boot_device: args.output.is_none(),
+        system_time: args.system_time,
+        systemd_firstboot: args.systemd_firstboot,
+        wait: Duration::from_secs(args.wait),
+        smoo_metrics_port: args.smoo_metrics_port,
+        session_state: args.session_state.clone(),
+    })
+}
+
+fn forward_session_events(rx: &Receiver<SessionEvent>, events: &Sender<BootEvent>) {
+    while let Ok(event) = rx.recv() {
+        emit(events, session_event_to_boot_event(event));
+    }
+}
+
+fn session_event_to_boot_event(event: SessionEvent) -> BootEvent {
+    match event {
+        SessionEvent::Phase { phase, detail } => BootEvent::Phase {
+            phase: match phase {
+                SessionEventPhase::Preparing => BootPhase::Preparing,
+                SessionEventPhase::WaitingForDevice => BootPhase::WaitingForDevice,
+                SessionEventPhase::DeviceDetected => BootPhase::DeviceDetected,
+                SessionEventPhase::BuildingStage0 => BootPhase::BuildingStage0,
+                SessionEventPhase::BuildingBootImage => BootPhase::BuildingBootImage,
+                SessionEventPhase::Downloading => BootPhase::Downloading,
+                SessionEventPhase::Booting => BootPhase::Booting,
+                SessionEventPhase::WaitingForSmoo => BootPhase::WaitingForSmoo,
+                SessionEventPhase::Serving => BootPhase::Serving,
+                SessionEventPhase::Failed => BootPhase::Failed,
             },
-        );
-    }
-
-    let cli_dtb_override = match &args.stage0.dtb {
-        Some(path) => {
-            Some(std::fs::read(path).with_context(|| format!("reading dtb {}", path.display()))?)
-        }
-        None => None,
-    };
-
-    let cli_dtbo_overlays = read_dtbo_overlays(&args.stage0.dtbo)?;
-    let ostree_arg = parse_ostree_arg(args.stage0.ostree.as_ref())?;
-    let serial_enabled = args.stage0.serial;
-    let impersonate_fastboot = args.stage0.impersonate_fastboot;
-    let smoo_queue_count = args.stage0.smoo_queue_count;
-    let smoo_queue_depth = args.stage0.smoo_queue_depth;
-    let smoo_max_io = args.stage0.smoo_max_io.unwrap_or(DEFAULT_SMOO_MAX_IO_BYTES);
-    let personalization = args.systemd_firstboot.then(personalization_from_host);
-
-    let existing = read_existing_initrd(&args.stage0.augment)?;
-    let stage0_binary =
-        load_stage0_binary_for_initrd(args.stage0.stage0.as_deref(), existing.as_deref())?;
-    let abl_exorcist_image = read_abl_exorcist(args.abl_exorcist.as_deref())?;
-    let cli_cmdline_append = args
-        .stage0
-        .cmdline_append
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let cli_kernel_modules = args.stage0.require_modules;
-    let system_time_part = if args.system_time {
-        Some(system_time_cmdline()?)
-    } else {
-        None
-    };
-
-    emit(
-        &events,
-        BootEvent::Phase {
-            phase: BootPhase::BuildingStage0,
-            detail: "building stage0 payload".to_string(),
+            detail,
         },
-    );
-
-    let (block_reader, image_size_bytes, image_identity, build) = {
-        let input = artifact_resolver
-            .open_channel_input(
-                &args.stage0.channel,
-                &profile.id,
-                args.stage0.boot_profile.as_deref(),
-            )
-            .await?;
-        let profile_source_overrides = resolve_boot_profile_source_overrides(
-            input.boot_profile.as_ref(),
-            &profile,
-            &mut artifact_resolver,
-        )
-        .await?;
-        let profile_stage0 = input
-            .boot_profile
-            .as_ref()
-            .map(|boot_profile| resolve_effective_boot_profile_stage0(boot_profile, &profile.id))
-            .unwrap_or_default();
-        let reader = input.reader;
-        let stage0_readers = input.stage0_readers;
-
-        let total_blocks = reader.total_blocks().await?;
-        let image_size_bytes = total_blocks * reader.block_size() as u64;
-        let image_identity = block_identity_string(reader.as_ref());
-        let provider = Stage0CoalescingFilesystem::open(stage0_readers).await?;
-
-        let mut kernel_modules = profile_stage0.kernel_modules;
-        kernel_modules.extend(cli_kernel_modules.iter().cloned());
-
-        let mut dtbo_overlays = profile_stage0.dt_overlays;
-        dtbo_overlays.extend(cli_dtbo_overlays.iter().cloned());
-
-        let merged_profile_cmdline = join_cmdline(
-            profile_stage0.extra_cmdline.as_deref(),
-            cli_cmdline_append.as_deref(),
-        );
-
-        let opts = Stage0Options {
-            switchroot_fs: provider.switchroot_fs(),
-            kernel_modules,
-            inject_mac: profile_stage0.inject_mac,
-            kernel_override: profile_source_overrides.kernel_override,
-            abl_exorcist: abl_exorcist_image.as_ref().map(|image| Stage0AblExorcist {
-                image: image.clone(),
-            }),
-            dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
-            dtbo_overlays,
-            enable_serial: serial_enabled,
-            mimic_fastboot: impersonate_fastboot,
-            smoo_vendor: detected_device.as_ref().map(|device| device.vid),
-            smoo_product: detected_device.as_ref().map(|device| device.pid),
-            stage0_serial: detected_device
-                .as_ref()
-                .and_then(|device| device.serial.clone()),
-            personalization,
-        };
-
-        let effective_ostree_arg =
-            resolve_effective_ostree_arg(&ostree_arg, input.boot_profile.as_ref());
-        let selected_ostree = match &effective_ostree_arg {
-            OstreeArg::Disabled => None,
-            OstreeArg::AutoDetect => {
-                let detected = auto_detect_ostree_deployment_path(&provider).await?;
-                debug!(ostree = %detected, "auto-detected ostree deployment path");
-                Some(detected)
-            }
-            OstreeArg::Explicit(path) => Some(path.clone()),
-        };
-
-        let mut extra_parts = Vec::new();
-        if let Some(ostree) = selected_ostree.as_deref() {
-            extra_parts.push(format!("ostree=/{ostree}"));
-        }
-        if !merged_profile_cmdline.is_empty() {
-            extra_parts.push(merged_profile_cmdline);
-        }
-        if let Some(system_time) = system_time_part.as_deref() {
-            extra_parts.push(system_time.to_string());
-        }
-        if let Some(queue_count) = smoo_queue_count {
-            extra_parts.push(format!("smoo.queue_count={queue_count}"));
-        }
-        if let Some(queue_depth) = smoo_queue_depth {
-            extra_parts.push(format!("smoo.queue_depth={queue_depth}"));
-        }
-        extra_parts.push(format!("smoo.max_io_bytes={smoo_max_io}"));
-        let extra_cmdline = if extra_parts.is_empty() {
-            None
-        } else {
-            Some(extra_parts.join(" "))
-        };
-
-        let build = if let Some(ostree) = selected_ostree.as_deref() {
-            let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree)
-                .await
-                .map_err(|err| anyhow!("resolve ostree deployment path {ostree}: {err}"))?;
-            debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
-            let provider = OstreeRootfs::new(provider, &resolved_ostree)
-                .map_err(|err| anyhow!("initialize ostree filesystem view: {err}"))?;
-            build_stage0(
-                &profile,
-                &provider,
-                &opts,
-                stage0_binary_ready(stage0_binary.clone()),
-                extra_cmdline.as_deref(),
-                existing.as_deref(),
-            )
-            .await
-        } else {
-            build_stage0(
-                &profile,
-                &provider,
-                &opts,
-                stage0_binary_ready(stage0_binary.clone()),
-                extra_cmdline.as_deref(),
-                existing.as_deref(),
-            )
-            .await
-        };
-        anyhow::Ok((reader, image_size_bytes, image_identity, build))
-    }?;
-
-    let build = build.map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
-
-    let mut cmdline = join_cmdline(
-        profile
-            .boot
-            .fastboot_boot
-            .android_bootimg
-            .cmdline_append
-            .as_deref(),
-        Some(build.kernel_cmdline_append.as_str()),
-    );
-    if abl_exorcist_image.is_some() {
-        cmdline = wrap_abl_exorcist_cmdline(&cmdline);
-    }
-
-    let mut kernel_image = build.kernel_image;
-    if profile
-        .boot
-        .fastboot_boot
-        .android_bootimg
-        .kernel
-        .encoding
-        .append_dtb()
-    {
-        kernel_image.extend_from_slice(&build.dtb);
-    }
-
-    let bootimg = build_android_bootimg(
-        &profile,
-        &kernel_image,
-        &build.initrd,
-        Some(&build.dtb),
-        &cmdline,
-    )
-    .map_err(|e| anyhow::anyhow!("bootimg build failed: {e}"))?;
-
-    emit(
-        &events,
-        BootEvent::Phase {
-            phase: BootPhase::BuildingBootImage,
-            detail: format!("boot image built ({} bytes)", bootimg.len()),
+        SessionEvent::Log(line) => BootEvent::Log(line),
+        SessionEvent::SmooStatus {
+            active,
+            export_count,
+            session_id,
+            ios_up,
+            ios_down,
+            bytes_up,
+            bytes_down,
+            inflight_requests,
+            max_inflight_requests,
+        } => BootEvent::SmooStatus {
+            active,
+            export_count,
+            session_id,
+            ios_up,
+            ios_down,
+            bytes_up,
+            bytes_down,
+            inflight_requests,
+            max_inflight_requests,
         },
-    );
-
-    if let Some(path) = args.output {
-        std::fs::write(&path, &bootimg)
-            .with_context(|| format!("writing bootimg to {}", path.display()))?;
-        emit(
-            &events,
-            BootEvent::Log(format!("Wrote boot image to {}", path.display())),
-        );
-        return Ok(());
-    }
-
-    let mut fastboot = detected_device
-        .take()
-        .expect("fastboot device probed when no --output");
-
-    emit(
-        &events,
-        BootEvent::Phase {
-            phase: BootPhase::Downloading,
-            detail: format!("sending {} bytes", bootimg.len()),
-        },
-    );
-
-    download(&mut fastboot.fastboot, &bootimg)
-        .await
-        .map_err(|e| anyhow::anyhow!("fastboot download failed: {e}"))?;
-
-    emit(
-        &events,
-        BootEvent::Phase {
-            phase: BootPhase::Booting,
-            detail: "issuing fastboot boot".to_string(),
-        },
-    );
-
-    boot(&mut fastboot.fastboot)
-        .await
-        .map_err(|e| anyhow::anyhow!("fastboot boot failed: {e}"))?;
-
-    run_host_daemon(
-        block_reader,
-        image_size_bytes,
-        image_identity,
-        crate::smoo_host::SmooHostOptions {
-            impersonate_fastboot,
-            metrics_port: args.smoo_metrics_port,
-        },
-        events,
-        shutdown,
-    )
-    .await
-    .context("running smoo host daemon after boot")?;
-    Ok(())
-}
-
-async fn wait_for_fastboot_device(
-    profile: &DeviceProfile,
-    wait: Duration,
-    events: &Sender<BootEvent>,
-) -> Result<DetectedFastbootDevice> {
-    let filters = profile_filters(std::slice::from_ref(profile));
-    let mut watcher = DeviceWatcher::new(&filters).context("starting USB hotplug watcher")?;
-    let deadline = if wait.is_zero() {
-        None
-    } else {
-        Some(Instant::now() + wait)
-    };
-    let mut waiting = false;
-
-    loop {
-        match watcher.try_next_event() {
-            Poll::Ready(Ok(DeviceEvent::Arrived { device })) => {
-                if let Some(fastboot) = probe_arrived_device(profile, device, events).await? {
-                    return Ok(fastboot);
-                }
-            }
-            Poll::Ready(Ok(DeviceEvent::Left { .. })) => {}
-            Poll::Ready(Err(err)) => {
-                bail!("USB watcher disconnected: {err}");
-            }
-            Poll::Pending => {
-                if !waiting {
-                    waiting = true;
-                    if wait.is_zero() {
-                        emit(
-                            events,
-                            BootEvent::Log(format!(
-                                "Waiting for fastboot device matching profile {}...",
-                                profile.id
-                            )),
-                        );
-                    } else {
-                        emit(
-                            events,
-                            BootEvent::Log(format!(
-                                "Waiting up to {}s for fastboot device matching profile {}...",
-                                wait.as_secs(),
-                                profile.id
-                            )),
-                        );
-                    }
-                }
-
-                if let Some(deadline) = deadline {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        bail!(
-                            "timed out waiting for fastboot device matching profile {}",
-                            profile.id
-                        );
-                    }
-                    let remaining = deadline.saturating_duration_since(now);
-                    tokio::time::sleep(remaining.min(IDLE_POLL_INTERVAL)).await;
-                } else {
-                    tokio::time::sleep(IDLE_POLL_INTERVAL).await;
-                }
-            }
-        }
-    }
-}
-
-async fn wait_for_fastboot_device_auto(
-    profiles: &[DeviceProfile],
-    wait: Duration,
-    events: &Sender<BootEvent>,
-) -> Result<ResolvedDetectedFastbootDevice> {
-    if profiles.is_empty() {
-        bail!("no device profiles available for auto-detection");
-    }
-
-    let filters = profile_filters(profiles);
-    let mut watcher = DeviceWatcher::new(&filters).context("starting USB hotplug watcher")?;
-    let deadline = if wait.is_zero() {
-        None
-    } else {
-        Some(Instant::now() + wait)
-    };
-    let mut waiting = false;
-
-    loop {
-        match watcher.try_next_event() {
-            Poll::Ready(Ok(DeviceEvent::Arrived { device })) => {
-                if let Some(resolved) = probe_arrived_device_auto(profiles, device, events).await? {
-                    return Ok(resolved);
-                }
-            }
-            Poll::Ready(Ok(DeviceEvent::Left { .. })) => {}
-            Poll::Ready(Err(err)) => {
-                bail!("USB watcher disconnected: {err}");
-            }
-            Poll::Pending => {
-                if !waiting {
-                    waiting = true;
-                    if wait.is_zero() {
-                        emit(
-                            events,
-                            BootEvent::Log(
-                                "Waiting for fastboot device matching any profile...".to_string(),
-                            ),
-                        );
-                    } else {
-                        emit(
-                            events,
-                            BootEvent::Log(format!(
-                                "Waiting up to {}s for fastboot device matching any profile...",
-                                wait.as_secs()
-                            )),
-                        );
-                    }
-                }
-
-                if let Some(deadline) = deadline {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        bail!("timed out waiting for fastboot device matching any profile");
-                    }
-                    let remaining = deadline.saturating_duration_since(now);
-                    tokio::time::sleep(remaining.min(IDLE_POLL_INTERVAL)).await;
-                } else {
-                    tokio::time::sleep(IDLE_POLL_INTERVAL).await;
-                }
-            }
-        }
-    }
-}
-
-async fn probe_arrived_device(
-    profile: &DeviceProfile,
-    device: RusbDeviceHandle,
-    events: &Sender<BootEvent>,
-) -> Result<Option<DetectedFastbootDevice>> {
-    let vid = device.vid();
-    let pid = device.pid();
-    if !profile_matches_vid_pid(profile, vid, pid) {
-        return Ok(None);
-    }
-    let serial = device.usb_serial_number();
-
-    let mut fastboot = match device.open_fastboot().await {
-        Ok(fastboot) => fastboot,
-        Err(err) => {
-            emit(
-                events,
-                BootEvent::Log(format!("Skipping {vid:04x}:{pid:04x}: open failed: {err}")),
-            );
-            return Ok(None);
-        }
-    };
-
-    let mut session = FastbootSession::new(&mut fastboot);
-    match session.probe_profile(profile).await {
-        Ok(()) => {
-            return Ok(Some(DetectedFastbootDevice {
-                fastboot,
-                vid,
-                pid,
-                serial,
-            }));
-        }
-        Err(err) => {
-            debug!(
-                profile_id = %profile.id,
-                vid = %format!("{:04x}", vid),
-                pid = %format!("{:04x}", pid),
-                error = %format_probe_error(err),
-                "fastboot probe failed"
-            );
-        }
-    }
-
-    Ok(None)
-}
-
-async fn probe_arrived_device_auto(
-    profiles: &[DeviceProfile],
-    device: RusbDeviceHandle,
-    events: &Sender<BootEvent>,
-) -> Result<Option<ResolvedDetectedFastbootDevice>> {
-    let vid = device.vid();
-    let pid = device.pid();
-    let matching_profiles: Vec<&DeviceProfile> = profiles
-        .iter()
-        .filter(|profile| profile_matches_vid_pid(profile, vid, pid))
-        .collect();
-    if matching_profiles.is_empty() {
-        return Ok(None);
-    }
-
-    let serial = device.usb_serial_number();
-    let mut fastboot = match device.open_fastboot().await {
-        Ok(fastboot) => fastboot,
-        Err(err) => {
-            emit(
-                events,
-                BootEvent::Log(format!("Skipping {vid:04x}:{pid:04x}: open failed: {err}")),
-            );
-            return Ok(None);
-        }
-    };
-
-    let mut session = FastbootSession::new(&mut fastboot);
-    let mut matched_profiles = Vec::new();
-    for profile in matching_profiles {
-        match session.probe_profile(profile).await {
-            Ok(()) => matched_profiles.push(profile),
-            Err(err) => {
-                debug!(
-                    profile_id = %profile.id,
-                    vid = %format!("{:04x}", vid),
-                    pid = %format!("{:04x}", pid),
-                    error = %format_probe_error(err),
-                    "fastboot probe failed"
-                );
-            }
-        }
-    }
-
-    match matched_profiles.as_slice() {
-        [] => Ok(None),
-        [profile] => Ok(Some(ResolvedDetectedFastbootDevice {
-            profile: (*profile).clone(),
-            device: DetectedFastbootDevice {
-                fastboot,
-                vid,
-                pid,
-                serial,
-            },
-        })),
-        _ => {
-            let mut profile_choices: Vec<String> = matched_profiles
-                .iter()
-                .map(|profile| profile_choice_label(profile))
-                .collect();
-            profile_choices.sort();
-            let serial_suffix = serial
-                .as_deref()
-                .map(|serial| format!(" serial={serial}"))
-                .unwrap_or_default();
-            bail!(
-                "multiple device profiles matched {vid:04x}:{pid:04x}{serial_suffix}: {}. --device-profile which-one, guv?",
-                profile_choices.join(", "),
-            );
-        }
     }
 }
 
@@ -880,62 +345,6 @@ fn emit(events: &Sender<BootEvent>, event: BootEvent) {
     let _ = events.send(event);
 }
 
-fn join_cmdline(left: Option<&str>, right: Option<&str>) -> String {
-    let mut out = String::new();
-    if let Some(left) = left {
-        out.push_str(left.trim());
-    }
-    if let Some(right) = right {
-        let right = right.trim();
-        if !right.is_empty() {
-            if !out.is_empty() {
-                out.push(' ');
-            }
-            out.push_str(right);
-        }
-    }
-    out
-}
-
-fn profile_choice_label(profile: &DeviceProfile) -> String {
-    match profile.display_name.as_deref() {
-        Some(display_name) => format!("{} ({display_name})", profile.id),
-        None => profile.id.clone(),
-    }
-}
-
-fn system_time_cmdline() -> Result<String> {
-    let since_epoch = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system time before UNIX_EPOCH")?;
-    let usec: u64 = since_epoch
-        .as_micros()
-        .try_into()
-        .context("system time exceeds u64 microseconds")?;
-    Ok(format!("systemd.clock_usec={usec}"))
-}
-
-fn read_abl_exorcist(path: Option<&Path>) -> Result<Option<Vec<u8>>> {
-    let Some(path) = path else {
-        return Ok(None);
-    };
-    let data = std::fs::read(path)
-        .with_context(|| format!("reading abl-exorcist shim {}", path.display()))?;
-    if data.is_empty() {
-        bail!("abl-exorcist shim is empty: {}", path.display());
-    }
-    Ok(Some(data))
-}
-
-fn wrap_abl_exorcist_cmdline(cmdline: &str) -> String {
-    let cmdline = cmdline.trim();
-    if cmdline.is_empty() {
-        "<S> <E>".to_string()
-    } else {
-        format!("<S> {cmdline} <E>")
-    }
-}
-
 fn parse_nonzero_u16(input: &str) -> std::result::Result<u16, String> {
     let value = input.parse::<u16>().map_err(|err| err.to_string())?;
     if value == 0 {
@@ -999,14 +408,5 @@ mod tests {
     fn parse_nonzero_u16_rejects_zero() {
         assert_eq!(parse_nonzero_u16("1").unwrap(), 1);
         assert!(parse_nonzero_u16("0").is_err());
-    }
-
-    #[test]
-    fn wraps_abl_exorcist_cmdline_markers() {
-        assert_eq!(
-            wrap_abl_exorcist_cmdline("quiet foo=bar"),
-            "<S> quiet foo=bar <E>"
-        );
-        assert_eq!(wrap_abl_exorcist_cmdline("   "), "<S> <E>");
     }
 }

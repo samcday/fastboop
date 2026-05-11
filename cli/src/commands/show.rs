@@ -5,6 +5,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use clap::Args;
 use fastboop_core::{ChannelStreamKind, classify_channel_prefix, read_channel_stream_head};
+use fastboop_environment_std::{
+    classify_channel_reader, open_channel_source_reader, read_channel_stream_head_from_reader,
+};
 
 #[derive(Args)]
 pub struct ShowArgs {
@@ -32,13 +35,11 @@ pub async fn run_show(args: ShowArgs) -> Result<()> {
             bytes.len() as u64,
         )?
     } else {
-        let source = super::open_channel_source_reader(Path::new(args.input.as_str())).await?;
-        let kind = super::classify_channel_reader(source.reader.as_ref()).await?;
-        let stream = super::read_channel_stream_head_from_reader(
-            source.reader.as_ref(),
-            source.exact_size_bytes,
-        )
-        .await?;
+        let source = open_channel_source_reader(Path::new(args.input.as_str())).await?;
+        let kind = classify_channel_reader(source.reader.as_ref()).await?;
+        let stream =
+            read_channel_stream_head_from_reader(source.reader.as_ref(), source.exact_size_bytes)
+                .await?;
         render_show_report(args.input.as_str(), kind, stream, source.exact_size_bytes)?
     };
 
