@@ -148,6 +148,11 @@ jobs:
       release_mode: ${{ needs.gate.outputs.mode }}
     secrets: inherit
 
+  flatpak:
+    needs: [gate, release]
+    if: needs.gate.outputs.enabled == 'true'
+    uses: ./.github/workflows/flatpak.yml
+
   publish-crates:
     needs: [gate, release, ci, publish-assets, publish-release]
     if: needs.gate.outputs.enabled == 'true'
@@ -183,7 +188,7 @@ jobs:
           just publish
 
   publish-assets:
-    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine]
+    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine, flatpak]
     if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -242,6 +247,16 @@ jobs:
           name: fastboop-docs
           path: release-artifacts/fastboop-docs
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: fastboop-desktop-x86_64.flatpak
+          path: release-artifacts/flatpak-x86_64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: fastboop-desktop-aarch64.flatpak
+          path: release-artifacts/flatpak-aarch64
+
       - name: Prepare release assets
         run: |
           set -euo pipefail
@@ -260,6 +275,9 @@ jobs:
           cp release-artifacts/packages-x86_64/*.apk release-assets/
           cp release-artifacts/packages-aarch64/*.apk release-assets/
 
+          cp release-artifacts/flatpak-x86_64/fastboop-desktop.flatpak release-assets/fastboop-desktop-x86_64.flatpak
+          cp release-artifacts/flatpak-aarch64/fastboop-desktop.flatpak release-assets/fastboop-desktop-aarch64.flatpak
+
           tar -C release-artifacts/fastboop-web -czf "release-assets/fastboop-web-${{ needs.gate.outputs.tag }}.tar.gz" .
           tar -C release-artifacts/fastboop-docs -czf "release-assets/fastboop-docs-${{ needs.gate.outputs.tag }}.tar.gz" .
 
@@ -276,11 +294,14 @@ jobs:
           test -f release-assets/fastboop-cli-aarch64-unknown-linux-musl.tar.gz
           test -f release-assets/fastboop-stage0-x86_64-unknown-linux-musl
           test -f release-assets/fastboop-stage0-aarch64-unknown-linux-musl
+          test -f release-assets/fastboop-desktop-x86_64.flatpak
+          test -f release-assets/fastboop-desktop-aarch64.flatpak
           test -f release-assets/APKBUILD
           test -f release-assets/SHA256SUMS
 
           compgen -G 'release-assets/*.deb' >/dev/null
           compgen -G 'release-assets/*.apk' >/dev/null
+          compgen -G 'release-assets/*.flatpak' >/dev/null
           compgen -G 'release-assets/fastboop-web-*.tar.gz' >/dev/null
           compgen -G 'release-assets/fastboop-docs-*.tar.gz' >/dev/null
 
@@ -309,13 +330,14 @@ jobs:
             release-assets/*.deb
             release-assets/APKBUILD
             release-assets/*.apk
+            release-assets/*.flatpak
             release-assets/fastboop-web-*.tar.gz
             release-assets/fastboop-docs-*.tar.gz
             release-assets/SHA256SUMS
 
   pass:
     name: "✅ Pass"
-    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine, publish-assets, publish-release, publish-crates, bump-web-version]
+    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine, flatpak, publish-assets, publish-release, publish-crates, bump-web-version]
     runs-on: ubuntu-latest
     if: always() && needs.gate.outputs.enabled == 'true'
     steps:
