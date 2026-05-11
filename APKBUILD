@@ -11,6 +11,7 @@ makedepends="
 	binutils
 	cargo
 	clang-dev
+	dtc
 	gtk+3.0-dev
 	libayatana-appindicator-dev
 	libusb-dev
