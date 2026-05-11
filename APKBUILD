@@ -6,7 +6,7 @@ pkgdesc="Ephemeral Linux boot tool for USB-enabled pocket computers"
 url=https://github.com/samcday/fastboop
 arch="x86_64 aarch64"
 license="GPL-3.0-only"
-depends="$pkgname-stage0"
+depends="$pkgname-cli"
 makedepends="
 	binutils
 	cargo
@@ -19,7 +19,7 @@ makedepends="
 _gitrev=main
 source="https://github.com/samcday/fastboop/archive/$_gitrev/fastboop-$_gitrev.tar.gz"
 builddir="$srcdir/fastboop-${_gitrev#v}"
-subpackages="$pkgname-stage0"
+subpackages="$pkgname-stage0 $pkgname-cli"
 options="net"
 
 export RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$builddir=/build/"
@@ -72,6 +72,12 @@ stage0() {
 	pkgdesc="fastboop stage0 sidecar payload"
 	depends=""
 	amove usr/lib/fastboop/stage0/stage0-aarch64
+}
+
+cli() {
+	pkgdesc="fastboop CLI"
+	depends="$pkgname-stage0 libusb"
+	amove usr/bin/fastboop
 }
 
 sha512sums=""
