@@ -28,7 +28,6 @@ pub(crate) struct StartupOptions {
 
 #[derive(Clone, Debug)]
 pub(crate) struct StartupChannelIntake {
-    pub(crate) exact_total_bytes: u64,
     pub(crate) stream_head: fastboop_core::ChannelStreamHead,
 }
 
@@ -38,36 +37,13 @@ pub(crate) enum DesktopChannelLocation {
     File(PathBuf),
 }
 
-impl DesktopChannelLocation {
-    pub(crate) fn file_name(&self) -> Option<String> {
-        match self {
-            Self::Http(url) => url
-                .path_segments()
-                .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())
-                .map(str::to_string),
-            Self::File(path) => path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::to_string),
-        }
-    }
-}
-
 pub(crate) struct OpenedDesktopChannel {
     pub(crate) reader: Arc<dyn BlockReader>,
     pub(crate) exact_total_bytes: u64,
-    pub(crate) location: DesktopChannelLocation,
-}
-
-impl StartupChannelIntake {
-    pub(crate) fn has_artifact_payload(&self) -> bool {
-        self.stream_head.consumed_bytes < self.exact_total_bytes
-    }
 }
 
 use views::{DevicePage, Home, SessionStore};
 
-mod stage0_binary;
 mod views;
 
 #[derive(Debug, Clone, Routable, PartialEq)]
@@ -184,7 +160,6 @@ pub(crate) async fn open_desktop_channel(
     Ok(OpenedDesktopChannel {
         reader,
         exact_total_bytes,
-        location,
     })
 }
 
@@ -207,10 +182,7 @@ where
         .await
         .map_err(|err| invalid_desktop_channel_error(channel, &err.to_string()))?;
 
-    let intake = StartupChannelIntake {
-        exact_total_bytes,
-        stream_head,
-    };
+    let intake = StartupChannelIntake { stream_head };
 
     if intake.stream_head.warning_count > 0 {
         tracing::warn!(

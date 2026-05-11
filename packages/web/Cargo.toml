@@ -7,10 +7,11 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
-async-trait = { workspace = true }
 dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
 fastboop-core = { path = "../../crates/fastboop-core" }
+fastboop-environment-web = { workspace = true }
+fastboop-session = { workspace = true }
 fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
 fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
 gobblytes-erofs = { workspace = true }
@@ -28,10 +29,6 @@ gibblox-zip = { workspace = true }
 gibblox-blockreader-messageport = { workspace = true }
 gibblox-web-worker = { workspace = true }
 url = { workspace = true }
-serde_json = "1.0.145"
-smoo-host-core = { version = "0.0.2-rc.6" }
-smoo-host-session = { version = "0.0.2-rc.6" }
-smoo-host-blocksource-gibblox = { version = "0.0.2-rc.6" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "registry", "std"] }
 tracing-wasm = "0.2.1"
@@ -47,6 +44,3 @@ web-sys = { workspace = true, features = ["DedicatedWorkerGlobalScope", "Documen
 [features]
 default = ["web"]
 web = ["dioxus/web"]
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-smoo-host-web-worker = { version = "0.0.2-rc.6" }

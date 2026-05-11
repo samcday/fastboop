@@ -1,8 +1,5 @@
 use dioxus::prelude::*;
-use fastboop_core::read_channel_stream_head_from_reader;
-use gibblox_core::BlockByteReader;
-use gibblox_core::BlockReader;
-use gibblox_http::HttpReader;
+use fastboop_environment_web::{load_web_startup_channel_intake, WebStartupChannelIntake};
 use js_sys::Reflect;
 use std::sync::OnceLock;
 use tracing::Level;
@@ -14,8 +11,6 @@ use wasm_bindgen::JsValue;
 
 use views::{DevicePage, Home, SessionStore};
 
-mod channel_source;
-mod gibblox_worker;
 mod views;
 #[cfg(target_arch = "wasm32")]
 mod wasm_utils;
@@ -31,17 +26,7 @@ pub(crate) struct StartupChannelError {
     pub(crate) launch_hint: String,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct StartupChannelIntake {
-    pub(crate) exact_total_bytes: u64,
-    pub(crate) stream_head: fastboop_core::ChannelStreamHead,
-}
-
-impl StartupChannelIntake {
-    pub(crate) fn has_artifact_payload(&self) -> bool {
-        self.stream_head.consumed_bytes < self.exact_total_bytes
-    }
-}
+pub(crate) type StartupChannelIntake = WebStartupChannelIntake;
 
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
@@ -62,12 +47,12 @@ fn main() {
     init_tracing();
 
     #[cfg(target_arch = "wasm32")]
-    if smoo_host_web_worker::run_if_worker() {
+    if fastboop_environment_web::run_smoo_host_worker_if_needed() {
         return;
     }
 
     #[cfg(target_arch = "wasm32")]
-    if gibblox_worker::run_if_worker() {
+    if fastboop_environment_web::run_gibblox_worker_if_needed() {
         return;
     }
 
@@ -101,86 +86,10 @@ pub(crate) async fn preflight_startup_channel(channel: &str) -> Result<(), Start
 pub(crate) async fn load_startup_channel_intake(
     channel: &str,
 ) -> Result<StartupChannelIntake, StartupChannelError> {
-    let url =
-        Url::parse(channel).map_err(|err| invalid_web_channel_error(channel, &err.to_string()))?;
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        return load_wasm_http_startup_channel_intake(channel, &url).await;
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let reader = HttpReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-            .await
-            .map_err(|err| {
-                invalid_web_channel_error(channel, &format!("open HTTP reader for {url}: {err}"))
-            })?;
-        let exact_total_bytes = reader.size_bytes();
-        let reader = BlockByteReader::new(reader, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-            .map_err(|err| {
-                invalid_web_channel_error(
-                    channel,
-                    &format!("open HTTP block view for {url}: {err}"),
-                )
-            })?;
-
-        read_startup_channel_intake(channel, &reader, exact_total_bytes).await
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn load_wasm_http_startup_channel_intake(
-    channel: &str,
-    url: &Url,
-) -> Result<StartupChannelIntake, StartupChannelError> {
-    let reader = HttpReader::new(url.clone(), gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE)
-        .await
-        .map_err(|err| {
-            invalid_web_channel_error(channel, &format!("open HTTP reader for {url}: {err}"))
-        })?;
-    let exact_total_bytes = reader.size_bytes();
-    let reader =
-        BlockByteReader::new(reader, gobblytes_erofs::DEFAULT_IMAGE_BLOCK_SIZE).map_err(|err| {
-            invalid_web_channel_error(channel, &format!("open HTTP block view for {url}: {err}"))
-        })?;
-
-    read_startup_channel_intake(channel, &reader, exact_total_bytes).await
-}
-
-async fn read_startup_channel_intake<R>(
-    channel: &str,
-    reader: &R,
-    exact_total_bytes: u64,
-) -> Result<StartupChannelIntake, StartupChannelError>
-where
-    R: BlockReader + ?Sized,
-{
-    if exact_total_bytes == 0 {
-        return Err(invalid_web_channel_error(
-            channel,
-            "channel stream is empty",
-        ));
-    }
-
-    let stream_head = read_channel_stream_head_from_reader(reader, exact_total_bytes)
+    validate_web_channel_url(channel)?;
+    let intake = load_web_startup_channel_intake(channel)
         .await
         .map_err(|err| invalid_web_channel_error(channel, &err.to_string()))?;
-
-    let intake = StartupChannelIntake {
-        exact_total_bytes,
-        stream_head,
-    };
-
-    if intake.stream_head.warning_count > 0 {
-        tracing::warn!(
-            warning_count = intake.stream_head.warning_count,
-            consumed_bytes = intake.stream_head.consumed_bytes,
-            channel,
-            "channel stream stopped after valid records due trailing bytes"
-        );
-    }
-
     Ok(intake)
 }
 

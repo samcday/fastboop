@@ -24,21 +24,17 @@ path = "src/main.rs"
 
 [features]
 default = []
-embed-stage0 = []
+embed-stage0 = ["fastboop-environment-std/embed-stage0"]
 tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
 anyhow = { workspace = true }
-async-trait = { workspace = true }
 clap = { workspace = true }
 fastboop-core = { path = "../crates/fastboop-core", version = "0.0.1-rc.12" }
 fastboop-bootpro = { workspace = true }
-fastboop-stage0-generator = { path = "../crates/fastboop-stage0-generator", version = "0.0.1-rc.12" }
-fastboop-fastboot-rusb = { path = "../crates/fastboop-fastboot-rusb", version = "0.0.1-rc.12" }
-serde = { version = "1.0.217", features = ["derive"] }
-serde_json = "1.0.132"
+fastboop-environment-std = { workspace = true }
+fastboop-session = { workspace = true }
 serde_yaml = { workspace = true }
-hyper = { workspace = true, features = ["server", "http1", "tcp"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 gibblox-core = { workspace = true, features = ["std"] }
@@ -64,8 +60,8 @@ smoo-host-transport-rusb = { version = "0.0.2-rc.6" }
 smoo-host-blocksource-gibblox = { version = "0.0.2-rc.6" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-util = { workspace = true }
-url = { workspace = true }
-rustix = { workspace = true, features = ["fs"] }
-sha2 = { workspace = true, default-features = true }
 ratatui = { version = "0.29.0", optional = true }
 crossterm = { version = "0.28.1", optional = true }
+
+[dev-dependencies]
+gibblox-pipeline = { version = "0.0.2-rc.3", features = ["std"] }

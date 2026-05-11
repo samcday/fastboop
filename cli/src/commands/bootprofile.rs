@@ -268,8 +268,7 @@ fn read_input_bytes(path: &str) -> Result<Vec<u8>> {
 fn validate_binary_output(path: &str, command: &str, stdout_is_tty: bool) -> Result<()> {
     if path == "-" && stdout_is_tty {
         bail!(
-            "{} output is binary and terminal output is disabled by default; use --output <FILE>",
-            command
+            "{command} output is binary and terminal output is disabled by default; use --output <FILE>"
         );
     }
     Ok(())

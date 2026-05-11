@@ -43,12 +43,6 @@ impl BootConfig {
 
 #[derive(Clone)]
 pub struct SessionChannelIntake {
-    pub exact_total_bytes: u64,
-    pub consumed_bytes: u64,
-    pub warning_count: usize,
-    pub has_artifact_payload: bool,
-    pub pipeline_hints: gibblox_pipeline::PipelineHints,
-    pub pipeline_hint_records: Vec<fastboop_core::ChannelPipelineHintsRecord>,
     pub compatible_boot_profiles: Vec<BootProfile>,
 }
 

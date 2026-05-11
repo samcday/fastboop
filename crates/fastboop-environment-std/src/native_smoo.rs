@@ -24,8 +24,6 @@ use smoo_host_transport_rusb::RusbTransport;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::boot_ui::{BootEvent, BootPhase};
-
 const SMOO_INTERFACE_CLASS: u8 = 0xFF;
 const SMOO_INTERFACE_SUBCLASS: u8 = 0x53;
 const SMOO_INTERFACE_PROTOCOL: u8 = 0x4D;
@@ -37,28 +35,54 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct SmooHostOptions {
+pub struct SmooHostOptions {
     pub impersonate_fastboot: bool,
     pub metrics_port: u16,
 }
 
-pub(crate) async fn run_host_daemon(
-    reader: Arc<dyn BlockReader>,
-    size_bytes: u64,
-    identity: String,
-    options: SmooHostOptions,
-    events: Sender<BootEvent>,
-    shutdown: CancellationToken,
-) -> Result<()> {
-    run_host_daemon_async(reader, size_bytes, identity, options, events, shutdown).await
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SmooHostEvent {
+    Phase {
+        phase: SmooHostPhase,
+        detail: String,
+    },
+    Log(String),
+    Status {
+        active: bool,
+        export_count: u32,
+        session_id: u64,
+        ios_up: u64,
+        ios_down: u64,
+        bytes_up: u64,
+        bytes_down: u64,
+        inflight_requests: u64,
+        max_inflight_requests: u64,
+    },
 }
 
-async fn run_host_daemon_async(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmooHostPhase {
+    WaitingForSmoo,
+    Serving,
+}
+
+pub async fn run_native_smoo_host(
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,
     identity: String,
     options: SmooHostOptions,
-    events: Sender<BootEvent>,
+    events: Sender<SmooHostEvent>,
+    shutdown: CancellationToken,
+) -> Result<()> {
+    run_native_smoo_host_async(reader, size_bytes, identity, options, events, shutdown).await
+}
+
+async fn run_native_smoo_host_async(
+    reader: Arc<dyn BlockReader>,
+    size_bytes: u64,
+    identity: String,
+    options: SmooHostOptions,
+    events: Sender<SmooHostEvent>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let shutdown_watch = shutdown.clone();
@@ -83,7 +107,7 @@ async fn run_host_daemon_async(
     if options.metrics_port != 0 {
         emit(
             &events,
-            BootEvent::Log(format!(
+            SmooHostEvent::Log(format!(
                 "smoo host metrics listening on http://0.0.0.0:{}/metrics",
                 options.metrics_port
             )),
@@ -92,14 +116,14 @@ async fn run_host_daemon_async(
 
     emit(
         &events,
-        BootEvent::Phase {
-            phase: BootPhase::WaitingForSmoo,
+        SmooHostEvent::Phase {
+            phase: SmooHostPhase::WaitingForSmoo,
             detail: "waiting for smoo gadget".to_string(),
         },
     );
     emit(
         &events,
-        BootEvent::Log("Waiting for smoo gadget and starting host daemon...".to_string()),
+        SmooHostEvent::Log("Waiting for smoo gadget and starting host daemon...".to_string()),
     );
     let (interface_subclass, interface_protocol) = if options.impersonate_fastboot {
         (FASTBOOT_INTERFACE_SUBCLASS, FASTBOOT_INTERFACE_PROTOCOL)
@@ -125,7 +149,7 @@ async fn run_host_daemon_async(
                 }
                 emit(
                     &events,
-                    BootEvent::Log(format!("smoo gadget not ready: {err}")),
+                    SmooHostEvent::Log(format!("smoo gadget not ready: {err}")),
                 );
                 tokio::time::sleep(DISCOVERY_RETRY).await;
                 continue;
@@ -153,7 +177,9 @@ async fn run_host_daemon_async(
                 }
                 emit(
                     &events,
-                    BootEvent::Log("smoo gadget disconnected; waiting to reconnect...".to_string()),
+                    SmooHostEvent::Log(
+                        "smoo gadget disconnected; waiting to reconnect...".to_string(),
+                    ),
                 );
             }
             Err(err) => {
@@ -162,7 +188,7 @@ async fn run_host_daemon_async(
                 }
                 emit(
                     &events,
-                    BootEvent::Log(format!("smoo host session ended with error: {err}")),
+                    SmooHostEvent::Log(format!("smoo host session ended with error: {err}")),
                 );
                 tokio::time::sleep(DISCOVERY_RETRY).await;
             }
@@ -185,7 +211,7 @@ enum SessionEnd {
 #[derive(Clone)]
 struct SessionRuntime {
     shutdown: CancellationToken,
-    events: Sender<BootEvent>,
+    events: Sender<SmooHostEvent>,
     metrics: SmooMetricsRegistry,
 }
 
@@ -238,14 +264,14 @@ async fn run_session(
     };
     emit(
         &runtime.events,
-        BootEvent::Phase {
-            phase: BootPhase::Serving,
+        SmooHostEvent::Phase {
+            phase: SmooHostPhase::Serving,
             detail: "smoo gadget connected".to_string(),
         },
     );
     emit(
         &runtime.events,
-        BootEvent::Log("smoo gadget connected; serving export...".to_string()),
+        SmooHostEvent::Log("smoo gadget connected; serving export...".to_string()),
     );
 
     let events = runtime.events.clone();
@@ -267,7 +293,7 @@ async fn run_session(
                 );
                 emit(
                     &events,
-                    BootEvent::SmooStatus {
+                    SmooHostEvent::Status {
                         active: status.export_active(),
                         export_count: status.export_count,
                         session_id: status.session_id,
@@ -284,7 +310,7 @@ async fn run_session(
                 metrics.update_counters(counters_for_events.snapshot());
                 emit(
                     &events,
-                    BootEvent::Log(format!(
+                    SmooHostEvent::Log(format!(
                         "smoo heartbeat recovered after {missed_heartbeats} misses"
                     )),
                 );
@@ -297,7 +323,7 @@ async fn run_session(
                 metrics.update_counters(counters_for_events.snapshot());
                 emit(
                     &events,
-                    BootEvent::Log(format!(
+                    SmooHostEvent::Log(format!(
                         "smoo heartbeat failed: {error} (miss {missed_heartbeats}/{budget})"
                     )),
                 );
@@ -309,7 +335,7 @@ async fn run_session(
                 metrics.update_counters(counters_for_events.snapshot());
                 emit(
                     &events,
-                    BootEvent::Log(format!(
+                    SmooHostEvent::Log(format!(
                         "smoo heartbeat miss budget exhausted ({missed_heartbeats}/{budget})"
                     )),
                 );
@@ -325,7 +351,7 @@ async fn run_session(
         HostSessionDriveOutcome::SessionChanged { previous, current } => {
             emit(
                 &runtime.events,
-                BootEvent::Log(format!(
+                SmooHostEvent::Log(format!(
                     "smoo session changed (0x{previous:016x} -> 0x{current:016x}); reconnecting"
                 )),
             );
@@ -335,7 +361,7 @@ async fn run_session(
     }
 }
 
-fn emit(events: &Sender<BootEvent>, event: BootEvent) {
+fn emit(events: &Sender<SmooHostEvent>, event: SmooHostEvent) {
     let _ = events.send(event);
 }
 
