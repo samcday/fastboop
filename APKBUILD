@@ -40,18 +40,19 @@ if [ -n "$CTARGET" ]; then
 	_cargo_target_dir="target/$CTARGET"
 fi
 
+_host_cargo="${FASTBOOP_HOST_CARGO:-/usr/bin/cargo}"
 _stage0_target="${FASTBOOP_STAGE0_TARGET:-aarch64-unknown-linux-musl}"
 _stage0_cargo="${FASTBOOP_STAGE0_CARGO:-cargo}"
 _stage0_target_dir="target/$_stage0_target"
 
 prepare() {
 	default_prepare
-	cargo fetch --locked $_cargo_target_arg
+	"$_host_cargo" fetch --locked $_cargo_target_arg
 	"$_stage0_cargo" fetch --locked --target "$_stage0_target"
 }
 
 build() {
-	cargo build --release --locked --frozen \
+	"$_host_cargo" build --release --locked --frozen \
 		-p fastboop-cli \
 		-p fastboop-desktop \
 		$_cargo_target_arg
@@ -61,7 +62,7 @@ build() {
 }
 
 check() {
-	cargo test --workspace --locked --frozen $_cargo_target_arg
+	"$_host_cargo" test --workspace --locked --frozen $_cargo_target_arg
 }
 
 package() {
