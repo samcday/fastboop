@@ -43,6 +43,7 @@ fi
 
 _host_cargo="${FASTBOOP_HOST_CARGO:-/usr/bin/cargo}"
 _host_rustc="${FASTBOOP_HOST_RUSTC:-/usr/bin/rustc}"
+_stage0_path="${FASTBOOP_STAGE0_PATH:-}"
 _stage0_target="${FASTBOOP_STAGE0_TARGET:-aarch64-unknown-linux-musl}"
 _stage0_cargo="${FASTBOOP_STAGE0_CARGO:-cargo}"
 _stage0_target_dir="target/$_stage0_target"
@@ -50,7 +51,9 @@ _stage0_target_dir="target/$_stage0_target"
 prepare() {
 	default_prepare
 	RUSTC="$_host_rustc" "$_host_cargo" fetch --locked $_cargo_target_arg
-	"$_stage0_cargo" fetch --locked --target "$_stage0_target"
+	if [ -z "$_stage0_path" ]; then
+		"$_stage0_cargo" fetch --locked --target "$_stage0_target"
+	fi
 }
 
 build() {
@@ -58,9 +61,11 @@ build() {
 		-p fastboop-cli \
 		-p fastboop-desktop \
 		$_cargo_target_arg
-	"$_stage0_cargo" build --release --locked --frozen \
-		--target "$_stage0_target" \
-		-p fastboop-stage0
+	if [ -z "$_stage0_path" ]; then
+		"$_stage0_cargo" build --release --locked --frozen \
+			--target "$_stage0_target" \
+			-p fastboop-stage0
+	fi
 }
 
 check() {
@@ -69,7 +74,7 @@ check() {
 
 package() {
 	local target_dir="$_cargo_target_dir/release"
-	local stage0_bin="$_stage0_target_dir/release/fastboop-stage0"
+	local stage0_bin="${_stage0_path:-$_stage0_target_dir/release/fastboop-stage0}"
 
 	install -Dm755 "$target_dir"/fastboop "$pkgdir"/usr/bin/fastboop
 	install -Dm755 "$target_dir"/fastboop-desktop "$pkgdir"/usr/bin/fastboop-desktop
