@@ -1,6 +1,6 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    use anyhow::{anyhow, Result};
+    use anyhow::{Result, anyhow};
     use gibblox_cache::CachedBlockReader;
     use gibblox_cache_store_opfs::OpfsCacheOps;
     use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
@@ -165,7 +165,7 @@ mod wasm {
         }
     }
 
-    fn parse_optional_chunk_store_url(value: Option<&str>) -> Result<Option<Url>> {
+    pub(crate) fn parse_optional_chunk_store_url(value: Option<&str>) -> Result<Option<Url>> {
         let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
             return Ok(None);
         };
@@ -174,15 +174,15 @@ mod wasm {
         Ok(Some(url))
     }
 
-    fn is_casync_blob_index_url(url: &Url) -> bool {
+    pub(crate) fn is_casync_blob_index_url(url: &Url) -> bool {
         url.path().to_ascii_lowercase().ends_with(".caibx")
     }
 
-    fn is_casync_archive_index_url(url: &Url) -> bool {
+    pub(crate) fn is_casync_archive_index_url(url: &Url) -> bool {
         url.path().to_ascii_lowercase().ends_with(".caidx")
     }
 
-    fn derive_casync_chunk_store_url(index_url: &Url) -> Result<Url> {
+    pub(crate) fn derive_casync_chunk_store_url(index_url: &Url) -> Result<Url> {
         if let Some(segments) = index_url.path_segments() {
             let segments: Vec<&str> = segments.collect();
             if let Some(index_pos) = segments.iter().rposition(|segment| *segment == "indexes") {
@@ -206,7 +206,7 @@ mod wasm {
             .map_err(|err| anyhow!("derive casync chunk store URL from {index_url}: {err}"))
     }
 
-    fn zip_entry_name_from_url(url: &Url) -> Result<Option<String>> {
+    pub(crate) fn zip_entry_name_from_url(url: &Url) -> Result<Option<String>> {
         let file_name = url
             .path_segments()
             .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back());
@@ -278,9 +278,7 @@ impl OffsetChannelBlockReader {
         }
         if offset_bytes > inner_size_bytes {
             anyhow::bail!(
-                "channel reader stream offset {} exceeds source size {}",
-                offset_bytes,
-                inner_size_bytes
+                "channel reader stream offset {offset_bytes} exceeds source size {inner_size_bytes}"
             );
         }
 
@@ -358,8 +356,7 @@ impl gibblox_core::BlockReader for OffsetChannelBlockReader {
 pub use wasm::*;
 
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
-pub fn build_channel_reader_pipeline(
+pub async fn build_channel_reader_pipeline(
     _channel: &str,
     _channel_offset_bytes: u64,
     _channel_chunk_store_url: Option<&str>,

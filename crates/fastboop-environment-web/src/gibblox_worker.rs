@@ -1,12 +1,13 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    use crate::wasm_utils::js_value_to_string;
-    use anyhow::{anyhow, Result};
+    use crate::js::js_value_to_string;
+    use anyhow::{Result, anyhow};
     use gibblox_web_worker::GibbloxWebWorker;
     use wasm_bindgen::JsCast;
     use web_sys::{HtmlScriptElement, Worker, WorkerOptions, WorkerType};
 
     const WORKER_NAME: &str = "fastboop-gibblox-worker";
+    const LOG_LEVEL_HINT_KEY: &str = "__FASTBOOP_LOG_LEVEL";
 
     pub fn run_if_worker() -> bool {
         gibblox_web_worker::run_if_worker(WORKER_NAME)
@@ -59,15 +60,9 @@ mod wasm {
         if script_url.contains('?') {
             return script_url;
         }
-        if let Some(level) = crate::global_log_level_hint() {
+        if let Some(level) = global_log_level_hint() {
             script_url.push_str("?log=");
-            script_url.push_str(match level {
-                tracing::Level::TRACE => "trace",
-                tracing::Level::DEBUG => "debug",
-                tracing::Level::INFO => "info",
-                tracing::Level::WARN => "warn",
-                tracing::Level::ERROR => "error",
-            });
+            script_url.push_str(level.as_str());
             return script_url;
         }
         let Some(window) = web_sys::window() else {
@@ -82,6 +77,20 @@ mod wasm {
         script_url.push_str(&search);
         script_url
     }
+
+    fn global_log_level_hint() -> Option<String> {
+        let global = js_sys::global();
+        let value = js_sys::Reflect::get(
+            &global,
+            &wasm_bindgen::JsValue::from_str(LOG_LEVEL_HINT_KEY),
+        )
+        .ok()?;
+        let text = value.as_string()?;
+        match text.to_ascii_lowercase().as_str() {
+            "trace" | "debug" | "info" | "warn" | "error" => Some(text),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -90,7 +99,7 @@ pub use wasm::*;
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 mod non_wasm {
-    use anyhow::{bail, Result};
+    use anyhow::{Result, bail};
 
     pub fn run_if_worker() -> bool {
         false
@@ -106,5 +115,4 @@ mod non_wasm {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(unused_imports)]
 pub use non_wasm::*;

@@ -15,10 +15,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 mod boot_ui;
 mod commands;
-mod devpros;
-mod personalization;
-mod smoo_host;
-mod stage0_binary;
 #[cfg(feature = "tui")]
 mod tui;
 

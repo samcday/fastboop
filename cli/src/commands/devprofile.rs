@@ -3,15 +3,15 @@ use std::fs;
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
-use crate::devpros::{load_local_device_profiles, resolve_devpro_dirs};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use fastboop_core::builtin::builtin_profiles;
 #[cfg(test)]
 use fastboop_core::decode_dev_profile;
 use fastboop_core::{DeviceProfile, encode_dev_profile};
-
-use super::ArtifactReaderResolver;
+use fastboop_environment_std::{
+    ArtifactReaderResolver, load_local_device_profiles, resolve_devpro_dirs,
+};
 
 #[derive(Args)]
 pub struct DevProfileArgs {
@@ -242,8 +242,7 @@ fn write_output_bytes(path: &str, bytes: &[u8]) -> Result<()> {
 fn validate_binary_output(path: &str, command: &str, stdout_is_tty: bool) -> Result<()> {
     if path == "-" && stdout_is_tty {
         bail!(
-            "{} output is binary and terminal output is disabled by default; use --output <FILE>",
-            command
+            "{command} output is binary and terminal output is disabled by default; use --output <FILE>"
         );
     }
     Ok(())

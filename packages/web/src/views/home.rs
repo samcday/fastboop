@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 #[cfg(target_arch = "wasm32")]
-use fastboop_fastboot_webusb::WebUsbDeviceHandle;
+use fastboop_environment_web::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Reflect;
 #[cfg(target_arch = "wasm32")]
@@ -30,7 +30,7 @@ use fastboop_core::device::{profile_filters, DeviceEvent, DeviceHandle as _, Dev
 use fastboop_core::prober::probe_candidates;
 use fastboop_core::BootProfile;
 #[cfg(target_arch = "wasm32")]
-use fastboop_fastboot_webusb::{request_device, DeviceWatcher};
+use fastboop_environment_web::{request_device, DeviceWatcher};
 #[cfg(target_arch = "wasm32")]
 use tracing::{debug, info, warn};
 
