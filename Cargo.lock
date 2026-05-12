@@ -4206,9 +4206,9 @@ dependencies = [
 
 [[package]]
 name = "kqueue-sys"
-version = "1.1.2"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07293a4e297ac234359b510362495713f75ea345d5307140414f20c69ffeb087"
+checksum = "285efcf12ef41bec907b3000d5ffaeb54191d4d9d83c0d6157e6cbc2db255e64"
 dependencies = [
  "bitflags 2.13.0",
  "libc 0.2.186",
