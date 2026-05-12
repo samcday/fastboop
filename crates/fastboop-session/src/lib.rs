@@ -23,8 +23,8 @@ use fastboop_core::{
     CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamKind, DeviceProfile, classify_channel_prefix,
 };
 use fastboop_stage0_generator::{
-    Stage0Build, Stage0Error, Stage0KernelOverride, Stage0Options, build_stage0,
-    stage0_binary_ready,
+    Stage0Build, Stage0Error, Stage0KernelOverride, Stage0Options, Stage0SwitchrootFs,
+    build_stage0, stage0_binary_ready,
 };
 use gibblox_core::{
     AlignedByteReader, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
@@ -710,6 +710,523 @@ impl Filesystem for Ext4Rootfs {
                 path: Some(path.to_string()),
                 source: err.to_string(),
             })
+    }
+}
+
+pub trait Stage0RootfsFactory {
+    type Erofs: Filesystem;
+    type Fat: Filesystem;
+    type Error;
+
+    async fn open_erofs(
+        &mut self,
+        reader: Arc<dyn BlockReader>,
+        image_size_bytes: u64,
+    ) -> Result<Self::Erofs, Self::Error>;
+
+    async fn open_fat(&mut self, reader: Arc<dyn BlockReader>) -> Result<Self::Fat, Self::Error>;
+}
+
+#[derive(Debug)]
+pub enum Stage0RootfsProviderError<OpenError, ErofsError, FatError> {
+    OpenErofs {
+        source: OpenError,
+    },
+    OpenExt4 {
+        source: RootfsAdapterError,
+    },
+    OpenFat {
+        source: OpenError,
+    },
+    Erofs {
+        operation: &'static str,
+        path: String,
+        source: ErofsError,
+    },
+    Ext4 {
+        source: RootfsAdapterError,
+    },
+    Fat {
+        operation: &'static str,
+        path: String,
+        source: FatError,
+    },
+    BlockReader {
+        source: BlockReaderHelperError,
+    },
+    UnsupportedFatSwitchroot,
+    EmptyProviderList,
+    NoSupportedProvider,
+    NoBootableProvider,
+    MissingPath {
+        path: String,
+    },
+    MissingSymlink {
+        path: String,
+    },
+}
+
+impl<OpenError, ErofsError, FatError> fmt::Display
+    for Stage0RootfsProviderError<OpenError, ErofsError, FatError>
+where
+    OpenError: fmt::Display,
+    ErofsError: fmt::Display,
+    FatError: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OpenErofs { source } => write!(f, "open erofs rootfs: {source}"),
+            Self::OpenExt4 { source } | Self::Ext4 { source } => write!(f, "{source}"),
+            Self::OpenFat { source } => write!(f, "open fat rootfs: {source}"),
+            Self::Erofs {
+                operation,
+                path,
+                source,
+            } => write!(f, "{operation} {path}: {source}"),
+            Self::Fat {
+                operation,
+                path,
+                source,
+            } => write!(f, "{operation} {path}: {source}"),
+            Self::BlockReader { source } => write!(f, "{source}"),
+            Self::UnsupportedFatSwitchroot => {
+                write!(f, "stage0 build does not support FAT rootfs providers")
+            }
+            Self::EmptyProviderList => write!(f, "channel filesystem provider list is empty"),
+            Self::NoSupportedProvider => {
+                write!(
+                    f,
+                    "channel did not contain a supported filesystem (erofs/ext4/fat)"
+                )
+            }
+            Self::NoBootableProvider => write!(
+                f,
+                "channel did not contain a bootable root filesystem (erofs/ext4)"
+            ),
+            Self::MissingPath { path } => write!(f, "missing path {path}"),
+            Self::MissingSymlink { path } => write!(f, "missing symlink {path}"),
+        }
+    }
+}
+
+pub type Stage0RootfsProviderErrorFor<F> = Stage0RootfsProviderError<
+    <F as Stage0RootfsFactory>::Error,
+    <<F as Stage0RootfsFactory>::Erofs as Filesystem>::Error,
+    <<F as Stage0RootfsFactory>::Fat as Filesystem>::Error,
+>;
+
+pub enum Stage0RootfsProvider<F>
+where
+    F: Stage0RootfsFactory,
+{
+    Erofs(F::Erofs),
+    Ext4(Ext4Rootfs),
+    Fat(F::Fat),
+}
+
+impl<F> Stage0RootfsProvider<F>
+where
+    F: Stage0RootfsFactory,
+{
+    pub async fn open(
+        kind: Stage0RootfsKind,
+        reader: Arc<dyn BlockReader>,
+        image_size_bytes: u64,
+    ) -> Result<Self, Stage0RootfsProviderErrorFor<F>>
+    where
+        F: Default,
+    {
+        let mut factory = F::default();
+        Self::open_with(&mut factory, kind, reader, image_size_bytes).await
+    }
+
+    pub async fn open_with(
+        factory: &mut F,
+        kind: Stage0RootfsKind,
+        reader: Arc<dyn BlockReader>,
+        image_size_bytes: u64,
+    ) -> Result<Self, Stage0RootfsProviderErrorFor<F>> {
+        match kind {
+            Stage0RootfsKind::Erofs => factory
+                .open_erofs(reader, image_size_bytes)
+                .await
+                .map(Self::Erofs)
+                .map_err(|source| Stage0RootfsProviderError::OpenErofs { source }),
+            Stage0RootfsKind::Ext4 => Ext4Rootfs::open(reader)
+                .await
+                .map(Self::Ext4)
+                .map_err(|source| Stage0RootfsProviderError::OpenExt4 { source }),
+            Stage0RootfsKind::Fat => factory
+                .open_fat(reader)
+                .await
+                .map(Self::Fat)
+                .map_err(|source| Stage0RootfsProviderError::OpenFat { source }),
+        }
+    }
+
+    pub fn switchroot_fs(&self) -> Option<Stage0SwitchrootFs> {
+        match self {
+            Self::Erofs(_) => Some(Stage0SwitchrootFs::Erofs),
+            Self::Ext4(_) => Some(Stage0SwitchrootFs::Ext4),
+            Self::Fat(_) => None,
+        }
+    }
+
+    pub fn require_switchroot_fs(
+        &self,
+    ) -> Result<Stage0SwitchrootFs, Stage0RootfsProviderErrorFor<F>> {
+        self.switchroot_fs()
+            .ok_or(Stage0RootfsProviderError::UnsupportedFatSwitchroot)
+    }
+}
+
+impl<F> Filesystem for Stage0RootfsProvider<F>
+where
+    F: Stage0RootfsFactory,
+{
+    type Error = Stage0RootfsProviderErrorFor<F>;
+
+    async fn read_all(&self, path: &str) -> Result<Vec<u8>, Self::Error> {
+        match self {
+            Self::Erofs(rootfs) => {
+                rootfs
+                    .read_all(path)
+                    .await
+                    .map_err(|source| Stage0RootfsProviderError::Erofs {
+                        operation: "read erofs path",
+                        path: path.to_string(),
+                        source,
+                    })
+            }
+            Self::Ext4(rootfs) => rootfs
+                .read_all(path)
+                .await
+                .map_err(|source| Stage0RootfsProviderError::Ext4 { source }),
+            Self::Fat(rootfs) => {
+                rootfs
+                    .read_all(path)
+                    .await
+                    .map_err(|source| Stage0RootfsProviderError::Fat {
+                        operation: "read fat path",
+                        path: path.to_string(),
+                        source,
+                    })
+            }
+        }
+    }
+
+    async fn read_range(
+        &self,
+        path: &str,
+        offset: u64,
+        len: usize,
+    ) -> Result<Vec<u8>, Self::Error> {
+        match self {
+            Self::Erofs(rootfs) => rootfs
+                .read_range(path, offset, len)
+                .await
+                .map_err(|source| Stage0RootfsProviderError::Erofs {
+                    operation: "read erofs path range",
+                    path: format!("{path}@{offset}+{len}"),
+                    source,
+                }),
+            Self::Ext4(rootfs) => rootfs
+                .read_range(path, offset, len)
+                .await
+                .map_err(|source| Stage0RootfsProviderError::Ext4 { source }),
+            Self::Fat(rootfs) => rootfs
+                .read_range(path, offset, len)
+                .await
+                .map_err(|source| Stage0RootfsProviderError::Fat {
+                    operation: "read fat path range",
+                    path: format!("{path}@{offset}+{len}"),
+                    source,
+                }),
+        }
+    }
+
+    async fn read_dir(&self, path: &str) -> Result<Vec<String>, Self::Error> {
+        match self {
+            Self::Erofs(rootfs) => {
+                rootfs
+                    .read_dir(path)
+                    .await
+                    .map_err(|source| Stage0RootfsProviderError::Erofs {
+                        operation: "read erofs directory",
+                        path: path.to_string(),
+                        source,
+                    })
+            }
+            Self::Ext4(rootfs) => rootfs
+                .read_dir(path)
+                .await
+                .map_err(|source| Stage0RootfsProviderError::Ext4 { source }),
+            Self::Fat(rootfs) => {
+                rootfs
+                    .read_dir(path)
+                    .await
+                    .map_err(|source| Stage0RootfsProviderError::Fat {
+                        operation: "read fat directory",
+                        path: path.to_string(),
+                        source,
+                    })
+            }
+        }
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>, Self::Error> {
+        match self {
+            Self::Erofs(rootfs) => {
+                rootfs
+                    .entry_type(path)
+                    .await
+                    .map_err(|source| Stage0RootfsProviderError::Erofs {
+                        operation: "read erofs entry type",
+                        path: path.to_string(),
+                        source,
+                    })
+            }
+            Self::Ext4(rootfs) => rootfs
+                .entry_type(path)
+                .await
+                .map_err(|source| Stage0RootfsProviderError::Ext4 { source }),
+            Self::Fat(rootfs) => {
+                rootfs
+                    .entry_type(path)
+                    .await
+                    .map_err(|source| Stage0RootfsProviderError::Fat {
+                        operation: "read fat entry type",
+                        path: path.to_string(),
+                        source,
+                    })
+            }
+        }
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String, Self::Error> {
+        match self {
+            Self::Erofs(rootfs) => {
+                rootfs
+                    .read_link(path)
+                    .await
+                    .map_err(|source| Stage0RootfsProviderError::Erofs {
+                        operation: "read erofs symlink target",
+                        path: path.to_string(),
+                        source,
+                    })
+            }
+            Self::Ext4(rootfs) => rootfs
+                .read_link(path)
+                .await
+                .map_err(|source| Stage0RootfsProviderError::Ext4 { source }),
+            Self::Fat(rootfs) => {
+                rootfs
+                    .read_link(path)
+                    .await
+                    .map_err(|source| Stage0RootfsProviderError::Fat {
+                        operation: "read fat symlink target",
+                        path: path.to_string(),
+                        source,
+                    })
+            }
+        }
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool, Self::Error> {
+        match self {
+            Self::Erofs(rootfs) => {
+                rootfs
+                    .exists(path)
+                    .await
+                    .map_err(|source| Stage0RootfsProviderError::Erofs {
+                        operation: "check erofs path",
+                        path: path.to_string(),
+                        source,
+                    })
+            }
+            Self::Ext4(rootfs) => rootfs
+                .exists(path)
+                .await
+                .map_err(|source| Stage0RootfsProviderError::Ext4 { source }),
+            Self::Fat(rootfs) => {
+                rootfs
+                    .exists(path)
+                    .await
+                    .map_err(|source| Stage0RootfsProviderError::Fat {
+                        operation: "check fat path",
+                        path: path.to_string(),
+                        source,
+                    })
+            }
+        }
+    }
+}
+
+impl<F> BootProfileSourceRootfs for Stage0RootfsProvider<F>
+where
+    F: Stage0RootfsFactory + Default,
+{
+    async fn open_boot_profile_source(
+        source: &BootProfileRootfs,
+        reader: Arc<dyn BlockReader>,
+    ) -> Result<Self, Self::Error> {
+        let kind = boot_profile_rootfs_kind(source);
+        let image_size_bytes = block_reader_size_bytes(reader.as_ref())
+            .await
+            .map_err(|source| Stage0RootfsProviderError::BlockReader { source })?;
+        Self::open(kind, reader, image_size_bytes).await
+    }
+}
+
+pub struct Stage0CoalescingFilesystem<F>
+where
+    F: Stage0RootfsFactory,
+{
+    providers: Vec<Stage0RootfsProvider<F>>,
+    switchroot_fs: Stage0SwitchrootFs,
+}
+
+impl<F> Stage0CoalescingFilesystem<F>
+where
+    F: Stage0RootfsFactory + Default,
+{
+    pub async fn open(
+        readers: Vec<Arc<dyn BlockReader>>,
+    ) -> Result<Self, Stage0RootfsProviderErrorFor<F>> {
+        if readers.is_empty() {
+            return Err(Stage0RootfsProviderError::EmptyProviderList);
+        }
+
+        let mut providers = Vec::new();
+        for reader in readers {
+            let image_size_bytes = block_reader_size_bytes(reader.as_ref())
+                .await
+                .map_err(|source| Stage0RootfsProviderError::BlockReader { source })?;
+            let Some(kind) = detect_rootfs_kind(reader.as_ref())
+                .await
+                .map_err(|source| Stage0RootfsProviderError::BlockReader { source })?
+            else {
+                continue;
+            };
+            let provider = Stage0RootfsProvider::<F>::open(kind, reader, image_size_bytes).await?;
+            providers.push(provider);
+        }
+
+        if providers.is_empty() {
+            return Err(Stage0RootfsProviderError::NoSupportedProvider);
+        }
+
+        let switchroot_fs = providers
+            .iter()
+            .find_map(Stage0RootfsProvider::switchroot_fs)
+            .ok_or(Stage0RootfsProviderError::NoBootableProvider)?;
+
+        Ok(Self {
+            providers,
+            switchroot_fs,
+        })
+    }
+
+    pub fn switchroot_fs(&self) -> Stage0SwitchrootFs {
+        self.switchroot_fs
+    }
+}
+
+impl<F> Filesystem for Stage0CoalescingFilesystem<F>
+where
+    F: Stage0RootfsFactory,
+{
+    type Error = Stage0RootfsProviderErrorFor<F>;
+
+    async fn read_all(&self, path: &str) -> Result<Vec<u8>, Self::Error> {
+        let mut last_err = None;
+        for provider in &self.providers {
+            match provider.read_all(path).await {
+                Ok(data) => return Ok(data),
+                Err(err) => last_err = Some(err),
+            }
+        }
+        Err(
+            last_err.unwrap_or_else(|| Stage0RootfsProviderError::MissingPath {
+                path: path.to_string(),
+            }),
+        )
+    }
+
+    async fn read_range(
+        &self,
+        path: &str,
+        offset: u64,
+        len: usize,
+    ) -> Result<Vec<u8>, Self::Error> {
+        let mut last_err = None;
+        for provider in &self.providers {
+            match provider.read_range(path, offset, len).await {
+                Ok(data) => return Ok(data),
+                Err(err) => last_err = Some(err),
+            }
+        }
+        Err(
+            last_err.unwrap_or_else(|| Stage0RootfsProviderError::MissingPath {
+                path: path.to_string(),
+            }),
+        )
+    }
+
+    async fn read_dir(&self, path: &str) -> Result<Vec<String>, Self::Error> {
+        let Some(first) = self.providers.first() else {
+            return Err(Stage0RootfsProviderError::EmptyProviderList);
+        };
+        first.read_dir(path).await
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>, Self::Error> {
+        let mut last_err = None;
+        for provider in &self.providers {
+            match provider.entry_type(path).await {
+                Ok(Some(ty)) => return Ok(Some(ty)),
+                Ok(None) => {}
+                Err(err) => last_err = Some(err),
+            }
+        }
+
+        if let Some(err) = last_err {
+            Err(err)
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String, Self::Error> {
+        let mut last_err = None;
+        for provider in &self.providers {
+            match provider.read_link(path).await {
+                Ok(target) => return Ok(target),
+                Err(err) => last_err = Some(err),
+            }
+        }
+        Err(
+            last_err.unwrap_or_else(|| Stage0RootfsProviderError::MissingSymlink {
+                path: path.to_string(),
+            }),
+        )
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool, Self::Error> {
+        let mut last_err = None;
+        for provider in &self.providers {
+            match provider.exists(path).await {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(err) => last_err = Some(err),
+            }
+        }
+
+        if let Some(err) = last_err {
+            Err(err)
+        } else {
+            Ok(false)
+        }
     }
 }
 
