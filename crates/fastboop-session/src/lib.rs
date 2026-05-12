@@ -3,23 +3,33 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt;
 
+use async_trait::async_trait;
 use fastboop_core::bootimg::{BootImageError, build_android_bootimg};
 use fastboop_core::builtin::builtin_profiles;
 use fastboop_core::fastboot::{FastbootProtocolError, FastbootWire, ProbeError, boot, download};
-use fastboop_core::{BootProfile, DeviceProfile};
-use fastboop_stage0_generator::{
-    Stage0Build, Stage0Error, Stage0Options, build_stage0, stage0_binary_ready,
+use fastboop_core::{
+    BootProfile, BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
+    CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamKind, DeviceProfile, classify_channel_prefix,
 };
-use gibblox_core::BlockReader;
+use fastboop_stage0_generator::{
+    Stage0Build, Stage0Error, Stage0KernelOverride, Stage0Options, build_stage0,
+    stage0_binary_ready,
+};
+use gibblox_core::{
+    AlignedByteReader, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
+};
+use gibblox_ext4::{Ext4EntryType, Ext4Fs};
 use gobblytes_core::{Filesystem, FilesystemEntryType, normalize_ostree_deployment_path};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -273,6 +283,716 @@ where
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Stage0RootfsKind {
+    Erofs,
+    Ext4,
+    Fat,
+}
+
+#[derive(Clone, Debug)]
+pub enum BlockReaderHelperError {
+    BlockReader(GibbloxError),
+    BlockSizeZero,
+    SizeOverflow(&'static str),
+    OffsetExceedsSize { offset_bytes: u64, size_bytes: u64 },
+    OffsetOverflow(&'static str),
+}
+
+impl fmt::Display for BlockReaderHelperError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BlockReader(err) => write!(f, "block reader error: {err}"),
+            Self::BlockSizeZero => write!(f, "block reader block size is zero"),
+            Self::SizeOverflow(context) => write!(f, "block reader size overflow: {context}"),
+            Self::OffsetExceedsSize {
+                offset_bytes,
+                size_bytes,
+            } => write!(
+                f,
+                "block reader offset {offset_bytes} exceeds source size {size_bytes}"
+            ),
+            Self::OffsetOverflow(context) => {
+                write!(f, "block reader offset overflow: {context}")
+            }
+        }
+    }
+}
+
+impl From<GibbloxError> for BlockReaderHelperError {
+    fn from(value: GibbloxError) -> Self {
+        Self::BlockReader(value)
+    }
+}
+
+pub async fn block_reader_size_bytes<R>(reader: &R) -> Result<u64, BlockReaderHelperError>
+where
+    R: BlockReader + ?Sized,
+{
+    reader
+        .total_blocks()
+        .await?
+        .checked_mul(reader.block_size() as u64)
+        .ok_or(BlockReaderHelperError::SizeOverflow(
+            "total blocks * block size",
+        ))
+}
+
+pub async fn read_block_reader_prefix<R>(
+    reader: &R,
+    cap: usize,
+) -> Result<Vec<u8>, BlockReaderHelperError>
+where
+    R: BlockReader + ?Sized,
+{
+    let block_size = reader.block_size() as usize;
+    if block_size == 0 {
+        return Err(BlockReaderHelperError::BlockSizeZero);
+    }
+
+    let total_bytes = block_reader_size_bytes(reader).await?;
+    let prefix_len = core::cmp::min(cap as u64, total_bytes) as usize;
+    if prefix_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    let blocks_to_read = prefix_len.div_ceil(block_size);
+    let mut scratch = vec![0u8; blocks_to_read * block_size];
+    let read = reader
+        .read_blocks(0, &mut scratch, ReadContext::FOREGROUND)
+        .await?;
+    scratch.truncate(core::cmp::min(read, prefix_len));
+    Ok(scratch)
+}
+
+pub async fn classify_channel_reader<R>(
+    reader: &R,
+) -> Result<ChannelStreamKind, BlockReaderHelperError>
+where
+    R: BlockReader + ?Sized,
+{
+    let prefix = read_block_reader_prefix(reader, CHANNEL_SNIFF_PREFIX_LEN).await?;
+    Ok(classify_channel_prefix(&prefix))
+}
+
+pub async fn detect_rootfs_kind<R>(
+    reader: &R,
+) -> Result<Option<Stage0RootfsKind>, BlockReaderHelperError>
+where
+    R: BlockReader + ?Sized,
+{
+    if reader_has_erofs_magic(reader).await? {
+        return Ok(Some(Stage0RootfsKind::Erofs));
+    }
+    if reader_has_ext4_magic(reader).await? {
+        return Ok(Some(Stage0RootfsKind::Ext4));
+    }
+    if reader_has_fat_magic(reader).await? {
+        return Ok(Some(Stage0RootfsKind::Fat));
+    }
+    Ok(None)
+}
+
+pub async fn reader_has_erofs_magic<R>(reader: &R) -> Result<bool, BlockReaderHelperError>
+where
+    R: BlockReader + ?Sized,
+{
+    const EROFS_SUPER_OFFSET: u64 = 1024;
+    const EROFS_SUPER_MAGIC: u32 = 0xe0f5_e1e2;
+
+    let Some(bytes) = read_magic_bytes(reader, EROFS_SUPER_OFFSET, 4).await? else {
+        return Ok(false);
+    };
+    let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    Ok(magic == EROFS_SUPER_MAGIC)
+}
+
+pub async fn reader_has_ext4_magic<R>(reader: &R) -> Result<bool, BlockReaderHelperError>
+where
+    R: BlockReader + ?Sized,
+{
+    const EXT4_MAGIC_OFFSET: u64 = 1024 + 0x38;
+    const EXT4_MAGIC: u16 = 0xef53;
+
+    let Some(bytes) = read_magic_bytes(reader, EXT4_MAGIC_OFFSET, 2).await? else {
+        return Ok(false);
+    };
+    let magic = u16::from_le_bytes([bytes[0], bytes[1]]);
+    Ok(magic == EXT4_MAGIC)
+}
+
+pub async fn reader_has_fat_magic<R>(reader: &R) -> Result<bool, BlockReaderHelperError>
+where
+    R: BlockReader + ?Sized,
+{
+    let Some(boot_signature) = read_magic_bytes(reader, 510, 2).await? else {
+        return Ok(false);
+    };
+    if boot_signature.as_slice() != [0x55, 0xAA] {
+        return Ok(false);
+    }
+
+    let fat12 = read_magic_bytes(reader, 54, 5).await?;
+    if fat12.as_deref() == Some(b"FAT12") {
+        return Ok(true);
+    }
+
+    let fat16 = read_magic_bytes(reader, 54, 5).await?;
+    if fat16.as_deref() == Some(b"FAT16") {
+        return Ok(true);
+    }
+
+    let fat32 = read_magic_bytes(reader, 82, 5).await?;
+    Ok(fat32.as_deref() == Some(b"FAT32"))
+}
+
+async fn read_magic_bytes<R>(
+    reader: &R,
+    offset: u64,
+    len: usize,
+) -> Result<Option<Vec<u8>>, BlockReaderHelperError>
+where
+    R: BlockReader + ?Sized,
+{
+    if len == 0 {
+        return Ok(Some(Vec::new()));
+    }
+
+    let block_size = reader.block_size() as u64;
+    if block_size == 0 {
+        return Err(BlockReaderHelperError::BlockSizeZero);
+    }
+    let total_bytes = block_reader_size_bytes(reader).await?;
+    let required_end = offset
+        .checked_add(len as u64)
+        .ok_or(BlockReaderHelperError::OffsetOverflow("magic end offset"))?;
+    if total_bytes < required_end {
+        return Ok(None);
+    }
+
+    let super_lba = offset / block_size;
+    let within_block = (offset % block_size) as usize;
+    let block_size_usize = block_size as usize;
+    let required = within_block + len;
+    let blocks_to_read = required.div_ceil(block_size_usize);
+    let mut scratch = vec![0u8; blocks_to_read * block_size_usize];
+    reader
+        .read_blocks(super_lba, &mut scratch, ReadContext::FOREGROUND)
+        .await?;
+    Ok(Some(scratch[within_block..within_block + len].to_vec()))
+}
+
+#[derive(Clone)]
+pub struct OffsetBlockReader {
+    inner: Arc<dyn BlockReader>,
+    offset_bytes: u64,
+    size_bytes: u64,
+    block_size: u32,
+}
+
+impl OffsetBlockReader {
+    pub fn new(
+        inner: Arc<dyn BlockReader>,
+        offset_bytes: u64,
+        inner_size_bytes: u64,
+    ) -> Result<Self, BlockReaderHelperError> {
+        let block_size = inner.block_size();
+        if block_size == 0 {
+            return Err(BlockReaderHelperError::BlockSizeZero);
+        }
+        if offset_bytes > inner_size_bytes {
+            return Err(BlockReaderHelperError::OffsetExceedsSize {
+                offset_bytes,
+                size_bytes: inner_size_bytes,
+            });
+        }
+
+        Ok(Self {
+            inner,
+            offset_bytes,
+            size_bytes: inner_size_bytes - offset_bytes,
+            block_size,
+        })
+    }
+}
+
+#[async_trait]
+impl BlockReader for OffsetBlockReader {
+    fn block_size(&self) -> u32 {
+        self.block_size
+    }
+
+    async fn total_blocks(&self) -> GibbloxResult<u64> {
+        let block_size = self.block_size as u64;
+        if block_size == 0 {
+            return Err(GibbloxError::with_message(
+                GibbloxErrorKind::InvalidInput,
+                "block size must be non-zero",
+            ));
+        }
+        Ok(self.size_bytes.div_ceil(block_size))
+    }
+
+    fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        self.inner.write_identity(out)?;
+        write!(out, "|offset:{}", self.offset_bytes)
+    }
+
+    async fn read_blocks(
+        &self,
+        lba: u64,
+        buf: &mut [u8],
+        ctx: ReadContext,
+    ) -> GibbloxResult<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let block_size = self.block_size as u64;
+        let local_offset = lba.checked_mul(block_size).ok_or_else(|| {
+            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "channel read offset overflow")
+        })?;
+        if local_offset >= self.size_bytes {
+            return Ok(0);
+        }
+
+        let remaining = self.size_bytes - local_offset;
+        let max_read = core::cmp::min(buf.len() as u64, remaining) as usize;
+        let global_offset = self.offset_bytes.checked_add(local_offset).ok_or_else(|| {
+            GibbloxError::with_message(
+                GibbloxErrorKind::OutOfRange,
+                "channel global read offset overflow",
+            )
+        })?;
+
+        let byte_reader = AlignedByteReader::new(self.inner.clone()).await?;
+        byte_reader
+            .read_exact_at(global_offset, &mut buf[..max_read], ctx)
+            .await?;
+        Ok(max_read)
+    }
+}
+
+pub async fn maybe_offset_block_reader(
+    reader: Arc<dyn BlockReader>,
+    offset_bytes: u64,
+) -> Result<Arc<dyn BlockReader>, BlockReaderHelperError> {
+    if offset_bytes == 0 {
+        return Ok(reader);
+    }
+
+    let size_bytes = block_reader_size_bytes(reader.as_ref()).await?;
+    Ok(Arc::new(OffsetBlockReader::new(
+        reader,
+        offset_bytes,
+        size_bytes,
+    )?))
+}
+
+#[derive(Clone, Debug)]
+pub enum RootfsAdapterError {
+    Ext4 {
+        operation: &'static str,
+        path: Option<String>,
+        source: String,
+    },
+}
+
+impl fmt::Display for RootfsAdapterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ext4 {
+                operation,
+                path,
+                source,
+            } => match path {
+                Some(path) => write!(f, "{operation} {path}: {source}"),
+                None => write!(f, "{operation}: {source}"),
+            },
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Ext4Rootfs {
+    fs: Ext4Fs,
+}
+
+impl Ext4Rootfs {
+    pub async fn open(reader: Arc<dyn BlockReader>) -> Result<Self, RootfsAdapterError> {
+        let fs = Ext4Fs::open(reader)
+            .await
+            .map_err(|err| RootfsAdapterError::Ext4 {
+                operation: "open ext4 rootfs",
+                path: None,
+                source: err.to_string(),
+            })?;
+        Ok(Self { fs })
+    }
+}
+
+impl Filesystem for Ext4Rootfs {
+    type Error = RootfsAdapterError;
+
+    async fn read_all(&self, path: &str) -> Result<Vec<u8>, Self::Error> {
+        self.fs
+            .read_all(path)
+            .await
+            .map_err(|err| RootfsAdapterError::Ext4 {
+                operation: "read ext4 path",
+                path: Some(path.to_string()),
+                source: err.to_string(),
+            })
+    }
+
+    async fn read_range(
+        &self,
+        path: &str,
+        offset: u64,
+        len: usize,
+    ) -> Result<Vec<u8>, Self::Error> {
+        self.fs
+            .read_range(path, offset, len)
+            .await
+            .map_err(|err| RootfsAdapterError::Ext4 {
+                operation: "read ext4 path range",
+                path: Some(format!("{path}@{offset}+{len}")),
+                source: err.to_string(),
+            })
+    }
+
+    async fn read_dir(&self, path: &str) -> Result<Vec<String>, Self::Error> {
+        self.fs
+            .read_dir(path)
+            .await
+            .map_err(|err| RootfsAdapterError::Ext4 {
+                operation: "read ext4 directory",
+                path: Some(path.to_string()),
+                source: err.to_string(),
+            })
+    }
+
+    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>, Self::Error> {
+        let ty = self
+            .fs
+            .entry_type(path)
+            .await
+            .map_err(|err| RootfsAdapterError::Ext4 {
+                operation: "read ext4 entry type",
+                path: Some(path.to_string()),
+                source: err.to_string(),
+            })?;
+        Ok(ty.map(|entry| match entry {
+            Ext4EntryType::File => FilesystemEntryType::File,
+            Ext4EntryType::Directory => FilesystemEntryType::Directory,
+            Ext4EntryType::Symlink => FilesystemEntryType::Symlink,
+            Ext4EntryType::Other => FilesystemEntryType::Other,
+        }))
+    }
+
+    async fn read_link(&self, path: &str) -> Result<String, Self::Error> {
+        self.fs
+            .read_link(path)
+            .await
+            .map_err(|err| RootfsAdapterError::Ext4 {
+                operation: "read ext4 symlink target",
+                path: Some(path.to_string()),
+                source: err.to_string(),
+            })
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool, Self::Error> {
+        self.fs
+            .exists(path)
+            .await
+            .map_err(|err| RootfsAdapterError::Ext4 {
+                operation: "check ext4 path",
+                path: Some(path.to_string()),
+                source: err.to_string(),
+            })
+    }
+}
+
+pub struct BootProfileSourceOverrides {
+    pub kernel_override: Option<Stage0KernelOverride>,
+    pub dtb_override: Option<Vec<u8>>,
+}
+
+impl BootProfileSourceOverrides {
+    pub const fn empty() -> Self {
+        Self {
+            kernel_override: None,
+            dtb_override: None,
+        }
+    }
+}
+
+pub trait BootProfileArtifactSourceOpener {
+    type Error;
+
+    async fn open_boot_profile_artifact_source(
+        &mut self,
+        source: &BootProfileArtifactSource,
+    ) -> Result<Arc<dyn BlockReader>, Self::Error>;
+}
+
+pub trait BootProfileSourceRootfs: Filesystem + Sized {
+    async fn open_boot_profile_source(
+        source: &BootProfileRootfs,
+        reader: Arc<dyn BlockReader>,
+    ) -> Result<Self, Self::Error>;
+}
+
+#[derive(Debug)]
+pub enum ProfileSourceOverrideError<ArtifactError, RootfsError> {
+    OpenArtifactSource {
+        source: ArtifactError,
+    },
+    OpenRootfs {
+        source: RootfsError,
+    },
+    ReadPath {
+        path: String,
+        source: RootfsError,
+    },
+    ProbePath {
+        path: String,
+        source: RootfsError,
+    },
+    EmptyProfilePath {
+        field: &'static str,
+    },
+    EmptyDeviceTreeName,
+    MissingDtb {
+        dtbs_base: String,
+        devicetree_name: String,
+    },
+}
+
+impl<ArtifactError, RootfsError> fmt::Display
+    for ProfileSourceOverrideError<ArtifactError, RootfsError>
+where
+    ArtifactError: fmt::Display,
+    RootfsError: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OpenArtifactSource { source } => {
+                write!(f, "open boot profile artifact source: {source}")
+            }
+            Self::OpenRootfs { source } => write!(f, "open boot profile source rootfs: {source}"),
+            Self::ReadPath { path, source } => {
+                write!(f, "read boot profile source path {path}: {source}")
+            }
+            Self::ProbePath { path, source } => {
+                write!(f, "probe boot profile source path {path}: {source}")
+            }
+            Self::EmptyProfilePath { field } => write!(f, "boot profile {field} must not be empty"),
+            Self::EmptyDeviceTreeName => write!(f, "device profile devicetree_name is empty"),
+            Self::MissingDtb {
+                dtbs_base,
+                devicetree_name,
+            } => write!(
+                f,
+                "boot profile dtbs path {dtbs_base} does not contain dtb for {devicetree_name}"
+            ),
+        }
+    }
+}
+
+pub async fn resolve_boot_profile_source_overrides_with<Opener, SourceRootfs>(
+    boot_profile: Option<&BootProfile>,
+    device_profile: &DeviceProfile,
+    opener: &mut Opener,
+) -> Result<
+    BootProfileSourceOverrides,
+    ProfileSourceOverrideError<Opener::Error, SourceRootfs::Error>,
+>
+where
+    Opener: BootProfileArtifactSourceOpener,
+    SourceRootfs: BootProfileSourceRootfs,
+{
+    let Some(boot_profile) = boot_profile else {
+        return Ok(BootProfileSourceOverrides::empty());
+    };
+
+    let kernel_override = if let Some(kernel_source) = boot_profile.kernel.as_ref() {
+        let kernel_path = non_empty_profile_path(kernel_source.path.as_str(), "kernel.path")?;
+        let source_reader = opener
+            .open_boot_profile_artifact_source(kernel_source.artifact_source())
+            .await
+            .map_err(|source| ProfileSourceOverrideError::OpenArtifactSource { source })?;
+        let source_rootfs =
+            SourceRootfs::open_boot_profile_source(&kernel_source.source, source_reader)
+                .await
+                .map_err(|source| ProfileSourceOverrideError::OpenRootfs { source })?;
+        let kernel_image = source_rootfs
+            .read_all(kernel_path)
+            .await
+            .map_err(|source| ProfileSourceOverrideError::ReadPath {
+                path: kernel_path.to_string(),
+                source,
+            })?;
+        Some(Stage0KernelOverride {
+            path: kernel_path.to_string(),
+            image: kernel_image,
+        })
+    } else {
+        None
+    };
+
+    let dtb_override = if let Some(dtbs_source) = boot_profile.dtbs.as_ref() {
+        let dtbs_base = non_empty_profile_path(dtbs_source.path.as_str(), "dtbs.path")?;
+        let source_reader = opener
+            .open_boot_profile_artifact_source(dtbs_source.artifact_source())
+            .await
+            .map_err(|source| ProfileSourceOverrideError::OpenArtifactSource { source })?;
+        let source_rootfs =
+            SourceRootfs::open_boot_profile_source(&dtbs_source.source, source_reader)
+                .await
+                .map_err(|source| ProfileSourceOverrideError::OpenRootfs { source })?;
+        let dtb_path = resolve_dtb_path_candidate(
+            &source_rootfs,
+            dtbs_base,
+            device_profile.devicetree_name.as_str(),
+        )
+        .await?;
+        Some(
+            source_rootfs
+                .read_all(dtb_path.as_str())
+                .await
+                .map_err(|source| ProfileSourceOverrideError::ReadPath {
+                    path: dtb_path,
+                    source,
+                })?,
+        )
+    } else {
+        None
+    };
+
+    Ok(BootProfileSourceOverrides {
+        kernel_override,
+        dtb_override,
+    })
+}
+
+fn non_empty_profile_path<'a, ArtifactError, RootfsError>(
+    path: &'a str,
+    field: &'static str,
+) -> Result<&'a str, ProfileSourceOverrideError<ArtifactError, RootfsError>> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(ProfileSourceOverrideError::EmptyProfilePath { field });
+    }
+    Ok(trimmed)
+}
+
+async fn resolve_dtb_path_candidate<ArtifactError, SourceRootfs>(
+    source_rootfs: &SourceRootfs,
+    dtbs_base: &str,
+    devicetree_name: &str,
+) -> Result<String, ProfileSourceOverrideError<ArtifactError, SourceRootfs::Error>>
+where
+    SourceRootfs: BootProfileSourceRootfs,
+{
+    let devicetree_name = devicetree_name.trim().trim_start_matches('/');
+    if devicetree_name.is_empty() {
+        return Err(ProfileSourceOverrideError::EmptyDeviceTreeName);
+    }
+
+    let mut candidates = Vec::new();
+    if dtbs_base.ends_with(".dtb") {
+        candidates.push(dtbs_base.to_string());
+    } else {
+        let dtb_file = format!("{devicetree_name}.dtb");
+        candidates.push(join_profile_path(dtbs_base, dtb_file.as_str()));
+        candidates.push(join_profile_path(dtbs_base, devicetree_name));
+        candidates.push(dtbs_base.to_string());
+    }
+
+    for candidate in candidates {
+        if source_rootfs
+            .exists(candidate.as_str())
+            .await
+            .map_err(|source| ProfileSourceOverrideError::ProbePath {
+                path: candidate.clone(),
+                source,
+            })?
+        {
+            return Ok(candidate);
+        }
+    }
+
+    Err(ProfileSourceOverrideError::MissingDtb {
+        dtbs_base: dtbs_base.to_string(),
+        devicetree_name: devicetree_name.to_string(),
+    })
+}
+
+pub fn join_profile_path(base: &str, suffix: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let suffix = suffix.trim_start_matches('/');
+    if base.is_empty() {
+        format!("/{suffix}")
+    } else {
+        format!("{base}/{suffix}")
+    }
+}
+
+pub fn boot_profile_rootfs_kind(rootfs: &BootProfileRootfs) -> Stage0RootfsKind {
+    match rootfs {
+        BootProfileRootfs::Ostree(source) => match &source.ostree {
+            BootProfileRootfsFilesystemSource::Erofs(_) => Stage0RootfsKind::Erofs,
+            BootProfileRootfsFilesystemSource::Ext4(_) => Stage0RootfsKind::Ext4,
+            BootProfileRootfsFilesystemSource::Fat(_) => Stage0RootfsKind::Fat,
+        },
+        BootProfileRootfs::Erofs(_) => Stage0RootfsKind::Erofs,
+        BootProfileRootfs::Ext4(_) => Stage0RootfsKind::Ext4,
+        BootProfileRootfs::Fat(_) => Stage0RootfsKind::Fat,
+    }
+}
+
+pub struct Stage0ExtraCmdline<'a> {
+    pub selected_ostree: Option<&'a str>,
+    pub profile_cmdline: Option<&'a str>,
+    pub requested_cmdline: Option<&'a str>,
+    pub system_time: Option<&'a str>,
+    pub smoo_queue_count: Option<u16>,
+    pub smoo_queue_depth: Option<u16>,
+    pub smoo_max_io: Option<usize>,
+    pub default_smoo_max_io: usize,
+}
+
+pub fn build_stage0_extra_cmdline(parts: Stage0ExtraCmdline<'_>) -> Option<String> {
+    let merged_profile_cmdline = join_cmdline(parts.profile_cmdline, parts.requested_cmdline);
+    let mut extra_parts = Vec::new();
+    if let Some(ostree) = parts.selected_ostree {
+        extra_parts.push(format!("ostree=/{ostree}"));
+    }
+    if !merged_profile_cmdline.is_empty() {
+        extra_parts.push(merged_profile_cmdline);
+    }
+    if let Some(system_time) = parts.system_time {
+        extra_parts.push(system_time.to_string());
+    }
+    if let Some(queue_count) = parts.smoo_queue_count {
+        extra_parts.push(format!("smoo.queue_count={queue_count}"));
+    }
+    if let Some(queue_depth) = parts.smoo_queue_depth {
+        extra_parts.push(format!("smoo.queue_depth={queue_depth}"));
+    }
+    extra_parts.push(format!(
+        "smoo.max_io_bytes={}",
+        parts.smoo_max_io.unwrap_or(parts.default_smoo_max_io)
+    ));
+
+    if extra_parts.is_empty() {
+        None
+    } else {
+        Some(extra_parts.join(" "))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionEvent {
     Phase {
@@ -396,6 +1116,31 @@ impl SessionStatus {
             | Self::Serving { profile_id, .. } => Some(profile_id),
             Self::New | Self::Preparing | Self::Completed | Self::Failed { .. } => None,
         }
+    }
+}
+
+pub fn session_status_event(status: &SessionStatus) -> Option<SessionEvent> {
+    match status {
+        SessionStatus::BootImageReady {
+            boot_image_size, ..
+        } => Some(SessionEvent::Phase {
+            phase: SessionEventPhase::BuildingBootImage,
+            detail: format!("boot image built ({boot_image_size} bytes)"),
+        }),
+        SessionStatus::Downloading {
+            boot_image_size, ..
+        } => Some(SessionEvent::Phase {
+            phase: SessionEventPhase::Downloading,
+            detail: format!("sending {boot_image_size} bytes"),
+        }),
+        SessionStatus::BootHandoffStarted { .. } => Some(SessionEvent::Phase {
+            phase: SessionEventPhase::Booting,
+            detail: "issuing fastboot boot".to_string(),
+        }),
+        SessionStatus::BootIssued { .. } => Some(SessionEvent::Log(
+            "fastboot boot command accepted".to_string(),
+        )),
+        _ => None,
     }
 }
 

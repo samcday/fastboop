@@ -11,8 +11,8 @@ use fastboop_core::device::DeviceHandle as _;
 use fastboop_fastboot_webusb::{FastbootWebUsb, WebUsbDeviceHandle};
 use fastboop_session::{
     BootRequest, BootSessionEnvironment, FastboopSession, PreparedBoot, PreparedBootInfo,
-    RuntimeExport, SessionCodecError, SessionEnvironment, SessionEvent, SessionEventPhase,
-    SessionSnapshot, SessionStatus,
+    RuntimeExport, SessionCodecError, SessionEnvironment, SessionEvent, SessionSnapshot,
+    SessionStatus, session_status_event,
 };
 #[cfg(target_arch = "wasm32")]
 use gibblox_core::BlockReader;
@@ -21,24 +21,22 @@ use gibblox_core::BlockReader;
 use anyhow::Context as _;
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::{
-    BootProfile, BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
-    resolve_effective_boot_profile_stage0, select_boot_profile_for_device,
+    BootProfile, BootProfileArtifactSource, resolve_effective_boot_profile_stage0,
+    select_boot_profile_for_device,
 };
 #[cfg(target_arch = "wasm32")]
 use fastboop_session::{
-    OstreeArg, Stage0Assembly, auto_detect_ostree_deployment_path, build_android_boot_payload,
-    join_cmdline, resolve_effective_ostree_arg,
+    BootProfileArtifactSourceOpener, BootProfileSourceRootfs, Ext4Rootfs, OstreeArg,
+    SessionEventPhase, Stage0Assembly, Stage0ExtraCmdline, Stage0RootfsKind,
+    auto_detect_ostree_deployment_path, block_reader_size_bytes, boot_profile_rootfs_kind,
+    build_android_boot_payload, build_stage0_extra_cmdline, resolve_effective_ostree_arg,
 };
 #[cfg(target_arch = "wasm32")]
-use fastboop_stage0_generator::{
-    Stage0Error, Stage0KernelOverride, Stage0Options, Stage0SwitchrootFs,
-};
+use fastboop_stage0_generator::{Stage0Error, Stage0Options, Stage0SwitchrootFs};
 #[cfg(target_arch = "wasm32")]
 use gibblox_blockreader_messageport::{MessagePortBlockReaderClient, MessagePortBlockReaderServer};
 #[cfg(target_arch = "wasm32")]
 use gibblox_core::{WindowBlockReader, block_identity_string};
-#[cfg(target_arch = "wasm32")]
-use gibblox_ext4::{Ext4EntryType, Ext4Fs};
 #[cfg(target_arch = "wasm32")]
 use gibblox_pipeline::{
     PipelineCachePolicy, PipelineHints, PipelineSource, encode_pipeline, encode_pipeline_hints,
@@ -50,7 +48,7 @@ use gibblox_zip::ZipEntryBlockReader;
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::sleep;
 #[cfg(target_arch = "wasm32")]
-use gobblytes_core::{Filesystem, FilesystemEntryType, OstreeFs as OstreeRootfs};
+use gobblytes_core::{Filesystem, OstreeFs as OstreeRootfs};
 #[cfg(target_arch = "wasm32")]
 use gobblytes_erofs::{DEFAULT_IMAGE_BLOCK_SIZE, ErofsRootfs};
 #[cfg(target_arch = "wasm32")]
@@ -76,7 +74,7 @@ use crate::gibblox_worker::spawn_gibblox_worker;
 #[cfg(target_arch = "wasm32")]
 use crate::js::js_value_to_string;
 #[cfg(target_arch = "wasm32")]
-use crate::startup::{open_web_channel_source_reader, reader_size_bytes};
+use crate::startup::open_web_channel_source_reader;
 
 #[cfg(target_arch = "wasm32")]
 const DEFAULT_SMOO_MAX_IO_BYTES: usize = 1024 * 1024;
@@ -431,13 +429,18 @@ async fn build_stage0_artifacts(
         }
         None => PipelineHints::default(),
     };
-    let profile_source_overrides = resolve_boot_profile_source_overrides_web(
-        selected_boot_profile,
-        &selected_device.profile,
-        &pipeline_hints,
-        &gibblox_worker,
-    )
-    .await?;
+    let mut source_opener = WebArtifactSourceOpener {
+        gibblox_worker: &gibblox_worker,
+        pipeline_hints: &pipeline_hints,
+    };
+    let profile_source_overrides =
+        fastboop_session::resolve_boot_profile_source_overrides_with::<_, Stage0RootfsProvider>(
+            selected_boot_profile,
+            &selected_device.profile,
+            &mut source_opener,
+        )
+        .await
+        .map_err(|err| anyhow!(err.to_string()))?;
     opts.kernel_override = profile_source_overrides.kernel_override;
     opts.dtb_override = profile_source_overrides.dtb_override;
 
@@ -462,7 +465,9 @@ async fn build_stage0_artifacts(
         (reader, rootfs_kind_for_web_boot(boot_profile)?, 0)
     };
 
-    let size_bytes = reader_size_bytes(reader.as_ref()).await?;
+    let size_bytes = block_reader_size_bytes(reader.as_ref())
+        .await
+        .map_err(|err| anyhow!(err.to_string()))?;
     let identity = block_identity_string(reader.as_ref());
     env.runtime_info = Some(WebRuntimeInfo {
         channel: channel.to_string(),
@@ -473,7 +478,7 @@ async fn build_stage0_artifacts(
     sleep(std::time::Duration::from_millis(100)).await;
 
     let provider = Stage0RootfsProvider::open(rootfs_kind, reader.clone(), size_bytes).await?;
-    opts.switchroot_fs = provider.switchroot_fs();
+    opts.switchroot_fs = provider.switchroot_fs()?;
     let selected_ostree =
         match resolve_effective_ostree_arg(&OstreeArg::Disabled, selected_boot_profile) {
             OstreeArg::Disabled => None,
@@ -557,31 +562,16 @@ fn build_extra_cmdline(
             resolve_effective_boot_profile_stage0(boot_profile, device_profile_id).extra_cmdline
         })
         .unwrap_or_default();
-    let merged_profile_cmdline = join_cmdline(
-        profile_cmdline.as_deref(),
-        env.config.stage0.cmdline_append.as_deref(),
-    );
-
-    let mut extra_parts = Vec::new();
-    if let Some(ostree) = selected_ostree {
-        extra_parts.push(format!("ostree=/{ostree}"));
-    }
-    if !merged_profile_cmdline.is_empty() {
-        extra_parts.push(merged_profile_cmdline);
-    }
-    extra_parts.push(format!(
-        "smoo.max_io_bytes={}",
-        env.config
-            .stage0
-            .smoo_max_io
-            .unwrap_or(DEFAULT_SMOO_MAX_IO_BYTES)
-    ));
-
-    if extra_parts.is_empty() {
-        None
-    } else {
-        Some(extra_parts.join(" "))
-    }
+    build_stage0_extra_cmdline(Stage0ExtraCmdline {
+        selected_ostree,
+        profile_cmdline: profile_cmdline.as_deref(),
+        requested_cmdline: env.config.stage0.cmdline_append.as_deref(),
+        system_time: None,
+        smoo_queue_count: None,
+        smoo_queue_depth: None,
+        smoo_max_io: env.config.stage0.smoo_max_io,
+        default_smoo_max_io: DEFAULT_SMOO_MAX_IO_BYTES,
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -725,211 +715,39 @@ async fn open_boot_profile_rootfs_reader(
     pipeline_hints: &PipelineHints,
     gibblox_worker: &GibbloxWebWorker,
 ) -> Result<Arc<dyn BlockReader>> {
-    open_boot_profile_artifact_source(boot_profile.rootfs.source(), pipeline_hints, gibblox_worker)
+    open_boot_profile_artifact_source_via_worker(
+        boot_profile.rootfs.source(),
+        pipeline_hints,
+        gibblox_worker,
+    )
+    .await
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WebArtifactSourceOpener<'a> {
+    gibblox_worker: &'a GibbloxWebWorker,
+    pipeline_hints: &'a PipelineHints,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl BootProfileArtifactSourceOpener for WebArtifactSourceOpener<'_> {
+    type Error = anyhow::Error;
+
+    async fn open_boot_profile_artifact_source(
+        &mut self,
+        source: &BootProfileArtifactSource,
+    ) -> Result<Arc<dyn BlockReader>, Self::Error> {
+        open_boot_profile_artifact_source_via_worker(
+            source,
+            self.pipeline_hints,
+            self.gibblox_worker,
+        )
         .await
-}
-
-#[cfg(target_arch = "wasm32")]
-struct ProfileSourceOverrides {
-    kernel_override: Option<Stage0KernelOverride>,
-    dtb_override: Option<Vec<u8>>,
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn resolve_boot_profile_source_overrides_web(
-    boot_profile: Option<&BootProfile>,
-    device_profile: &DeviceProfile,
-    pipeline_hints: &PipelineHints,
-    gibblox_worker: &GibbloxWebWorker,
-) -> Result<ProfileSourceOverrides> {
-    let Some(boot_profile) = boot_profile else {
-        return Ok(ProfileSourceOverrides {
-            kernel_override: None,
-            dtb_override: None,
-        });
-    };
-
-    let kernel_override = if let Some(kernel_source) = boot_profile.kernel.as_ref() {
-        let kernel_path = non_empty_profile_path(kernel_source.path.as_str(), "kernel.path")?;
-        let source_reader = open_boot_profile_artifact_source(
-            kernel_source.artifact_source(),
-            pipeline_hints,
-            gibblox_worker,
-        )
-        .await?;
-        let source_rootfs = ProfileSourceRootfs::open(&kernel_source.source, source_reader).await?;
-        let kernel_image = source_rootfs.read_all(kernel_path).await?;
-        Some(Stage0KernelOverride {
-            path: kernel_path.to_string(),
-            image: kernel_image,
-        })
-    } else {
-        None
-    };
-
-    let dtb_override = if let Some(dtbs_source) = boot_profile.dtbs.as_ref() {
-        let dtbs_base = non_empty_profile_path(dtbs_source.path.as_str(), "dtbs.path")?;
-        let source_reader = open_boot_profile_artifact_source(
-            dtbs_source.artifact_source(),
-            pipeline_hints,
-            gibblox_worker,
-        )
-        .await?;
-        let source_rootfs = ProfileSourceRootfs::open(&dtbs_source.source, source_reader).await?;
-        let dtb_path = resolve_dtb_path_candidate_web(
-            &source_rootfs,
-            dtbs_base,
-            device_profile.devicetree_name.as_str(),
-        )
-        .await?;
-        Some(source_rootfs.read_all(dtb_path.as_str()).await?)
-    } else {
-        None
-    };
-
-    Ok(ProfileSourceOverrides {
-        kernel_override,
-        dtb_override,
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-enum ProfileSourceRootfs {
-    Erofs(ErofsRootfs),
-    Ext4(Ext4Rootfs),
-    Fat(FatFs),
-}
-
-#[cfg(target_arch = "wasm32")]
-impl ProfileSourceRootfs {
-    async fn open(source: &BootProfileRootfs, reader: Arc<dyn BlockReader>) -> Result<Self> {
-        match source {
-            BootProfileRootfs::Ostree(source) => match &source.ostree {
-                BootProfileRootfsFilesystemSource::Erofs(_) => {
-                    let image_size_bytes = reader_size_bytes(reader.as_ref()).await?;
-                    let rootfs = ErofsRootfs::new(reader, image_size_bytes)
-                        .await
-                        .map_err(|err| anyhow!("open boot profile erofs source: {err}"))?;
-                    Ok(Self::Erofs(rootfs))
-                }
-                BootProfileRootfsFilesystemSource::Ext4(_) => {
-                    let rootfs = Ext4Rootfs::open(reader).await?;
-                    Ok(Self::Ext4(rootfs))
-                }
-                BootProfileRootfsFilesystemSource::Fat(_) => {
-                    let rootfs = FatFs::open(reader)
-                        .await
-                        .map_err(|err| anyhow!("open boot profile fat source: {err}"))?;
-                    Ok(Self::Fat(rootfs))
-                }
-            },
-            BootProfileRootfs::Erofs(_) => {
-                let image_size_bytes = reader_size_bytes(reader.as_ref()).await?;
-                let rootfs = ErofsRootfs::new(reader, image_size_bytes)
-                    .await
-                    .map_err(|err| anyhow!("open boot profile erofs source: {err}"))?;
-                Ok(Self::Erofs(rootfs))
-            }
-            BootProfileRootfs::Ext4(_) => {
-                let rootfs = Ext4Rootfs::open(reader).await?;
-                Ok(Self::Ext4(rootfs))
-            }
-            BootProfileRootfs::Fat(_) => {
-                let rootfs = FatFs::open(reader)
-                    .await
-                    .map_err(|err| anyhow!("open boot profile fat source: {err}"))?;
-                Ok(Self::Fat(rootfs))
-            }
-        }
-    }
-
-    async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
-        match self {
-            Self::Erofs(rootfs) => rootfs
-                .read_all(path)
-                .await
-                .map_err(|err| anyhow!("read boot profile erofs path {path}: {err}")),
-            Self::Ext4(rootfs) => rootfs
-                .read_all(path)
-                .await
-                .map_err(|err| anyhow!("read boot profile ext4 path {path}: {err}")),
-            Self::Fat(rootfs) => rootfs
-                .read_all(path)
-                .await
-                .map_err(|err| anyhow!("read boot profile fat path {path}: {err}")),
-        }
-    }
-
-    async fn exists(&self, path: &str) -> Result<bool> {
-        match self {
-            Self::Erofs(rootfs) => rootfs
-                .exists(path)
-                .await
-                .map_err(|err| anyhow!("check boot profile erofs path {path}: {err}")),
-            Self::Ext4(rootfs) => rootfs
-                .exists(path)
-                .await
-                .map_err(|err| anyhow!("check boot profile ext4 path {path}: {err}")),
-            Self::Fat(rootfs) => rootfs
-                .exists(path)
-                .await
-                .map_err(|err| anyhow!("check boot profile fat path {path}: {err}")),
-        }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
-fn non_empty_profile_path<'a>(path: &'a str, field: &str) -> Result<&'a str> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        bail!("boot profile {field} must not be empty");
-    }
-    Ok(trimmed)
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn resolve_dtb_path_candidate_web(
-    source_rootfs: &ProfileSourceRootfs,
-    dtbs_base: &str,
-    devicetree_name: &str,
-) -> Result<String> {
-    let devicetree_name = devicetree_name.trim().trim_start_matches('/');
-    if devicetree_name.is_empty() {
-        bail!("device profile devicetree_name is empty");
-    }
-
-    let mut candidates = Vec::new();
-    if dtbs_base.ends_with(".dtb") {
-        candidates.push(dtbs_base.to_string());
-    } else {
-        let dtb_file = format!("{devicetree_name}.dtb");
-        candidates.push(join_profile_path(dtbs_base, dtb_file.as_str()));
-        candidates.push(join_profile_path(dtbs_base, devicetree_name));
-        candidates.push(dtbs_base.to_string());
-    }
-
-    for candidate in candidates {
-        if source_rootfs.exists(candidate.as_str()).await? {
-            return Ok(candidate);
-        }
-    }
-
-    bail!("boot profile dtbs path {dtbs_base} does not contain dtb for {devicetree_name}")
-}
-
-#[cfg(target_arch = "wasm32")]
-fn join_profile_path(base: &str, suffix: &str) -> String {
-    let base = base.trim_end_matches('/');
-    let suffix = suffix.trim_start_matches('/');
-    if base.is_empty() {
-        format!("/{suffix}")
-    } else {
-        format!("{base}/{suffix}")
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn open_boot_profile_artifact_source(
+async fn open_boot_profile_artifact_source_via_worker(
     source: &BootProfileArtifactSource,
     pipeline_hints: &PipelineHints,
     gibblox_worker: &GibbloxWebWorker,
@@ -958,7 +776,9 @@ async fn normalize_partition_reader_block_size(
         return Ok(reader);
     }
 
-    let size_bytes = reader_size_bytes(reader.as_ref()).await?;
+    let size_bytes = block_reader_size_bytes(reader.as_ref())
+        .await
+        .map_err(|err| anyhow!(err.to_string()))?;
     let reader = WindowBlockReader::new(reader, 0, size_bytes, DEFAULT_IMAGE_BLOCK_SIZE)
         .await
         .map_err(|err| anyhow!("normalize partition reader block size: {err}"))?;
@@ -966,86 +786,10 @@ async fn normalize_partition_reader_block_size(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Stage0RootfsKind {
-    Erofs,
-    Ext4,
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone)]
-struct Ext4Rootfs {
-    fs: Ext4Fs,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl Ext4Rootfs {
-    async fn open(reader: Arc<dyn BlockReader>) -> Result<Self> {
-        let fs = Ext4Fs::open(reader)
-            .await
-            .map_err(|err| anyhow!("open ext4 rootfs: {err}"))?;
-        Ok(Self { fs })
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl Filesystem for Ext4Rootfs {
-    type Error = anyhow::Error;
-
-    async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
-        self.fs
-            .read_all(path)
-            .await
-            .map_err(|err| anyhow!("read ext4 path {path}: {err}"))
-    }
-
-    async fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
-        self.fs
-            .read_range(path, offset, len)
-            .await
-            .map_err(|err| anyhow!("read ext4 path range {path}@{offset}+{len}: {err}"))
-    }
-
-    async fn read_dir(&self, path: &str) -> Result<Vec<String>> {
-        self.fs
-            .read_dir(path)
-            .await
-            .map_err(|err| anyhow!("read ext4 directory {path}: {err}"))
-    }
-
-    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>> {
-        let ty = self
-            .fs
-            .entry_type(path)
-            .await
-            .map_err(|err| anyhow!("read ext4 entry type {path}: {err}"))?;
-        Ok(ty.map(|entry| match entry {
-            Ext4EntryType::File => FilesystemEntryType::File,
-            Ext4EntryType::Directory => FilesystemEntryType::Directory,
-            Ext4EntryType::Symlink => FilesystemEntryType::Symlink,
-            Ext4EntryType::Other => FilesystemEntryType::Other,
-        }))
-    }
-
-    async fn read_link(&self, path: &str) -> Result<String> {
-        self.fs
-            .read_link(path)
-            .await
-            .map_err(|err| anyhow!("read ext4 symlink target {path}: {err}"))
-    }
-
-    async fn exists(&self, path: &str) -> Result<bool> {
-        self.fs
-            .exists(path)
-            .await
-            .map_err(|err| anyhow!("check ext4 path {path}: {err}"))
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
 enum Stage0RootfsProvider {
     Erofs(ErofsRootfs),
     Ext4(Ext4Rootfs),
+    Fat(FatFs),
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1063,16 +807,25 @@ impl Stage0RootfsProvider {
                 Ok(Self::Erofs(rootfs))
             }
             Stage0RootfsKind::Ext4 => {
-                let rootfs = Ext4Rootfs::open(reader).await?;
+                let rootfs = Ext4Rootfs::open(reader)
+                    .await
+                    .map_err(|err| anyhow!(err.to_string()))?;
                 Ok(Self::Ext4(rootfs))
+            }
+            Stage0RootfsKind::Fat => {
+                let rootfs = FatFs::open(reader)
+                    .await
+                    .map_err(|err| anyhow!("open fat image: {err}"))?;
+                Ok(Self::Fat(rootfs))
             }
         }
     }
 
-    fn switchroot_fs(&self) -> Stage0SwitchrootFs {
+    fn switchroot_fs(&self) -> Result<Stage0SwitchrootFs> {
         match self {
-            Self::Erofs(_) => Stage0SwitchrootFs::Erofs,
-            Self::Ext4(_) => Stage0SwitchrootFs::Ext4,
+            Self::Erofs(_) => Ok(Stage0SwitchrootFs::Erofs),
+            Self::Ext4(_) => Ok(Stage0SwitchrootFs::Ext4),
+            Self::Fat(_) => bail!("web stage0 build does not support FAT rootfs providers"),
         }
     }
 }
@@ -1084,61 +837,107 @@ impl Filesystem for Stage0RootfsProvider {
     async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
         match self {
             Self::Erofs(rootfs) => rootfs.read_all(path).await,
-            Self::Ext4(rootfs) => rootfs.read_all(path).await,
+            Self::Ext4(rootfs) => rootfs
+                .read_all(path)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
+            Self::Fat(rootfs) => rootfs
+                .read_all(path)
+                .await
+                .map_err(|err| anyhow!("read fat path {path}: {err}")),
         }
     }
 
     async fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
         match self {
             Self::Erofs(rootfs) => rootfs.read_range(path, offset, len).await,
-            Self::Ext4(rootfs) => rootfs.read_range(path, offset, len).await,
+            Self::Ext4(rootfs) => rootfs
+                .read_range(path, offset, len)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
+            Self::Fat(rootfs) => rootfs
+                .read_range(path, offset, len)
+                .await
+                .map_err(|err| anyhow!("read fat path range {path}@{offset}+{len}: {err}")),
         }
     }
 
     async fn read_dir(&self, path: &str) -> Result<Vec<String>> {
         match self {
             Self::Erofs(rootfs) => rootfs.read_dir(path).await,
-            Self::Ext4(rootfs) => rootfs.read_dir(path).await,
+            Self::Ext4(rootfs) => rootfs
+                .read_dir(path)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
+            Self::Fat(rootfs) => rootfs
+                .read_dir(path)
+                .await
+                .map_err(|err| anyhow!("read fat directory {path}: {err}")),
         }
     }
 
-    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>> {
+    async fn entry_type(&self, path: &str) -> Result<Option<gobblytes_core::FilesystemEntryType>> {
         match self {
             Self::Erofs(rootfs) => rootfs.entry_type(path).await,
-            Self::Ext4(rootfs) => rootfs.entry_type(path).await,
+            Self::Ext4(rootfs) => rootfs
+                .entry_type(path)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
+            Self::Fat(rootfs) => <FatFs as Filesystem>::entry_type(rootfs, path)
+                .await
+                .map_err(|err| anyhow!("read fat entry type {path}: {err}")),
         }
     }
 
     async fn read_link(&self, path: &str) -> Result<String> {
         match self {
             Self::Erofs(rootfs) => rootfs.read_link(path).await,
-            Self::Ext4(rootfs) => rootfs.read_link(path).await,
+            Self::Ext4(rootfs) => rootfs
+                .read_link(path)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
+            Self::Fat(rootfs) => rootfs
+                .read_link(path)
+                .await
+                .map_err(|err| anyhow!("read fat symlink target {path}: {err}")),
         }
     }
 
     async fn exists(&self, path: &str) -> Result<bool> {
         match self {
             Self::Erofs(rootfs) => rootfs.exists(path).await,
-            Self::Ext4(rootfs) => rootfs.exists(path).await,
+            Self::Ext4(rootfs) => rootfs
+                .exists(path)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
+            Self::Fat(rootfs) => rootfs
+                .exists(path)
+                .await
+                .map_err(|err| anyhow!("check fat path {path}: {err}")),
         }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
+impl BootProfileSourceRootfs for Stage0RootfsProvider {
+    async fn open_boot_profile_source(
+        source: &fastboop_core::BootProfileRootfs,
+        reader: Arc<dyn BlockReader>,
+    ) -> Result<Self, Self::Error> {
+        let kind = boot_profile_rootfs_kind(source);
+        let image_size_bytes = block_reader_size_bytes(reader.as_ref())
+            .await
+            .map_err(|err| anyhow!(err.to_string()))?;
+        Self::open(kind, reader, image_size_bytes).await
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 fn rootfs_kind_for_web_boot(boot_profile: &BootProfile) -> Result<Stage0RootfsKind> {
-    match &boot_profile.rootfs {
-        BootProfileRootfs::Erofs(_) => Ok(Stage0RootfsKind::Erofs),
-        BootProfileRootfs::Ext4(_) => Ok(Stage0RootfsKind::Ext4),
-        BootProfileRootfs::Fat(_) => {
-            bail!("web stage0 build does not support FAT rootfs providers")
-        }
-        BootProfileRootfs::Ostree(source) => match &source.ostree {
-            BootProfileRootfsFilesystemSource::Erofs(_) => Ok(Stage0RootfsKind::Erofs),
-            BootProfileRootfsFilesystemSource::Ext4(_) => Ok(Stage0RootfsKind::Ext4),
-            BootProfileRootfsFilesystemSource::Fat(_) => {
-                bail!("web stage0 build does not support OSTree on FAT rootfs")
-            }
-        },
+    let kind = boot_profile_rootfs_kind(&boot_profile.rootfs);
+    match kind {
+        Stage0RootfsKind::Erofs | Stage0RootfsKind::Ext4 => Ok(kind),
+        Stage0RootfsKind::Fat => bail!("web stage0 build does not support FAT rootfs providers"),
     }
 }
 
@@ -1204,27 +1003,8 @@ async fn load_stage0_binary_sidecar(
 }
 
 fn emit_session_status(env: &mut WebBootEnvironment, status: &SessionStatus) {
-    match status {
-        SessionStatus::BootImageReady {
-            boot_image_size, ..
-        } => env.emit(SessionEvent::Phase {
-            phase: SessionEventPhase::BuildingBootImage,
-            detail: format!("boot image built ({boot_image_size} bytes)"),
-        }),
-        SessionStatus::Downloading {
-            boot_image_size, ..
-        } => env.emit(SessionEvent::Phase {
-            phase: SessionEventPhase::Downloading,
-            detail: format!("sending {boot_image_size} bytes"),
-        }),
-        SessionStatus::BootHandoffStarted { .. } => env.emit(SessionEvent::Phase {
-            phase: SessionEventPhase::Booting,
-            detail: "issuing fastboot boot".to_string(),
-        }),
-        SessionStatus::BootIssued { .. } => env.emit(SessionEvent::Log(
-            "fastboot boot command accepted".to_string(),
-        )),
-        _ => {}
+    if let Some(event) = session_status_event(status) {
+        env.emit(event);
     }
 }
 

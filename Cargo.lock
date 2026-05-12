@@ -2261,7 +2261,6 @@ name = "fastboop-environment-web"
 version = "0.0.1-rc.21"
 dependencies = [
  "anyhow",
- "async-trait",
  "fastboop-core",
  "fastboop-fastboot-webusb",
  "fastboop-session",
@@ -2341,9 +2340,11 @@ dependencies = [
 name = "fastboop-session"
 version = "0.0.1-rc.21"
 dependencies = [
+ "async-trait",
  "fastboop-core",
  "fastboop-stage0-generator",
  "gibblox-core",
+ "gibblox-ext4",
  "gobblytes-core",
  "postcard",
  "serde",

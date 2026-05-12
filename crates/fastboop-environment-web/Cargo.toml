@@ -8,7 +8,6 @@ description = "Web browser environment bindings for fastboop sessions."
 
 [dependencies]
 anyhow = { workspace = true }
-async-trait = { workspace = true }
 fastboop-core = { path = "../fastboop-core", version = "0.0.1-rc.12" }
 fastboop-fastboot-webusb = { path = "../fastboop-fastboot-webusb", version = "0.0.1-rc.12" }
 fastboop-session = { path = "../fastboop-session", version = "0.0.1-rc.12" }
