@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use fastboop_core::{ChannelStreamHead, read_channel_stream_head_from_reader};
+#[cfg(target_arch = "wasm32")]
+use fastboop_session::block_reader_size_bytes;
 use gibblox_core::BlockReader;
 
 #[derive(Clone)]
@@ -35,7 +37,9 @@ pub async fn open_web_channel_source_reader(channel: &str) -> Result<WebChannelS
         )
         .await
         .map_err(|err| anyhow!("open channel reader pipeline: {err}"))?;
-        let exact_total_bytes = reader_size_bytes(reader.as_ref()).await?;
+        let exact_total_bytes = block_reader_size_bytes(reader.as_ref())
+            .await
+            .map_err(|err| anyhow!(err.to_string()))?;
         Ok(WebChannelSourceReader {
             reader,
             exact_total_bytes,
@@ -80,15 +84,4 @@ where
     }
 
     Ok(intake)
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) async fn reader_size_bytes(reader: &dyn BlockReader) -> Result<u64> {
-    let total_blocks = reader
-        .total_blocks()
-        .await
-        .map_err(|err| anyhow!("read channel total blocks: {err}"))?;
-    total_blocks
-        .checked_mul(reader.block_size() as u64)
-        .ok_or_else(|| anyhow!("channel size overflow"))
 }
