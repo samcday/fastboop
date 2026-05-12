@@ -673,7 +673,9 @@ async fn build_stage0_artifacts(
         .checked_mul(reader.block_size() as u64)
         .ok_or_else(|| anyhow!("channel image size overflow"))?;
     let image_identity = block_identity_string(reader.as_ref());
-    let provider = Stage0CoalescingFilesystem::open(stage0_readers).await?;
+    let provider = Stage0CoalescingFilesystem::open(stage0_readers)
+        .await
+        .map_err(|err| anyhow!(err.to_string()))?;
 
     let mut kernel_modules = profile_stage0.kernel_modules;
     kernel_modules.extend(config.require_modules.iter().cloned());
