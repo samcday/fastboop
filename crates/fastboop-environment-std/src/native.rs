@@ -13,8 +13,8 @@ use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_session::{
     BootRequest, BootSessionEnvironment, FastboopSession, PreparedBoot, PreparedBootInfo,
     RuntimeExport, SessionCodecError, SessionEnvironment, SessionEvent, SessionEventPhase,
-    SessionSnapshot, SessionStatus, Stage0Assembly, build_android_boot_payload_with_options,
-    join_cmdline,
+    SessionSnapshot, Stage0Assembly, Stage0ExtraCmdline, build_android_boot_payload_with_options,
+    build_stage0_extra_cmdline, session_status_event,
 };
 use gibblox_core::{BlockReader, block_identity_string};
 use gobblytes_core::OstreeFs as OstreeRootfs;
@@ -173,7 +173,9 @@ impl SessionEnvironment for NativeBootEnvironment {
         if let Some(path) = self.config.session_state.as_deref() {
             write_session_snapshot(path, encoded)?;
         }
-        emit_session_status(&self.events, &snapshot.status);
+        if let Some(event) = session_status_event(&snapshot.status) {
+            emit(&self.events, event);
+        }
         Ok(())
     }
 
@@ -686,11 +688,6 @@ async fn build_stage0_artifacts(
     let mut dtbo_overlays = profile_stage0.dt_overlays;
     dtbo_overlays.extend(cli_dtbo_overlays.iter().cloned());
 
-    let merged_profile_cmdline = join_cmdline(
-        profile_stage0.extra_cmdline.as_deref(),
-        cli_cmdline_append.as_deref(),
-    );
-
     let opts = fastboop_stage0_generator::Stage0Options {
         switchroot_fs: provider.switchroot_fs(),
         kernel_modules,
@@ -721,31 +718,16 @@ async fn build_stage0_artifacts(
         OstreeArg::Explicit(path) => Some(path.clone()),
     };
 
-    let mut extra_parts = Vec::new();
-    if let Some(ostree) = selected_ostree.as_deref() {
-        extra_parts.push(format!("ostree=/{ostree}"));
-    }
-    if !merged_profile_cmdline.is_empty() {
-        extra_parts.push(merged_profile_cmdline);
-    }
-    if let Some(system_time) = system_time_part {
-        extra_parts.push(system_time.to_string());
-    }
-    if let Some(queue_count) = config.smoo_queue_count {
-        extra_parts.push(format!("smoo.queue_count={queue_count}"));
-    }
-    if let Some(queue_depth) = config.smoo_queue_depth {
-        extra_parts.push(format!("smoo.queue_depth={queue_depth}"));
-    }
-    extra_parts.push(format!(
-        "smoo.max_io_bytes={}",
-        config.smoo_max_io.unwrap_or(DEFAULT_SMOO_MAX_IO_BYTES)
-    ));
-    let extra_cmdline = if extra_parts.is_empty() {
-        None
-    } else {
-        Some(extra_parts.join(" "))
-    };
+    let extra_cmdline = build_stage0_extra_cmdline(Stage0ExtraCmdline {
+        selected_ostree: selected_ostree.as_deref(),
+        profile_cmdline: profile_stage0.extra_cmdline.as_deref(),
+        requested_cmdline: cli_cmdline_append.as_deref(),
+        system_time: system_time_part,
+        smoo_queue_count: config.smoo_queue_count,
+        smoo_queue_depth: config.smoo_queue_depth,
+        smoo_max_io: config.smoo_max_io,
+        default_smoo_max_io: DEFAULT_SMOO_MAX_IO_BYTES,
+    });
 
     let assembly = Stage0Assembly::new(opts, stage0_binary)
         .with_extra_cmdline(extra_cmdline)
@@ -1072,43 +1054,6 @@ fn emit_detected_device(
             ),
         },
     );
-}
-
-fn emit_session_status(events: &Sender<SessionEvent>, status: &SessionStatus) {
-    match status {
-        SessionStatus::BootImageReady {
-            boot_image_size, ..
-        } => emit(
-            events,
-            SessionEvent::Phase {
-                phase: SessionEventPhase::BuildingBootImage,
-                detail: format!("boot image built ({boot_image_size} bytes)"),
-            },
-        ),
-        SessionStatus::Downloading {
-            boot_image_size, ..
-        } => emit(
-            events,
-            SessionEvent::Phase {
-                phase: SessionEventPhase::Downloading,
-                detail: format!("sending {boot_image_size} bytes"),
-            },
-        ),
-        SessionStatus::BootHandoffStarted { .. } => emit(
-            events,
-            SessionEvent::Phase {
-                phase: SessionEventPhase::Booting,
-                detail: "issuing fastboot boot".to_string(),
-            },
-        ),
-        SessionStatus::BootIssued { .. } => {
-            emit(
-                events,
-                SessionEvent::Log("fastboot boot command accepted".to_string()),
-            );
-        }
-        _ => {}
-    }
 }
 
 fn smoo_event_to_session_event(event: SmooHostEvent) -> SessionEvent {

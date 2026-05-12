@@ -230,8 +230,6 @@ mod wasm {
 }
 
 #[cfg(target_arch = "wasm32")]
-use gibblox_core::{AlignedByteReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
-#[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 
 #[cfg(target_arch = "wasm32")]
@@ -239,117 +237,9 @@ pub(crate) async fn maybe_offset_reader(
     reader: Arc<dyn gibblox_core::BlockReader>,
     offset_bytes: u64,
 ) -> anyhow::Result<Arc<dyn gibblox_core::BlockReader>> {
-    if offset_bytes == 0 {
-        return Ok(reader);
-    }
-
-    let total_size_bytes = reader
-        .total_blocks()
+    fastboop_session::maybe_offset_block_reader(reader, offset_bytes)
         .await
-        .map_err(|err| anyhow::anyhow!("read channel total blocks for offset reader: {err}"))?
-        .checked_mul(reader.block_size() as u64)
-        .ok_or_else(|| anyhow::anyhow!("channel total size overflow"))?;
-
-    Ok(Arc::new(OffsetChannelBlockReader::new(
-        reader,
-        offset_bytes,
-        total_size_bytes,
-    )?))
-}
-
-#[cfg(target_arch = "wasm32")]
-struct OffsetChannelBlockReader {
-    inner: Arc<dyn gibblox_core::BlockReader>,
-    offset_bytes: u64,
-    size_bytes: u64,
-    block_size: u32,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl OffsetChannelBlockReader {
-    fn new(
-        inner: Arc<dyn gibblox_core::BlockReader>,
-        offset_bytes: u64,
-        inner_size_bytes: u64,
-    ) -> anyhow::Result<Self> {
-        let block_size = inner.block_size();
-        if block_size == 0 {
-            anyhow::bail!("channel reader block size is zero");
-        }
-        if offset_bytes > inner_size_bytes {
-            anyhow::bail!(
-                "channel reader stream offset {offset_bytes} exceeds source size {inner_size_bytes}"
-            );
-        }
-
-        Ok(Self {
-            inner,
-            offset_bytes,
-            size_bytes: inner_size_bytes
-                .checked_sub(offset_bytes)
-                .ok_or_else(|| anyhow::anyhow!("channel stream offset underflow"))?,
-            block_size,
-        })
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-#[async_trait::async_trait]
-impl gibblox_core::BlockReader for OffsetChannelBlockReader {
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
-
-    async fn total_blocks(&self) -> GibbloxResult<u64> {
-        let block_size = u64::from(self.block_size);
-        if block_size == 0 {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "channel reader block size is zero",
-            ));
-        }
-        Ok(self.size_bytes.div_ceil(block_size))
-    }
-
-    fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
-        self.inner.write_identity(out)?;
-        write!(out, "|offset:{}", self.offset_bytes)
-    }
-
-    async fn read_blocks(
-        &self,
-        lba: u64,
-        buf: &mut [u8],
-        ctx: ReadContext,
-    ) -> GibbloxResult<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-
-        let local_offset = lba.checked_mul(u64::from(self.block_size)).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "channel read offset overflow")
-        })?;
-        if local_offset >= self.size_bytes {
-            return Ok(0);
-        }
-
-        let remaining = self.size_bytes.checked_sub(local_offset).ok_or_else(|| {
-            GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "channel read offset underflow",
-            )
-        })?;
-        let max_read = core::cmp::min(buf.len() as u64, remaining) as usize;
-        let global_offset = self.offset_bytes.checked_add(local_offset).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "channel read offset overflow")
-        })?;
-
-        let byte_reader = AlignedByteReader::new(self.inner.clone()).await?;
-        byte_reader
-            .read_exact_at(global_offset, &mut buf[..max_read], ctx)
-            .await?;
-        Ok(max_read)
-    }
+        .map_err(|err| anyhow::anyhow!(err.to_string()))
 }
 
 #[cfg(target_arch = "wasm32")]

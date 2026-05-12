@@ -8,15 +8,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail};
-use async_trait::async_trait;
 use fastboop_core::{
-    BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
-    CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamHead, ChannelStreamKind, DeviceProfile,
-    classify_channel_prefix, read_channel_pipeline_hints_for_boot_profile,
+    BootProfileArtifactSource, BootProfileRootfs, ChannelStreamHead, ChannelStreamKind,
+    DeviceProfile, read_channel_pipeline_hints_for_boot_profile,
     read_channel_stream_head_from_reader as read_channel_stream_head_from_reader_core,
     select_boot_profile_for_device,
 };
-use fastboop_stage0_generator::{Stage0KernelOverride, Stage0SwitchrootFs};
+use fastboop_stage0_generator::Stage0SwitchrootFs;
 use gibblox_android_sparse::{
     AndroidSparseBlockReader, AndroidSparseChunkIndex, AndroidSparseImageIndex,
 };
@@ -28,10 +26,8 @@ use gibblox_casync_std::{
     StdCasyncIndexLocator, StdCasyncIndexSource,
 };
 use gibblox_core::{
-    AlignedByteReader, BlockByteReader, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult,
-    GptBlockReader, GptPartitionSelector, ReadContext,
+    AlignedByteReader, BlockByteReader, BlockReader, GptBlockReader, GptPartitionSelector,
 };
-use gibblox_ext4::{Ext4EntryType, Ext4Fs};
 use gibblox_file::FileReader;
 use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
@@ -49,7 +45,16 @@ use sha2::{Digest, Sha512};
 use tracing::info;
 use url::Url;
 
-pub use fastboop_session::{OstreeArg, format_probe_error, resolve_effective_ostree_arg};
+use fastboop_session::{
+    BootProfileArtifactSourceOpener, BootProfileSourceRootfs, OffsetBlockReader,
+    block_reader_size_bytes, boot_profile_rootfs_kind,
+    classify_channel_reader as classify_channel_reader_core, detect_rootfs_kind,
+    reader_has_erofs_magic, reader_has_ext4_magic, resolve_boot_profile_source_overrides_with,
+};
+pub use fastboop_session::{
+    BootProfileSourceOverrides, Ext4Rootfs, OstreeArg, Stage0RootfsKind as RootfsKind,
+    format_probe_error, resolve_effective_ostree_arg,
+};
 
 pub struct ChannelInput {
     pub reader: Arc<dyn BlockReader>,
@@ -60,80 +65,6 @@ pub struct ChannelInput {
 pub struct ChannelSourceReader {
     pub reader: Arc<dyn BlockReader>,
     pub exact_size_bytes: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RootfsKind {
-    Erofs,
-    Ext4,
-    Fat,
-}
-
-#[derive(Clone)]
-pub struct Ext4Rootfs {
-    fs: Ext4Fs,
-}
-
-impl Ext4Rootfs {
-    pub async fn open(reader: Arc<dyn BlockReader>) -> Result<Self> {
-        let fs = Ext4Fs::open(reader)
-            .await
-            .map_err(|err| anyhow!("open ext4 rootfs: {err}"))?;
-        Ok(Self { fs })
-    }
-}
-
-impl Filesystem for Ext4Rootfs {
-    type Error = anyhow::Error;
-
-    async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
-        self.fs
-            .read_all(path)
-            .await
-            .map_err(|err| anyhow!("read ext4 path {path}: {err}"))
-    }
-
-    async fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
-        self.fs
-            .read_range(path, offset, len)
-            .await
-            .map_err(|err| anyhow!("read ext4 path range {path}@{offset}+{len}: {err}"))
-    }
-
-    async fn read_dir(&self, path: &str) -> Result<Vec<String>> {
-        self.fs
-            .read_dir(path)
-            .await
-            .map_err(|err| anyhow!("read ext4 directory {path}: {err}"))
-    }
-
-    async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>> {
-        let ty = self
-            .fs
-            .entry_type(path)
-            .await
-            .map_err(|err| anyhow!("read ext4 entry type {path}: {err}"))?;
-        Ok(ty.map(|entry| match entry {
-            Ext4EntryType::File => FilesystemEntryType::File,
-            Ext4EntryType::Directory => FilesystemEntryType::Directory,
-            Ext4EntryType::Symlink => FilesystemEntryType::Symlink,
-            Ext4EntryType::Other => FilesystemEntryType::Other,
-        }))
-    }
-
-    async fn read_link(&self, path: &str) -> Result<String> {
-        self.fs
-            .read_link(path)
-            .await
-            .map_err(|err| anyhow!("read ext4 symlink target {path}: {err}"))
-    }
-
-    async fn exists(&self, path: &str) -> Result<bool> {
-        self.fs
-            .exists(path)
-            .await
-            .map_err(|err| anyhow!("check ext4 path {path}: {err}"))
-    }
 }
 
 pub enum Stage0RootfsProvider {
@@ -156,7 +87,9 @@ impl Stage0RootfsProvider {
                 Ok(Self::Erofs(rootfs))
             }
             RootfsKind::Ext4 => {
-                let rootfs = Ext4Rootfs::open(reader).await?;
+                let rootfs = Ext4Rootfs::open(reader)
+                    .await
+                    .map_err(|err| anyhow!(err.to_string()))?;
                 Ok(Self::Ext4(rootfs))
             }
             RootfsKind::Fat => {
@@ -183,7 +116,10 @@ impl Filesystem for Stage0RootfsProvider {
     async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
         match self {
             Self::Erofs(rootfs) => rootfs.read_all(path).await,
-            Self::Ext4(rootfs) => rootfs.read_all(path).await,
+            Self::Ext4(rootfs) => rootfs
+                .read_all(path)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
             Self::Fat(rootfs) => rootfs
                 .read_all(path)
                 .await
@@ -194,7 +130,10 @@ impl Filesystem for Stage0RootfsProvider {
     async fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
         match self {
             Self::Erofs(rootfs) => rootfs.read_range(path, offset, len).await,
-            Self::Ext4(rootfs) => rootfs.read_range(path, offset, len).await,
+            Self::Ext4(rootfs) => rootfs
+                .read_range(path, offset, len)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
             Self::Fat(rootfs) => rootfs
                 .read_range(path, offset, len)
                 .await
@@ -205,7 +144,10 @@ impl Filesystem for Stage0RootfsProvider {
     async fn read_dir(&self, path: &str) -> Result<Vec<String>> {
         match self {
             Self::Erofs(rootfs) => rootfs.read_dir(path).await,
-            Self::Ext4(rootfs) => rootfs.read_dir(path).await,
+            Self::Ext4(rootfs) => rootfs
+                .read_dir(path)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
             Self::Fat(rootfs) => rootfs
                 .read_dir(path)
                 .await
@@ -216,7 +158,10 @@ impl Filesystem for Stage0RootfsProvider {
     async fn entry_type(&self, path: &str) -> Result<Option<FilesystemEntryType>> {
         match self {
             Self::Erofs(rootfs) => rootfs.entry_type(path).await,
-            Self::Ext4(rootfs) => rootfs.entry_type(path).await,
+            Self::Ext4(rootfs) => rootfs
+                .entry_type(path)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
             Self::Fat(rootfs) => <FatFs as Filesystem>::entry_type(rootfs, path)
                 .await
                 .map_err(|err| anyhow!("read fat entry type {path}: {err}")),
@@ -226,7 +171,10 @@ impl Filesystem for Stage0RootfsProvider {
     async fn read_link(&self, path: &str) -> Result<String> {
         match self {
             Self::Erofs(rootfs) => rootfs.read_link(path).await,
-            Self::Ext4(rootfs) => rootfs.read_link(path).await,
+            Self::Ext4(rootfs) => rootfs
+                .read_link(path)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
             Self::Fat(rootfs) => rootfs
                 .read_link(path)
                 .await
@@ -237,7 +185,10 @@ impl Filesystem for Stage0RootfsProvider {
     async fn exists(&self, path: &str) -> Result<bool> {
         match self {
             Self::Erofs(rootfs) => rootfs.exists(path).await,
-            Self::Ext4(rootfs) => rootfs.exists(path).await,
+            Self::Ext4(rootfs) => rootfs
+                .exists(path)
+                .await
+                .map_err(|err| anyhow!(err.to_string())),
             Self::Fat(rootfs) => rootfs
                 .exists(path)
                 .await
@@ -263,7 +214,10 @@ impl Stage0CoalescingFilesystem {
             let image_size_bytes = total_blocks
                 .checked_mul(reader.block_size() as u64)
                 .ok_or_else(|| anyhow!("channel image size overflow"))?;
-            let Some(kind) = detect_rootfs_kind(reader.as_ref()).await? else {
+            let Some(kind) = detect_rootfs_kind(reader.as_ref())
+                .await
+                .map_err(|err| anyhow!(err.to_string()))?
+            else {
                 continue;
             };
             let provider = Stage0RootfsProvider::open(kind, reader, image_size_bytes).await?;
@@ -367,90 +321,6 @@ impl Filesystem for Stage0CoalescingFilesystem {
         } else {
             Ok(false)
         }
-    }
-}
-
-#[derive(Clone)]
-struct OffsetChannelBlockReader {
-    inner: Arc<dyn BlockReader>,
-    offset_bytes: u64,
-    size_bytes: u64,
-    block_size: u32,
-}
-
-impl OffsetChannelBlockReader {
-    fn new(inner: Arc<dyn BlockReader>, offset_bytes: u64, inner_size_bytes: u64) -> Result<Self> {
-        let block_size = inner.block_size();
-        if block_size == 0 {
-            bail!("channel reader block size is zero");
-        }
-        if offset_bytes > inner_size_bytes {
-            bail!("channel stream offset {offset_bytes} exceeds source size {inner_size_bytes}");
-        }
-
-        Ok(Self {
-            inner,
-            offset_bytes,
-            size_bytes: inner_size_bytes - offset_bytes,
-            block_size,
-        })
-    }
-}
-
-#[async_trait]
-impl BlockReader for OffsetChannelBlockReader {
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
-
-    async fn total_blocks(&self) -> GibbloxResult<u64> {
-        let block_size = self.block_size as u64;
-        if block_size == 0 {
-            return Err(GibbloxError::with_message(
-                GibbloxErrorKind::InvalidInput,
-                "block size must be non-zero",
-            ));
-        }
-        Ok(self.size_bytes.div_ceil(block_size))
-    }
-
-    fn write_identity(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
-        self.inner.write_identity(out)?;
-        write!(out, "|offset:{}", self.offset_bytes)
-    }
-
-    async fn read_blocks(
-        &self,
-        lba: u64,
-        buf: &mut [u8],
-        ctx: ReadContext,
-    ) -> GibbloxResult<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-
-        let block_size = self.block_size as u64;
-        let local_offset = lba.checked_mul(block_size).ok_or_else(|| {
-            GibbloxError::with_message(GibbloxErrorKind::OutOfRange, "channel read offset overflow")
-        })?;
-        if local_offset >= self.size_bytes {
-            return Ok(0);
-        }
-
-        let remaining = self.size_bytes - local_offset;
-        let max_read = core::cmp::min(buf.len() as u64, remaining) as usize;
-        let global_offset = self.offset_bytes.checked_add(local_offset).ok_or_else(|| {
-            GibbloxError::with_message(
-                GibbloxErrorKind::OutOfRange,
-                "channel global read offset overflow",
-            )
-        })?;
-
-        let byte_reader = AlignedByteReader::new(self.inner.clone()).await?;
-        byte_reader
-            .read_exact_at(global_offset, &mut buf[..max_read], ctx)
-            .await?;
-        Ok(max_read)
     }
 }
 
@@ -584,12 +454,14 @@ impl ArtifactReaderResolver {
             }
 
             let reader = if stream_head.consumed_bytes < source_total_bytes {
-                let trailing = OffsetChannelBlockReader::new(
-                    source.reader,
-                    stream_head.consumed_bytes,
-                    source_total_bytes,
-                )?;
-                let trailing: Arc<dyn BlockReader> = Arc::new(trailing);
+                let trailing: Arc<dyn BlockReader> = Arc::new(
+                    OffsetBlockReader::new(
+                        source.reader,
+                        stream_head.consumed_bytes,
+                        source_total_bytes,
+                    )
+                    .map_err(|err| anyhow!(err.to_string()))?,
+                );
                 unwrap_channel_reader(trailing, Some(channel)).await?
             } else {
                 unwrap_channel_reader(source.reader, Some(channel)).await?
@@ -619,12 +491,14 @@ impl ArtifactReaderResolver {
         self.reset_pipeline_hints(&pipeline_hints)?;
 
         let reader = if stream_head.consumed_bytes < source_total_bytes {
-            let trailing = OffsetChannelBlockReader::new(
-                source.reader,
-                stream_head.consumed_bytes,
-                source_total_bytes,
-            )?;
-            let trailing: Arc<dyn BlockReader> = Arc::new(trailing);
+            let trailing: Arc<dyn BlockReader> = Arc::new(
+                OffsetBlockReader::new(
+                    source.reader,
+                    stream_head.consumed_bytes,
+                    source_total_bytes,
+                )
+                .map_err(|err| anyhow!(err.to_string()))?,
+            );
             unwrap_channel_reader(trailing, Some(channel)).await?
         } else {
             self.open_artifact_source(boot_profile.rootfs.source())
@@ -848,6 +722,17 @@ impl ArtifactReaderResolver {
             "using local artifact override"
         );
         Ok(Some(path.clone()))
+    }
+}
+
+impl BootProfileArtifactSourceOpener for ArtifactReaderResolver {
+    type Error = anyhow::Error;
+
+    async fn open_boot_profile_artifact_source(
+        &mut self,
+        source: &BootProfileArtifactSource,
+    ) -> Result<Arc<dyn BlockReader>, Self::Error> {
+        self.open_artifact_source(source).await
     }
 }
 
@@ -1185,36 +1070,9 @@ async fn discover_mbr_partition_readers(
 pub async fn classify_channel_reader<R: BlockReader + ?Sized>(
     reader: &R,
 ) -> Result<ChannelStreamKind> {
-    let prefix = read_channel_prefix(reader, CHANNEL_SNIFF_PREFIX_LEN).await?;
-    Ok(classify_channel_prefix(&prefix))
-}
-
-async fn read_channel_prefix<R: BlockReader + ?Sized>(reader: &R, cap: usize) -> Result<Vec<u8>> {
-    let block_size = reader.block_size() as usize;
-    if block_size == 0 {
-        bail!("channel reader block size is zero")
-    }
-
-    let total_bytes = total_reader_bytes(reader).await?;
-    let prefix_len = core::cmp::min(cap as u64, total_bytes) as usize;
-    if prefix_len == 0 {
-        return Ok(Vec::new());
-    }
-
-    let blocks_to_read = prefix_len.div_ceil(block_size);
-    let mut scratch = vec![0u8; blocks_to_read * block_size];
-    let read = reader
-        .read_blocks(0, &mut scratch, ReadContext::FOREGROUND)
-        .await?;
-    scratch.truncate(core::cmp::min(read, prefix_len));
-    Ok(scratch)
-}
-
-async fn total_reader_bytes<R: BlockReader + ?Sized>(reader: &R) -> Result<u64> {
-    let total_blocks = reader.total_blocks().await?;
-    total_blocks
-        .checked_mul(reader.block_size() as u64)
-        .ok_or_else(|| anyhow!("channel size overflow"))
+    classify_channel_reader_core(reader)
+        .await
+        .map_err(|err| anyhow!(err.to_string()))
 }
 
 fn zip_entry_name_from_channel_hint(channel_hint: Option<&Path>) -> Result<Option<String>> {
@@ -1251,19 +1109,6 @@ fn zip_entry_name_from_file_name(file_name: Option<&str>) -> Result<Option<Strin
         bail!("zip channel filename must include a non-empty stem")
     }
     Ok(Some(format!("{stem}.ero")))
-}
-
-async fn detect_rootfs_kind<R: BlockReader + ?Sized>(reader: &R) -> Result<Option<RootfsKind>> {
-    if reader_has_erofs_magic(reader).await? {
-        return Ok(Some(RootfsKind::Erofs));
-    }
-    if reader_has_ext4_magic(reader).await? {
-        return Ok(Some(RootfsKind::Ext4));
-    }
-    if reader_has_fat_magic(reader).await? {
-        return Ok(Some(RootfsKind::Fat));
-    }
-    Ok(None)
 }
 
 async fn open_uncached_http_reader(url: Url) -> Result<ChannelSourceReader> {
@@ -1341,91 +1186,13 @@ async fn open_casync_reader(
 async fn casync_blob_looks_like_supported_rootfs<R: BlockReader + ?Sized>(
     reader: &R,
 ) -> Result<bool> {
-    Ok(reader_has_erofs_magic(reader).await? || reader_has_ext4_magic(reader).await?)
-}
-
-async fn reader_has_erofs_magic<R: BlockReader + ?Sized>(reader: &R) -> Result<bool> {
-    const EROFS_SUPER_OFFSET: u64 = 1024;
-    const EROFS_SUPER_MAGIC: u32 = 0xe0f5_e1e2;
-
-    let Some(bytes) = read_magic_bytes(reader, EROFS_SUPER_OFFSET, 4).await? else {
-        return Ok(false);
-    };
-    let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-    Ok(magic == EROFS_SUPER_MAGIC)
-}
-
-async fn reader_has_ext4_magic<R: BlockReader + ?Sized>(reader: &R) -> Result<bool> {
-    const EXT4_MAGIC_OFFSET: u64 = 1024 + 0x38;
-    const EXT4_MAGIC: u16 = 0xef53;
-
-    let Some(bytes) = read_magic_bytes(reader, EXT4_MAGIC_OFFSET, 2).await? else {
-        return Ok(false);
-    };
-    let magic = u16::from_le_bytes([bytes[0], bytes[1]]);
-    Ok(magic == EXT4_MAGIC)
-}
-
-async fn reader_has_fat_magic<R: BlockReader + ?Sized>(reader: &R) -> Result<bool> {
-    let Some(boot_signature) = read_magic_bytes(reader, 510, 2).await? else {
-        return Ok(false);
-    };
-    if boot_signature.as_slice() != [0x55, 0xAA] {
-        return Ok(false);
-    }
-
-    let fat12 = read_magic_bytes(reader, 54, 5).await?;
-    if fat12.as_deref() == Some(b"FAT12") {
-        return Ok(true);
-    }
-
-    let fat16 = read_magic_bytes(reader, 54, 5).await?;
-    if fat16.as_deref() == Some(b"FAT16") {
-        return Ok(true);
-    }
-
-    let fat32 = read_magic_bytes(reader, 82, 5).await?;
-    Ok(fat32.as_deref() == Some(b"FAT32"))
-}
-
-async fn read_magic_bytes<R: BlockReader + ?Sized>(
-    reader: &R,
-    offset: u64,
-    len: usize,
-) -> Result<Option<Vec<u8>>> {
-    if len == 0 {
-        return Ok(Some(Vec::new()));
-    }
-
-    let block_size = reader.block_size() as u64;
-    if block_size == 0 {
-        bail!("channel reader block size is zero");
-    }
-    let total_blocks = reader.total_blocks().await?;
-    let total_bytes = total_blocks
-        .checked_mul(block_size)
-        .ok_or_else(|| anyhow!("channel blob size overflow"))?;
-    let required_end = offset
-        .checked_add(len as u64)
-        .ok_or_else(|| anyhow!("channel magic offset overflow"))?;
-    if total_bytes < required_end {
-        return Ok(None);
-    }
-
-    let super_lba = offset / block_size;
-    let within_block = (offset % block_size) as usize;
-    let block_size_usize = block_size as usize;
-    let required = within_block + len;
-    let blocks_to_read = required.div_ceil(block_size_usize);
-    let mut scratch = vec![0u8; blocks_to_read * block_size_usize];
-    let read = reader
-        .read_blocks(super_lba, &mut scratch, ReadContext::FOREGROUND)
-        .await?;
-    if read < required {
-        return Ok(None);
-    }
-
-    Ok(Some(scratch[within_block..within_block + len].to_vec()))
+    let erofs = reader_has_erofs_magic(reader)
+        .await
+        .map_err(|err| anyhow!(err.to_string()))?;
+    let ext4 = reader_has_ext4_magic(reader)
+        .await
+        .map_err(|err| anyhow!(err.to_string()))?;
+    Ok(erofs || ext4)
 }
 
 fn derive_casync_chunk_store_url(index_url: &Url) -> Result<Url> {
@@ -1477,10 +1244,17 @@ pub fn default_gibblox_cache_root() -> PathBuf {
     std::env::temp_dir().join("gibblox")
 }
 
-#[derive(Default)]
-pub struct BootProfileSourceOverrides {
-    pub kernel_override: Option<Stage0KernelOverride>,
-    pub dtb_override: Option<Vec<u8>>,
+impl BootProfileSourceRootfs for Stage0RootfsProvider {
+    async fn open_boot_profile_source(
+        source: &BootProfileRootfs,
+        reader: Arc<dyn BlockReader>,
+    ) -> Result<Self, Self::Error> {
+        let kind = boot_profile_rootfs_kind(source);
+        let image_size_bytes = block_reader_size_bytes(reader.as_ref())
+            .await
+            .map_err(|err| anyhow!(err.to_string()))?;
+        Self::open(kind, reader, image_size_bytes).await
+    }
 }
 
 pub async fn resolve_boot_profile_source_overrides(
@@ -1488,186 +1262,13 @@ pub async fn resolve_boot_profile_source_overrides(
     device_profile: &DeviceProfile,
     resolver: &mut ArtifactReaderResolver,
 ) -> Result<BootProfileSourceOverrides> {
-    let Some(boot_profile) = boot_profile else {
-        return Ok(BootProfileSourceOverrides::default());
-    };
-
-    let kernel_override = if let Some(kernel_source) = boot_profile.kernel.as_ref() {
-        let kernel_path = non_empty_profile_path(kernel_source.path.as_str(), "kernel.path")?;
-        let source_reader = resolver
-            .open_artifact_source(kernel_source.artifact_source())
-            .await?;
-        let source_rootfs = ProfileSourceRootfs::open(&kernel_source.source, source_reader).await?;
-        let kernel_image = source_rootfs.read_all(kernel_path).await?;
-        Some(Stage0KernelOverride {
-            path: kernel_path.to_string(),
-            image: kernel_image,
-        })
-    } else {
-        None
-    };
-
-    let dtb_override = if let Some(dtbs_source) = boot_profile.dtbs.as_ref() {
-        let dtbs_base = non_empty_profile_path(dtbs_source.path.as_str(), "dtbs.path")?;
-        let source_reader = resolver
-            .open_artifact_source(dtbs_source.artifact_source())
-            .await?;
-        let source_rootfs = ProfileSourceRootfs::open(&dtbs_source.source, source_reader).await?;
-        let dtb_path = resolve_dtb_path_candidate(
-            &source_rootfs,
-            dtbs_base,
-            device_profile.devicetree_name.as_str(),
-        )
-        .await?;
-        Some(source_rootfs.read_all(dtb_path.as_str()).await?)
-    } else {
-        None
-    };
-
-    Ok(BootProfileSourceOverrides {
-        kernel_override,
-        dtb_override,
-    })
-}
-
-enum ProfileSourceRootfs {
-    Erofs(ErofsRootfs),
-    Ext4(Ext4Rootfs),
-    Fat(FatFs),
-}
-
-impl ProfileSourceRootfs {
-    async fn open(source: &BootProfileRootfs, reader: Arc<dyn BlockReader>) -> Result<Self> {
-        match source {
-            BootProfileRootfs::Ostree(source) => match &source.ostree {
-                BootProfileRootfsFilesystemSource::Erofs(_) => {
-                    let total_blocks = reader.total_blocks().await?;
-                    let image_size_bytes = total_blocks
-                        .checked_mul(reader.block_size() as u64)
-                        .ok_or_else(|| anyhow!("boot profile source image size overflow"))?;
-                    let rootfs = ErofsRootfs::new(reader, image_size_bytes)
-                        .await
-                        .map_err(|err| anyhow!("open boot profile erofs source: {err}"))?;
-                    Ok(Self::Erofs(rootfs))
-                }
-                BootProfileRootfsFilesystemSource::Ext4(_) => {
-                    let rootfs = Ext4Rootfs::open(reader)
-                        .await
-                        .map_err(|err| anyhow!("open boot profile ext4 source: {err}"))?;
-                    Ok(Self::Ext4(rootfs))
-                }
-                BootProfileRootfsFilesystemSource::Fat(_) => {
-                    let rootfs = FatFs::open(reader)
-                        .await
-                        .map_err(|err| anyhow!("open boot profile fat source: {err}"))?;
-                    Ok(Self::Fat(rootfs))
-                }
-            },
-            BootProfileRootfs::Erofs(_) => {
-                let total_blocks = reader.total_blocks().await?;
-                let image_size_bytes = total_blocks
-                    .checked_mul(reader.block_size() as u64)
-                    .ok_or_else(|| anyhow!("boot profile source image size overflow"))?;
-                let rootfs = ErofsRootfs::new(reader, image_size_bytes)
-                    .await
-                    .map_err(|err| anyhow!("open boot profile erofs source: {err}"))?;
-                Ok(Self::Erofs(rootfs))
-            }
-            BootProfileRootfs::Ext4(_) => {
-                let rootfs = Ext4Rootfs::open(reader)
-                    .await
-                    .map_err(|err| anyhow!("open boot profile ext4 source: {err}"))?;
-                Ok(Self::Ext4(rootfs))
-            }
-            BootProfileRootfs::Fat(_) => {
-                let rootfs = FatFs::open(reader)
-                    .await
-                    .map_err(|err| anyhow!("open boot profile fat source: {err}"))?;
-                Ok(Self::Fat(rootfs))
-            }
-        }
-    }
-
-    async fn read_all(&self, path: &str) -> Result<Vec<u8>> {
-        match self {
-            Self::Erofs(rootfs) => rootfs
-                .read_all(path)
-                .await
-                .map_err(|err| anyhow!("read boot profile erofs path {path}: {err}")),
-            Self::Ext4(rootfs) => rootfs
-                .read_all(path)
-                .await
-                .map_err(|err| anyhow!("read boot profile ext4 path {path}: {err}")),
-            Self::Fat(rootfs) => rootfs
-                .read_all(path)
-                .await
-                .map_err(|err| anyhow!("read boot profile fat path {path}: {err}")),
-        }
-    }
-
-    async fn exists(&self, path: &str) -> Result<bool> {
-        match self {
-            Self::Erofs(rootfs) => rootfs
-                .exists(path)
-                .await
-                .map_err(|err| anyhow!("check boot profile erofs path {path}: {err}")),
-            Self::Ext4(rootfs) => rootfs
-                .exists(path)
-                .await
-                .map_err(|err| anyhow!("check boot profile ext4 path {path}: {err}")),
-            Self::Fat(rootfs) => rootfs
-                .exists(path)
-                .await
-                .map_err(|err| anyhow!("check boot profile fat path {path}: {err}")),
-        }
-    }
-}
-
-fn non_empty_profile_path<'a>(path: &'a str, field: &str) -> Result<&'a str> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        bail!("boot profile {field} must not be empty");
-    }
-    Ok(trimmed)
-}
-
-async fn resolve_dtb_path_candidate(
-    source_rootfs: &ProfileSourceRootfs,
-    dtbs_base: &str,
-    devicetree_name: &str,
-) -> Result<String> {
-    let devicetree_name = devicetree_name.trim().trim_start_matches('/');
-    if devicetree_name.is_empty() {
-        bail!("device profile devicetree_name is empty");
-    }
-
-    let mut candidates = Vec::new();
-    if dtbs_base.ends_with(".dtb") {
-        candidates.push(dtbs_base.to_string());
-    } else {
-        let dtb_file = format!("{devicetree_name}.dtb");
-        candidates.push(join_profile_path(dtbs_base, dtb_file.as_str()));
-        candidates.push(join_profile_path(dtbs_base, devicetree_name));
-        candidates.push(dtbs_base.to_string());
-    }
-
-    for candidate in candidates {
-        if source_rootfs.exists(candidate.as_str()).await? {
-            return Ok(candidate);
-        }
-    }
-
-    bail!("boot profile dtbs path {dtbs_base} does not contain dtb for {devicetree_name}")
-}
-
-fn join_profile_path(base: &str, suffix: &str) -> String {
-    let base = base.trim_end_matches('/');
-    let suffix = suffix.trim_start_matches('/');
-    if base.is_empty() {
-        format!("/{suffix}")
-    } else {
-        format!("{base}/{suffix}")
-    }
+    resolve_boot_profile_source_overrides_with::<_, Stage0RootfsProvider>(
+        boot_profile,
+        device_profile,
+        resolver,
+    )
+    .await
+    .map_err(|err| anyhow!(err.to_string()))
 }
 
 pub fn parse_ostree_arg(raw: Option<&Option<String>>) -> Result<OstreeArg> {
@@ -1793,9 +1394,11 @@ fn resolve_rooted(root: &Path, path: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use fastboop_core::{
         BootProfile, BootProfileManifest, DeviceProfile, encode_boot_profile, encode_dev_profile,
     };
+    use gibblox_core::{GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
     use gobblytes_core::MockFilesystem;
 
     #[tokio::test]
@@ -2092,7 +1695,7 @@ stage0:
         assert_eq!(head.warning_count, 1);
 
         let trailing_reader =
-            OffsetChannelBlockReader::new(source, head.consumed_bytes, stream_len).unwrap();
+            OffsetBlockReader::new(source, head.consumed_bytes, stream_len).unwrap();
         let trailing_reader: Arc<dyn BlockReader> = Arc::new(trailing_reader);
         let unwrapped = unwrap_channel_reader(trailing_reader, None).await.unwrap();
         let kind = classify_channel_reader(unwrapped.as_ref()).await.unwrap();
@@ -2193,7 +1796,7 @@ rootfs:
         assert_eq!(head.consumed_bytes, indexed_len);
 
         let trailing_reader =
-            OffsetChannelBlockReader::new(source, head.consumed_bytes, stream_len).unwrap();
+            OffsetBlockReader::new(source, head.consumed_bytes, stream_len).unwrap();
         let trailing_reader: Arc<dyn BlockReader> = Arc::new(trailing_reader);
         let unwrapped = unwrap_channel_reader(trailing_reader, None).await.unwrap();
         let kind = classify_channel_reader(unwrapped.as_ref()).await.unwrap();
