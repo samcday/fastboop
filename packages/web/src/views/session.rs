@@ -1,26 +1,13 @@
-#[cfg(target_arch = "wasm32")]
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(target_arch = "wasm32")]
-use std::sync::Arc;
 
-#[cfg(target_arch = "wasm32")]
-use anyhow::Context;
 use dioxus::prelude::{Signal, WritableExt};
 use fastboop_core::{BootProfile, ChannelPipelineHintsRecord, DeviceProfile};
-use fastboop_fastboot_webusb::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
-use gibblox_blockreader_messageport::{MessagePortBlockReaderClient, MessagePortBlockReaderServer};
-#[cfg(target_arch = "wasm32")]
-use gibblox_core::BlockReader;
+use fastboop_environment_web::LocalReaderBridge;
+use fastboop_environment_web::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
 use ui::SmooStatsHandle;
-#[cfg(target_arch = "wasm32")]
-use web_sys::MessageChannel;
-
-#[cfg(target_arch = "wasm32")]
-use crate::wasm_utils::js_value_to_string;
 
 #[derive(Clone)]
 pub struct ProbedDevice {
@@ -64,40 +51,6 @@ pub struct SessionChannelIntake {
     pub has_artifact_payload: bool,
     pub compatible_boot_profiles: Vec<BootProfile>,
     pub pipeline_hint_records: Vec<ChannelPipelineHintsRecord>,
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone)]
-pub struct LocalReaderBridge {
-    reader: Arc<dyn BlockReader>,
-    servers: Rc<RefCell<Vec<MessagePortBlockReaderServer>>>,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl LocalReaderBridge {
-    pub fn new(reader: Arc<dyn BlockReader>) -> Self {
-        Self {
-            reader,
-            servers: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    pub async fn create_reader(&self) -> anyhow::Result<MessagePortBlockReaderClient> {
-        let channel = MessageChannel::new().map_err(|err| {
-            anyhow::anyhow!(
-                "create local channel reader bridge message channel: {}",
-                js_value_to_string(&err)
-            )
-        })?;
-        let server = MessagePortBlockReaderServer::serve(channel.port2(), self.reader.clone())
-            .map_err(|err| anyhow::anyhow!("serve local channel reader bridge: {err}"))?;
-        let client = MessagePortBlockReaderClient::connect(channel.port1())
-            .await
-            .map_err(|err| anyhow::anyhow!("connect local channel reader bridge: {err}"))
-            .with_context(|| "attach local channel reader bridge")?;
-        self.servers.borrow_mut().push(server);
-        Ok(client)
-    }
 }
 
 #[allow(dead_code)]

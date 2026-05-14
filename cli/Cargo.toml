@@ -24,48 +24,23 @@ path = "src/main.rs"
 
 [features]
 default = []
-embed-stage0 = []
+embed-stage0 = ["fastboop-environment-std/embed-stage0"]
 tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
 anyhow = { workspace = true }
-async-trait = { workspace = true }
 clap = { workspace = true }
 fastboop-core = { path = "../crates/fastboop-core", version = "0.0.1-rc.12" }
 fastboop-bootpro = { workspace = true }
-fastboop-stage0-generator = { path = "../crates/fastboop-stage0-generator", version = "0.0.1-rc.12" }
-fastboop-fastboot-rusb = { path = "../crates/fastboop-fastboot-rusb", version = "0.0.1-rc.12" }
-serde = { version = "1.0.217", features = ["derive"] }
-serde_json = "1.0.132"
+fastboop-environment-std = { workspace = true }
+fastboop-session = { workspace = true }
 serde_yaml = { workspace = true }
-hyper = { workspace = true, features = ["server", "http1", "tcp"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-gibblox-core = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-ext4 = { version = "0.0.2-rc.3" }
-gibblox-mbr = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-casync = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-casync-std = { version = "0.0.2-rc.3" }
-gibblox-file = { version = "0.0.2-rc.3" }
-gibblox-http = { version = "0.0.2-rc.3", default-features = false, features = ["native-client"] }
-gibblox-cache = { version = "0.0.2-rc.3" }
-gibblox-cache-store-std = { version = "0.0.2-rc.3" }
-gibblox-pipeline = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-android-sparse = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-tar = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-xz = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-zip = { version = "0.0.2-rc.3", features = ["std"] }
-gobblytes-core = { version = "0.0.2-rc.3" }
-gobblytes-erofs = { version = "0.0.2-rc.3" }
-gobblytes-fat = { version = "0.0.2-rc.3" }
-smoo-host-core = { version = "0.0.2-rc.6" }
-smoo-host-session = { version = "0.0.2-rc.6" }
-smoo-host-transport-rusb = { version = "0.0.2-rc.6" }
-smoo-host-blocksource-gibblox = { version = "0.0.2-rc.6" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-util = { workspace = true }
-url = { workspace = true }
-rustix = { workspace = true, features = ["fs"] }
-sha2 = { workspace = true, default-features = true }
 ratatui = { version = "0.29.0", optional = true }
 crossterm = { version = "0.28.1", optional = true }
+
+[dev-dependencies]
+gibblox-pipeline = { version = "0.0.2-rc.3", features = ["std"] }

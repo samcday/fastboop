@@ -66,10 +66,6 @@ pub fn Home() -> Element {
     };
 
     let submit_channel_url_handler: Option<EventHandler<MouseEvent>> = {
-        let startup_channel = startup_channel;
-        let startup_channel_prompt_error = startup_channel_prompt_error;
-        let startup_channel_url_value = startup_channel_url_value;
-        let startup_channel_url_submit_pending = startup_channel_url_submit_pending;
         Some(EventHandler::new(move |_evt: MouseEvent| {
             if startup_channel_url_submit_pending() {
                 return;
@@ -87,10 +83,6 @@ pub fn Home() -> Element {
     };
 
     let pick_channel_file_handler: EventHandler<MouseEvent> = {
-        let startup_channel = startup_channel;
-        let startup_channel_prompt_error = startup_channel_prompt_error;
-        let startup_channel_url_value = startup_channel_url_value;
-        let startup_channel_url_submit_pending = startup_channel_url_submit_pending;
         EventHandler::new(move |_evt: MouseEvent| {
             if startup_channel_url_submit_pending() {
                 return;
@@ -128,19 +120,16 @@ pub fn Home() -> Element {
         })
     };
 
-    let startup_channel_intake = {
-        let startup_channel = startup_channel;
-        use_resource(move || {
-            let startup_channel = startup_channel();
-            async move {
-                let Some(startup_channel) = startup_channel else {
-                    return Err(missing_desktop_channel_prompt());
-                };
+    let startup_channel_intake = use_resource(move || {
+        let startup_channel = startup_channel();
+        async move {
+            let Some(startup_channel) = startup_channel else {
+                return Err(missing_desktop_channel_prompt());
+            };
 
-                crate::load_startup_channel_intake(&startup_channel).await
-            }
-        })
-    };
+            crate::load_startup_channel_intake(&startup_channel).await
+        }
+    });
     let startup_channel_ready = matches!(startup_channel_intake.read().as_ref(), Some(Ok(_)));
 
     let mut watcher_started = use_signal(|| false);
@@ -251,7 +240,6 @@ pub fn Home() -> Element {
     let on_boot = {
         let mut sessions = sessions;
         let devices = snapshot.devices.clone();
-        let startup_channel_intake = startup_channel_intake;
         Some(EventHandler::new(move |index: usize| {
             let Some(device) = devices.get(index).cloned() else {
                 return;
@@ -294,12 +282,6 @@ pub fn Home() -> Element {
                     serial: device.serial,
                 },
                 channel_intake: SessionChannelIntake {
-                    exact_total_bytes: intake.exact_total_bytes,
-                    consumed_bytes: intake.stream_head.consumed_bytes,
-                    warning_count: intake.stream_head.warning_count,
-                    has_artifact_payload: intake.has_artifact_payload(),
-                    pipeline_hints: intake.stream_head.pipeline_hints.clone(),
-                    pipeline_hint_records: intake.stream_head.pipeline_hint_records.clone(),
                     compatible_boot_profiles,
                 },
                 boot_config: BootConfig::new(
@@ -343,8 +325,8 @@ pub fn Home() -> Element {
                 launch_hint,
                 eyebrow: Some("Startup channel".to_string()),
                 channel_url_value: Some(startup_channel_url_value()),
-                on_channel_url_input: channel_url_input_handler.clone(),
-                on_submit_channel_url: submit_channel_url_handler.clone(),
+                on_channel_url_input: channel_url_input_handler,
+                on_submit_channel_url: submit_channel_url_handler,
                 submit_channel_url_pending: Some(startup_channel_url_submit_pending()),
                 channel_input_label: Some("or enter a channel URL or local path".to_string()),
                 channel_input_placeholder: Some("https://example.invalid/channel.ero or /path/to/channel.ero".to_string()),
