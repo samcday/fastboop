@@ -3,6 +3,7 @@ mod check;
 mod desktop_dev;
 mod frontdoor_dev;
 mod release;
+mod util;
 
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
