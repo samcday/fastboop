@@ -1,6 +1,6 @@
+use crate::util;
 use std::fs;
 use std::path::Path;
-use std::process::{Command, ExitStatus};
 
 pub fn bump(version: Option<&str>) {
     let version = version.unwrap_or_else(|| die("usage: cargo xtask bump <version>"));
@@ -43,7 +43,7 @@ pub fn bump(version: Option<&str>) {
     );
 
     sync_path_dependency_versions(Path::new("."), &old_cargo_version, cargo_version);
-    run(
+    util::run(
         "cargo",
         &["update", "-p", "fastboop-cli", "--precise", cargo_version],
     );
@@ -63,9 +63,9 @@ pub fn bump(version: Option<&str>) {
 
 pub fn publish(live: bool) {
     if live {
-        run("tools/publish-crates.sh", &["--publish"]);
+        util::run("tools/publish-crates.sh", &["--publish"]);
     } else {
-        run("tools/publish-crates.sh", &["--dry-run"]);
+        util::run("tools/publish-crates.sh", &["--dry-run"]);
     }
 }
 
@@ -117,29 +117,25 @@ fn workspace_version() -> String {
 fn replace_line(path: &str, prefix: &str, replacement: &str) {
     let text =
         fs::read_to_string(path).unwrap_or_else(|err| panic!("failed to read {path}: {err}"));
-    let updated = text
-        .lines()
-        .map(|line| {
-            if line.starts_with(prefix) {
-                replacement
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(path, format!("{updated}\n"))
-        .unwrap_or_else(|err| panic!("failed to write {path}: {err}"));
+    let updated = replace_lines_preserving_endings(&text, |line| {
+        line.starts_with(prefix).then(|| replacement.to_string())
+    });
+    fs::write(path, updated).unwrap_or_else(|err| panic!("failed to write {path}: {err}"));
 }
 
 fn replace_first_line(path: &str, replacement: &str) {
     let text =
         fs::read_to_string(path).unwrap_or_else(|err| panic!("failed to read {path}: {err}"));
-    let mut lines = text.lines();
-    let _ = lines.next();
-    let rest = lines.collect::<Vec<_>>().join("\n");
-    fs::write(path, format!("{replacement}\n{rest}\n"))
-        .unwrap_or_else(|err| panic!("failed to write {path}: {err}"));
+    let mut replaced = false;
+    let updated = replace_lines_preserving_endings(&text, |_| {
+        if replaced {
+            None
+        } else {
+            replaced = true;
+            Some(replacement.to_string())
+        }
+    });
+    fs::write(path, updated).unwrap_or_else(|err| panic!("failed to write {path}: {err}"));
 }
 
 fn sync_path_dependency_versions(dir: &Path, old_version: &str, new_version: &str) {
@@ -169,32 +165,37 @@ fn sync_manifest(path: &Path, old_version: &str, new_version: &str) {
     }
 
     let replacement = format!("version = \"={new_version}\"");
-    let updated = text
-        .lines()
-        .map(|line| {
-            if line.contains("path =") {
-                line.replace(&needle, &replacement)
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(path, format!("{updated}\n"))
-        .unwrap_or_else(|err| panic!("failed to write {path:?}: {err}"));
+    let updated = replace_lines_preserving_endings(&text, |line| {
+        line.contains("path =")
+            .then(|| line.replace(&needle, &replacement))
+    });
+    fs::write(path, updated).unwrap_or_else(|err| panic!("failed to write {path:?}: {err}"));
 }
 
-fn run(program: &str, args: &[&str]) {
-    let status = Command::new(program)
-        .args(args)
-        .status()
-        .unwrap_or_else(|err| panic!("failed to run {program}: {err}"));
-    exit_on_failure(status);
+fn replace_lines_preserving_endings(
+    text: &str,
+    mut replace: impl FnMut(&str) -> Option<String>,
+) -> String {
+    let mut updated = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (line, line_ending) = split_line_ending(line);
+        if let Some(replacement) = replace(line) {
+            updated.push_str(&replacement);
+        } else {
+            updated.push_str(line);
+        }
+        updated.push_str(line_ending);
+    }
+    updated
 }
 
-fn exit_on_failure(status: ExitStatus) {
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+fn split_line_ending(line: &str) -> (&str, &str) {
+    if let Some(line) = line.strip_suffix("\r\n") {
+        (line, "\r\n")
+    } else if let Some(line) = line.strip_suffix('\n') {
+        (line, "\n")
+    } else {
+        (line, "")
     }
 }
 
