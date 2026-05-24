@@ -108,8 +108,13 @@ pub fn build_android_bootimg(
     }
 
     let (cmdline_main, cmdline_extra) = split_cmdline(cmdline)?;
-    let (kernel_addr, ramdisk_addr, second_addr, tags_addr) =
-        compute_addrs(boot.base, boot.kernel_offset)?;
+    let (kernel_addr, ramdisk_addr, second_addr, tags_addr) = compute_addrs(
+        boot.base,
+        boot.kernel_offset,
+        boot.ramdisk_offset,
+        boot.second_offset,
+        boot.tags_offset,
+    )?;
     let dtb = if header_version >= 2 && !boot.kernel.encoding.append_dtb() {
         dtb
     } else {
@@ -179,13 +184,19 @@ pub fn build_android_bootimg(
 fn compute_addrs(
     base: Option<u64>,
     kernel_offset: Option<u64>,
+    ramdisk_offset: Option<u64>,
+    second_offset: Option<u64>,
+    tags_offset: Option<u64>,
 ) -> Result<(u32, u32, u32, u32), BootImageError> {
     let base = base.unwrap_or(0);
     let kernel_offset = kernel_offset.unwrap_or(DEFAULT_KERNEL_OFFSET);
+    let ramdisk_offset = ramdisk_offset.unwrap_or(DEFAULT_RAMDISK_OFFSET);
+    let second_offset = second_offset.unwrap_or(DEFAULT_SECOND_OFFSET);
+    let tags_offset = tags_offset.unwrap_or(DEFAULT_TAGS_OFFSET);
     let kernel_addr = base + kernel_offset;
-    let ramdisk_addr = base + DEFAULT_RAMDISK_OFFSET;
-    let second_addr = base + DEFAULT_SECOND_OFFSET;
-    let tags_addr = base + DEFAULT_TAGS_OFFSET;
+    let ramdisk_addr = base + ramdisk_offset;
+    let second_addr = base + second_offset;
+    let tags_addr = base + tags_offset;
 
     Ok((
         u32::try_from(kernel_addr).map_err(|_| BootImageError::AddressOverflow("kernel"))?,

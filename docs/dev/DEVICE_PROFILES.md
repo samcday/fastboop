@@ -36,6 +36,9 @@ boot:
       header_version: 2
       page_size: 4096
       kernel_offset: 0x00008000
+      ramdisk_offset: 0x01000000
+      second_offset: 0x00f00000
+      tags_offset: 0x00000100
 
       kernel:
         encoding: image.gz
@@ -91,6 +94,11 @@ Treat this as a hardware contract, not distro policy:
 - Include fields required by the target bootloader.
 - Keep values factual to observed device behavior.
 - Avoid adding logic that belongs in Boot Profiles or stage0 generation.
+
+Address fields are Android boot image offsets relative to `base`. Most devices
+can rely on defaults, but older bootloaders can need explicit `ramdisk_offset`,
+`second_offset`, or `tags_offset` when their safe staging addresses differ from
+the generic Android layout.
 
 ## Stage0 Ownership
 

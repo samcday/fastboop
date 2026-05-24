@@ -8,6 +8,7 @@ Release assets include first-class stage0 static binaries:
 
 - `fastboop-stage0-x86_64-unknown-linux-musl`
 - `fastboop-stage0-aarch64-unknown-linux-musl`
+- `fastboop-stage0-armv7-unknown-linux-musleabihf` once the armv7 pipeline is promoted
 
 For tag `vX.Y.Z` (or `vX.Y.Z-rc.N`), assets are published alongside other release artifacts:
 
@@ -41,6 +42,8 @@ Local development fallback paths include:
 
 - `target/aarch64-unknown-linux-musl/release/fastboop-stage0`
 - `target/aarch64-unknown-linux-gnu/release/fastboop-stage0`
+- `target/armv7-unknown-linux-musleabihf/release/fastboop-stage0`
+- `target/armv7-unknown-linux-gnueabihf/release/fastboop-stage0`
 - `target/release/fastboop-stage0`
 - `target/debug/fastboop-stage0`
 
@@ -77,6 +80,4 @@ The sidecar payload target does not need to match the host package architecture.
 
 ## Armv7 Status
 
-Issue #13 allows `armv7-unknown-linux-musleabihf` or documented equivalent. Current release gating intentionally uses x86_64+aarch64 only.
-
-Reason: upstream `io-uring` target checks currently block reliable armv7 stage0 static artifact production in CI without additional architecture-specific work. Armv7 remains deferred follow-up scope.
+Issue #13 allows `armv7-unknown-linux-musleabihf` or documented equivalent. Local stage0 discovery now checks armv7 target output paths and package-style `stage0-armv7` sidecars. Release gating still needs the smoo armv7 gadget build pipeline before armv7 can be promoted to a first-class published stage0 artifact.

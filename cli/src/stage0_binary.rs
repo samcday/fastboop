@@ -6,10 +6,14 @@ use fastboop_stage0_generator::cpio_contains_path;
 
 const STAGE0_PATH_ENV: &str = "FASTBOOP_STAGE0_PATH";
 const STAGE0_FILE_NAME: &str = "stage0-aarch64";
+const ARMV7_STAGE0_FILE_NAME: &str = "stage0-armv7";
 const SIBLING_STAGE0_FILE_NAMES: &[&str] = &[
     STAGE0_FILE_NAME,
+    ARMV7_STAGE0_FILE_NAME,
     "fastboop-stage0-aarch64-unknown-linux-musl",
     "fastboop-stage0-aarch64-unknown-linux-gnu",
+    "fastboop-stage0-armv7-unknown-linux-musleabihf",
+    "fastboop-stage0-armv7-unknown-linux-gnueabihf",
     "fastboop-stage0",
 ];
 
@@ -121,6 +125,14 @@ fn push_workspace_candidates_from(out: &mut Vec<PathBuf>, start: &Path) {
             out,
             ancestor.join("target/aarch64-unknown-linux-gnu/release/fastboop-stage0"),
         );
+        push_unique(
+            out,
+            ancestor.join("target/armv7-unknown-linux-musleabihf/release/fastboop-stage0"),
+        );
+        push_unique(
+            out,
+            ancestor.join("target/armv7-unknown-linux-gnueabihf/release/fastboop-stage0"),
+        );
         push_unique(out, ancestor.join("target/release/fastboop-stage0"));
         push_unique(out, ancestor.join("target/debug/fastboop-stage0"));
     }
@@ -141,6 +153,12 @@ fn push_package_candidates(out: &mut Vec<PathBuf>) {
                 .join("lib/fastboop/stage0")
                 .join(STAGE0_FILE_NAME),
         );
+        push_unique(
+            out,
+            Path::new(prefix)
+                .join("lib/fastboop/stage0")
+                .join(ARMV7_STAGE0_FILE_NAME),
+        );
     }
 }
 
@@ -152,7 +170,7 @@ fn push_unique(out: &mut Vec<PathBuf>, path: PathBuf) {
 
 fn missing_stage0_message(candidates: &[PathBuf]) -> String {
     let mut message = format!(
-        "stage0 binary not found; build it first with `cargo build --release --target aarch64-unknown-linux-musl -p fastboop-stage0`, pass `--stage0 <PATH>`, or set `{STAGE0_PATH_ENV}`"
+        "stage0 binary not found; build it first with `cargo build --release --target aarch64-unknown-linux-musl -p fastboop-stage0` or an armv7 target such as `armv7-unknown-linux-musleabihf`, pass `--stage0 <PATH>`, or set `{STAGE0_PATH_ENV}`"
     );
     if !candidates.is_empty() {
         message.push_str("; searched: ");
