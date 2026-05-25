@@ -11,7 +11,7 @@ spec:
     - group: gateway.networking.k8s.io
       kind: Gateway
       name: shared
-      namespace: kube-system
+      namespace: nginx-gateway
   rules:
     - matches:
         - path:
@@ -34,7 +34,7 @@ spec:
     - group: gateway.networking.k8s.io
       kind: Gateway
       name: shared
-      namespace: kube-system
+      namespace: nginx-gateway
   rules:
     - matches:
         - path:
