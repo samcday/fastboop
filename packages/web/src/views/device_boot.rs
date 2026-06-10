@@ -1,9 +1,7 @@
 #[cfg(target_arch = "wasm32")]
 use anyhow::Context;
 use dioxus::prelude::*;
-use fastboop_core::{
-    BootSessionEnvironment, FastboopSession as BootSession, SessionEvent, SessionEventPhase,
-};
+use fastboop_core::FastbootBoot;
 #[cfg(target_arch = "wasm32")]
 use fastboop_environment_web::{
     run_web_smoo_host, WebBootRuntime, WebSmooHostEvent, WebSmooHostOptions, WebSmooHostPhase,
@@ -41,11 +39,9 @@ pub async fn boot_selected_device(
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("session not found"))?;
     let config = web_boot_config_for_session(&session)?;
-    let request = config.boot_request()?;
     let selected_device =
         WebSelectedFastbootDevice::new(session.device.handle, session.device.profile.clone());
     let mut env = WebBootEnvironment::new(config).with_selected_device(selected_device);
-    let boot_session = BootSession::new(request);
 
     update_session_phase(
         sessions,
@@ -54,11 +50,10 @@ pub async fn boot_selected_device(
             step: "Preparing boot payload".to_string(),
         },
     );
-    let prepared = boot_session
-        .prepare(&mut env)
+    let prepared = env
+        .prepare_boot()
         .await
         .context("prepare web boot payload")?;
-    drain_session_events(&mut env, sessions, session_id);
 
     update_session_phase(
         sessions,
@@ -68,7 +63,7 @@ pub async fn boot_selected_device(
         },
     );
     let mut fastboot = env
-        .connect_fastboot(&boot_session, &prepared.info())
+        .connect_fastboot()
         .await
         .context("open selected WebUSB fastboot transport")?;
 
@@ -82,11 +77,10 @@ pub async fn boot_selected_device(
             ),
         },
     );
-    boot_session
-        .handoff_fastboot(&mut env, &prepared, &mut fastboot)
+    FastbootBoot::new(&prepared.boot_image)
+        .run(&mut fastboot)
         .await
         .map_err(|err| anyhow::anyhow!("fastboot handoff failed: {err}"))?;
-    drain_session_events(&mut env, sessions, session_id);
     let _ = fastboot.shutdown().await;
 
     let runtime = env.runtime_for_export(&prepared.export)?;
@@ -206,34 +200,6 @@ fn web_boot_config_for_session(session: &DeviceSession) -> anyhow::Result<WebBoo
             smoo_max_io: None,
         },
     })
-}
-
-fn drain_session_events(
-    env: &mut WebBootEnvironment,
-    sessions: &mut SessionStore,
-    session_id: &str,
-) {
-    for event in env.drain_events() {
-        match event {
-            SessionEvent::Phase { phase, detail } => match phase {
-                SessionEventPhase::Preparing
-                | SessionEventPhase::WaitingForDevice
-                | SessionEventPhase::DeviceDetected
-                | SessionEventPhase::BuildingStage0
-                | SessionEventPhase::BuildingBootImage
-                | SessionEventPhase::Downloading
-                | SessionEventPhase::Booting
-                | SessionEventPhase::WaitingForSmoo => update_session_phase(
-                    sessions,
-                    session_id,
-                    SessionPhase::Booting { step: detail },
-                ),
-                SessionEventPhase::Serving | SessionEventPhase::Failed => {}
-            },
-            SessionEvent::Log(line) => tracing::info!(message = %line, "web boot session event"),
-            SessionEvent::SmooStatus { .. } => {}
-        }
-    }
 }
 
 #[cfg(target_arch = "wasm32")]

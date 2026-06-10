@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
-use fastboop_core::{BootSessionEnvironment, FastboopSession as BootSession};
+use fastboop_core::FastbootBoot;
 use fastboop_environment_std::{
     NativeBootConfig, NativeBootEnvironment, NativeBootStage0Config, parse_ostree_arg,
 };
@@ -90,14 +90,10 @@ pub struct BootArgs {
 pub async fn run_boot(args: BootArgs) -> Result<()> {
     let output = args.output.clone();
     let config = native_boot_config_from_args(&args)?;
-    let request = config.boot_request()?;
-    let session = BootSession::new(request);
-    let (session_tx, session_rx) = std::sync::mpsc::channel();
-    drop(session_rx);
-    let mut env = NativeBootEnvironment::new(config, session_tx, CancellationToken::new());
+    let mut env = NativeBootEnvironment::new(config, CancellationToken::new());
 
     info!(channel = %args.stage0.channel.display(), "preparing boot payload");
-    let prepared = session.prepare(&mut env).await?;
+    let prepared = env.prepare_boot().await?;
     if let Some(path) = output {
         std::fs::write(&path, &prepared.boot_image)
             .with_context(|| format!("writing bootimg to {}", path.display()))?;
@@ -105,22 +101,19 @@ pub async fn run_boot(args: BootArgs) -> Result<()> {
         return Ok(());
     }
 
-    let post_handoff_resume = session.status().await.is_post_handoff();
-    if !post_handoff_resume {
-        info!(
-            bytes = prepared.boot_image.len(),
-            "opening fastboot transport"
-        );
-        let mut fastboot = env.connect_fastboot(&session, &prepared.info()).await?;
-        info!(bytes = prepared.boot_image.len(), "issuing fastboot boot");
-        session
-            .handoff_fastboot(&mut env, &prepared, &mut fastboot)
-            .await
-            .map_err(|err| anyhow!("{err}"))?;
-    }
+    info!(
+        bytes = prepared.boot_image.len(),
+        "opening fastboot transport"
+    );
+    let mut fastboot = env.connect_fastboot().await?;
+    info!(bytes = prepared.boot_image.len(), "issuing fastboot boot");
+    FastbootBoot::new(&prepared.boot_image)
+        .run(&mut fastboot)
+        .await
+        .map_err(|err| anyhow!("fastboot handoff failed: {err}"))?;
 
     info!(identity = %prepared.export.identity, size_bytes = prepared.export.size_bytes, "serving smoo runtime");
-    session.serve_prepared(&mut env, prepared).await
+    env.serve_runtime(prepared.export).await
 }
 
 fn native_boot_config_from_args(args: &BootArgs) -> Result<NativeBootConfig> {
@@ -149,7 +142,6 @@ fn native_boot_config_from_args(args: &BootArgs) -> Result<NativeBootConfig> {
         systemd_firstboot: args.systemd_firstboot,
         wait: Duration::from_secs(args.wait),
         smoo_metrics_port: args.smoo_metrics_port,
-        session_state: None,
     })
 }
 

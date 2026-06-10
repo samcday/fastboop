@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use dioxus::prelude::ReadableExt;
-use fastboop_core::{
-    BootSessionEnvironment, FastboopSession as BootSession, SessionEvent, SessionEventPhase,
-};
+use fastboop_core::FastbootBoot;
 use fastboop_environment_std::{
     run_native_smoo_host, NativeBootConfig, NativeBootEnvironment, NativeBootStage0Config,
     NativeSelectedFastbootDevice, SmooHostEvent, SmooHostOptions, SmooHostPhase,
@@ -32,17 +30,14 @@ pub async fn boot_selected_device(
         .cloned()
         .ok_or_else(|| anyhow!("session not found"))?;
     let config = native_boot_config_for_session(&session)?;
-    let request = config.boot_request()?;
     let selected_device = NativeSelectedFastbootDevice::new(
         session.device.handle.clone(),
         session.device.profile.clone(),
         session.device.serial.clone(),
     );
 
-    let (session_tx, session_rx) = std::sync::mpsc::channel::<SessionEvent>();
-    let mut env = NativeBootEnvironment::new(config, session_tx, CancellationToken::new())
+    let mut env = NativeBootEnvironment::new(config, CancellationToken::new())
         .with_selected_device(selected_device);
-    let boot_session = BootSession::new(request);
 
     update_session_phase(
         sessions,
@@ -51,11 +46,10 @@ pub async fn boot_selected_device(
             step: "Preparing boot payload".to_string(),
         },
     );
-    let prepared = boot_session
-        .prepare(&mut env)
+    let prepared = env
+        .prepare_boot()
         .await
         .context("prepare desktop boot payload")?;
-    drain_session_events(&session_rx, sessions, session_id);
 
     update_session_phase(
         sessions,
@@ -65,7 +59,7 @@ pub async fn boot_selected_device(
         },
     );
     let mut fastboot = env
-        .connect_fastboot(&boot_session, &prepared.info())
+        .connect_fastboot()
         .await
         .context("open selected fastboot transport")?;
 
@@ -79,11 +73,10 @@ pub async fn boot_selected_device(
             ),
         },
     );
-    boot_session
-        .handoff_fastboot(&mut env, &prepared, &mut fastboot)
+    FastbootBoot::new(&prepared.boot_image)
+        .run(&mut fastboot)
         .await
         .map_err(|err| anyhow!("fastboot handoff failed: {err}"))?;
-    drain_session_events(&session_rx, sessions, session_id);
 
     let export = prepared.export;
     Ok(BootRuntime {
@@ -160,36 +153,7 @@ fn native_boot_config_for_session(session: &DeviceSession) -> Result<NativeBootC
         systemd_firstboot: true,
         wait: std::time::Duration::ZERO,
         smoo_metrics_port: DEFAULT_SMOO_METRICS_PORT,
-        session_state: None,
     })
-}
-
-fn drain_session_events(
-    rx: &Receiver<SessionEvent>,
-    sessions: &mut SessionStore,
-    session_id: &str,
-) {
-    while let Ok(event) = rx.try_recv() {
-        match event {
-            SessionEvent::Phase { phase, detail } => match phase {
-                SessionEventPhase::Preparing
-                | SessionEventPhase::WaitingForDevice
-                | SessionEventPhase::DeviceDetected
-                | SessionEventPhase::BuildingStage0
-                | SessionEventPhase::BuildingBootImage
-                | SessionEventPhase::Downloading
-                | SessionEventPhase::Booting
-                | SessionEventPhase::WaitingForSmoo => update_session_phase(
-                    sessions,
-                    session_id,
-                    SessionPhase::Booting { step: detail },
-                ),
-                SessionEventPhase::Serving | SessionEventPhase::Failed => {}
-            },
-            SessionEvent::Log(line) => info!(message = %line, "desktop boot session event"),
-            SessionEvent::SmooStatus { .. } => {}
-        }
-    }
 }
 
 fn forward_smoo_events(rx: Receiver<SmooHostEvent>, smoo_stats: SmooStatsHandle) {
