@@ -8,14 +8,14 @@ use anyhow::{Context, Result, anyhow, bail};
 use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, profile_filters};
 use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::prober::probe_candidates;
-use fastboop_core::{DeviceProfile, Personalization, resolve_effective_boot_profile_stage0};
-use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
-use fastboop_session::{
-    BootRequest, BootSessionEnvironment, FastboopSession, PreparedBoot, PreparedBootInfo,
-    RuntimeExport, SessionCodecError, SessionEnvironment, SessionEvent, SessionEventPhase,
-    SessionSnapshot, Stage0Assembly, Stage0ExtraCmdline, build_android_boot_payload_with_options,
-    build_stage0_extra_cmdline, session_status_event,
+use fastboop_core::{
+    BootImageComponents, BootRequest, BootSessionEnvironment, DeviceProfile, FastboopSession,
+    Personalization, PreparedBoot, PreparedBootInfo, RuntimeExport, SessionCodecError,
+    SessionEnvironment, SessionEvent, SessionEventPhase, SessionSnapshot, Stage0ExtraCmdline,
+    build_android_boot_payload_with_options, build_stage0_extra_cmdline, session_status_event,
 };
+use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
+use fastboop_stage0_generator::{build_stage0, stage0_binary_ready};
 use gibblox_core::{BlockReader, block_identity_string};
 use gobblytes_core::OstreeFs as OstreeRootfs;
 use tokio_util::sync::CancellationToken;
@@ -329,10 +329,15 @@ impl SessionEnvironment for NativeBootEnvironment {
             .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
         let bootimg = build_android_boot_payload_with_options(
             &profile,
-            build,
+            BootImageComponents {
+                kernel_image: build.kernel_image,
+                initrd: build.initrd,
+                dtb: build.dtb,
+                kernel_cmdline_append: build.kernel_cmdline_append,
+            },
             self.config.stage0.abl_exorcist.is_some(),
         )
-            .map_err(|e| anyhow::anyhow!("bootimg build failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("bootimg build failed: {e}"))?;
 
         self.detected_device = detected_fastboot;
         Ok(PreparedBoot {
@@ -659,19 +664,14 @@ async fn build_stage0_artifacts(
         .map(str::to_string);
 
     let input = artifact_resolver
-        .open_channel_input(&config.channel, &profile.id, config.boot_profile.as_deref())
+        .open_channel_input(&config.channel, profile, config.boot_profile.as_deref())
         .await?;
-    let profile_source_overrides = resolve_boot_profile_source_overrides(
-        input.boot_profile.as_ref(),
-        profile,
-        artifact_resolver,
-    )
-    .await?;
-    let profile_stage0 = input
-        .boot_profile
-        .as_ref()
-        .map(|boot_profile| resolve_effective_boot_profile_stage0(boot_profile, &profile.id))
-        .unwrap_or_default();
+    let boot_spec = input.boot_spec;
+    let selected_boot_profile = boot_spec.boot_profile();
+    let profile_source_overrides =
+        resolve_boot_profile_source_overrides(selected_boot_profile, profile, artifact_resolver)
+            .await?;
+    let profile_stage0 = boot_spec.stage0();
     let reader = input.reader;
     let stage0_readers = input.stage0_readers;
 
@@ -684,16 +684,16 @@ async fn build_stage0_artifacts(
         .await
         .map_err(|err| anyhow!(err.to_string()))?;
 
-    let mut kernel_modules = profile_stage0.kernel_modules;
+    let mut kernel_modules = profile_stage0.kernel_modules.clone();
     kernel_modules.extend(config.require_modules.iter().cloned());
 
-    let mut dtbo_overlays = profile_stage0.dt_overlays;
+    let mut dtbo_overlays = profile_stage0.dt_overlays.clone();
     dtbo_overlays.extend(cli_dtbo_overlays.iter().cloned());
 
     let opts = fastboop_stage0_generator::Stage0Options {
         switchroot_fs: provider.switchroot_fs(),
         kernel_modules,
-        inject_mac: profile_stage0.inject_mac,
+        inject_mac: profile_stage0.inject_mac.clone(),
         kernel_override: profile_source_overrides.kernel_override,
         abl_exorcist: abl_exorcist_image.map(|image| fastboop_stage0_generator::Stage0AblExorcist {
             image,
@@ -708,8 +708,7 @@ async fn build_stage0_artifacts(
         personalization,
     };
 
-    let effective_ostree_arg =
-        resolve_effective_ostree_arg(&config.ostree, input.boot_profile.as_ref());
+    let effective_ostree_arg = resolve_effective_ostree_arg(&config.ostree, selected_boot_profile);
     let selected_ostree = match &effective_ostree_arg {
         OstreeArg::Disabled => None,
         OstreeArg::AutoDetect => {
@@ -731,10 +730,6 @@ async fn build_stage0_artifacts(
         default_smoo_max_io: DEFAULT_SMOO_MAX_IO_BYTES,
     });
 
-    let assembly = Stage0Assembly::new(opts, stage0_binary)
-        .with_extra_cmdline(extra_cmdline)
-        .with_existing_cpio(existing);
-
     let build = if let Some(ostree) = selected_ostree.as_deref() {
         let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree)
             .await
@@ -742,9 +737,25 @@ async fn build_stage0_artifacts(
         debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
         let provider = OstreeRootfs::new(provider, &resolved_ostree)
             .map_err(|err| anyhow!("initialize ostree filesystem view: {err}"))?;
-        assembly.build(profile, &provider).await
+        build_stage0(
+            profile,
+            &provider,
+            &opts,
+            stage0_binary_ready(stage0_binary.clone()),
+            extra_cmdline.as_deref(),
+            existing.as_deref(),
+        )
+        .await
     } else {
-        assembly.build(profile, &provider).await
+        build_stage0(
+            profile,
+            &provider,
+            &opts,
+            stage0_binary_ready(stage0_binary.clone()),
+            extra_cmdline.as_deref(),
+            existing.as_deref(),
+        )
+        .await
     };
 
     Ok(Stage0Artifacts {

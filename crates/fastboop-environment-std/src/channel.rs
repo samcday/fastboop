@@ -9,10 +9,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail};
 use fastboop_core::{
-    BootProfileArtifactSource, ChannelStreamHead, ChannelStreamKind, DeviceProfile,
-    read_channel_pipeline_hints_for_boot_profile,
+    BootProfileArtifactSource, BootSpec, BootSpecRequest, Channel, ChannelStreamHead,
+    ChannelStreamKind, DeviceProfile, read_channel_pipeline_hints_for_boot_profile,
     read_channel_stream_head_from_reader as read_channel_stream_head_from_reader_core,
-    select_boot_profile_for_device,
 };
 use gibblox_android_sparse::{
     AndroidSparseBlockReader, AndroidSparseChunkIndex, AndroidSparseImageIndex,
@@ -44,12 +43,12 @@ use sha2::{Digest, Sha512};
 use tracing::info;
 use url::Url;
 
-use fastboop_session::{
+use fastboop_core::{
     BootProfileArtifactSourceOpener, OffsetBlockReader, Stage0RootfsFactory,
     classify_channel_reader as classify_channel_reader_core, reader_has_erofs_magic,
     reader_has_ext4_magic, resolve_boot_profile_source_overrides_with,
 };
-pub use fastboop_session::{
+pub use fastboop_core::{
     BootProfileSourceOverrides, Ext4Rootfs, OstreeArg, Stage0RootfsKind as RootfsKind,
     format_probe_error, resolve_effective_ostree_arg,
 };
@@ -57,7 +56,7 @@ pub use fastboop_session::{
 pub struct ChannelInput {
     pub reader: Arc<dyn BlockReader>,
     pub stage0_readers: Vec<Arc<dyn BlockReader>>,
-    pub boot_profile: Option<fastboop_core::BootProfile>,
+    pub boot_spec: BootSpec,
 }
 
 pub struct ChannelSourceReader {
@@ -90,9 +89,9 @@ impl Stage0RootfsFactory for NativeStage0RootfsFactory {
     }
 }
 
-pub type Stage0RootfsProvider = fastboop_session::Stage0RootfsProvider<NativeStage0RootfsFactory>;
+pub type Stage0RootfsProvider = fastboop_core::Stage0RootfsProvider<NativeStage0RootfsFactory>;
 pub type Stage0CoalescingFilesystem =
-    fastboop_session::Stage0CoalescingFilesystem<NativeStage0RootfsFactory>;
+    fastboop_core::Stage0CoalescingFilesystem<NativeStage0RootfsFactory>;
 
 #[derive(Default)]
 pub struct ArtifactReaderResolver {
@@ -205,7 +204,7 @@ impl ArtifactReaderResolver {
     pub async fn open_channel_input(
         &mut self,
         channel: &Path,
-        device_profile_id: &str,
+        device_profile: &DeviceProfile,
         requested_boot_profile_id: Option<&str>,
     ) -> Result<ChannelInput> {
         let source = open_channel_source_reader(channel).await?;
@@ -213,15 +212,21 @@ impl ArtifactReaderResolver {
         let stream_head =
             read_channel_stream_head_from_reader(source.reader.as_ref(), source_total_bytes)
                 .await?;
+        let channel_plan = Channel::new(
+            Some(channel.to_string_lossy().into_owned()),
+            stream_head.clone(),
+        );
+        let boot_spec = channel_plan
+            .boot_spec(
+                BootSpecRequest::new(device_profile.clone())
+                    .with_optional_requested_boot_profile_id(
+                        requested_boot_profile_id.map(str::to_string),
+                    ),
+            )
+            .map_err(|err| anyhow!(err.to_string()))?;
 
         if stream_head.boot_profiles.is_empty() {
             self.reset_pipeline_hints(&PipelineHints::default())?;
-
-            if let Some(requested) = requested_boot_profile_id {
-                bail!(
-                    "boot profile '{requested}' was requested, but channel does not start with a boot profile stream"
-                );
-            }
 
             let reader = if stream_head.consumed_bytes < source_total_bytes {
                 let trailing: Arc<dyn BlockReader> = Arc::new(
@@ -240,16 +245,13 @@ impl ArtifactReaderResolver {
             return Ok(ChannelInput {
                 reader,
                 stage0_readers,
-                boot_profile: None,
+                boot_spec,
             });
         }
 
-        let boot_profile = select_boot_profile_for_device(
-            stream_head.boot_profiles.as_slice(),
-            device_profile_id,
-            requested_boot_profile_id,
-        )
-        .map_err(|err| anyhow!("{err}"))?;
+        let boot_profile = boot_spec
+            .boot_profile()
+            .expect("boot profile stream produced a boot profile");
 
         let pipeline_hints = read_channel_pipeline_hints_for_boot_profile(
             source.reader.as_ref(),
@@ -279,7 +281,7 @@ impl ArtifactReaderResolver {
         Ok(ChannelInput {
             reader,
             stage0_readers,
-            boot_profile: Some(boot_profile),
+            boot_spec,
         })
     }
 
@@ -1029,7 +1031,7 @@ pub async fn resolve_boot_profile_source_overrides(
 }
 
 pub fn parse_ostree_arg(raw: Option<&Option<String>>) -> Result<OstreeArg> {
-    fastboop_session::parse_ostree_arg(raw).map_err(|err| anyhow!(err.to_string()))
+    fastboop_core::parse_ostree_arg(raw).map_err(|err| anyhow!(err.to_string()))
 }
 
 pub async fn auto_detect_ostree_deployment_path<P>(rootfs: &P) -> Result<String>
@@ -1037,7 +1039,7 @@ where
     P: Filesystem,
     P::Error: core::fmt::Display,
 {
-    fastboop_session::auto_detect_ostree_deployment_path(rootfs)
+    fastboop_core::auto_detect_ostree_deployment_path(rootfs)
         .await
         .map_err(|err| anyhow!(err.to_string()))
 }
@@ -1154,6 +1156,7 @@ mod tests {
     use async_trait::async_trait;
     use fastboop_core::{
         BootProfile, BootProfileManifest, DeviceProfile, encode_boot_profile, encode_dev_profile,
+        select_boot_profile_for_device,
     };
     use gibblox_core::{GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
     use gobblytes_core::MockFilesystem;

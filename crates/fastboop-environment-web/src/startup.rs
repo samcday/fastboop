@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
-use fastboop_core::{ChannelStreamHead, read_channel_stream_head_from_reader};
 #[cfg(target_arch = "wasm32")]
-use fastboop_session::block_reader_size_bytes;
+use fastboop_core::block_reader_size_bytes;
+use fastboop_core::{ChannelStreamHead, read_channel_stream_head_from_reader};
 use gibblox_core::BlockReader;
 
 #[derive(Clone)]

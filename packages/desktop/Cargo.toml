@@ -13,7 +13,6 @@ ui = { workspace = true }
 fastboop-core = { workspace = true }
 fastboop-environment-std = { workspace = true }
 fastboop-fastboot-rusb = { path = "../../crates/fastboop-fastboot-rusb" }
-fastboop-session = { workspace = true }
 gobblytes-core = { workspace = true }
 gobblytes-erofs = { workspace = true }
 gobblytes-fat = { workspace = true }

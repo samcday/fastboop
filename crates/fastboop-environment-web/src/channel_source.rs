@@ -237,7 +237,7 @@ pub(crate) async fn maybe_offset_reader(
     reader: Arc<dyn gibblox_core::BlockReader>,
     offset_bytes: u64,
 ) -> anyhow::Result<Arc<dyn gibblox_core::BlockReader>> {
-    fastboop_session::maybe_offset_block_reader(reader, offset_bytes)
+    fastboop_core::maybe_offset_block_reader(reader, offset_bytes)
         .await
         .map_err(|err| anyhow::anyhow!(err.to_string()))
 }
