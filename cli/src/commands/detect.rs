@@ -4,7 +4,6 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::Args;
 use fastboop_core::DeviceProfile;
-use fastboop_core::SessionEvent;
 use fastboop_environment_std::{NativeDetectConfig, detect_native_fastboot};
 
 #[derive(Args)]
@@ -23,14 +22,8 @@ pub struct DetectArgs {
 }
 
 pub async fn run_detect(args: DetectArgs) -> Result<()> {
-    let (tx, rx) = std::sync::mpsc::channel::<SessionEvent>();
-    let forwarder = std::thread::spawn(move || {
-        while let Ok(event) = rx.recv() {
-            if let SessionEvent::Log(line) = event {
-                eprintln!("{line}");
-            }
-        }
-    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    drop(rx);
 
     let detected = detect_native_fastboot(
         NativeDetectConfig {
@@ -38,11 +31,9 @@ pub async fn run_detect(args: DetectArgs) -> Result<()> {
             channel: args.channel,
             wait: args.wait.map(Duration::from_secs),
         },
-        tx.clone(),
+        tx,
     )
     .await;
-    drop(tx);
-    let _ = forwarder.join();
 
     for device in detected? {
         print_detected(&device.profile, device.vid, device.pid);

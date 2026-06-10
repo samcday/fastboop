@@ -1,23 +1,14 @@
-#[cfg(feature = "tui")]
-use std::io::IsTerminal;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender};
-use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
-use fastboop_core::{
-    BootSessionEnvironment, FastboopSession as BootSession, SessionEvent, SessionEventPhase,
-};
+use fastboop_core::{BootSessionEnvironment, FastboopSession as BootSession};
 use fastboop_environment_std::{
     NativeBootConfig, NativeBootEnvironment, NativeBootStage0Config, parse_ostree_arg,
 };
 use tokio_util::sync::CancellationToken;
-
-use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
-#[cfg(feature = "tui")]
-use crate::tui::{TuiOutcome, run_boot_tui};
+use tracing::info;
 
 #[derive(Args)]
 pub struct BootStage0Args {
@@ -94,121 +85,42 @@ pub struct BootArgs {
     /// Expose fastboop's smoo host metrics on this TCP port (0 disables).
     #[arg(long = "smoo-metrics-port", default_value_t = 0)]
     pub smoo_metrics_port: u16,
-    /// Write serialized session state after durable state transitions.
-    #[arg(long = "session-state", value_name = "PATH")]
-    pub session_state: Option<PathBuf>,
-    #[cfg(feature = "tui")]
-    /// Use plain line-oriented logs (disable TUI view).
-    #[arg(long, default_value_t = false)]
-    pub plain: bool,
 }
 
 pub async fn run_boot(args: BootArgs) -> Result<()> {
-    #[cfg(feature = "tui")]
-    let use_tui = !args.plain && std::io::stdout().is_terminal() && std::io::stderr().is_terminal();
-
-    let (tx, rx) = std::sync::mpsc::channel::<BootEvent>();
-    let shutdown = CancellationToken::new();
-    let runtime = tokio::runtime::Handle::current();
-
-    #[cfg(feature = "tui")]
-    if use_tui {
-        crate::setup_tui_tracing(tx.clone());
-    } else {
-        crate::setup_default_tracing();
-    }
-
-    #[cfg(not(feature = "tui"))]
-    crate::setup_default_tracing();
-
-    let worker_shutdown = shutdown.clone();
-    let worker = thread::spawn(move || run_boot_worker(args, tx, worker_shutdown, runtime));
-
-    #[cfg(feature = "tui")]
-    if use_tui {
-        match run_boot_tui(&rx)? {
-            TuiOutcome::Completed => {}
-            TuiOutcome::Quit => {
-                shutdown.cancel();
-                eprintln!("Shutting down...");
-            }
-        }
-    } else {
-        run_plain_event_loop(&rx);
-    }
-
-    #[cfg(not(feature = "tui"))]
-    run_plain_event_loop(&rx);
-
-    worker
-        .join()
-        .map_err(|_| anyhow::anyhow!("boot worker thread panicked"))?
-}
-
-fn run_boot_worker(
-    args: BootArgs,
-    events: Sender<BootEvent>,
-    shutdown: CancellationToken,
-    runtime: tokio::runtime::Handle,
-) -> Result<()> {
-    let result = runtime.block_on(run_boot_inner(args, events.clone(), shutdown));
-    match &result {
-        Ok(()) => emit(&events, BootEvent::Finished),
-        Err(err) => {
-            emit(
-                &events,
-                BootEvent::Phase {
-                    phase: BootPhase::Failed,
-                    detail: err.to_string(),
-                },
-            );
-            emit(&events, BootEvent::Failed(err.to_string()));
-        }
-    }
-    result
-}
-
-async fn run_boot_inner(
-    args: BootArgs,
-    events: Sender<BootEvent>,
-    shutdown: CancellationToken,
-) -> Result<()> {
     let output = args.output.clone();
     let config = native_boot_config_from_args(&args)?;
     let request = config.boot_request()?;
     let session = BootSession::new(request);
-    let (session_tx, session_rx) = std::sync::mpsc::channel::<SessionEvent>();
-    let forward_events = events.clone();
-    let forwarder = thread::spawn(move || forward_session_events(&session_rx, &forward_events));
+    let (session_tx, session_rx) = std::sync::mpsc::channel();
+    drop(session_rx);
+    let mut env = NativeBootEnvironment::new(config, session_tx, CancellationToken::new());
 
-    let result = {
-        let mut env = NativeBootEnvironment::new(config, session_tx.clone(), shutdown);
-        if let Some(path) = output {
-            let prepared = session.prepare(&mut env).await?;
-            std::fs::write(&path, &prepared.boot_image)
-                .with_context(|| format!("writing bootimg to {}", path.display()))?;
-            emit(
-                &events,
-                BootEvent::Log(format!("Wrote boot image to {}", path.display())),
-            );
-            Ok(())
-        } else {
-            let post_handoff_resume = session.status().await.is_post_handoff();
-            let prepared = session.prepare(&mut env).await?;
-            if !post_handoff_resume {
-                let mut fastboot = env.connect_fastboot(&session, &prepared.info()).await?;
-                session
-                    .handoff_fastboot(&mut env, &prepared, &mut fastboot)
-                    .await
-                    .map_err(|err| anyhow!("{err}"))?;
-            }
-            session.serve_prepared(&mut env, prepared).await
-        }
-    };
+    info!(channel = %args.stage0.channel.display(), "preparing boot payload");
+    let prepared = session.prepare(&mut env).await?;
+    if let Some(path) = output {
+        std::fs::write(&path, &prepared.boot_image)
+            .with_context(|| format!("writing bootimg to {}", path.display()))?;
+        info!(path = %path.display(), bytes = prepared.boot_image.len(), "wrote boot image");
+        return Ok(());
+    }
 
-    drop(session_tx);
-    let _ = forwarder.join();
-    result
+    let post_handoff_resume = session.status().await.is_post_handoff();
+    if !post_handoff_resume {
+        info!(
+            bytes = prepared.boot_image.len(),
+            "opening fastboot transport"
+        );
+        let mut fastboot = env.connect_fastboot(&session, &prepared.info()).await?;
+        info!(bytes = prepared.boot_image.len(), "issuing fastboot boot");
+        session
+            .handoff_fastboot(&mut env, &prepared, &mut fastboot)
+            .await
+            .map_err(|err| anyhow!("{err}"))?;
+    }
+
+    info!(identity = %prepared.export.identity, size_bytes = prepared.export.size_bytes, "serving smoo runtime");
+    session.serve_prepared(&mut env, prepared).await
 }
 
 fn native_boot_config_from_args(args: &BootArgs) -> Result<NativeBootConfig> {
@@ -237,123 +149,8 @@ fn native_boot_config_from_args(args: &BootArgs) -> Result<NativeBootConfig> {
         systemd_firstboot: args.systemd_firstboot,
         wait: Duration::from_secs(args.wait),
         smoo_metrics_port: args.smoo_metrics_port,
-        session_state: args.session_state.clone(),
+        session_state: None,
     })
-}
-
-fn forward_session_events(rx: &Receiver<SessionEvent>, events: &Sender<BootEvent>) {
-    while let Ok(event) = rx.recv() {
-        emit(events, session_event_to_boot_event(event));
-    }
-}
-
-fn session_event_to_boot_event(event: SessionEvent) -> BootEvent {
-    match event {
-        SessionEvent::Phase { phase, detail } => BootEvent::Phase {
-            phase: match phase {
-                SessionEventPhase::Preparing => BootPhase::Preparing,
-                SessionEventPhase::WaitingForDevice => BootPhase::WaitingForDevice,
-                SessionEventPhase::DeviceDetected => BootPhase::DeviceDetected,
-                SessionEventPhase::BuildingStage0 => BootPhase::BuildingStage0,
-                SessionEventPhase::BuildingBootImage => BootPhase::BuildingBootImage,
-                SessionEventPhase::Downloading => BootPhase::Downloading,
-                SessionEventPhase::Booting => BootPhase::Booting,
-                SessionEventPhase::WaitingForSmoo => BootPhase::WaitingForSmoo,
-                SessionEventPhase::Serving => BootPhase::Serving,
-                SessionEventPhase::Failed => BootPhase::Failed,
-            },
-            detail,
-        },
-        SessionEvent::Log(line) => BootEvent::Log(line),
-        SessionEvent::SmooStatus {
-            active,
-            export_count,
-            session_id,
-            ios_up,
-            ios_down,
-            bytes_up,
-            bytes_down,
-            inflight_requests,
-            max_inflight_requests,
-        } => BootEvent::SmooStatus {
-            active,
-            export_count,
-            session_id,
-            ios_up,
-            ios_down,
-            bytes_up,
-            bytes_down,
-            inflight_requests,
-            max_inflight_requests,
-        },
-    }
-}
-
-fn run_plain_event_loop(rx: &Receiver<BootEvent>) {
-    while let Ok(event) = rx.recv() {
-        print_plain_event(event);
-    }
-}
-
-fn print_plain_event(event: BootEvent) {
-    match event {
-        BootEvent::Phase { phase, detail } => {
-            eprintln!("[{}] phase={} {}", timestamp_hms(), phase.label(), detail);
-        }
-        BootEvent::Log(line) => {
-            eprintln!("[{}] {line}", timestamp_hms());
-        }
-        BootEvent::SmooStatus {
-            active,
-            export_count,
-            session_id,
-            ios_up,
-            ios_down,
-            bytes_up,
-            bytes_down,
-            inflight_requests,
-            max_inflight_requests,
-        } => {
-            let status = if active { "up" } else { "down" };
-            eprintln!(
-                "[{}] smoo status={} exports={} sid={} ios={} inflight={}/{} up_bytes={} down_bytes={}",
-                timestamp_hms(),
-                status,
-                export_count,
-                session_id,
-                ios_up.saturating_add(ios_down),
-                inflight_requests,
-                max_inflight_requests,
-                bytes_up,
-                bytes_down,
-            );
-        }
-        BootEvent::GibbloxStats {
-            hit_rate_pct,
-            fill_rate_pct,
-            cached_blocks,
-            total_blocks,
-        } => {
-            eprintln!(
-                "[{}] gibblox hit={}%% fill={}%% cache={}/{}",
-                timestamp_hms(),
-                hit_rate_pct,
-                fill_rate_pct,
-                cached_blocks,
-                total_blocks
-            );
-        }
-        BootEvent::Finished => {
-            eprintln!("[{}] boot flow finished", timestamp_hms());
-        }
-        BootEvent::Failed(message) => {
-            eprintln!("[{}] boot flow failed: {message}", timestamp_hms());
-        }
-    }
-}
-
-fn emit(events: &Sender<BootEvent>, event: BootEvent) {
-    let _ = events.send(event);
 }
 
 fn parse_nonzero_u16(input: &str) -> std::result::Result<u16, String> {
