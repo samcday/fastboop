@@ -7,6 +7,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod block_reader;
+pub mod boot_plan;
 pub mod bootimg;
 pub mod bootprofile;
 pub mod builtin;
@@ -20,10 +21,12 @@ pub mod devpro;
 pub mod fastboot;
 pub mod personalization;
 pub mod prober;
+pub mod session;
 
 use alloc::{string::String, vec::Vec};
 
 pub use block_reader::*;
+pub use boot_plan::*;
 pub use bootprofile::*;
 pub use channel_index::*;
 pub use channel_intake::*;
@@ -34,6 +37,7 @@ pub use device::*;
 pub use devpro::*;
 pub use personalization::*;
 pub use prober::*;
+pub use session::*;
 
 /// Newline-separated list of modules to load, in deterministic order.
 pub type ModuleLoadList = Vec<String>;

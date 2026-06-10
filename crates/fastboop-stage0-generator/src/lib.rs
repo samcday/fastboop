@@ -12,7 +12,9 @@ use core::future::Future;
 use dtoolkit::fdt::Fdt;
 use dtoolkit::model::{DeviceTree, DeviceTreeNode, DeviceTreeProperty};
 use dtoolkit::{Node, Property};
-use fastboop_core::{DeviceProfile, InjectMac, Personalization};
+use fastboop_core::{
+    DeviceProfile, InjectMac, Personalization, Stage0KernelOverride, Stage0SwitchrootFs,
+};
 use futures_util::future::{join, join_all, try_join};
 use gobblytes_core::Filesystem;
 
@@ -66,30 +68,6 @@ pub struct Stage0Options {
     pub personalization: Option<Personalization>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Stage0SwitchrootFs {
-    Erofs,
-    Ext4,
-}
-
-impl Stage0SwitchrootFs {
-    fn as_stage0_value(self) -> &'static str {
-        match self {
-            Self::Erofs => "erofs",
-            Self::Ext4 => "ext4",
-        }
-    }
-
-    fn module_name(self) -> &'static str {
-        self.as_stage0_value()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Stage0KernelOverride {
-    pub path: String,
-    pub image: Vec<u8>,
-}
 /// Resulting artifacts and recommended kernel cmdline additions.
 pub struct Stage0Build {
     pub kernel_image: Vec<u8>,

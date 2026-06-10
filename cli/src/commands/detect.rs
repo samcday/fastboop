@@ -4,8 +4,8 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::Args;
 use fastboop_core::DeviceProfile;
+use fastboop_core::SessionEvent;
 use fastboop_environment_std::{NativeDetectConfig, detect_native_fastboot};
-use fastboop_session::SessionEvent;
 
 #[derive(Args)]
 pub struct DetectArgs {

@@ -33,7 +33,6 @@ clap = { workspace = true }
 fastboop-core = { path = "../crates/fastboop-core", version = "0.0.1-rc.12" }
 fastboop-bootpro = { workspace = true }
 fastboop-environment-std = { workspace = true }
-fastboop-session = { workspace = true }
 serde_yaml = { workspace = true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

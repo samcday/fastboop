@@ -1,8 +1,3 @@
-#![no_std]
-#![allow(async_fn_in_trait)]
-
-extern crate alloc;
-
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -14,18 +9,15 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt;
 
-use async_trait::async_trait;
-use fastboop_core::bootimg::{BootImageError, build_android_bootimg};
-use fastboop_core::builtin::builtin_profiles;
-use fastboop_core::fastboot::{FastbootProtocolError, FastbootWire, ProbeError, boot, download};
-use fastboop_core::{
+use crate::boot_plan::FastbootBoot;
+use crate::bootimg::{BootImageError, build_android_bootimg};
+use crate::builtin::builtin_profiles;
+use crate::fastboot::{FastbootProtocolError, FastbootWire, ProbeError};
+use crate::{
     BootProfile, BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
     CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamKind, DeviceProfile, classify_channel_prefix,
 };
-use fastboop_stage0_generator::{
-    Stage0Build, Stage0Error, Stage0KernelOverride, Stage0Options, Stage0SwitchrootFs,
-    build_stage0, stage0_binary_ready,
-};
+use async_trait::async_trait;
 use gibblox_core::{
     AlignedByteReader, BlockReader, GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext,
 };
@@ -288,6 +280,31 @@ pub enum Stage0RootfsKind {
     Erofs,
     Ext4,
     Fat,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Stage0SwitchrootFs {
+    Erofs,
+    Ext4,
+}
+
+impl Stage0SwitchrootFs {
+    pub const fn as_stage0_value(self) -> &'static str {
+        match self {
+            Self::Erofs => "erofs",
+            Self::Ext4 => "ext4",
+        }
+    }
+
+    pub const fn module_name(self) -> &'static str {
+        self.as_stage0_value()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Stage0KernelOverride {
+    pub path: String,
+    pub image: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -1759,42 +1776,67 @@ impl FastboopSession {
                     return Err(SessionRunError::Environment(err));
                 }
             };
-
-            self.transition(env, prepared.downloading_status())
-                .await
-                .map_err(SessionRunError::Environment)?;
-            if let Err(err) = download(&mut fastboot, &prepared.boot_image).await {
-                let message = err.to_string();
-                let _ = self.mark_failed(env, message).await;
-                return Err(SessionRunError::Fastboot(err));
-            }
-
-            self.transition(env, prepared.handoff_started_status())
-                .await
-                .map_err(SessionRunError::Environment)?;
-            if let Err(err) = boot(&mut fastboot).await {
-                let message = err.to_string();
-                let _ = self.mark_failed(env, message).await;
-                return Err(SessionRunError::Fastboot(err));
-            }
-
-            self.transition(env, prepared.boot_issued_status())
-                .await
-                .map_err(SessionRunError::Environment)?;
+            self.handoff_fastboot(env, &prepared, &mut fastboot).await?;
         }
 
-        self.transition(env, prepared.serving_status())
+        self.serve_prepared(env, prepared)
+            .await
+            .map_err(SessionRunError::Environment)
+    }
+
+    pub async fn handoff_fastboot<E, F>(
+        &self,
+        env: &mut E,
+        prepared: &PreparedBoot,
+        fastboot: &mut F,
+    ) -> Result<(), SessionRunError<E::Error, F::Error>>
+    where
+        E: SessionEnvironment,
+        E::Error: fmt::Display,
+        F: FastbootWire,
+        F::Error: fmt::Display,
+    {
+        let handoff = FastbootBoot::new(&prepared.boot_image);
+        self.transition(env, prepared.downloading_status())
             .await
             .map_err(SessionRunError::Environment)?;
+        if let Err(err) = handoff.download(fastboot).await {
+            let message = err.to_string();
+            let _ = self.mark_failed(env, message).await;
+            return Err(SessionRunError::Fastboot(err));
+        }
+
+        self.transition(env, prepared.handoff_started_status())
+            .await
+            .map_err(SessionRunError::Environment)?;
+        if let Err(err) = handoff.boot(fastboot).await {
+            let message = err.to_string();
+            let _ = self.mark_failed(env, message).await;
+            return Err(SessionRunError::Fastboot(err));
+        }
+
+        self.transition(env, prepared.boot_issued_status())
+            .await
+            .map_err(SessionRunError::Environment)
+    }
+
+    pub async fn serve_prepared<E>(
+        &self,
+        env: &mut E,
+        prepared: PreparedBoot,
+    ) -> Result<(), E::Error>
+    where
+        E: BootSessionEnvironment,
+        E::Error: fmt::Display,
+    {
+        self.transition(env, prepared.serving_status()).await?;
         let export = prepared.export;
         if let Err(err) = env.serve_runtime(self, export).await {
             let message = err.to_string();
             let _ = self.mark_failed(env, message).await;
-            return Err(SessionRunError::Environment(err));
+            return Err(err);
         }
-        self.transition(env, SessionStatus::Completed)
-            .await
-            .map_err(SessionRunError::Environment)
+        self.transition(env, SessionStatus::Completed).await
     }
 
     async fn transition<E>(&self, env: &mut E, status: SessionStatus) -> Result<(), E::Error>
@@ -1968,63 +2010,41 @@ where
     }
 }
 
-pub struct Stage0Assembly {
-    pub options: Stage0Options,
-    pub stage0_binary: Option<Vec<u8>>,
-    pub extra_cmdline: Option<String>,
-    pub existing_cpio: Option<Vec<u8>>,
+pub struct BootImageComponents {
+    pub kernel_image: Vec<u8>,
+    pub initrd: Vec<u8>,
+    pub dtb: Vec<u8>,
+    pub kernel_cmdline_append: String,
 }
 
-impl Stage0Assembly {
-    pub fn new(options: Stage0Options, stage0_binary: Option<Vec<u8>>) -> Self {
+pub struct BootImageBuilder<'a> {
+    profile: &'a DeviceProfile,
+    components: BootImageComponents,
+}
+
+impl<'a> BootImageBuilder<'a> {
+    pub fn new(profile: &'a DeviceProfile, components: BootImageComponents) -> Self {
         Self {
-            options,
-            stage0_binary,
-            extra_cmdline: None,
-            existing_cpio: None,
+            profile,
+            components,
         }
     }
 
-    pub fn with_extra_cmdline(mut self, extra_cmdline: Option<String>) -> Self {
-        self.extra_cmdline = extra_cmdline;
-        self
-    }
-
-    pub fn with_existing_cpio(mut self, existing_cpio: Option<Vec<u8>>) -> Self {
-        self.existing_cpio = existing_cpio;
-        self
-    }
-
-    pub async fn build<P>(
-        &self,
-        profile: &DeviceProfile,
-        rootfs: &P,
-    ) -> Result<Stage0Build, Stage0Error>
-    where
-        P: Filesystem,
-    {
-        build_stage0(
-            profile,
-            rootfs,
-            &self.options,
-            stage0_binary_ready(self.stage0_binary.clone()),
-            self.extra_cmdline.as_deref(),
-            self.existing_cpio.as_deref(),
-        )
-        .await
+    pub fn build(self) -> Result<Vec<u8>, BootImageError> {
+        build_android_boot_payload(self.profile, self.components)
     }
 }
 
 pub fn build_android_boot_payload(
     profile: &DeviceProfile,
-    build: Stage0Build,
+    components: BootImageComponents,
 ) -> Result<Vec<u8>, BootImageError> {
-    build_android_boot_payload_with_options(profile, build, false)
+    build_android_boot_payload_with_options(profile, components, false)
 }
 
 pub fn build_android_boot_payload_with_options(
     profile: &DeviceProfile,
-    build: Stage0Build,
+    components: BootImageComponents,
     wrap_abl_exorcist_cmdline: bool,
 ) -> Result<Vec<u8>, BootImageError> {
     let mut cmdline = join_cmdline(
@@ -2034,13 +2054,13 @@ pub fn build_android_boot_payload_with_options(
             .android_bootimg
             .cmdline_append
             .as_deref(),
-        Some(build.kernel_cmdline_append.as_str()),
+        Some(components.kernel_cmdline_append.as_str()),
     );
     if wrap_abl_exorcist_cmdline {
         cmdline = wrap_abl_exorcist_cmdline_markers(&cmdline);
     }
 
-    let mut kernel_image = build.kernel_image;
+    let mut kernel_image = components.kernel_image;
     if profile
         .boot
         .fastboot_boot
@@ -2049,14 +2069,14 @@ pub fn build_android_boot_payload_with_options(
         .encoding
         .append_dtb()
     {
-        kernel_image.extend_from_slice(&build.dtb);
+        kernel_image.extend_from_slice(&components.dtb);
     }
 
     build_android_bootimg(
         profile,
         &kernel_image,
-        &build.initrd,
-        Some(&build.dtb),
+        &components.initrd,
+        Some(&components.dtb),
         &cmdline,
     )
 }

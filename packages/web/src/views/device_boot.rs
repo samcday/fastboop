@@ -1,16 +1,15 @@
 #[cfg(target_arch = "wasm32")]
 use anyhow::Context;
 use dioxus::prelude::*;
-use fastboop_core::fastboot::{boot, download};
+use fastboop_core::{
+    BootSessionEnvironment, FastboopSession as BootSession, SessionEvent, SessionEventPhase,
+};
 #[cfg(target_arch = "wasm32")]
 use fastboop_environment_web::{
     run_web_smoo_host, WebBootRuntime, WebSmooHostEvent, WebSmooHostOptions, WebSmooHostPhase,
 };
 use fastboop_environment_web::{
     WebBootConfig, WebBootEnvironment, WebBootStage0Config, WebSelectedFastbootDevice,
-};
-use fastboop_session::{
-    BootSessionEnvironment, FastboopSession as BootSession, SessionEvent, SessionEventPhase,
 };
 #[cfg(target_arch = "wasm32")]
 use futures_util::{pin_mut, FutureExt, StreamExt};
@@ -83,20 +82,11 @@ pub async fn boot_selected_device(
             ),
         },
     );
-    download(&mut fastboot, &prepared.boot_image)
+    boot_session
+        .handoff_fastboot(&mut env, &prepared, &mut fastboot)
         .await
-        .map_err(|err| anyhow::anyhow!("fastboot download failed: {err}"))?;
-
-    update_session_phase(
-        sessions,
-        session_id,
-        SessionPhase::Booting {
-            step: "Issuing fastboot boot".to_string(),
-        },
-    );
-    boot(&mut fastboot)
-        .await
-        .map_err(|err| anyhow::anyhow!("fastboot boot failed: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("fastboot handoff failed: {err}"))?;
+    drain_session_events(&mut env, sessions, session_id);
     let _ = fastboot.shutdown().await;
 
     let runtime = env.runtime_for_export(&prepared.export)?;

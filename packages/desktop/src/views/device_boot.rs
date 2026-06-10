@@ -4,13 +4,12 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use dioxus::prelude::ReadableExt;
-use fastboop_core::fastboot::{boot, download};
+use fastboop_core::{
+    BootSessionEnvironment, FastboopSession as BootSession, SessionEvent, SessionEventPhase,
+};
 use fastboop_environment_std::{
     run_native_smoo_host, NativeBootConfig, NativeBootEnvironment, NativeBootStage0Config,
     NativeSelectedFastbootDevice, SmooHostEvent, SmooHostOptions, SmooHostPhase,
-};
-use fastboop_session::{
-    BootSessionEnvironment, FastboopSession as BootSession, SessionEvent, SessionEventPhase,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -80,20 +79,11 @@ pub async fn boot_selected_device(
             ),
         },
     );
-    download(&mut fastboot, &prepared.boot_image)
+    boot_session
+        .handoff_fastboot(&mut env, &prepared, &mut fastboot)
         .await
-        .map_err(|err| anyhow!("fastboot download failed: {err}"))?;
-
-    update_session_phase(
-        sessions,
-        session_id,
-        SessionPhase::Booting {
-            step: "Issuing fastboot boot".to_string(),
-        },
-    );
-    boot(&mut fastboot)
-        .await
-        .map_err(|err| anyhow!("fastboot boot failed: {err}"))?;
+        .map_err(|err| anyhow!("fastboot handoff failed: {err}"))?;
+    drain_session_events(&session_rx, sessions, session_id);
 
     let export = prepared.export;
     Ok(BootRuntime {

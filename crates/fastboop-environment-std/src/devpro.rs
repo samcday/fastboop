@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use fastboop_core::DeviceProfile;
-use fastboop_session::{
+use fastboop_core::{
     build_device_profile_pool, resolve_profile_in_pool as resolve_profile_in_pool_core,
 };
 use tracing::warn;

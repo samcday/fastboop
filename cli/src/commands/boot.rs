@@ -7,10 +7,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
+use fastboop_core::{
+    BootSessionEnvironment, FastboopSession as BootSession, SessionEvent, SessionEventPhase,
+};
 use fastboop_environment_std::{
     NativeBootConfig, NativeBootEnvironment, NativeBootStage0Config, parse_ostree_arg,
 };
-use fastboop_session::{FastboopSession as BootSession, SessionEvent, SessionEventPhase};
 use tokio_util::sync::CancellationToken;
 
 use crate::boot_ui::{BootEvent, BootPhase, timestamp_hms};
@@ -191,7 +193,16 @@ async fn run_boot_inner(
             );
             Ok(())
         } else {
-            session.run(&mut env).await.map_err(|err| anyhow!("{err}"))
+            let post_handoff_resume = session.status().await.is_post_handoff();
+            let prepared = session.prepare(&mut env).await?;
+            if !post_handoff_resume {
+                let mut fastboot = env.connect_fastboot(&session, &prepared.info()).await?;
+                session
+                    .handoff_fastboot(&mut env, &prepared, &mut fastboot)
+                    .await
+                    .map_err(|err| anyhow!("{err}"))?;
+            }
+            session.serve_prepared(&mut env, prepared).await
         }
     };
 

@@ -8,31 +8,31 @@ use fastboop_core::DeviceProfile;
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::Personalization;
 use fastboop_core::device::DeviceHandle as _;
-use fastboop_fastboot_webusb::{FastbootWebUsb, WebUsbDeviceHandle};
-use fastboop_session::{
+use fastboop_core::{
     BootRequest, BootSessionEnvironment, FastboopSession, PreparedBoot, PreparedBootInfo,
     RuntimeExport, SessionCodecError, SessionEnvironment, SessionEvent, SessionSnapshot,
     SessionStatus, session_status_event,
 };
+use fastboop_fastboot_webusb::{FastbootWebUsb, WebUsbDeviceHandle};
 #[cfg(target_arch = "wasm32")]
 use gibblox_core::BlockReader;
 
 #[cfg(target_arch = "wasm32")]
 use anyhow::Context as _;
 #[cfg(target_arch = "wasm32")]
+use fastboop_core::Stage0SwitchrootFs;
+#[cfg(target_arch = "wasm32")]
 use fastboop_core::{
-    BootProfile, BootProfileArtifactSource, resolve_effective_boot_profile_stage0,
-    select_boot_profile_for_device,
+    BootImageBuilder, BootImageComponents, BootProfileArtifactSourceOpener, BootSpec,
+    BootSpecRequest, Channel, OstreeArg, SessionEventPhase, Stage0ExtraCmdline,
+    Stage0RootfsFactory, Stage0RootfsKind, auto_detect_ostree_deployment_path,
+    block_reader_size_bytes, boot_profile_rootfs_kind, build_stage0_extra_cmdline,
+    resolve_effective_ostree_arg,
 };
 #[cfg(target_arch = "wasm32")]
-use fastboop_session::{
-    BootProfileArtifactSourceOpener, OstreeArg, SessionEventPhase, Stage0Assembly,
-    Stage0ExtraCmdline, Stage0RootfsFactory, Stage0RootfsKind, auto_detect_ostree_deployment_path,
-    block_reader_size_bytes, boot_profile_rootfs_kind, build_android_boot_payload,
-    build_stage0_extra_cmdline, resolve_effective_ostree_arg,
-};
+use fastboop_core::{BootProfile, BootProfileArtifactSource};
 #[cfg(target_arch = "wasm32")]
-use fastboop_stage0_generator::{Stage0Error, Stage0Options, Stage0SwitchrootFs};
+use fastboop_stage0_generator::{Stage0Error, Stage0Options, build_stage0, stage0_binary_ready};
 #[cfg(target_arch = "wasm32")]
 use gibblox_blockreader_messageport::{MessagePortBlockReaderClient, MessagePortBlockReaderServer};
 #[cfg(target_arch = "wasm32")]
@@ -340,11 +340,13 @@ async fn prepare_boot_impl(
         )));
     }
 
-    let selected_boot_profile = select_web_boot_profile(
-        &stream_head.boot_profiles,
-        selected_device.profile.id.as_str(),
-        env.config.stage0.boot_profile.as_deref(),
-    )?;
+    let channel_plan = Channel::new(Some(channel.clone()), stream_head.clone());
+    let boot_spec = channel_plan
+        .boot_spec(
+            BootSpecRequest::new(selected_device.profile.clone())
+                .with_optional_requested_boot_profile_id(env.config.stage0.boot_profile.clone()),
+        )
+        .map_err(|err| anyhow!(err.to_string()))?;
 
     env.emit(SessionEvent::Phase {
         phase: SessionEventPhase::DeviceDetected,
@@ -372,14 +374,23 @@ async fn prepare_boot_impl(
         source.exact_total_bytes,
         &stream_head,
         &selected_device,
-        selected_boot_profile.as_ref(),
+        &boot_spec,
     )
     .await?;
     let build = prepared
         .build
         .map_err(|err| anyhow!("stage0 build failed: {err:?}"))?;
-    let boot_image = build_android_boot_payload(&selected_device.profile, build)
-        .map_err(|err| anyhow!("bootimg build failed: {err}"))?;
+    let boot_image = BootImageBuilder::new(
+        &selected_device.profile,
+        BootImageComponents {
+            kernel_image: build.kernel_image,
+            initrd: build.initrd,
+            dtb: build.dtb,
+            kernel_cmdline_append: build.kernel_cmdline_append,
+        },
+    )
+    .build()
+    .map_err(|err| anyhow!("bootimg build failed: {err}"))?;
 
     Ok(PreparedBoot {
         profile_id: selected_device.profile.id,
@@ -416,9 +427,10 @@ async fn build_stage0_artifacts(
     exact_total_bytes: u64,
     stream_head: &fastboop_core::ChannelStreamHead,
     selected_device: &WebSelectedFastbootDevice,
-    selected_boot_profile: Option<&BootProfile>,
+    boot_spec: &BootSpec,
 ) -> Result<Stage0Artifacts> {
-    let mut opts = stage0_options_for_web_boot(env, selected_device, selected_boot_profile);
+    let selected_boot_profile = boot_spec.boot_profile();
+    let mut opts = stage0_options_for_web_boot(env, selected_device, boot_spec);
     let gibblox_worker = spawn_gibblox_worker(channel.to_string(), 0, None)
         .await
         .map_err(|err| anyhow!("spawn gibblox worker failed: {err}"))?;
@@ -434,9 +446,9 @@ async fn build_stage0_artifacts(
         pipeline_hints: &pipeline_hints,
     };
     let profile_source_overrides =
-        fastboop_session::resolve_boot_profile_source_overrides_with::<_, Stage0RootfsProvider>(
+        fastboop_core::resolve_boot_profile_source_overrides_with::<_, Stage0RootfsProvider>(
             selected_boot_profile,
-            &selected_device.profile,
+            boot_spec.device_profile(),
             &mut source_opener,
         )
         .await
@@ -496,16 +508,10 @@ async fn build_stage0_artifacts(
             OstreeArg::Explicit(path) => Some(path),
         };
 
-    let extra_cmdline = build_extra_cmdline(
-        env,
-        selected_boot_profile,
-        selected_device.profile.id.as_str(),
-        selected_ostree.as_deref(),
-    );
+    let extra_cmdline = build_extra_cmdline(env, boot_spec, selected_ostree.as_deref());
     let stage0_binary = load_stage0_binary_sidecar(env.config.stage0.stage0_asset_url.clone())
         .await
         .map_err(|err| anyhow!("stage0 binary sidecar: {err:?}"))?;
-    let assembly = Stage0Assembly::new(opts, stage0_binary).with_extra_cmdline(extra_cmdline);
     let build = if let Some(ostree) = selected_ostree.as_deref() {
         let resolved_ostree = OstreeRootfs::resolve_deployment_path(&provider, ostree)
             .await
@@ -513,9 +519,25 @@ async fn build_stage0_artifacts(
         tracing::debug!(ostree = %ostree, resolved_ostree = %resolved_ostree, "resolved ostree deployment path");
         let provider = OstreeRootfs::new(provider, &resolved_ostree)
             .map_err(|err| anyhow!("initialize ostree filesystem view: {err}"))?;
-        assembly.build(&selected_device.profile, &provider).await
+        build_stage0(
+            &selected_device.profile,
+            &provider,
+            &opts,
+            stage0_binary_ready(stage0_binary.clone()),
+            extra_cmdline.as_deref(),
+            None,
+        )
+        .await
     } else {
-        assembly.build(&selected_device.profile, &provider).await
+        build_stage0(
+            &selected_device.profile,
+            &provider,
+            &opts,
+            stage0_binary_ready(stage0_binary.clone()),
+            extra_cmdline.as_deref(),
+            None,
+        )
+        .await
     };
 
     Ok(Stage0Artifacts {
@@ -530,22 +552,18 @@ async fn build_stage0_artifacts(
 fn stage0_options_for_web_boot(
     env: &WebBootEnvironment,
     selected_device: &WebSelectedFastbootDevice,
-    selected_boot_profile: Option<&BootProfile>,
+    boot_spec: &BootSpec,
 ) -> Stage0Options {
-    let profile_stage0 = selected_boot_profile
-        .map(|boot_profile| {
-            resolve_effective_boot_profile_stage0(boot_profile, selected_device.profile.id.as_str())
-        })
-        .unwrap_or_default();
+    let profile_stage0 = boot_spec.stage0();
 
     Stage0Options {
         switchroot_fs: Stage0SwitchrootFs::Erofs,
-        kernel_modules: profile_stage0.kernel_modules,
-        inject_mac: profile_stage0.inject_mac,
+        kernel_modules: profile_stage0.kernel_modules.clone(),
+        inject_mac: profile_stage0.inject_mac.clone(),
         kernel_override: None,
         abl_exorcist: None,
         dtb_override: None,
-        dtbo_overlays: profile_stage0.dt_overlays,
+        dtbo_overlays: profile_stage0.dt_overlays.clone(),
         enable_serial: env.config.stage0.serial,
         mimic_fastboot: true,
         smoo_vendor: Some(selected_device.vid),
@@ -558,18 +576,13 @@ fn stage0_options_for_web_boot(
 #[cfg(target_arch = "wasm32")]
 fn build_extra_cmdline(
     env: &WebBootEnvironment,
-    selected_boot_profile: Option<&BootProfile>,
-    device_profile_id: &str,
+    boot_spec: &BootSpec,
     selected_ostree: Option<&str>,
 ) -> Option<String> {
-    let profile_cmdline = selected_boot_profile
-        .map(|boot_profile| {
-            resolve_effective_boot_profile_stage0(boot_profile, device_profile_id).extra_cmdline
-        })
-        .unwrap_or_default();
+    let profile_cmdline = boot_spec.stage0().extra_cmdline.as_deref();
     build_stage0_extra_cmdline(Stage0ExtraCmdline {
         selected_ostree,
-        profile_cmdline: profile_cmdline.as_deref(),
+        profile_cmdline,
         requested_cmdline: env.config.stage0.cmdline_append.as_deref(),
         system_time: None,
         smoo_queue_count: None,
@@ -577,26 +590,6 @@ fn build_extra_cmdline(
         smoo_max_io: env.config.stage0.smoo_max_io,
         default_smoo_max_io: DEFAULT_SMOO_MAX_IO_BYTES,
     })
-}
-
-#[cfg(target_arch = "wasm32")]
-fn select_web_boot_profile(
-    boot_profiles: &[BootProfile],
-    device_profile_id: &str,
-    requested_boot_profile_id: Option<&str>,
-) -> Result<Option<BootProfile>> {
-    if boot_profiles.is_empty() {
-        if let Some(requested) = requested_boot_profile_id {
-            bail!(
-                "boot profile '{requested}' was requested, but channel does not start with a boot profile stream"
-            );
-        }
-        return Ok(None);
-    }
-
-    select_boot_profile_for_device(boot_profiles, device_profile_id, requested_boot_profile_id)
-        .map(Some)
-        .map_err(|err| anyhow!(err.to_string()))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -818,7 +811,7 @@ impl Stage0RootfsFactory for WebStage0RootfsFactory {
 }
 
 #[cfg(target_arch = "wasm32")]
-type Stage0RootfsProvider = fastboop_session::Stage0RootfsProvider<WebStage0RootfsFactory>;
+type Stage0RootfsProvider = fastboop_core::Stage0RootfsProvider<WebStage0RootfsFactory>;
 
 #[cfg(target_arch = "wasm32")]
 fn rootfs_kind_for_web_boot(boot_profile: &BootProfile) -> Result<Stage0RootfsKind> {
