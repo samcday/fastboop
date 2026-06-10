@@ -22,17 +22,11 @@ pub struct DetectArgs {
 }
 
 pub async fn run_detect(args: DetectArgs) -> Result<()> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    drop(rx);
-
-    let detected = detect_native_fastboot(
-        NativeDetectConfig {
-            device_profile: args.device_profile,
-            channel: args.channel,
-            wait: args.wait.map(Duration::from_secs),
-        },
-        tx,
-    )
+    let detected = detect_native_fastboot(NativeDetectConfig {
+        device_profile: args.device_profile,
+        channel: args.channel,
+        wait: args.wait.map(Duration::from_secs),
+    })
     .await;
 
     for device in detected? {

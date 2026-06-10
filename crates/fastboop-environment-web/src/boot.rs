@@ -8,11 +8,7 @@ use fastboop_core::DeviceProfile;
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::Personalization;
 use fastboop_core::device::DeviceHandle as _;
-use fastboop_core::{
-    BootRequest, BootSessionEnvironment, FastboopSession, PreparedBoot, PreparedBootInfo,
-    RuntimeExport, SessionCodecError, SessionEnvironment, SessionEvent, SessionSnapshot,
-    SessionStatus, session_status_event,
-};
+use fastboop_core::{PreparedBoot, RuntimeExport};
 use fastboop_fastboot_webusb::{FastbootWebUsb, WebUsbDeviceHandle};
 #[cfg(target_arch = "wasm32")]
 use gibblox_core::BlockReader;
@@ -24,10 +20,9 @@ use fastboop_core::Stage0SwitchrootFs;
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::{
     BootImageBuilder, BootImageComponents, BootProfileArtifactSourceOpener, BootSpec,
-    BootSpecRequest, Channel, OstreeArg, SessionEventPhase, Stage0ExtraCmdline,
-    Stage0RootfsFactory, Stage0RootfsKind, auto_detect_ostree_deployment_path,
-    block_reader_size_bytes, boot_profile_rootfs_kind, build_stage0_extra_cmdline,
-    resolve_effective_ostree_arg,
+    BootSpecRequest, Channel, OstreeArg, Stage0ExtraCmdline, Stage0RootfsFactory, Stage0RootfsKind,
+    auto_detect_ostree_deployment_path, block_reader_size_bytes, boot_profile_rootfs_kind,
+    build_stage0_extra_cmdline, resolve_effective_ostree_arg,
 };
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::{BootProfile, BootProfileArtifactSource};
@@ -92,15 +87,6 @@ pub struct WebBootStage0Config {
 #[derive(Clone, Debug)]
 pub struct WebBootConfig {
     pub stage0: WebBootStage0Config,
-}
-
-impl WebBootConfig {
-    pub fn boot_request(&self) -> Result<BootRequest> {
-        let mut request = BootRequest::new(web_session_seed()?);
-        request.source = Some(self.stage0.channel.clone());
-        request.requested_boot_profile = self.stage0.boot_profile.clone();
-        Ok(request)
-    }
 }
 
 #[derive(Clone)]
@@ -186,7 +172,6 @@ pub struct WebBootEnvironment {
     config: WebBootConfig,
     selected_device: Option<WebSelectedFastbootDevice>,
     runtime_info: Option<WebRuntimeInfo>,
-    events: Vec<SessionEvent>,
 }
 
 impl WebBootEnvironment {
@@ -195,17 +180,12 @@ impl WebBootEnvironment {
             config,
             selected_device: None,
             runtime_info: None,
-            events: Vec::new(),
         }
     }
 
     pub fn with_selected_device(mut self, device: WebSelectedFastbootDevice) -> Self {
         self.selected_device = Some(device);
         self
-    }
-
-    pub fn drain_events(&mut self) -> Vec<SessionEvent> {
-        core::mem::take(&mut self.events)
     }
 
     pub fn runtime_for_export(&self, export: &RuntimeExport) -> Result<WebBootRuntime> {
@@ -223,36 +203,11 @@ impl WebBootEnvironment {
         })
     }
 
-    fn emit(&mut self, event: SessionEvent) {
-        self.events.push(event);
-    }
-}
-
-impl SessionEnvironment for WebBootEnvironment {
-    type Error = anyhow::Error;
-
-    fn session_codec_error(&mut self, err: SessionCodecError) -> Self::Error {
-        anyhow!(err.to_string())
+    pub async fn prepare_boot(&mut self) -> Result<PreparedBoot> {
+        prepare_boot_impl(self).await
     }
 
-    async fn persist_session(&mut self, snapshot: &SessionSnapshot, _encoded: &[u8]) -> Result<()> {
-        emit_session_status(self, &snapshot.status);
-        Ok(())
-    }
-
-    async fn prepare_boot(&mut self, session: &FastboopSession) -> Result<PreparedBoot> {
-        prepare_boot_impl(self, session).await
-    }
-}
-
-impl BootSessionEnvironment for WebBootEnvironment {
-    type Fastboot = FastbootWebUsb;
-
-    async fn connect_fastboot(
-        &mut self,
-        _session: &FastboopSession,
-        _prepared: &PreparedBootInfo,
-    ) -> Result<FastbootWebUsb> {
+    pub async fn connect_fastboot(&mut self) -> Result<FastbootWebUsb> {
         let Some(device) = self.selected_device.as_ref() else {
             bail!("selected WebUSB fastboot device is unavailable")
         };
@@ -263,11 +218,7 @@ impl BootSessionEnvironment for WebBootEnvironment {
             .map_err(|err| anyhow!("open selected WebUSB fastboot device failed: {err}"))
     }
 
-    async fn serve_runtime(
-        &mut self,
-        _session: &FastboopSession,
-        export: RuntimeExport,
-    ) -> Result<()> {
+    pub async fn serve_runtime(&mut self, export: RuntimeExport) -> Result<()> {
         #[cfg(target_arch = "wasm32")]
         {
             let Some(device) = self.selected_device.as_ref() else {
@@ -293,14 +244,8 @@ impl BootSessionEnvironment for WebBootEnvironment {
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn prepare_boot_impl(
-    env: &mut WebBootEnvironment,
-    session: &FastboopSession,
-) -> Result<PreparedBoot> {
-    env.emit(SessionEvent::Phase {
-        phase: SessionEventPhase::Preparing,
-        detail: "loading web channel".to_string(),
-    });
+async fn prepare_boot_impl(env: &mut WebBootEnvironment) -> Result<PreparedBoot> {
+    tracing::info!("loading web channel");
 
     let channel = env.config.stage0.channel.trim().to_string();
     if channel.is_empty() {
@@ -312,16 +257,6 @@ async fn prepare_boot_impl(
         .as_ref()
         .ok_or_else(|| anyhow!("selected WebUSB fastboot device is unavailable"))?
         .clone();
-    let resume_status = session.status().await;
-    if let Some(profile_id) = resume_status.profile_id()
-        && profile_id != selected_device.profile.id
-    {
-        bail!(
-            "selected WebUSB device profile '{}' does not match session profile '{}'",
-            selected_device.profile.id,
-            profile_id,
-        );
-    }
 
     let source = open_web_channel_source_reader(&channel)
         .await
@@ -334,10 +269,11 @@ async fn prepare_boot_impl(
     .map_err(|err| anyhow!("read channel stream head: {err}"))?;
 
     if stream_head.warning_count > 0 {
-        env.emit(SessionEvent::Log(format!(
-            "channel stream has {} warning(s) while reading profile head; using {} bytes of leading records",
-            stream_head.warning_count, stream_head.consumed_bytes
-        )));
+        tracing::warn!(
+            warning_count = stream_head.warning_count,
+            consumed_bytes = stream_head.consumed_bytes,
+            "channel stream warnings while reading profile head"
+        );
     }
 
     let channel_plan = Channel::new(Some(channel.clone()), stream_head.clone());
@@ -348,24 +284,14 @@ async fn prepare_boot_impl(
         )
         .map_err(|err| anyhow!(err.to_string()))?;
 
-    env.emit(SessionEvent::Phase {
-        phase: SessionEventPhase::DeviceDetected,
-        detail: format!(
-            "{:04x}:{:04x} {} profile={}",
-            selected_device.vid,
-            selected_device.pid,
-            selected_device
-                .serial
-                .as_deref()
-                .map(|serial| format!("serial={serial}"))
-                .unwrap_or_else(|| "serial=unknown".to_string()),
-            selected_device.profile.id,
-        ),
-    });
-    env.emit(SessionEvent::Phase {
-        phase: SessionEventPhase::BuildingStage0,
-        detail: "building stage0 payload".to_string(),
-    });
+    tracing::info!(
+        vid = %format!("{:04x}", selected_device.vid),
+        pid = %format!("{:04x}", selected_device.pid),
+        serial = selected_device.serial.as_deref().unwrap_or("unknown"),
+        profile = %selected_device.profile.id,
+        "selected WebUSB fastboot device"
+    );
+    tracing::info!(profile = %selected_device.profile.id, "building stage0 payload");
 
     let prepared = build_stage0_artifacts(
         env,
@@ -404,10 +330,7 @@ async fn prepare_boot_impl(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn prepare_boot_impl(
-    _env: &mut WebBootEnvironment,
-    _session: &FastboopSession,
-) -> Result<PreparedBoot> {
+async fn prepare_boot_impl(_env: &mut WebBootEnvironment) -> Result<PreparedBoot> {
     bail!("web boot preparation is only available on wasm32 targets")
 }
 
@@ -883,12 +806,6 @@ async fn load_stage0_binary_sidecar(
     Ok(Some(bytes))
 }
 
-fn emit_session_status(env: &mut WebBootEnvironment, status: &SessionStatus) {
-    if let Some(event) = session_status_event(status) {
-        env.emit(event);
-    }
-}
-
 #[cfg(target_arch = "wasm32")]
 fn personalization_from_browser() -> Personalization {
     let locale = browser_locale().unwrap_or_else(|| "en_US.UTF-8".to_string());
@@ -938,18 +855,4 @@ fn browser_timezone() -> Option<String> {
         .ok()?
         .as_string()?;
     if tz.trim().is_empty() { None } else { Some(tz) }
-}
-
-fn web_session_seed() -> Result<u64> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let millis = js_sys::Date::now() as u64;
-        let random = (js_sys::Math::random() * u64::MAX as f64) as u64;
-        Ok(millis ^ random)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        Ok(0)
-    }
 }

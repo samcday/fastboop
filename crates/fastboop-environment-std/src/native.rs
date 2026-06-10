@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
 use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -9,10 +8,8 @@ use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, 
 use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::prober::probe_candidates;
 use fastboop_core::{
-    BootImageComponents, BootRequest, BootSessionEnvironment, DeviceProfile, FastboopSession,
-    Personalization, PreparedBoot, PreparedBootInfo, RuntimeExport, SessionCodecError,
-    SessionEnvironment, SessionEvent, SessionEventPhase, SessionSnapshot, Stage0ExtraCmdline,
-    build_android_boot_payload_with_options, build_stage0_extra_cmdline, session_status_event,
+    BootImageComponents, DeviceProfile, Personalization, PreparedBoot, RuntimeExport,
+    Stage0ExtraCmdline, build_android_boot_payload_with_options, build_stage0_extra_cmdline,
 };
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_stage0_generator::{build_stage0, stage0_binary_ready};
@@ -27,7 +24,7 @@ use crate::channel::{
     read_existing_initrd, resolve_boot_profile_source_overrides, resolve_effective_ostree_arg,
 };
 use crate::devpro::{channel_matching_pool, resolve_devpro_dirs, resolve_profile_in_pool};
-use crate::native_smoo::{SmooHostEvent, SmooHostOptions, SmooHostPhase, run_native_smoo_host};
+use crate::native_smoo::{SmooHostEvent, SmooHostOptions, run_native_smoo_host};
 use crate::stage0_binary::load_stage0_binary_for_initrd;
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -89,22 +86,10 @@ pub struct NativeBootConfig {
     pub systemd_firstboot: bool,
     pub wait: Duration,
     pub smoo_metrics_port: u16,
-    pub session_state: Option<PathBuf>,
-}
-
-impl NativeBootConfig {
-    pub fn boot_request(&self) -> Result<BootRequest> {
-        let mut request = BootRequest::new(session_seed()?);
-        request.source = Some(self.stage0.channel.to_string_lossy().to_string());
-        request.requested_device_profile = self.stage0.device_profile.clone();
-        request.requested_boot_profile = self.stage0.boot_profile.clone();
-        Ok(request)
-    }
 }
 
 pub struct NativeBootEnvironment {
     config: NativeBootConfig,
-    events: Sender<SessionEvent>,
     shutdown: CancellationToken,
     selected_device: Option<NativeSelectedFastbootDevice>,
     detected_device: Option<DetectedFastbootDevice>,
@@ -142,14 +127,9 @@ impl NativeSelectedFastbootDevice {
 }
 
 impl NativeBootEnvironment {
-    pub fn new(
-        config: NativeBootConfig,
-        events: Sender<SessionEvent>,
-        shutdown: CancellationToken,
-    ) -> Self {
+    pub fn new(config: NativeBootConfig, shutdown: CancellationToken) -> Self {
         Self {
             config,
-            events,
             shutdown,
             selected_device: None,
             detected_device: None,
@@ -160,33 +140,8 @@ impl NativeBootEnvironment {
         self.selected_device = Some(device);
         self
     }
-}
-
-impl SessionEnvironment for NativeBootEnvironment {
-    type Error = anyhow::Error;
-
-    fn session_codec_error(&mut self, err: SessionCodecError) -> Self::Error {
-        anyhow!(err.to_string())
-    }
-
-    async fn persist_session(&mut self, snapshot: &SessionSnapshot, encoded: &[u8]) -> Result<()> {
-        if let Some(path) = self.config.session_state.as_deref() {
-            write_session_snapshot(path, encoded)?;
-        }
-        if let Some(event) = session_status_event(&snapshot.status) {
-            emit(&self.events, event);
-        }
-        Ok(())
-    }
-
-    async fn prepare_boot(&mut self, session: &FastboopSession) -> Result<PreparedBoot> {
-        emit(
-            &self.events,
-            SessionEvent::Phase {
-                phase: SessionEventPhase::Preparing,
-                detail: "loading profiles".to_string(),
-            },
-        );
+    pub async fn prepare_boot(&mut self) -> Result<PreparedBoot> {
+        tracing::info!("loading profiles");
 
         let devpro_dirs = resolve_devpro_dirs()?;
         let mut artifact_resolver = ArtifactReaderResolver::with_local_artifacts(
@@ -203,38 +158,26 @@ impl SessionEnvironment for NativeBootEnvironment {
             })?;
 
         if channel_head.warning_count > 0 {
-            emit(
-                &self.events,
-                SessionEvent::Log(format!(
-                    "channel stream has {} warning(s) while reading profile head; using {} bytes of leading records",
-                    channel_head.warning_count, channel_head.consumed_bytes
-                )),
+            tracing::warn!(
+                warning_count = channel_head.warning_count,
+                consumed_bytes = channel_head.consumed_bytes,
+                "channel stream warnings while reading profile head"
             );
         }
 
-        let resume_status = session.status().await;
-        let post_handoff_resume = resume_status.is_post_handoff();
         let matching_pool = channel_matching_pool(&channel_head.dev_profiles, &devpro_dirs)?;
-        let selected_device = if self.config.boot_device && !post_handoff_resume {
+        let selected_device = if self.config.boot_device {
             self.selected_device.as_ref()
         } else {
             None
         };
-        let mut profile = if let Some(profile_id) = resume_status.profile_id() {
-            Some(resolve_profile_in_pool(
+        let mut profile = match self.config.stage0.device_profile.as_deref() {
+            Some(requested) => Some(resolve_profile_in_pool(
                 &matching_pool,
                 &devpro_dirs,
-                profile_id,
-            )?)
-        } else {
-            match self.config.stage0.device_profile.as_deref() {
-                Some(requested) => Some(resolve_profile_in_pool(
-                    &matching_pool,
-                    &devpro_dirs,
-                    requested,
-                )?),
-                None => None,
-            }
+                requested,
+            )?),
+            None => None,
         };
 
         if let Some(selected_device) = selected_device {
@@ -257,34 +200,19 @@ impl SessionEnvironment for NativeBootEnvironment {
         }
 
         let mut detected_fastboot = None;
-        let detected_device = if self.config.boot_device && !post_handoff_resume {
+        let detected_device = if self.config.boot_device {
             if let Some(selected_device) = selected_device {
                 Some(selected_device.info())
             } else if let Some(selected_profile) = profile.as_ref() {
-                emit(
-                    &self.events,
-                    SessionEvent::Phase {
-                        phase: SessionEventPhase::WaitingForDevice,
-                        detail: format!("profile={}", selected_profile.id),
-                    },
-                );
-                let detected =
-                    wait_for_fastboot_device(selected_profile, self.config.wait, &self.events)
-                        .await?;
+                tracing::info!(profile = %selected_profile.id, "waiting for fastboot device");
+                let detected = wait_for_fastboot_device(selected_profile, self.config.wait).await?;
                 let info = detected.info.clone();
                 detected_fastboot = Some(detected);
                 Some(info)
             } else {
-                emit(
-                    &self.events,
-                    SessionEvent::Phase {
-                        phase: SessionEventPhase::WaitingForDevice,
-                        detail: "profile=auto".to_string(),
-                    },
-                );
+                tracing::info!("waiting for fastboot device matching any profile");
                 let resolved =
-                    wait_for_fastboot_device_auto(&matching_pool, self.config.wait, &self.events)
-                        .await?;
+                    wait_for_fastboot_device_auto(&matching_pool, self.config.wait).await?;
                 profile = Some(resolved.profile);
                 let info = resolved.device.info.clone();
                 detected_fastboot = Some(resolved.device);
@@ -295,15 +223,8 @@ impl SessionEnvironment for NativeBootEnvironment {
         };
 
         let profile = profile.expect("profile resolved before build");
-        emit_detected_device(&self.events, &profile, detected_device.as_ref());
-
-        emit(
-            &self.events,
-            SessionEvent::Phase {
-                phase: SessionEventPhase::BuildingStage0,
-                detail: "building stage0 payload".to_string(),
-            },
-        );
+        log_detected_device(&profile, detected_device.as_ref());
+        tracing::info!(profile = %profile.id, "building stage0 payload");
 
         let personalization = self
             .config
@@ -350,16 +271,8 @@ impl SessionEnvironment for NativeBootEnvironment {
             },
         })
     }
-}
 
-impl BootSessionEnvironment for NativeBootEnvironment {
-    type Fastboot = FastbootRusb;
-
-    async fn connect_fastboot(
-        &mut self,
-        _session: &FastboopSession,
-        _prepared: &PreparedBootInfo,
-    ) -> Result<FastbootRusb> {
+    pub async fn connect_fastboot(&mut self) -> Result<FastbootRusb> {
         if let Some(device) = self.detected_device.take() {
             return Ok(device.fastboot);
         }
@@ -375,16 +288,11 @@ impl BootSessionEnvironment for NativeBootEnvironment {
         Err(anyhow!("fastboot device was not prepared for boot handoff"))
     }
 
-    async fn serve_runtime(
-        &mut self,
-        _session: &FastboopSession,
-        export: RuntimeExport,
-    ) -> Result<()> {
+    pub async fn serve_runtime(&mut self, export: RuntimeExport) -> Result<()> {
         let (tx, rx) = std::sync::mpsc::channel::<SmooHostEvent>();
-        let events = self.events.clone();
         let forwarder = std::thread::spawn(move || {
             while let Ok(event) = rx.recv() {
-                emit(&events, smoo_event_to_session_event(event));
+                log_smoo_event(event);
             }
         });
 
@@ -432,7 +340,6 @@ pub struct NativeDetectedDevice {
 
 pub async fn detect_native_fastboot(
     config: NativeDetectConfig,
-    events: Sender<SessionEvent>,
 ) -> Result<Vec<NativeDetectedDevice>> {
     const NO_MATCHING_DEVICE_MSG: &str = "No matching fastboot devices detected.";
 
@@ -446,12 +353,10 @@ pub async fn detect_native_fastboot(
                 format!("read channel profile stream head for {}", channel.display())
             })?;
         if head.warning_count > 0 {
-            emit(
-                &events,
-                SessionEvent::Log(format!(
-                    "channel stream has {} warning(s) while reading profile head; using {} bytes of leading records",
-                    head.warning_count, head.consumed_bytes
-                )),
+            tracing::warn!(
+                warning_count = head.warning_count,
+                consumed_bytes = head.consumed_bytes,
+                "channel stream warnings while reading profile head"
             );
         }
         head.dev_profiles
@@ -502,20 +407,13 @@ pub async fn detect_native_fastboot(
                 if !waiting {
                     waiting = true;
                     if wait.is_zero() {
-                        emit(
-                            &events,
-                            SessionEvent::Log(
-                                "No matching fastboot devices detected. Waiting for devices..."
-                                    .to_string(),
-                            ),
+                        tracing::info!(
+                            "no matching fastboot devices detected; waiting for devices"
                         );
                     } else {
-                        emit(
-                            &events,
-                            SessionEvent::Log(format!(
-                                "No matching fastboot devices detected. Waiting up to {}s...",
-                                wait.as_secs()
-                            )),
+                        tracing::info!(
+                            wait_seconds = wait.as_secs(),
+                            "no matching fastboot devices detected; waiting for devices"
                         );
                     }
                 }
@@ -798,7 +696,6 @@ struct ResolvedDetectedFastbootDevice {
 async fn wait_for_fastboot_device(
     profile: &DeviceProfile,
     wait: Duration,
-    events: &Sender<SessionEvent>,
 ) -> Result<DetectedFastbootDevice> {
     let filters = profile_filters(std::slice::from_ref(profile));
     let mut watcher = DeviceWatcher::new(&filters).context("starting USB hotplug watcher")?;
@@ -812,7 +709,7 @@ async fn wait_for_fastboot_device(
     loop {
         match watcher.try_next_event() {
             Poll::Ready(Ok(DeviceEvent::Arrived { device })) => {
-                if let Some(fastboot) = probe_arrived_device(profile, device, events).await? {
+                if let Some(fastboot) = probe_arrived_device(profile, device).await? {
                     return Ok(fastboot);
                 }
             }
@@ -824,21 +721,15 @@ async fn wait_for_fastboot_device(
                 if !waiting {
                     waiting = true;
                     if wait.is_zero() {
-                        emit(
-                            events,
-                            SessionEvent::Log(format!(
-                                "Waiting for fastboot device matching profile {}...",
-                                profile.id
-                            )),
+                        tracing::info!(
+                            profile = %profile.id,
+                            "waiting for fastboot device matching profile"
                         );
                     } else {
-                        emit(
-                            events,
-                            SessionEvent::Log(format!(
-                                "Waiting up to {}s for fastboot device matching profile {}...",
-                                wait.as_secs(),
-                                profile.id
-                            )),
+                        tracing::info!(
+                            profile = %profile.id,
+                            wait_seconds = wait.as_secs(),
+                            "waiting for fastboot device matching profile"
                         );
                     }
                 }
@@ -864,7 +755,6 @@ async fn wait_for_fastboot_device(
 async fn wait_for_fastboot_device_auto(
     profiles: &[DeviceProfile],
     wait: Duration,
-    events: &Sender<SessionEvent>,
 ) -> Result<ResolvedDetectedFastbootDevice> {
     if profiles.is_empty() {
         bail!("no device profiles available for auto-detection");
@@ -882,7 +772,7 @@ async fn wait_for_fastboot_device_auto(
     loop {
         match watcher.try_next_event() {
             Poll::Ready(Ok(DeviceEvent::Arrived { device })) => {
-                if let Some(resolved) = probe_arrived_device_auto(profiles, device, events).await? {
+                if let Some(resolved) = probe_arrived_device_auto(profiles, device).await? {
                     return Ok(resolved);
                 }
             }
@@ -894,19 +784,11 @@ async fn wait_for_fastboot_device_auto(
                 if !waiting {
                     waiting = true;
                     if wait.is_zero() {
-                        emit(
-                            events,
-                            SessionEvent::Log(
-                                "Waiting for fastboot device matching any profile...".to_string(),
-                            ),
-                        );
+                        tracing::info!("waiting for fastboot device matching any profile");
                     } else {
-                        emit(
-                            events,
-                            SessionEvent::Log(format!(
-                                "Waiting up to {}s for fastboot device matching any profile...",
-                                wait.as_secs()
-                            )),
+                        tracing::info!(
+                            wait_seconds = wait.as_secs(),
+                            "waiting for fastboot device matching any profile"
                         );
                     }
                 }
@@ -929,7 +811,6 @@ async fn wait_for_fastboot_device_auto(
 async fn probe_arrived_device(
     profile: &DeviceProfile,
     device: RusbDeviceHandle,
-    events: &Sender<SessionEvent>,
 ) -> Result<Option<DetectedFastbootDevice>> {
     let vid = device.vid();
     let pid = device.pid();
@@ -941,9 +822,11 @@ async fn probe_arrived_device(
     let mut fastboot = match device.open_fastboot().await {
         Ok(fastboot) => fastboot,
         Err(err) => {
-            emit(
-                events,
-                SessionEvent::Log(format!("Skipping {vid:04x}:{pid:04x}: open failed: {err}")),
+            tracing::info!(
+                %err,
+                vid = %format!("{vid:04x}"),
+                pid = %format!("{pid:04x}"),
+                "skipping fastboot device after open failure"
             );
             return Ok(None);
         }
@@ -974,7 +857,6 @@ async fn probe_arrived_device(
 async fn probe_arrived_device_auto(
     profiles: &[DeviceProfile],
     device: RusbDeviceHandle,
-    events: &Sender<SessionEvent>,
 ) -> Result<Option<ResolvedDetectedFastbootDevice>> {
     let vid = device.vid();
     let pid = device.pid();
@@ -990,9 +872,11 @@ async fn probe_arrived_device_auto(
     let mut fastboot = match device.open_fastboot().await {
         Ok(fastboot) => fastboot,
         Err(err) => {
-            emit(
-                events,
-                SessionEvent::Log(format!("Skipping {vid:04x}:{pid:04x}: open failed: {err}")),
+            tracing::info!(
+                %err,
+                vid = %format!("{vid:04x}"),
+                pid = %format!("{pid:04x}"),
+                "skipping fastboot device after open failure"
             );
             return Ok(None);
         }
@@ -1042,43 +926,25 @@ async fn probe_arrived_device_auto(
     }
 }
 
-fn emit_detected_device(
-    events: &Sender<SessionEvent>,
-    profile: &DeviceProfile,
-    device: Option<&DetectedFastbootInfo>,
-) {
+fn log_detected_device(profile: &DeviceProfile, device: Option<&DetectedFastbootInfo>) {
     let Some(device) = device else {
         return;
     };
-    emit(
-        events,
-        SessionEvent::Phase {
-            phase: SessionEventPhase::DeviceDetected,
-            detail: format!(
-                "{:04x}:{:04x} {} profile={}",
-                device.vid,
-                device.pid,
-                device
-                    .serial
-                    .as_deref()
-                    .map(|s| format!("serial={s}"))
-                    .unwrap_or_else(|| "serial=unknown".to_string()),
-                profile.id,
-            ),
-        },
+    tracing::info!(
+        vid = %format!("{:04x}", device.vid),
+        pid = %format!("{:04x}", device.pid),
+        serial = device.serial.as_deref().unwrap_or("unknown"),
+        profile = %profile.id,
+        "detected fastboot device"
     );
 }
 
-fn smoo_event_to_session_event(event: SmooHostEvent) -> SessionEvent {
+fn log_smoo_event(event: SmooHostEvent) {
     match event {
-        SmooHostEvent::Phase { phase, detail } => SessionEvent::Phase {
-            phase: match phase {
-                SmooHostPhase::WaitingForSmoo => SessionEventPhase::WaitingForSmoo,
-                SmooHostPhase::Serving => SessionEventPhase::Serving,
-            },
-            detail,
-        },
-        SmooHostEvent::Log(line) => SessionEvent::Log(line),
+        SmooHostEvent::Phase { phase, detail } => {
+            tracing::info!(phase = ?phase, detail = %detail, "smoo host phase");
+        }
+        SmooHostEvent::Log(line) => tracing::info!(message = %line, "smoo host"),
         SmooHostEvent::Status {
             active,
             export_count,
@@ -1089,7 +955,7 @@ fn smoo_event_to_session_event(event: SmooHostEvent) -> SessionEvent {
             bytes_down,
             inflight_requests,
             max_inflight_requests,
-        } => SessionEvent::SmooStatus {
+        } => tracing::debug!(
             active,
             export_count,
             session_id,
@@ -1099,47 +965,9 @@ fn smoo_event_to_session_event(event: SmooHostEvent) -> SessionEvent {
             bytes_down,
             inflight_requests,
             max_inflight_requests,
-        },
+            "smoo host status"
+        ),
     }
-}
-
-fn emit(events: &Sender<SessionEvent>, event: SessionEvent) {
-    let _ = events.send(event);
-}
-
-pub fn session_seed() -> Result<u64> {
-    let since_epoch = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system time before UNIX_EPOCH")?;
-    let nanos = since_epoch.as_nanos();
-    Ok((nanos as u64) ^ ((nanos >> 64) as u64))
-}
-
-fn write_session_snapshot(path: &Path, encoded: &[u8]) -> Result<()> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating session state directory {}", parent.display()))?;
-    }
-    let mut tmp_name = path
-        .file_name()
-        .ok_or_else(|| anyhow!("session state path {} has no file name", path.display()))?
-        .to_os_string();
-    tmp_name.push(".tmp");
-    let tmp_path = path.with_file_name(tmp_name);
-
-    std::fs::write(&tmp_path, encoded)
-        .with_context(|| format!("writing session state {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "replacing session state {} with {}",
-            path.display(),
-            tmp_path.display()
-        )
-    })?;
-    Ok(())
 }
 
 fn profile_choice_label(profile: &DeviceProfile) -> String {
