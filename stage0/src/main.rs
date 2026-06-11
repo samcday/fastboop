@@ -226,6 +226,7 @@ fn run_gadget_child(args: Args) -> Result<()> {
         dma_heap: map_dma_heap(args.dma_heap),
         state_file: Some(args.state_file),
         adopt: args.adopt,
+        adopt_deadline: None,
         metrics_port: args.metrics_port,
         ffs_dir: args.ffs_dir,
         mimic_fastboot: args.mimic_fastboot,
