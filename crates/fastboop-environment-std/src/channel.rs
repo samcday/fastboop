@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail};
 use fastboop_core::{
@@ -13,11 +12,7 @@ use fastboop_core::{
     ChannelStreamKind, DeviceProfile, read_channel_pipeline_hints_for_boot_profile,
     read_channel_stream_head_from_reader as read_channel_stream_head_from_reader_core,
 };
-use gibblox_android_sparse::{
-    AndroidSparseBlockReader, AndroidSparseChunkIndex, AndroidSparseImageIndex,
-};
-use gibblox_cache::CachedBlockReader;
-use gibblox_cache_store_std::StdCacheOps;
+use gibblox_android_sparse::AndroidSparseBlockReader;
 use gibblox_casync::{CasyncBlockReader, CasyncReaderConfig};
 use gibblox_casync_std::{
     StdCasyncChunkStore, StdCasyncChunkStoreConfig, StdCasyncChunkStoreLocator,
@@ -30,16 +25,14 @@ use gibblox_file::FileReader;
 use gibblox_http::HttpReader;
 use gibblox_mbr::{MbrBlockReader, MbrPartitionSelector};
 use gibblox_pipeline::{
-    OpenPipelineOptions, PipelineCachePolicy, PipelineHint, PipelineHints, PipelineSource,
-    PipelineSourceContent, open_pipeline, pipeline_identity_string, validate_pipeline_hints,
+    LocalArtifactIndex, OpenPipelineOptions, PipelineCachePolicy, PipelineHints, open_pipeline,
+    pipeline_identity_string, validate_pipeline_hints,
 };
-use gibblox_tar::{TarEntryByteReader, TarEntryByteReaderConfig, TarEntryIndex};
 use gibblox_xz::XzBlockReader;
 use gibblox_zip::ZipEntryBlockReader;
 use gobblytes_core::{Filesystem, FilesystemEntryType};
 use gobblytes_erofs::{DEFAULT_IMAGE_BLOCK_SIZE, ErofsRootfs};
 use gobblytes_fat::FatFs;
-use sha2::{Digest, Sha512};
 use tracing::info;
 use url::Url;
 
@@ -96,17 +89,8 @@ pub type Stage0CoalescingFilesystem =
 #[derive(Default)]
 pub struct ArtifactReaderResolver {
     cache: HashMap<String, Arc<dyn BlockReader>>,
-    sparse_index_hints: HashMap<String, AndroidSparseImageIndex>,
-    tar_entry_hints: HashMap<String, TarEntryIndex>,
-    content_digest_hints: HashMap<String, PipelineSourceContent>,
     pipeline_hints: PipelineHints,
-    local_artifacts: HashMap<ArtifactContentKey, PathBuf>,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct ArtifactContentKey {
-    digest: String,
-    size_bytes: u64,
+    local_artifacts: LocalArtifactIndex,
 }
 
 type OpenArtifactFuture<'a> = Pin<Box<dyn Future<Output = Result<Arc<dyn BlockReader>>> + 'a>>;
@@ -121,7 +105,7 @@ impl ArtifactReaderResolver {
             info!(count = paths.len(), "indexing local artifact overrides");
         }
         let resolver = Self {
-            local_artifacts: build_local_artifact_index(paths)?,
+            local_artifacts: LocalArtifactIndex::from_paths(paths)?,
             ..Self::default()
         };
         if !paths.is_empty() {
@@ -135,69 +119,7 @@ impl ArtifactReaderResolver {
 
     fn reset_pipeline_hints(&mut self, hints: &PipelineHints) -> Result<()> {
         validate_pipeline_hints(hints).map_err(|err| anyhow!("validate pipeline hints: {err}"))?;
-        self.sparse_index_hints.clear();
-        self.tar_entry_hints.clear();
-        self.content_digest_hints.clear();
         self.pipeline_hints = hints.clone();
-
-        for entry in &hints.entries {
-            for hint in &entry.hints {
-                match hint {
-                    PipelineHint::AndroidSparseIndex(index) => {
-                        self.sparse_index_hints.insert(
-                            entry.pipeline_identity.clone(),
-                            AndroidSparseImageIndex {
-                                file_hdr_sz: index.file_hdr_sz,
-                                chunk_hdr_sz: index.chunk_hdr_sz,
-                                blk_sz: index.blk_sz,
-                                total_blks: index.total_blks,
-                                total_chunks: index.total_chunks,
-                                image_checksum: index.image_checksum,
-                                chunks: index
-                                    .chunks
-                                    .iter()
-                                    .map(|chunk| AndroidSparseChunkIndex {
-                                        chunk_index: chunk.chunk_index,
-                                        chunk_type: chunk.chunk_type,
-                                        chunk_sz: chunk.chunk_sz,
-                                        total_sz: chunk.total_sz,
-                                        chunk_offset: chunk.chunk_offset,
-                                        payload_offset: chunk.payload_offset,
-                                        payload_size: chunk.payload_size,
-                                        output_start: chunk.output_start,
-                                        output_end: chunk.output_end,
-                                        fill_pattern: chunk.fill_pattern,
-                                        crc32: chunk.crc32,
-                                    })
-                                    .collect(),
-                            },
-                        );
-                    }
-                    PipelineHint::TarEntryIndex(index) => {
-                        self.tar_entry_hints.insert(
-                            entry.pipeline_identity.clone(),
-                            TarEntryIndex {
-                                entry_name: index.entry_name.clone(),
-                                header_offset: index.header_offset,
-                                data_offset: index.data_offset,
-                                size_bytes: index.size_bytes,
-                                entry_type: index.entry_type,
-                            },
-                        );
-                    }
-                    PipelineHint::ContentDigest(content) => {
-                        self.content_digest_hints.insert(
-                            entry.pipeline_identity.clone(),
-                            PipelineSourceContent {
-                                digest: content.digest.clone(),
-                                size_bytes: content.size_bytes,
-                            },
-                        );
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -295,205 +217,27 @@ impl ArtifactReaderResolver {
         source: &'a BootProfileArtifactSource,
     ) -> OpenArtifactFuture<'a> {
         Box::pin(async move {
-            if let Some(local_path) = self.match_local_artifact(source)? {
-                let cache_key = format!("file:{}", local_path.display());
-                if let Some(reader) = self.cache.get(&cache_key).cloned() {
-                    return Ok(reader);
-                }
-
-                let file_reader =
-                    FileReader::open(&local_path, DEFAULT_IMAGE_BLOCK_SIZE).map_err(|err| {
-                        anyhow!("open local artifact {}: {err}", local_path.display())
-                    })?;
-                let reader: Arc<dyn BlockReader> = Arc::new(file_reader);
-                self.cache.insert(cache_key, reader.clone());
-                return Ok(reader);
-            }
-
-            let cache_key = artifact_source_cache_key(source)?;
+            let cache_key = pipeline_identity_string(source);
             if let Some(reader) = self.cache.get(&cache_key).cloned() {
                 return Ok(reader);
             }
 
-            if self.local_artifacts.is_empty() {
-                let reader = open_pipeline(
-                    source,
-                    &OpenPipelineOptions {
-                        image_block_size: DEFAULT_IMAGE_BLOCK_SIZE,
-                        cache_policy: PipelineCachePolicy::Head,
-                        pipeline_hints: Some(self.pipeline_hints.clone()),
-                        ..OpenPipelineOptions::default()
-                    },
-                )
-                .await
-                .map_err(|err| anyhow!("open artifact pipeline: {err}"))?;
-                self.cache.insert(cache_key, reader.clone());
-                return Ok(reader);
-            }
-
-            let reader: Arc<dyn BlockReader> = match source {
-                BootProfileArtifactSource::Http(source) => {
-                    let url = Url::parse(source.http.as_str())
-                        .with_context(|| format!("parse HTTP artifact URL {}", source.http))?;
-                    cache_artifact_reader(open_uncached_http_reader(url).await?.reader).await?
-                }
-                BootProfileArtifactSource::File(source) => {
-                    let path = Path::new(source.file.as_str());
-                    let canonical = fs::canonicalize(path).with_context(|| {
-                        format!("canonicalize file artifact path {}", path.display())
-                    })?;
-                    let file_reader = FileReader::open(&canonical, DEFAULT_IMAGE_BLOCK_SIZE)
-                        .map_err(|err| {
-                            anyhow!("open file artifact {}: {err}", canonical.display())
-                        })?;
-                    Arc::new(file_reader)
-                }
-                BootProfileArtifactSource::Casync(source) => {
-                    let index_url =
-                        Url::parse(source.casync.index.as_str()).with_context(|| {
-                            format!("parse casync index URL {}", source.casync.index)
-                        })?;
-                    let chunk_store = source
-                        .casync
-                        .chunk_store
-                        .as_deref()
-                        .map(Url::parse)
-                        .transpose()
-                        .with_context(|| {
-                            format!(
-                                "parse casync chunk store URL {}",
-                                source.casync.chunk_store.as_deref().unwrap_or_default()
-                            )
-                        })?;
-                    let reader = open_casync_reader(index_url, chunk_store, false).await?;
-                    cache_artifact_reader(reader.reader).await?
-                }
-                BootProfileArtifactSource::Xz(source) => {
-                    let upstream = self.open_artifact_source(source.xz.as_ref()).await?;
-                    let upstream = AlignedByteReader::new(upstream)
-                        .await
-                        .map_err(|err| anyhow!("open aligned byte view for xz source: {err}"))?;
-                    let reader = XzBlockReader::new_from_byte_reader(Arc::new(upstream))
-                        .await
-                        .map_err(|err| anyhow!("open xz block reader: {err}"))?;
-                    let reader = BlockByteReader::new(reader, DEFAULT_IMAGE_BLOCK_SIZE)
-                        .map_err(|err| anyhow!("open xz block view: {err}"))?;
-                    Arc::new(reader)
-                }
-                BootProfileArtifactSource::AndroidSparseImg(source) => {
-                    let upstream = self
-                        .open_artifact_source(source.android_sparseimg.source.as_ref())
-                        .await?;
-                    let pipeline_identity = pipeline_identity_string(
-                        &BootProfileArtifactSource::AndroidSparseImg(source.clone()),
-                    );
-                    let sidecar_index = self.sparse_index_hints.get(&pipeline_identity);
-                    let reader = if let Some(index) = sidecar_index {
-                        AndroidSparseBlockReader::new_with_index(upstream, index.clone())
-                            .await
-                            .map_err(|err| {
-                                anyhow!("open android sparse reader from sidecar index: {err}")
-                            })?
-                    } else {
-                        AndroidSparseBlockReader::new(upstream)
-                            .await
-                            .map_err(|err| anyhow!("open android sparse reader: {err}"))?
-                    };
-                    Arc::new(reader)
-                }
-                BootProfileArtifactSource::Tar(source) => {
-                    let upstream = self
-                        .open_artifact_source(source.tar.source.as_ref())
-                        .await?;
-                    let upstream = AlignedByteReader::new(upstream)
-                        .await
-                        .map_err(|err| anyhow!("open aligned byte view for tar source: {err}"))?;
-                    let pipeline_identity =
-                        pipeline_identity_string(&BootProfileArtifactSource::Tar(source.clone()));
-                    let upstream: Arc<dyn gibblox_core::ByteReader> = Arc::new(upstream);
-                    let config = TarEntryByteReaderConfig::new(source.tar.entry.as_str())?
-                        .with_source_identity(pipeline_identity_string(source.tar.source.as_ref()));
-                    let reader = if let Some(index) = self.tar_entry_hints.get(&pipeline_identity) {
-                        TarEntryByteReader::open_with_index(upstream, config, index.clone())
-                            .await
-                            .map_err(|err| {
-                                anyhow!("open tar entry reader from sidecar index: {err}")
-                            })?
-                    } else {
-                        TarEntryByteReader::open_with_config(upstream, config)
-                            .await
-                            .map_err(|err| anyhow!("open tar entry reader: {err}"))?
-                    };
-                    let reader = BlockByteReader::new(reader, DEFAULT_IMAGE_BLOCK_SIZE)
-                        .map_err(|err| anyhow!("open tar entry block view: {err}"))?;
-                    Arc::new(reader)
-                }
-                BootProfileArtifactSource::Mbr(source) => {
-                    let selector = if let Some(partuuid) = source.mbr.partuuid.as_deref() {
-                        MbrPartitionSelector::part_uuid(partuuid)
-                    } else if let Some(index) = source.mbr.index {
-                        MbrPartitionSelector::index(index)
-                    } else {
-                        bail!("boot profile MBR source missing selector")
-                    };
-
-                    let upstream = self
-                        .open_artifact_source(source.mbr.source.as_ref())
-                        .await?;
-                    let reader = MbrBlockReader::new(upstream, selector, DEFAULT_IMAGE_BLOCK_SIZE)
-                        .await
-                        .map_err(|err| anyhow!("open MBR partition reader: {err}"))?;
-                    Arc::new(reader)
-                }
-                BootProfileArtifactSource::Gpt(source) => {
-                    let selector = if let Some(partlabel) = source.gpt.partlabel.as_deref() {
-                        GptPartitionSelector::part_label(partlabel)
-                    } else if let Some(partuuid) = source.gpt.partuuid.as_deref() {
-                        GptPartitionSelector::part_uuid(partuuid)
-                    } else if let Some(index) = source.gpt.index {
-                        GptPartitionSelector::index(index)
-                    } else {
-                        bail!("boot profile GPT source missing selector")
-                    };
-
-                    let upstream = self
-                        .open_artifact_source(source.gpt.source.as_ref())
-                        .await?;
-                    let reader = GptBlockReader::new(upstream, selector, DEFAULT_IMAGE_BLOCK_SIZE)
-                        .await
-                        .map_err(|err| anyhow!("open GPT partition reader: {err}"))?;
-                    Arc::new(reader)
-                }
-            };
+            let reader = open_pipeline(
+                source,
+                &OpenPipelineOptions {
+                    image_block_size: DEFAULT_IMAGE_BLOCK_SIZE,
+                    cache_policy: PipelineCachePolicy::Head,
+                    pipeline_hints: Some(self.pipeline_hints.clone()),
+                    local_artifacts: Some(self.local_artifacts.clone()),
+                    ..OpenPipelineOptions::default()
+                },
+            )
+            .await
+            .map_err(|err| anyhow!("open artifact pipeline: {err}"))?;
 
             self.cache.insert(cache_key, reader.clone());
             Ok(reader)
         })
-    }
-
-    fn match_local_artifact(&self, source: &PipelineSource) -> Result<Option<PathBuf>> {
-        let source_identity = pipeline_identity_string(source);
-        let content = artifact_source_content(source)
-            .or_else(|| self.content_digest_hints.get(&source_identity));
-        let Some(content) = content else {
-            return Ok(None);
-        };
-        let key = ArtifactContentKey {
-            digest: content.digest.clone(),
-            size_bytes: content.size_bytes,
-        };
-        let Some(path) = self.local_artifacts.get(&key) else {
-            return Ok(None);
-        };
-
-        info!(
-            source_identity = %source_identity,
-            digest = %content.digest,
-            size_bytes = content.size_bytes,
-            local_path = %path.display(),
-            "using local artifact override"
-        );
-        Ok(Some(path.clone()))
     }
 }
 
@@ -505,151 +249,6 @@ impl BootProfileArtifactSourceOpener for ArtifactReaderResolver {
         source: &BootProfileArtifactSource,
     ) -> Result<Arc<dyn BlockReader>, Self::Error> {
         self.open_artifact_source(source).await
-    }
-}
-
-fn artifact_source_content(source: &PipelineSource) -> Option<&PipelineSourceContent> {
-    match source {
-        PipelineSource::Http(source) => source.content.as_ref(),
-        PipelineSource::File(source) => source.content.as_ref(),
-        PipelineSource::Casync(source) => source.casync.content.as_ref(),
-        PipelineSource::Xz(source) => source.content.as_ref(),
-        PipelineSource::AndroidSparseImg(source) => source.android_sparseimg.content.as_ref(),
-        PipelineSource::Tar(source) => source.tar.content.as_ref(),
-        PipelineSource::Mbr(source) => source.mbr.content.as_ref(),
-        PipelineSource::Gpt(source) => source.gpt.content.as_ref(),
-    }
-}
-
-fn build_local_artifact_index(paths: &[PathBuf]) -> Result<HashMap<ArtifactContentKey, PathBuf>> {
-    let mut out = HashMap::new();
-    for path in paths {
-        let canonical = fs::canonicalize(path)
-            .with_context(|| format!("canonicalize local artifact path {}", path.display()))?;
-        let metadata = fs::metadata(&canonical)
-            .with_context(|| format!("stat local artifact {}", canonical.display()))?;
-        if !metadata.is_file() {
-            bail!(
-                "local artifact {} is not a regular file",
-                canonical.display()
-            );
-        }
-
-        info!(
-            local_path = %canonical.display(),
-            size_bytes = metadata.len(),
-            "hashing local artifact"
-        );
-        let started = Instant::now();
-        let digest = sha512_file(canonical.as_path())?;
-        let elapsed = started.elapsed();
-        let elapsed_secs = elapsed.as_secs_f64();
-        let throughput_mib_per_sec = if elapsed_secs > 0.0 {
-            (metadata.len() as f64 / (1024.0 * 1024.0)) / elapsed_secs
-        } else {
-            0.0
-        };
-        info!(
-            local_path = %canonical.display(),
-            digest = %digest,
-            size_bytes = metadata.len(),
-            elapsed_ms = elapsed.as_millis() as u64,
-            throughput_mib_per_sec,
-            "indexed local artifact"
-        );
-        let key = ArtifactContentKey {
-            digest,
-            size_bytes: metadata.len(),
-        };
-        if let Some(existing) = out.insert(key.clone(), canonical.clone()) {
-            if existing != canonical {
-                bail!(
-                    "local artifact digest+size collision between {} and {}",
-                    existing.display(),
-                    canonical.display()
-                );
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn sha512_file(path: &Path) -> Result<String> {
-    let file =
-        fs::File::open(path).with_context(|| format!("open local artifact {}", path.display()))?;
-    let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
-    let mut hasher = Sha512::new();
-    let mut buf = [0u8; 1024 * 1024];
-
-    loop {
-        let read = reader
-            .read(&mut buf)
-            .with_context(|| format!("read local artifact {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buf[..read]);
-    }
-
-    Ok(format!("sha512:{:x}", hasher.finalize()))
-}
-
-fn artifact_source_cache_key(source: &BootProfileArtifactSource) -> Result<String> {
-    match source {
-        BootProfileArtifactSource::Http(source) => Ok(format!("http:{}", source.http)),
-        BootProfileArtifactSource::File(source) => {
-            let path = Path::new(source.file.as_str());
-            let canonical = fs::canonicalize(path)
-                .with_context(|| format!("canonicalize file artifact path {}", path.display()))?;
-            Ok(format!("file:{}", canonical.display()))
-        }
-        BootProfileArtifactSource::Casync(source) => {
-            let chunk_store = source.casync.chunk_store.as_deref().unwrap_or_default();
-            Ok(format!("casync:{}:{}", source.casync.index, chunk_store))
-        }
-        BootProfileArtifactSource::Xz(source) => Ok(format!(
-            "xz:{}",
-            artifact_source_cache_key(source.xz.as_ref())?
-        )),
-        BootProfileArtifactSource::AndroidSparseImg(source) => Ok(format!(
-            "android_sparseimg:{}",
-            artifact_source_cache_key(source.android_sparseimg.source.as_ref())?
-        )),
-        BootProfileArtifactSource::Tar(source) => Ok(format!(
-            "tar:entry={}:{}",
-            source.tar.entry,
-            artifact_source_cache_key(source.tar.source.as_ref())?
-        )),
-        BootProfileArtifactSource::Mbr(source) => {
-            let selector = if let Some(partuuid) = source.mbr.partuuid.as_deref() {
-                format!("partuuid={partuuid}")
-            } else if let Some(index) = source.mbr.index {
-                format!("index={index}")
-            } else {
-                bail!("boot profile MBR source missing selector")
-            };
-            Ok(format!(
-                "mbr:{}:{}",
-                selector,
-                artifact_source_cache_key(source.mbr.source.as_ref())?
-            ))
-        }
-        BootProfileArtifactSource::Gpt(source) => {
-            let selector = if let Some(partlabel) = source.gpt.partlabel.as_deref() {
-                format!("partlabel={partlabel}")
-            } else if let Some(partuuid) = source.gpt.partuuid.as_deref() {
-                format!("partuuid={partuuid}")
-            } else if let Some(index) = source.gpt.index {
-                format!("index={index}")
-            } else {
-                bail!("boot profile GPT source missing selector")
-            };
-            Ok(format!(
-                "gpt:{}:{}",
-                selector,
-                artifact_source_cache_key(source.gpt.source.as_ref())?
-            ))
-        }
     }
 }
 
@@ -896,17 +495,6 @@ async fn open_uncached_http_reader(url: Url) -> Result<ChannelSourceReader> {
     })
 }
 
-async fn cache_artifact_reader(reader: Arc<dyn BlockReader>) -> Result<Arc<dyn BlockReader>> {
-    let cache_root = default_gibblox_cache_root().join("pipelines");
-    let cache_ops = StdCacheOps::open_in_for_reader(cache_root.as_path(), reader.as_ref())
-        .await
-        .map_err(|err| anyhow!("open pipeline cache file {}: {err}", cache_root.display()))?;
-    let cached = CachedBlockReader::new(reader, cache_ops)
-        .await
-        .map_err(|err| anyhow!("open pipeline cached reader: {err}"))?;
-    Ok(Arc::new(cached))
-}
-
 async fn open_casync_reader(
     index_url: Url,
     chunk_store_url: Option<Url>,
@@ -989,31 +577,6 @@ fn derive_casync_chunk_store_url(index_url: &Url) -> Result<Url> {
     index_url
         .join("./")
         .with_context(|| format!("derive casync chunk store URL from {index_url}"))
-}
-
-pub fn default_gibblox_cache_root() -> PathBuf {
-    if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
-        if !path.is_empty() {
-            return PathBuf::from(path).join("gibblox");
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(path) = std::env::var_os("LOCALAPPDATA") {
-            if !path.is_empty() {
-                return PathBuf::from(path).join("gibblox");
-            }
-        }
-    }
-
-    if let Some(path) = std::env::var_os("HOME") {
-        if !path.is_empty() {
-            return PathBuf::from(path).join(".cache").join("gibblox");
-        }
-    }
-
-    std::env::temp_dir().join("gibblox")
 }
 
 pub async fn resolve_boot_profile_source_overrides(
@@ -1159,6 +722,7 @@ mod tests {
         select_boot_profile_for_device,
     };
     use gibblox_core::{GibbloxError, GibbloxErrorKind, GibbloxResult, ReadContext};
+    use gibblox_pipeline::PipelineSourceContent;
     use gobblytes_core::MockFilesystem;
 
     #[tokio::test]
