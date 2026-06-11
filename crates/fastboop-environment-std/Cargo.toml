@@ -17,8 +17,6 @@ fastboop-core = { path = "../fastboop-core", version = "0.0.1-rc.12" }
 fastboop-fastboot-rusb = { path = "../fastboop-fastboot-rusb", version = "0.0.1-rc.12" }
 fastboop-stage0-generator = { path = "../fastboop-stage0-generator", version = "0.0.1-rc.12" }
 gibblox-android-sparse = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-cache = { version = "0.0.2-rc.3" }
-gibblox-cache-store-std = { version = "0.0.2-rc.3" }
 gibblox-casync = { version = "0.0.2-rc.3", features = ["std"] }
 gibblox-casync-std = { version = "0.0.2-rc.3" }
 gibblox-core = { version = "0.0.2-rc.3", features = ["std"] }
@@ -27,7 +25,6 @@ gibblox-file = { version = "0.0.2-rc.3" }
 gibblox-http = { version = "0.0.2-rc.3", default-features = false, features = ["native-client"] }
 gibblox-mbr = { version = "0.0.2-rc.3", features = ["std"] }
 gibblox-pipeline = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-tar = { version = "0.0.2-rc.3", features = ["std"] }
 gibblox-xz = { version = "0.0.2-rc.3", features = ["std"] }
 gibblox-zip = { version = "0.0.2-rc.3", features = ["std"] }
 gobblytes-core = { version = "0.0.2-rc.3" }
@@ -35,7 +32,6 @@ gobblytes-erofs = { version = "0.0.2-rc.3" }
 gobblytes-fat = { version = "0.0.2-rc.3" }
 hyper = { workspace = true, features = ["server", "http1", "tcp"] }
 serde_yaml = { workspace = true }
-sha2 = { workspace = true, default-features = true }
 smoo-host-blocksource-gibblox = { version = "0.0.2-rc.6" }
 smoo-host-core = { version = "0.0.2-rc.6" }
 smoo-host-session = { version = "0.0.2-rc.6" }

@@ -8,7 +8,7 @@ pub use channel::{
     ArtifactReaderResolver, BootProfileSourceOverrides, ChannelInput, ChannelSourceReader,
     DirectoryRootfs, Ext4Rootfs, OstreeArg, RootfsKind, Stage0CoalescingFilesystem,
     Stage0RootfsProvider, auto_detect_ostree_deployment_path, classify_channel_reader,
-    default_gibblox_cache_root, format_probe_error, open_channel_source_reader, parse_ostree_arg,
+    format_probe_error, open_channel_source_reader, parse_ostree_arg,
     read_channel_stream_head_from_reader, read_dtbo_overlays, read_existing_initrd,
     resolve_boot_profile_source_overrides, resolve_effective_ostree_arg,
 };

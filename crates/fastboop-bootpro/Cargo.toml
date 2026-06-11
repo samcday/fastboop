@@ -24,6 +24,3 @@ gibblox-tar = { workspace = true, features = ["std"] }
 gibblox-xz = { workspace = true, features = ["std"] }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true, default-features = true }
-tokio = { workspace = true, features = ["rt", "sync"] }
-tracing = "0.1.41"
-url = { workspace = true }
