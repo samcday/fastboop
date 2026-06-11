@@ -10,7 +10,10 @@ use std::rc::Rc;
 use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use ui::run_smoo_stats_view_loop;
-use ui::{BootConfigCard, BootProfileOptionView, SmooStatsPanel, SmooStatsViewModel};
+use ui::{
+    boot_profile_options as boot_profile_option_views, ActiveSessionPanel, BootConfigCard,
+    BootErrorPanel, BootingPanel, SmooStatsViewModel,
+};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::closure::Closure;
 #[cfg(target_arch = "wasm32")]
@@ -147,18 +150,8 @@ fn BootConfigDevice(session_id: String) -> Element {
         );
     };
 
-    let boot_profile_options: Vec<BootProfileOptionView> = session
-        .channel_intake
-        .compatible_boot_profiles
-        .iter()
-        .map(|profile| BootProfileOptionView {
-            id: profile.id.clone(),
-            label: profile
-                .display_name
-                .clone()
-                .unwrap_or_else(|| profile.id.clone()),
-        })
-        .collect();
+    let boot_profile_options =
+        boot_profile_option_views(&session.channel_intake.compatible_boot_profiles);
 
     rsx! {
         BootConfigCard {
@@ -220,15 +213,7 @@ fn BootingDevice(session_id: String, step: String) -> Element {
         });
     });
 
-    rsx! {
-        section { id: "landing",
-            div { class: "landing__panel",
-                p { class: "landing__eyebrow", "Booting" }
-                h1 { "Working on it..." }
-                p { class: "landing__lede", "{step}" }
-            }
-        }
-    }
+    rsx! { BootingPanel { step } }
 }
 
 #[component]
@@ -378,22 +363,16 @@ fn BootedDevice(session_id: String) -> Element {
     let smoo_stats = smoo_stats();
 
     rsx! {
-        section { id: "landing",
-            div { class: "landing__panel",
-                p { class: "landing__eyebrow", "Active" }
-                h1 { "We're live." }
-                p { class: "landing__lede", "Please don't close this page while the session is active." }
-                p { class: "landing__note", "Channel: {channel}" }
-                if let Some(selected_boot_profile_id) = selected_boot_profile_id {
-                    p { class: "landing__note", "Boot profile: {selected_boot_profile_id}" }
-                }
-                if let Some(smoo_stats) = smoo_stats {
-                    SmooStatsPanel { stats: smoo_stats }
-                }
+        ActiveSessionPanel {
+            channel,
+            selected_boot_profile_id,
+            close_target: "page".to_string(),
+            stats: smoo_stats,
+            extra: rsx! {
                 if host_connected {
                     SerialLogPanel { device_vid, device_pid }
                 }
-            }
+            },
         }
     }
 }
@@ -529,13 +508,5 @@ fn document_hidden() -> bool {
 
 #[component]
 fn BootError(summary: String) -> Element {
-    rsx! {
-        section { id: "landing",
-            div { class: "landing__panel",
-                p { class: "landing__eyebrow", "onoes" }
-                h1 { "Boot failed" }
-                p { class: "landing__lede", "{summary}" }
-            }
-        }
-    }
+    rsx! { BootErrorPanel { summary } }
 }

@@ -13,6 +13,11 @@ mod startup_error;
 pub use startup_error::StartupError;
 mod boot_config;
 pub use boot_config::{BootConfigCard, BootProfileOptionView, DEFAULT_ENABLE_SERIAL};
+mod channel_profiles;
+pub use channel_profiles::{
+    boot_profile_options, compatible_boot_profiles_for_device, initial_boot_profile_id,
+    load_profiles_for_channel_head,
+};
 mod dtbo;
 pub use dtbo::oneplus_fajita_dtbo_overlays;
 mod cache_stats;
@@ -22,6 +27,13 @@ pub use smoo_stats::{
     apply_transport_counters, run_smoo_stats_view_loop, SmooStatsAccumulator, SmooStatsHandle,
     SmooStatsPanel, SmooStatsSnapshot, SmooStatsViewModel, SmooTransportCounters,
 };
+mod session;
+pub use session::{
+    next_session_id, update_session_active_host_state, update_session_boot_config,
+    update_session_phase, BootConfig, DeviceSession, SessionPhase, SessionStore,
+};
+mod session_panels;
+pub use session_panels::{ActiveSessionPanel, BootErrorPanel, BootingPanel};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportKind {

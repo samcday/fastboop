@@ -5,8 +5,8 @@ use std::time::Duration;
 use dioxus::prelude::*;
 use tracing::error;
 use ui::{
-    run_smoo_stats_view_loop, BootConfigCard, BootProfileOptionView, SmooStatsPanel,
-    SmooStatsViewModel,
+    boot_profile_options as boot_profile_option_views, run_smoo_stats_view_loop,
+    ActiveSessionPanel, BootConfigCard, BootErrorPanel, BootingPanel, SmooStatsViewModel,
 };
 
 use super::device_boot::{boot_selected_device, run_rusb_host_daemon};
@@ -122,18 +122,8 @@ fn BootConfigDevice(session_id: String) -> Element {
         );
     };
 
-    let boot_profile_options: Vec<BootProfileOptionView> = session
-        .channel_intake
-        .compatible_boot_profiles
-        .iter()
-        .map(|profile| BootProfileOptionView {
-            id: profile.id.clone(),
-            label: profile
-                .display_name
-                .clone()
-                .unwrap_or_else(|| profile.id.clone()),
-        })
-        .collect();
+    let boot_profile_options =
+        boot_profile_option_views(&session.channel_intake.compatible_boot_profiles);
 
     rsx! {
         BootConfigCard {
@@ -175,6 +165,7 @@ fn BootingDevice(session_id: String, step: String) -> Element {
                     SessionPhase::Active {
                         runtime,
                         host_started: false,
+                        host_connected: false,
                     },
                 ),
                 Err(err) => {
@@ -191,15 +182,7 @@ fn BootingDevice(session_id: String, step: String) -> Element {
         });
     });
 
-    rsx! {
-        section { id: "landing",
-            div { class: "landing__panel",
-                p { class: "landing__eyebrow", "Booting" }
-                h1 { "Working on it..." }
-                p { class: "landing__lede", "{step}" }
-            }
-        }
-    }
+    rsx! { BootingPanel { step } }
 }
 
 fn log_boot_error(err: &anyhow::Error) {
@@ -219,6 +202,7 @@ fn BootedDevice(session_id: String) -> Element {
             SessionPhase::Active {
                 runtime,
                 host_started,
+                host_connected: _,
             } => Some((
                 runtime.clone(),
                 *host_started,
@@ -246,6 +230,7 @@ fn BootedDevice(session_id: String) -> Element {
             SessionPhase::Active {
                 runtime: runtime_for_kickoff.clone(),
                 host_started: true,
+                host_connected: false,
             },
         );
         let runtime_for_host = runtime_for_kickoff.clone();
@@ -304,32 +289,17 @@ fn BootedDevice(session_id: String) -> Element {
     let smoo_stats = smoo_stats();
 
     rsx! {
-        section { id: "landing",
-            div { class: "landing__panel",
-                p { class: "landing__eyebrow", "Active" }
-                h1 { "We're live." }
-                p { class: "landing__lede", "Please don't close this window while the session is active." }
-                p { class: "landing__note", "Channel: {channel}" }
-                if let Some(selected_boot_profile_id) = selected_boot_profile_id {
-                    p { class: "landing__note", "Boot profile: {selected_boot_profile_id}" }
-                }
-                if let Some(smoo_stats) = smoo_stats {
-                    SmooStatsPanel { stats: smoo_stats }
-                }
-            }
+        ActiveSessionPanel {
+            channel,
+            selected_boot_profile_id,
+            close_target: "window".to_string(),
+            stats: smoo_stats,
+            extra: rsx! {},
         }
     }
 }
 
 #[component]
 fn BootError(summary: String) -> Element {
-    rsx! {
-        section { id: "landing",
-            div { class: "landing__panel",
-                p { class: "landing__eyebrow", "onoes" }
-                h1 { "Boot failed" }
-                p { class: "landing__lede", "{summary}" }
-            }
-        }
-    }
+    rsx! { BootErrorPanel { summary } }
 }

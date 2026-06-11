@@ -1,11 +1,10 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use dioxus::prelude::{Signal, WritableExt};
 use fastboop_core::{BootProfile, DeviceProfile};
 use fastboop_fastboot_rusb::RusbDeviceHandle;
 use gibblox_core::BlockReader;
 use ui::SmooStatsHandle;
+pub use ui::{next_session_id, update_session_boot_config, update_session_phase, BootConfig};
 
 #[derive(Clone)]
 pub struct ProbedDevice {
@@ -15,30 +14,6 @@ pub struct ProbedDevice {
     pub vid: u16,
     pub pid: u16,
     pub serial: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BootConfig {
-    pub channel: String,
-    pub selected_boot_profile_id: Option<String>,
-    pub extra_kargs: String,
-    pub enable_serial: bool,
-}
-
-impl BootConfig {
-    pub fn new(
-        channel: impl Into<String>,
-        selected_boot_profile_id: Option<String>,
-        extra_kargs: impl Into<String>,
-        enable_serial: bool,
-    ) -> Self {
-        Self {
-            channel: channel.into(),
-            selected_boot_profile_id,
-            extra_kargs: extra_kargs.into(),
-            enable_serial,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -54,51 +29,6 @@ pub struct BootRuntime {
     pub smoo_stats: SmooStatsHandle,
 }
 
-#[derive(Clone)]
-pub enum SessionPhase {
-    Configuring,
-    Booting {
-        step: String,
-    },
-    Active {
-        runtime: BootRuntime,
-        host_started: bool,
-    },
-    Error {
-        summary: String,
-    },
-}
-
-#[derive(Clone)]
-pub struct DeviceSession {
-    pub id: String,
-    pub device: ProbedDevice,
-    pub channel_intake: SessionChannelIntake,
-    pub boot_config: BootConfig,
-    pub phase: SessionPhase,
-}
-
-pub type SessionStore = Signal<Vec<DeviceSession>>;
-
-static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-pub fn next_session_id() -> String {
-    let n = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("device-{n}")
-}
-
-pub fn update_session_phase(store: &mut SessionStore, session_id: &str, phase: SessionPhase) {
-    if let Some(session) = store.write().iter_mut().find(|s| s.id == session_id) {
-        session.phase = phase;
-    }
-}
-
-pub fn update_session_boot_config(
-    store: &mut SessionStore,
-    session_id: &str,
-    update: impl FnOnce(&mut BootConfig),
-) {
-    if let Some(session) = store.write().iter_mut().find(|s| s.id == session_id) {
-        update(&mut session.boot_config);
-    }
-}
+pub type SessionPhase = ui::SessionPhase<BootRuntime>;
+pub type DeviceSession = ui::DeviceSession<ProbedDevice, SessionChannelIntake, BootRuntime>;
+pub type SessionStore = ui::SessionStore<ProbedDevice, SessionChannelIntake, BootRuntime>;
