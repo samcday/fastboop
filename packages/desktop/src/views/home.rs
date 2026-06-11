@@ -1,14 +1,11 @@
-use std::collections::{BTreeSet, HashMap};
-
 use dioxus::prelude::*;
-use fastboop_core::builtin::builtin_profiles;
 use fastboop_core::device::{profile_filters, DeviceEvent, DeviceHandle as _, DeviceWatcher as _};
 use fastboop_core::prober::probe_candidates;
-use fastboop_core::BootProfile;
 use fastboop_fastboot_rusb::{DeviceWatcher, RusbDeviceHandle};
 use tracing::{debug, info};
 use ui::{
-    apply_selected_profiles, build_probe_snapshot, selected_profile_option,
+    apply_selected_profiles, build_probe_snapshot, compatible_boot_profiles_for_device,
+    initial_boot_profile_id, load_profiles_for_channel_head, selected_profile_option,
     update_profile_selection, Hero, ProbeSnapshot, ProbeState, ProfileSelectionMap, StartupError,
     TransportKind, DEFAULT_ENABLE_SERIAL,
 };
@@ -151,7 +148,7 @@ pub fn Home() -> Element {
         }
         watcher_started.set(true);
 
-        let profiles = load_profiles_for_channel(&intake);
+        let profiles = load_profiles_for_channel_head(&intake.stream_head);
         let filters = profile_filters(&profiles);
         let mut candidates = candidates;
 
@@ -202,7 +199,7 @@ pub fn Home() -> Element {
                 };
             };
 
-            let profiles = load_profiles_for_channel(&intake);
+            let profiles = load_profiles_for_channel_head(&intake.stream_head);
             probe_fastboot_devices(candidates, profiles).await
         }
     });
@@ -262,12 +259,13 @@ pub fn Home() -> Element {
                 return;
             };
 
-            let compatible_boot_profiles =
-                compatible_boot_profiles_for_device(&intake, profile.profile.id.as_str());
+            let compatible_boot_profiles = compatible_boot_profiles_for_device(
+                &intake.stream_head,
+                profile.profile.id.as_str(),
+            );
             let selected_boot_profile_id = initial_boot_profile_id(
                 &compatible_boot_profiles,
                 startup_boot_profile_id_for_boot.as_deref(),
-                profile.profile.id.as_str(),
             );
 
             let session_id = next_session_id();
@@ -438,86 +436,4 @@ async fn probe_fastboot_devices(
         &candidates,
         RusbDeviceHandle::usb_serial_number,
     )
-}
-
-fn load_profiles_for_channel(
-    intake: &crate::StartupChannelIntake,
-) -> Vec<fastboop_core::DeviceProfile> {
-    let mut profiles: HashMap<String, fastboop_core::DeviceProfile> = HashMap::new();
-    for profile in builtin_profiles().unwrap_or_default() {
-        profiles.insert(profile.id.clone(), profile);
-    }
-    for profile in &intake.stream_head.dev_profiles {
-        profiles.insert(profile.id.clone(), profile.clone());
-    }
-
-    let allowed_by_boot_profiles =
-        allowed_boot_profile_device_ids(&intake.stream_head.boot_profiles);
-
-    profiles
-        .into_values()
-        .filter(|profile| match allowed_by_boot_profiles.as_ref() {
-            Some(allowed) => allowed.contains(profile.id.as_str()),
-            None => true,
-        })
-        .collect()
-}
-
-fn allowed_boot_profile_device_ids(boot_profiles: &[BootProfile]) -> Option<BTreeSet<String>> {
-    if boot_profiles.is_empty()
-        || boot_profiles
-            .iter()
-            .any(|profile| profile.stage0.devices.is_empty())
-    {
-        return None;
-    }
-
-    let mut out = BTreeSet::new();
-    for profile in boot_profiles {
-        out.extend(profile.stage0.devices.keys().cloned());
-    }
-    Some(out)
-}
-
-fn compatible_boot_profiles_for_device(
-    intake: &crate::StartupChannelIntake,
-    device_profile_id: &str,
-) -> Vec<BootProfile> {
-    intake
-        .stream_head
-        .boot_profiles
-        .iter()
-        .filter(|boot_profile| {
-            fastboop_core::boot_profile_matches_device(boot_profile, device_profile_id)
-        })
-        .cloned()
-        .collect()
-}
-
-fn initial_boot_profile_id(
-    compatible_boot_profiles: &[BootProfile],
-    requested_boot_profile_id: Option<&str>,
-    device_profile_id: &str,
-) -> Option<String> {
-    if let Some(requested_boot_profile_id) = requested_boot_profile_id {
-        if compatible_boot_profiles
-            .iter()
-            .any(|profile| profile.id == requested_boot_profile_id)
-        {
-            return Some(requested_boot_profile_id.to_string());
-        }
-
-        info!(
-            boot_profile = requested_boot_profile_id,
-            device_profile = device_profile_id,
-            "startup boot profile is not compatible with selected device"
-        );
-        return None;
-    }
-
-    if compatible_boot_profiles.len() == 1 {
-        Some(compatible_boot_profiles[0].id.clone())
-    } else {
-        None
-    }
 }

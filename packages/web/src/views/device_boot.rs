@@ -18,11 +18,11 @@ use ui::SmooStatsHandle;
 #[cfg(target_arch = "wasm32")]
 use ui::{apply_transport_counters, SmooTransportCounters};
 
-#[cfg(target_arch = "wasm32")]
-use super::session::update_session_active_host_state;
 use super::session::{
     update_session_phase, BootRuntime, DeviceSession, SessionPhase, SessionStore,
 };
+#[cfg(target_arch = "wasm32")]
+use ui::update_session_active_host_state;
 
 #[cfg(target_arch = "wasm32")]
 const STAGE0_BINARY_ASSET: Option<Asset> =

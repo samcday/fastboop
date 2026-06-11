@@ -3,14 +3,13 @@ use dioxus::prelude::*;
 use fastboop_environment_web::WebUsbDeviceHandle;
 #[cfg(target_arch = "wasm32")]
 use js_sys::Reflect;
-#[cfg(target_arch = "wasm32")]
-use std::collections::BTreeSet;
 use ui::{
-    apply_selected_profiles, selected_profile_option, update_profile_selection, Hero,
-    ProbeSnapshot, ProbeState, ProfileSelectionMap, StartupError, DEFAULT_ENABLE_SERIAL,
+    apply_selected_profiles, compatible_boot_profiles_for_device, initial_boot_profile_id,
+    selected_profile_option, update_profile_selection, Hero, ProbeSnapshot, ProbeState,
+    ProfileSelectionMap, StartupError, DEFAULT_ENABLE_SERIAL,
 };
 #[cfg(target_arch = "wasm32")]
-use ui::{build_probe_snapshot, TransportKind};
+use ui::{build_probe_snapshot, load_profiles_for_channel_head, TransportKind};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
 
@@ -23,12 +22,9 @@ use super::session::{
 use super::unsupported::WebUnsupported;
 
 #[cfg(target_arch = "wasm32")]
-use fastboop_core::builtin::builtin_profiles;
-#[cfg(target_arch = "wasm32")]
 use fastboop_core::device::{profile_filters, DeviceEvent, DeviceHandle as _, DeviceWatcher as _};
 #[cfg(target_arch = "wasm32")]
 use fastboop_core::prober::probe_candidates;
-use fastboop_core::BootProfile;
 #[cfg(target_arch = "wasm32")]
 use fastboop_environment_web::{request_device, DeviceWatcher};
 #[cfg(target_arch = "wasm32")]
@@ -174,7 +170,7 @@ pub fn Home(channel: Option<String>) -> Element {
             }
             watcher_started.set(true);
 
-            let profiles = load_profiles_for_channel(&intake);
+            let profiles = load_profiles_for_channel_head(&intake.stream_head);
             let filters = profile_filters(&profiles);
 
             spawn(async move {
@@ -245,7 +241,7 @@ pub fn Home(channel: Option<String>) -> Element {
                         devices: Vec::new(),
                     };
                 }
-                let profiles = load_profiles_for_channel(&intake);
+                let profiles = load_profiles_for_channel_head(&intake.stream_head);
                 probe_fastboot_devices(candidates, profiles).await
             }
         }
@@ -301,7 +297,7 @@ pub fn Home(channel: Option<String>) -> Element {
                     Some(Ok(intake)) => intake.clone(),
                     _ => return,
                 };
-                let profiles = load_profiles_for_channel(&intake);
+                let profiles = load_profiles_for_channel_head(&intake.stream_head);
                 let filters = profile_filters(&profiles);
                 let mut refresh = refresh;
                 let mut candidates = candidates;
@@ -355,13 +351,11 @@ pub fn Home(channel: Option<String>) -> Element {
                 return;
             };
 
-            let compatible_boot_profiles =
-                compatible_boot_profiles_for_device(&intake, profile.profile.id.as_str());
-            let selected_boot_profile_id = if compatible_boot_profiles.len() == 1 {
-                Some(compatible_boot_profiles[0].id.clone())
-            } else {
-                None
-            };
+            let compatible_boot_profiles = compatible_boot_profiles_for_device(
+                &intake.stream_head,
+                profile.profile.id.as_str(),
+            );
+            let selected_boot_profile_id = initial_boot_profile_id(&compatible_boot_profiles, None);
 
             let session_id = next_session_id();
             sessions.write().push(DeviceSession {
@@ -454,31 +448,6 @@ pub fn Home(channel: Option<String>) -> Element {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn load_profiles_for_channel(
-    intake: &crate::StartupChannelIntake,
-) -> Vec<fastboop_core::DeviceProfile> {
-    let mut profiles: std::collections::HashMap<String, fastboop_core::DeviceProfile> =
-        std::collections::HashMap::new();
-    for profile in builtin_profiles().unwrap_or_default() {
-        profiles.insert(profile.id.clone(), profile);
-    }
-    for profile in &intake.stream_head.dev_profiles {
-        profiles.insert(profile.id.clone(), profile.clone());
-    }
-
-    let allowed_by_boot_profiles =
-        allowed_boot_profile_device_ids(&intake.stream_head.boot_profiles);
-
-    profiles
-        .into_values()
-        .filter(|profile| match allowed_by_boot_profiles.as_ref() {
-            Some(allowed) => allowed.contains(profile.id.as_str()),
-            None => true,
-        })
-        .collect()
-}
-
-#[cfg(target_arch = "wasm32")]
 async fn probe_fastboot_devices(
     candidates: Vec<WebUsbDeviceHandle>,
     profiles: Vec<fastboop_core::DeviceProfile>,
@@ -491,38 +460,6 @@ async fn probe_fastboot_devices(
         &candidates,
         |_| None,
     )
-}
-
-#[cfg(target_arch = "wasm32")]
-fn allowed_boot_profile_device_ids(boot_profiles: &[BootProfile]) -> Option<BTreeSet<String>> {
-    if boot_profiles.is_empty()
-        || boot_profiles
-            .iter()
-            .any(|profile| profile.stage0.devices.is_empty())
-    {
-        return None;
-    }
-
-    let mut out = BTreeSet::new();
-    for profile in boot_profiles {
-        out.extend(profile.stage0.devices.keys().cloned());
-    }
-    Some(out)
-}
-
-fn compatible_boot_profiles_for_device(
-    intake: &crate::StartupChannelIntake,
-    device_profile_id: &str,
-) -> Vec<BootProfile> {
-    intake
-        .stream_head
-        .boot_profiles
-        .iter()
-        .filter(|boot_profile| {
-            fastboop_core::boot_profile_matches_device(boot_profile, device_profile_id)
-        })
-        .cloned()
-        .collect()
 }
 
 #[cfg(target_arch = "wasm32")]
