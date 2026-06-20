@@ -24,6 +24,9 @@ const HOTPLUG_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const OPEN_BUSY_RETRY_DELAY: Duration = Duration::from_millis(150);
 const OPEN_BUSY_RETRIES: usize = 20;
 const RESPONSE_BUFFER_LEN: usize = 4096;
+const FASTBOOT_INTERFACE_CLASS: u8 = 0xFF;
+const FASTBOOT_INTERFACE_SUBCLASS: u8 = 0x42;
+const FASTBOOT_INTERFACE_PROTOCOL: u8 = 0x03;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FastbootInterface {
@@ -81,7 +84,9 @@ impl fmt::Display for FastbootRusbError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Usb(err) => write!(f, "usb error: {err}"),
-            Self::NoFastbootInterface => write!(f, "no fastboot bulk endpoints found"),
+            Self::NoFastbootInterface => {
+                write!(f, "no fastboot interface with bulk endpoints found")
+            }
             Self::InvalidResponse => write!(f, "invalid fastboot response"),
             Self::Fail(msg) => write!(f, "fastboot failure: {msg}"),
             Self::DownloadTooLarge(size) => write!(f, "download too large: {size} bytes"),
@@ -406,6 +411,21 @@ pub fn find_fastboot_interface(
         let config = device.config_descriptor(config_index)?;
         for interface in config.interfaces() {
             for alt in interface.descriptors() {
+                if !is_fastboot_interface_descriptor(
+                    alt.class_code(),
+                    alt.sub_class_code(),
+                    alt.protocol_code(),
+                ) {
+                    trace!(
+                        interface = alt.interface_number(),
+                        class = alt.class_code(),
+                        subclass = alt.sub_class_code(),
+                        protocol = alt.protocol_code(),
+                        "fastboot interface identity rejected"
+                    );
+                    continue;
+                }
+
                 let mut ep_in = None;
                 let mut ep_out = None;
                 for endpoint in alt.endpoint_descriptors() {
@@ -420,6 +440,9 @@ pub fn find_fastboot_interface(
                 if let (Some(ep_in), Some(ep_out)) = (ep_in, ep_out) {
                     trace!(
                         interface = alt.interface_number(),
+                        class = alt.class_code(),
+                        subclass = alt.sub_class_code(),
+                        protocol = alt.protocol_code(),
                         ep_in = ep_in,
                         ep_out = ep_out,
                         "fastboot interface selected"
@@ -434,6 +457,12 @@ pub fn find_fastboot_interface(
         }
     }
     Err(FastbootRusbError::NoFastbootInterface)
+}
+
+fn is_fastboot_interface_descriptor(class: u8, subclass: u8, protocol: u8) -> bool {
+    class == FASTBOOT_INTERFACE_CLASS
+        && subclass == FASTBOOT_INTERFACE_SUBCLASS
+        && protocol == FASTBOOT_INTERFACE_PROTOCOL
 }
 
 fn enqueue_arrived_if_matching(
@@ -489,5 +518,25 @@ fn truncate_payload(payload: &str) -> String {
         payload.to_string()
     } else {
         format!("{}…", &payload[..MAX])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fastboot_interface_identity_matches_android_fastboot() {
+        assert!(is_fastboot_interface_descriptor(0xFF, 0x42, 0x03));
+    }
+
+    #[test]
+    fn fastboot_interface_identity_rejects_cdc_acm_data_interface() {
+        assert!(!is_fastboot_interface_descriptor(0x0A, 0x00, 0x00));
+    }
+
+    #[test]
+    fn fastboot_interface_identity_rejects_vendor_non_fastboot_interface() {
+        assert!(!is_fastboot_interface_descriptor(0xFF, 0x53, 0x4D));
     }
 }

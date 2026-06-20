@@ -19,6 +19,9 @@ use web_sys::{
 };
 
 const RESPONSE_BUFFER_LEN: u32 = 4096;
+const FASTBOOT_INTERFACE_CLASS: u8 = 0xFF;
+const FASTBOOT_INTERFACE_SUBCLASS: u8 = 0x42;
+const FASTBOOT_INTERFACE_PROTOCOL: u8 = 0x03;
 
 #[derive(Clone)]
 struct SendSyncUsbDevice(UsbDevice);
@@ -85,7 +88,9 @@ impl std::fmt::Display for FastbootWebUsbError {
         match self {
             Self::Js(err) => write!(f, "js error: {:?}", err),
             Self::InvalidResponse => write!(f, "invalid fastboot response"),
-            Self::NoFastbootInterface => write!(f, "no fastboot bulk endpoints found"),
+            Self::NoFastbootInterface => {
+                write!(f, "no fastboot interface with bulk endpoints found")
+            }
             Self::Fail(msg) => write!(f, "fastboot failure: {msg}"),
             Self::UnexpectedStatus(status) => write!(f, "unexpected status: {status}"),
             Self::DownloadTooLarge(size) => write!(f, "download too large: {size} bytes"),
@@ -526,6 +531,21 @@ fn find_fastboot_interface(device: &UsbDevice) -> Result<(u8, u8, u8), FastbootW
         let interface: web_sys::UsbInterface =
             interface.dyn_into().map_err(FastbootWebUsbError::Js)?;
         let alt = interface.alternate();
+        if !is_fastboot_interface_descriptor(
+            alt.interface_class(),
+            alt.interface_subclass(),
+            alt.interface_protocol(),
+        ) {
+            trace!(
+                interface = interface.interface_number(),
+                class = alt.interface_class(),
+                subclass = alt.interface_subclass(),
+                protocol = alt.interface_protocol(),
+                "fastboot webusb interface identity rejected"
+            );
+            continue;
+        }
+
         let mut ep_in = None;
         let mut ep_out = None;
         for endpoint in alt.endpoints().iter() {
@@ -549,10 +569,21 @@ fn find_fastboot_interface(device: &UsbDevice) -> Result<(u8, u8, u8), FastbootW
         if let (Some(ep_in), Some(ep_out)) = (ep_in, ep_out) {
             debug!(
                 interface = interface.interface_number(),
-                ep_in, ep_out, "fastboot interface selected"
+                class = alt.interface_class(),
+                subclass = alt.interface_subclass(),
+                protocol = alt.interface_protocol(),
+                ep_in,
+                ep_out,
+                "fastboot interface selected"
             );
             return Ok((interface.interface_number(), ep_in, ep_out));
         }
     }
     Err(FastbootWebUsbError::NoFastbootInterface)
+}
+
+fn is_fastboot_interface_descriptor(class: u8, subclass: u8, protocol: u8) -> bool {
+    class == FASTBOOT_INTERFACE_CLASS
+        && subclass == FASTBOOT_INTERFACE_SUBCLASS
+        && protocol == FASTBOOT_INTERFACE_PROTOCOL
 }
