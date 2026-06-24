@@ -36,27 +36,16 @@ import sys
 
 metadata_path = pathlib.Path(sys.argv[1])
 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-root = pathlib.Path(".").resolve()
-
-
-def in_repo(path: pathlib.Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
 local_names = set()
 packages = {pkg["name"]: pkg for pkg in metadata["packages"]}
+workspace_member_ids = set(metadata.get("workspace_members", []))
 
 for pkg in metadata["packages"]:
-    manifest_path = pathlib.Path(pkg["manifest_path"]).resolve()
+    if pkg["id"] not in workspace_member_ids:
+        continue
     if pkg.get("source") is not None:
         continue
     if pkg.get("publish") == []:
-        continue
-    if not in_repo(manifest_path):
         continue
     local_names.add(pkg["name"])
 
@@ -149,25 +138,14 @@ current_package = sys.argv[2]
 patch_path = pathlib.Path(sys.argv[3])
 
 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-root = pathlib.Path(".").resolve()
-
-
-def in_repo(path: pathlib.Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
 local_packages = {}
+workspace_member_ids = set(metadata.get("workspace_members", []))
 for pkg in metadata["packages"]:
-    manifest_path = pathlib.Path(pkg["manifest_path"]).resolve()
+    if pkg["id"] not in workspace_member_ids:
+        continue
     if pkg.get("source") is not None:
         continue
     if pkg.get("publish") == []:
-        continue
-    if not in_repo(manifest_path):
         continue
     local_packages[pkg["name"]] = pkg
 

@@ -8,6 +8,7 @@ members = [
     "crates/fastboop-environment-web",
     "crates/fastboop-schema",
     "crates/fastboop-stage0-generator",
+    "crates/fastboop-smoo-gibblox",
     "crates/fastboop-fastboot-rusb",
     "crates/fastboop-fastboot-webusb",
     "packages/desktop",
@@ -16,6 +17,7 @@ members = [
     "packages/web",
     "xtask",
 ]
+exclude = ["gibblox", "smoo"]
 resolver = "2"
 
 [workspace.package]
@@ -33,6 +35,7 @@ fastboop-bootpro = { path = "crates/fastboop-bootpro", version = "0.0.1-rc.19" }
 fastboop-environment-std = { path = "crates/fastboop-environment-std" }
 fastboop-environment-web = { path = "crates/fastboop-environment-web" }
 fastboop-schema = { path = "crates/fastboop-schema", default-features = false }
+fastboop-smoo-gibblox = { path = "crates/fastboop-smoo-gibblox" }
 gibblox-android-sparse = "0.0.2-rc.4"
 gibblox-blockreader-messageport = "0.0.2-rc.4"
 gibblox-cache = "0.0.2-rc.4"
@@ -87,3 +90,36 @@ rustix = { version = "1", default-features = false }
 [workspace.lints.clippy]
 nursery = { level = "warn", priority = -1 }
 missing_const_for_fn = "allow"
+
+[patch.crates-io]
+gibblox-android-sparse = { path = "gibblox/crates/gibblox-android-sparse" }
+gibblox-blockreader-messageport = { path = "gibblox/crates/gibblox-blockreader-messageport" }
+gibblox-cache = { path = "gibblox/crates/gibblox-cache" }
+gibblox-cache-store-opfs = { path = "gibblox/crates/gibblox-cache-store-opfs" }
+gibblox-cache-store-std = { path = "gibblox/crates/gibblox-cache-store-std" }
+gibblox-casync = { path = "gibblox/crates/gibblox-casync" }
+gibblox-casync-std = { path = "gibblox/crates/gibblox-casync-std" }
+gibblox-casync-web = { path = "gibblox/crates/gibblox-casync-web" }
+gibblox-core = { path = "gibblox/crates/gibblox-core" }
+gibblox-ext4 = { path = "gibblox/crates/gibblox-ext4" }
+gibblox-file = { path = "gibblox/crates/gibblox-file" }
+gibblox-http = { path = "gibblox/crates/gibblox-http" }
+gibblox-mbr = { path = "gibblox/crates/gibblox-mbr" }
+gibblox-optimizer = { path = "gibblox/crates/gibblox-optimizer" }
+gibblox-pipeline = { path = "gibblox/crates/gibblox-pipeline" }
+gibblox-schema = { path = "gibblox/crates/gibblox-schema" }
+gibblox-tar = { path = "gibblox/crates/gibblox-tar" }
+gibblox-web-worker = { path = "gibblox/crates/gibblox-web-worker" }
+gibblox-xz = { path = "gibblox/crates/gibblox-xz" }
+gibblox-zip = { path = "gibblox/crates/gibblox-zip" }
+gobblytes-core = { path = "gibblox/crates/gobblytes-core" }
+gobblytes-erofs = { path = "gibblox/crates/gobblytes-erofs" }
+gobblytes-fat = { path = "gibblox/crates/gobblytes-fat" }
+smoo-gadget-app = { path = "smoo/crates/smoo-gadget-app" }
+smoo-gadget-core = { path = "smoo/crates/smoo-gadget-core" }
+smoo-gadget-ublk = { path = "smoo/crates/smoo-gadget-ublk" }
+smoo-host-core = { path = "smoo/crates/smoo-host-core" }
+smoo-host-session = { path = "smoo/crates/smoo-host-session" }
+smoo-host-transport-rusb = { path = "smoo/crates/smoo-host-transport-rusb" }
+smoo-host-webusb = { path = "smoo/crates/smoo-host-webusb" }
+smoo-proto = { path = "smoo/crates/smoo-proto" }

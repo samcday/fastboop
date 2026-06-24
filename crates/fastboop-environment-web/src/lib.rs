@@ -4,6 +4,8 @@ mod boot;
 mod gibblox_worker;
 mod js;
 mod smoo;
+#[cfg(target_arch = "wasm32")]
+mod smoo_host_worker;
 mod startup;
 
 pub use boot::{

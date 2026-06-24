@@ -52,35 +52,22 @@ See `docs/dev/DEVICE_PROFILES.md` for schema and semantics.
 - `crates/fastboop-core/`: core model/state-machine traits.
 - `packages/*`: desktop/web/mobile/ui frontends.
 - `devprofiles.d/`: device profile definitions.
-- `smoo-*` crates: consumed from crates.io (see upstream smoo docs for internals).
-- `gibblox-*` crates: consumed from crates.io (see upstream gibblox docs for internals).
+- `smoo/`: checked-in smoo submodule used for development snapshot builds.
+- `gibblox/`: checked-in gibblox submodule used for development snapshot builds.
 
-For local integration work across gibblox and/or smoo, clone either (or both) into
-the repo root and run `./tools/cargo-local.sh ...`:
+Development builds intentionally use the checked-in `gibblox` and `smoo`
+submodules via the root `[patch.crates-io]` table. After cloning fastboop, make
+sure submodules are present:
 
 ```sh
-git clone https://github.com/samcday/gibblox ./gibblox
-git clone https://github.com/samcday/smoo    ./smoo
-./tools/cargo-local.sh check --workspace --exclude fastboop-web
+git submodule update --init --recursive
+cargo check --workspace --exclude fastboop-web
 ```
 
-The script discovers every `<root>/crates/*/Cargo.toml` it finds and emits a
-`[patch.crates-io]` overlay fed to cargo via `--config`, so new gibblox/smoo
-crates get picked up automatically without editing this repo. At least one of
-`./gibblox` or `./smoo` must exist; either may be absent (the missing side
-resolves from crates.io as usual). Workspace manifests and `Cargo.lock` are not
-mutated.
-
-For Dioxus commands that shell out to cargo, use `./tools/dx-local.sh ...` so
-`dx` receives the overlay too.
-
-For IDE integrations or direct invocations that want a static file, pass
-`--config .cargo/config.local.toml` to cargo. Keep that file in sync with the
-set of crates actually published by gibblox and smoo.
-
-CI uses the same local overlay wrappers when a draft PR includes `./gibblox` or
-`./smoo`. Ready-for-review PRs, release builds, and main builds fail if either
-checkout is present so throwaway dependency commits cannot merge by accident.
+The versioned dependency declarations still describe the crates.io release
+contract, but day-to-day fastboop CI and development use the pinned submodule
+snapshots. Update the submodule pins and root patch table together when adding
+or removing gibblox/smoo crates from the fastboop graph.
 
 ## Contributor workflow
 

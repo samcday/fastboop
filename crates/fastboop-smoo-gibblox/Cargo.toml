@@ -1,0 +1,12 @@
+[package]
+name = "fastboop-smoo-gibblox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "fastboop adapter from gibblox BlockReader to smoo BlockSource."
+
+[dependencies]
+async-trait = { workspace = true }
+gibblox-core = { version = "0.0.2-rc.3", default-features = false }
+smoo-host-core = { version = "0.0.2-rc.6" }

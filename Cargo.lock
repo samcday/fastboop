@@ -2066,8 +2066,19 @@ version = "0.0.1-rc.21"
 dependencies = [
  "anyhow",
  "fastboop-core",
+ "gibblox-android-sparse",
+ "gibblox-cache",
+ "gibblox-cache-store-std",
+ "gibblox-casync",
+ "gibblox-casync-std",
+ "gibblox-core",
+ "gibblox-file",
+ "gibblox-http",
+ "gibblox-mbr",
  "gibblox-optimizer",
  "gibblox-pipeline",
+ "gibblox-tar",
+ "gibblox-xz",
  "serde_yaml",
  "sha2",
 ]
@@ -2162,6 +2173,7 @@ dependencies = [
  "async-trait",
  "fastboop-core",
  "fastboop-fastboot-rusb",
+ "fastboop-smoo-gibblox",
  "fastboop-stage0-generator",
  "gibblox-android-sparse",
  "gibblox-casync",
@@ -2179,7 +2191,6 @@ dependencies = [
  "gobblytes-fat",
  "hyper 0.14.32",
  "serde_yaml",
- "smoo-host-blocksource-gibblox",
  "smoo-host-core",
  "smoo-host-session",
  "smoo-host-transport-rusb",
@@ -2196,6 +2207,7 @@ dependencies = [
  "anyhow",
  "fastboop-core",
  "fastboop-fastboot-webusb",
+ "fastboop-smoo-gibblox",
  "fastboop-stage0-generator",
  "futures-channel",
  "futures-util",
@@ -2216,7 +2228,9 @@ dependencies = [
  "gobblytes-fat",
  "js-sys",
  "serde_json",
- "smoo-host-web-worker",
+ "smoo-host-core",
+ "smoo-host-session",
+ "smoo-host-webusb",
  "tracing",
  "url",
  "wasm-bindgen",
@@ -2266,6 +2280,15 @@ dependencies = [
  "gibblox-pipeline",
  "schemars",
  "serde",
+]
+
+[[package]]
+name = "fastboop-smoo-gibblox"
+version = "0.0.1-rc.21"
+dependencies = [
+ "async-trait",
+ "gibblox-core",
+ "smoo-host-core",
 ]
 
 [[package]]
@@ -6606,8 +6629,6 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 [[package]]
 name = "smoo-gadget-app"
 version = "0.0.2-rc.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aada73774f7b5225d8ce6e585a014ff2a72e2b13c43fdc79e806c99018a3a211"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6627,8 +6648,6 @@ dependencies = [
 [[package]]
 name = "smoo-gadget-core"
 version = "0.0.2-rc.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e57ab76e83cb266e48f6ce2a4fc2c1159d76b812003e4dbddd5468677ba211bd"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6651,8 +6670,6 @@ dependencies = [
 [[package]]
 name = "smoo-gadget-ublk"
 version = "0.0.2-rc.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6301e0bc0bca0c7ffcda2e641ff68b35eaa6ca60bfef7389eddcdbafa51c202c"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -6679,8 +6696,6 @@ dependencies = [
 [[package]]
 name = "smoo-host-core"
 version = "0.0.2-rc.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0072571a5816c88393adb30a942b630169f3dab44fb75bddda29c97a126e139"
 dependencies = [
  "async-trait",
  "futures-channel",
@@ -6692,8 +6707,6 @@ dependencies = [
 [[package]]
 name = "smoo-host-session"
 version = "0.0.2-rc.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e184cb2fca239c3c89816d6165c883c14bd5df2f290c1e11d8c0e2d533b126d7"
 dependencies = [
  "futures-util",
  "smoo-host-core",
@@ -6704,8 +6717,6 @@ dependencies = [
 [[package]]
 name = "smoo-host-transport-rusb"
 version = "0.0.2-rc.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d439b3db25d85291e04aafd38948ae6c101701ac2b3c7dfde642f4ad5d99fffa"
 dependencies = [
  "async-trait",
  "crossbeam-channel",
@@ -6716,32 +6727,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "smoo-host-web-worker"
-version = "0.0.2-rc.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea5312190b7890f278e9af853d108b6ef9e5c59f8de15f2202b64734a8938191"
-dependencies = [
- "futures-channel",
- "futures-util",
- "gibblox-blockreader-messageport",
- "gibblox-core",
- "gloo-timers",
- "js-sys",
- "smoo-host-blocksource-gibblox",
- "smoo-host-core",
- "smoo-host-session",
- "smoo-host-webusb",
- "tracing",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "smoo-host-webusb"
 version = "0.0.2-rc.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b95f1f0898db58600f3c61f480f492f72a4fd776eaf26c43230134a7961f4761"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -6756,8 +6743,6 @@ dependencies = [
 [[package]]
 name = "smoo-proto"
 version = "0.0.2-rc.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c265b255ce6702a8ee4d43a5f867e52cdead3f0bf2c4ae4964a7a3df9351b62"
 dependencies = [
  "heapless 0.8.0",
 ]
@@ -8657,3 +8642,95 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
+
+[[patch.unused]]
+name = "gibblox-android-sparse"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-blockreader-messageport"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-cache"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-cache-store-opfs"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-cache-store-std"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-casync"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-casync-std"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-casync-web"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-core"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-ext4"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-file"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-http"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-mbr"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-optimizer"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-pipeline"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-schema"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-tar"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-web-worker"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-xz"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gibblox-zip"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gobblytes-core"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gobblytes-erofs"
+version = "0.0.2-rc.3"
+
+[[patch.unused]]
+name = "gobblytes-fat"
+version = "0.0.2-rc.3"
