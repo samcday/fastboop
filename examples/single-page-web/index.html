@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>fastboop single-page WebUSB example</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        background: #10141f;
+        color: #f5f7fb;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+      }
+
+      main {
+        box-sizing: border-box;
+        width: min(920px, 100%);
+        padding: clamp(1rem, 5vw, 3rem);
+      }
+
+      .panel {
+        border: 1px solid #2b3448;
+        border-radius: 24px;
+        background: linear-gradient(145deg, #151b2b, #0f1421);
+        box-shadow: 0 24px 80px rgb(0 0 0 / 0.35);
+        padding: clamp(1.25rem, 4vw, 2.5rem);
+      }
+
+      h1 {
+        margin: 0 0 0.75rem;
+        font-size: clamp(2rem, 7vw, 4.5rem);
+        letter-spacing: -0.06em;
+        line-height: 0.95;
+      }
+
+      p {
+        color: #b8c1d8;
+        line-height: 1.6;
+      }
+
+      label {
+        display: grid;
+        gap: 0.5rem;
+        color: #dce4f7;
+        font-weight: 700;
+      }
+
+      input[type="text"] {
+        box-sizing: border-box;
+        width: 100%;
+        border: 1px solid #3b4760;
+        border-radius: 14px;
+        background: #0b101a;
+        color: #f5f7fb;
+        padding: 0.9rem 1rem;
+        font: inherit;
+      }
+
+      .grid {
+        display: grid;
+        gap: 1rem;
+        margin: 1.5rem 0;
+      }
+
+      .serial {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        font-weight: 600;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin: 1.5rem 0;
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        background: #7cf7c4;
+        color: #06120d;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 800;
+        padding: 0.85rem 1.25rem;
+      }
+
+      button.secondary {
+        background: #b6c5ff;
+        color: #0b1020;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        filter: grayscale(0.7) brightness(0.65);
+      }
+
+      pre {
+        box-sizing: border-box;
+        min-height: 14rem;
+        overflow: auto;
+        border: 1px solid #293349;
+        border-radius: 18px;
+        background: #070a11;
+        color: #d6ffe9;
+        padding: 1rem;
+        white-space: pre-wrap;
+      }
+
+      code {
+        color: #7cf7c4;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <h1>fastboop single-page WebUSB</h1>
+        <p>
+          This example detects one fastboot-mode device using built-in DevPros,
+          builds stage0 from a fully formed EROFS rootfs artifact, boots it with
+          <code>fastboot boot</code>, then serves the same artifact through smoo.
+          It does not flash, erase, format, unlock, or switch slots.
+        </p>
+
+        <div class="grid">
+          <label>
+            Rootfs EROFS URL
+            <input id="channel-url" type="text" value="assets/rootfs/rootfs.ero" />
+          </label>
+          <label>
+            Stage0 sidecar URL
+            <input
+              id="stage0-url"
+              type="text"
+              value="assets/stage0/fastboop-stage0-aarch64-unknown-linux-musl"
+            />
+          </label>
+          <label>
+            Extra kernel command line
+            <input id="cmdline" type="text" placeholder="console=ttyMSM0,115200n8" />
+          </label>
+          <label class="serial">
+            <input id="serial" type="checkbox" />
+            Enable CDC-ACM serial gadget
+          </label>
+        </div>
+
+        <div class="actions">
+          <button id="detect-device">Detect device</button>
+          <button id="boot-device" class="secondary" disabled>Boot and serve smoo</button>
+        </div>
+
+        <pre id="status">idle</pre>
+      </section>
+    </main>
+
+    <script type="module">
+      import init from "./pkg/fastboop-web-single-page-example.js";
+      init();
+    </script>
+  </body>
+</html>

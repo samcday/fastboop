@@ -13,8 +13,8 @@ use tracing::{debug, info, warn};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
-    DedicatedWorkerGlobalScope, HtmlScriptElement, MessageChannel, MessageEvent, MessagePort, Usb,
-    UsbDevice, Worker, WorkerOptions, WorkerType,
+    DedicatedWorkerGlobalScope, MessageChannel, MessageEvent, MessagePort, Usb, UsbDevice, Worker,
+    WorkerOptions, WorkerType,
 };
 
 const WORKER_NAME: &str = "fastboop-smoo-host-worker";
@@ -37,7 +37,9 @@ impl HostWorker {
         block_source: MessagePortBlockReaderClient,
         cfg: HostWorkerConfig,
     ) -> Result<Self, String> {
-        let script_url = append_current_query_to_script_url(current_module_script_url()?);
+        let script_url = append_current_query_to_script_url(crate::js::current_module_script_url(
+            "fastboop-web",
+        )?);
         let worker_opts = WorkerOptions::new();
         worker_opts.set_type(WorkerType::Module);
         worker_opts.set_name(WORKER_NAME);
@@ -730,30 +732,6 @@ fn post_error_to_scope(scope: &DedicatedWorkerGlobalScope, message: &str) -> Res
     scope
         .post_message(&response.into())
         .map_err(|err| format!("post worker error response: {}", js_value_to_string(err)))
-}
-
-fn current_module_script_url() -> Result<String, String> {
-    let window = web_sys::window().ok_or_else(|| "window is unavailable".to_string())?;
-    let document = window
-        .document()
-        .ok_or_else(|| "document is unavailable".to_string())?;
-    let scripts = document.scripts();
-
-    let mut candidate = None;
-    for index in 0..scripts.length() {
-        let Some(script) = scripts.item(index) else {
-            continue;
-        };
-        let Ok(script) = script.dyn_into::<HtmlScriptElement>() else {
-            continue;
-        };
-        let src = script.src();
-        if src.ends_with(".js") && src.contains("fastboop-web") {
-            candidate = Some(src);
-        }
-    }
-
-    candidate.ok_or_else(|| "failed to determine fastboop web module script URL".to_string())
 }
 
 fn append_current_query_to_script_url(mut script_url: String) -> String {
