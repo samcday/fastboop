@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+: "${BUILDROOT:?}"
+: "${OUTPUTDIR:?}"
+
+rootfs="$OUTPUTDIR/rootfs.ero"
+rm -f "$rootfs"
+mkfs.erofs --all-root -zlz4hc,level=9 "$rootfs" "$BUILDROOT"

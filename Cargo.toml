@@ -11,6 +11,7 @@ members = [
     "crates/fastboop-smoo-gibblox",
     "crates/fastboop-fastboot-rusb",
     "crates/fastboop-fastboot-webusb",
+    "examples/single-page-web",
     "packages/desktop",
     "packages/mobile",
     "packages/ui",

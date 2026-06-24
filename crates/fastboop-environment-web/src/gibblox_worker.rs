@@ -1,10 +1,9 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    use crate::js::js_value_to_string;
+    use crate::js::{current_module_script_url, js_value_to_string};
     use anyhow::{Result, anyhow};
     use gibblox_web_worker::GibbloxWebWorker;
-    use wasm_bindgen::JsCast;
-    use web_sys::{HtmlScriptElement, Worker, WorkerOptions, WorkerType};
+    use web_sys::{Worker, WorkerOptions, WorkerType};
 
     const WORKER_NAME: &str = "fastboop-gibblox-worker";
     const LOG_LEVEL_HINT_KEY: &str = "__FASTBOOP_LOG_LEVEL";
@@ -18,7 +17,9 @@ mod wasm {
         _channel_offset_bytes: u64,
         _channel_chunk_store_url: Option<String>,
     ) -> Result<GibbloxWebWorker> {
-        let script_url = append_current_query_to_script_url(current_module_script_url()?);
+        let script_url = append_current_query_to_script_url(
+            current_module_script_url("fastboop-web").map_err(anyhow::Error::msg)?,
+        );
         tracing::info!(%script_url, "starting gibblox web worker");
 
         let opts = WorkerOptions::new();
@@ -30,30 +31,6 @@ mod wasm {
         GibbloxWebWorker::new(worker)
             .await
             .map_err(|err| anyhow!("initialize gibblox worker: {err}"))
-    }
-
-    fn current_module_script_url() -> Result<String> {
-        let window = web_sys::window().ok_or_else(|| anyhow!("window is unavailable"))?;
-        let document = window
-            .document()
-            .ok_or_else(|| anyhow!("document is unavailable"))?;
-        let scripts = document.scripts();
-
-        let mut candidate = None;
-        for index in 0..scripts.length() {
-            let Some(script) = scripts.item(index) else {
-                continue;
-            };
-            let Ok(script) = script.dyn_into::<HtmlScriptElement>() else {
-                continue;
-            };
-            let src = script.src();
-            if src.ends_with(".js") && src.contains("fastboop-web") {
-                candidate = Some(src);
-            }
-        }
-
-        candidate.ok_or_else(|| anyhow!("failed to determine fastboop web module script URL"))
     }
 
     fn append_current_query_to_script_url(mut script_url: String) -> String {
