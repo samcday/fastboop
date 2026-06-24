@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, ensure};
 use async_trait::async_trait;
+use fastboop_smoo_gibblox::GibbloxBlockSource;
 use gibblox_core::BlockReader;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
-use smoo_host_blocksource_gibblox::GibbloxBlockSource;
 use smoo_host_core::{
     BlockSource, BlockSourceHandle, ControlTransport, CountingTransport, Transport,
     TransportCounterSnapshot, TransportResult, register_export,

@@ -48,16 +48,16 @@ mod wasm {
     use futures_channel::mpsc::UnboundedSender;
     use futures_util::StreamExt;
     use gloo_timers::future::sleep;
-    use smoo_host_web_worker::{HostWorker, HostWorkerConfig, HostWorkerEvent, HostWorkerState};
     use web_sys::UsbDevice;
 
     use crate::boot::WebBootRuntime;
     use crate::smoo::{WebSmooHostEvent, WebSmooHostOptions, WebSmooHostPhase};
+    use crate::smoo_host_worker::{HostWorker, HostWorkerConfig, HostWorkerEvent, HostWorkerState};
 
     const STATUS_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
 
     pub fn run_if_worker() -> bool {
-        smoo_host_web_worker::run_if_worker()
+        crate::smoo_host_worker::run_if_worker()
     }
 
     pub async fn run_web_smoo_host(

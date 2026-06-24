@@ -11,8 +11,7 @@ fn main() {
         Some("bump") => release::bump(args.get(1).map(String::as_str)),
         Some("channels-fixtures") => channels::fixtures(),
         Some("channels-test") => channels::test(),
-        Some("check") => check::run(false),
-        Some("check-local") => check::run(true),
+        Some("check") => check::run(),
         Some("desktop-dev-install") => desktop_dev::install(),
         Some("desktop-dev-uninstall") => desktop_dev::uninstall(),
         Some("frontdoor-dev") => frontdoor_dev::run(),
@@ -26,7 +25,7 @@ fn main() {
         None => {
             eprintln!("usage: cargo xtask <command>");
             eprintln!(
-                "commands: bump, channels-fixtures, channels-test, check, check-local, desktop-dev-install, desktop-dev-uninstall, frontdoor-dev, publish, publish-dry-run, www-live"
+                "commands: bump, channels-fixtures, channels-test, check, desktop-dev-install, desktop-dev-uninstall, frontdoor-dev, publish, publish-dry-run, www-live"
             );
             std::process::exit(1);
         }

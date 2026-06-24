@@ -1,0 +1,6 @@
+[submodule "gibblox"]
+	path = gibblox
+	url = https://github.com/samcday/gibblox.git
+[submodule "smoo"]
+	path = smoo
+	url = https://github.com/samcday/smoo.git

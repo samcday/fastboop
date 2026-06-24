@@ -10,6 +10,7 @@ description = "Web browser environment bindings for fastboop sessions."
 anyhow = { workspace = true }
 fastboop-core = { path = "../fastboop-core", version = "0.0.1-rc.12" }
 fastboop-fastboot-webusb = { path = "../fastboop-fastboot-webusb", version = "0.0.1-rc.12" }
+fastboop-smoo-gibblox = { workspace = true }
 fastboop-stage0-generator = { path = "../fastboop-stage0-generator", version = "0.0.1-rc.12" }
 futures-channel = { workspace = true }
 gibblox-core = { version = "0.0.2-rc.3" }
@@ -33,8 +34,10 @@ gobblytes-erofs = { version = "0.0.2-rc.3" }
 gobblytes-fat = { version = "0.0.2-rc.3" }
 js-sys = { workspace = true }
 serde_json = "1.0.145"
-smoo-host-web-worker = { version = "0.0.2-rc.6" }
+smoo-host-core = { version = "0.0.2-rc.6" }
+smoo-host-session = { version = "0.0.2-rc.6" }
+smoo-host-webusb = { version = "0.0.2-rc.6" }
 url = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-web-sys = { workspace = true, features = ["Document", "HtmlCollection", "HtmlScriptElement", "Location", "MessageChannel", "Navigator", "Response", "UsbDevice", "Window", "Worker", "WorkerOptions", "WorkerType"] }
+web-sys = { workspace = true, features = ["DedicatedWorkerGlobalScope", "Document", "Event", "HtmlCollection", "HtmlScriptElement", "Location", "MessageChannel", "MessageEvent", "MessagePort", "Navigator", "Response", "Usb", "UsbDevice", "Window", "Worker", "WorkerNavigator", "WorkerOptions", "WorkerType"] }

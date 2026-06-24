@@ -178,7 +178,7 @@ impl ArtifactReaderResolver {
         let pipeline_hints = read_channel_pipeline_hints_for_boot_profile(
             source.reader.as_ref(),
             &stream_head,
-            &boot_profile,
+            boot_profile,
         )
         .await
         .map_err(|err| anyhow!("read channel pipeline hints: {err}"))?;
