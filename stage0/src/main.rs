@@ -225,6 +225,7 @@ fn run_gadget_child(args: Args) -> Result<()> {
         experimental_dma_buf: args.experimental_dma_buf,
         dma_heap: map_dma_heap(args.dma_heap),
         state_file: Some(args.state_file),
+        export_map_file: Some(PathBuf::from("/run/smoo/exports.json")),
         adopt: args.adopt,
         adopt_deadline: None,
         metrics_port: args.metrics_port,
