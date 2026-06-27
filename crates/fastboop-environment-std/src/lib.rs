@@ -20,5 +20,8 @@ pub use native::{
     NativeDetectedDevice, NativeSelectedFastbootDevice, Stage0InitrdOutput, build_stage0_initrd,
     detect_native_fastboot,
 };
-pub use native_smoo::{SmooHostEvent, SmooHostOptions, SmooHostPhase, run_native_smoo_host};
+pub use native_smoo::{
+    NativeSmooExport, SmooHostEvent, SmooHostOptions, SmooHostPhase, run_native_smoo_host,
+    run_native_smoo_host_exports,
+};
 pub use stage0_binary::load_stage0_binary_for_initrd;

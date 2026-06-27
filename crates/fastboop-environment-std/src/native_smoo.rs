@@ -14,7 +14,7 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
 use smoo_host_core::{
     BlockSource, BlockSourceHandle, ControlTransport, CountingTransport, Transport,
-    TransportCounterSnapshot, TransportResult, register_export,
+    TransportCounterSnapshot, TransportResult, register_export, register_export_with_id,
 };
 use smoo_host_session::{
     HostSession, HostSessionConfig, HostSessionDriveConfig, HostSessionDriveEvent,
@@ -66,6 +66,14 @@ pub enum SmooHostPhase {
     Serving,
 }
 
+#[derive(Clone)]
+pub struct NativeSmooExport {
+    pub reader: Arc<dyn BlockReader>,
+    pub size_bytes: u64,
+    pub identity: String,
+    pub export_id: Option<u32>,
+}
+
 pub async fn run_native_smoo_host(
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,
@@ -74,17 +82,39 @@ pub async fn run_native_smoo_host(
     events: Sender<SmooHostEvent>,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    run_native_smoo_host_async(reader, size_bytes, identity, options, events, shutdown).await
+    run_native_smoo_host_exports(
+        vec![NativeSmooExport {
+            reader,
+            size_bytes,
+            identity,
+            export_id: None,
+        }],
+        options,
+        events,
+        shutdown,
+    )
+    .await
 }
 
-async fn run_native_smoo_host_async(
-    reader: Arc<dyn BlockReader>,
-    size_bytes: u64,
-    identity: String,
+pub async fn run_native_smoo_host_exports(
+    exports: Vec<NativeSmooExport>,
     options: SmooHostOptions,
     events: Sender<SmooHostEvent>,
     shutdown: CancellationToken,
 ) -> Result<()> {
+    run_native_smoo_host_async(exports, options, events, shutdown).await
+}
+
+async fn run_native_smoo_host_async(
+    exports: Vec<NativeSmooExport>,
+    options: SmooHostOptions,
+    events: Sender<SmooHostEvent>,
+    shutdown: CancellationToken,
+) -> Result<()> {
+    ensure!(
+        !exports.is_empty(),
+        "smoo host requires at least one export"
+    );
     let shutdown_watch = shutdown.clone();
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
@@ -159,9 +189,7 @@ async fn run_native_smoo_host_async(
         let outcome = run_session(
             transport,
             control,
-            reader.clone(),
-            size_bytes,
-            identity.clone(),
+            exports.clone(),
             SessionRuntime {
                 shutdown: shutdown.clone(),
                 events: events.clone(),
@@ -218,35 +246,47 @@ struct SessionRuntime {
 async fn run_session(
     transport: RusbTransport,
     mut control: smoo_host_transport_rusb::RusbControl,
-    reader: Arc<dyn BlockReader>,
-    size_bytes: u64,
-    identity: String,
+    exports: Vec<NativeSmooExport>,
     runtime: SessionRuntime,
 ) -> Result<SessionEnd> {
     let transport = CountingTransport::new(transport);
     let counters = transport.counters();
     let transport = InflightTransport::new(transport, runtime.metrics.clone());
 
-    let source = GibbloxBlockSource::new(reader, identity.clone());
-    let block_size = source.block_size();
-    ensure!(block_size > 0, "block size must be non-zero");
-    ensure!(
-        size_bytes.is_multiple_of(block_size as u64),
-        "image size must align to export block size"
-    );
-
-    let source_handle = BlockSourceHandle::new(source, identity.clone());
     let mut sources = BTreeMap::new();
     let mut entries = Vec::new();
-    register_export(
-        &mut sources,
-        &mut entries,
-        source_handle,
-        identity,
-        block_size,
-        size_bytes,
-    )
-    .map_err(|err| anyhow!(err.to_string()))?;
+    for export in exports {
+        let source = GibbloxBlockSource::new(export.reader, export.identity.clone());
+        let block_size = source.block_size();
+        ensure!(block_size > 0, "block size must be non-zero");
+        ensure!(
+            export.size_bytes.is_multiple_of(block_size as u64),
+            "image size must align to export block size"
+        );
+
+        let source_handle = BlockSourceHandle::new(source, export.identity.clone());
+        if let Some(export_id) = export.export_id {
+            register_export_with_id(
+                &mut sources,
+                &mut entries,
+                source_handle,
+                export.identity,
+                export_id,
+                block_size,
+                export.size_bytes,
+            )
+        } else {
+            register_export(
+                &mut sources,
+                &mut entries,
+                source_handle,
+                export.identity,
+                block_size,
+                export.size_bytes,
+            )
+        }
+        .map_err(|err| anyhow!(err.to_string()))?;
+    }
     let session = HostSession::new(
         sources,
         HostSessionConfig {
@@ -271,7 +311,7 @@ async fn run_session(
     );
     emit(
         &runtime.events,
-        SmooHostEvent::Log("smoo gadget connected; serving export...".to_string()),
+        SmooHostEvent::Log("smoo gadget connected; serving export(s)...".to_string()),
     );
 
     let events = runtime.events.clone();
