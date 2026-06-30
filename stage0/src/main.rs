@@ -536,8 +536,8 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
     if let Err(err) = request_plymouth_units() {
         warn!(error = ?err, "pid1: failed to request Plymouth startup");
     }
-    if let Err(err) = stage_machine_id() {
-        warn!(error = ?err, "pid1: failed to stage /etc/machine-id");
+    if let Err(err) = stage_machine_id_credential() {
+        warn!(error = ?err, "pid1: failed to stage system.machine_id credential");
     }
     stage_firstboot_credentials().context("stage firstboot credentials")?;
 
@@ -770,11 +770,7 @@ fn stage_firstboot_credentials() -> Result<()> {
         if value.is_empty() {
             continue;
         }
-        std::fs::create_dir_all(STAGE0_CREDSTORE_DIR)
-            .with_context(|| format!("create {STAGE0_CREDSTORE_DIR}"))?;
-        let path = Path::new(STAGE0_CREDSTORE_DIR).join(key);
-        std::fs::write(&path, value.as_bytes())
-            .with_context(|| format!("write {}", path.display()))?;
+        stage_credstore_credential(key, value)?;
         wrote_any = true;
     }
 
@@ -785,21 +781,21 @@ fn stage_firstboot_credentials() -> Result<()> {
     Ok(())
 }
 
-fn stage_machine_id() -> Result<()> {
-    std::fs::create_dir_all("/etc").context("create /etc")?;
+fn stage_machine_id_credential() -> Result<()> {
     let machine_id = generate_machine_id().context("generate machine-id")?;
-    let path = Path::new("/etc/machine-id");
-    if std::fs::symlink_metadata(path)
-        .map(|meta| meta.file_type().is_symlink())
-        .unwrap_or(false)
-    {
-        std::fs::remove_file(path).context("remove /etc/machine-id symlink")?;
-    }
+    stage_credstore_credential("system.machine_id", &machine_id)?;
+    info!("pid1: staged system.machine_id credential");
+    Ok(())
+}
 
-    let mut contents = machine_id.into_bytes();
-    contents.push(b'\n');
-    std::fs::write(path, contents).context("write /etc/machine-id")?;
-    info!("pid1: staged /etc/machine-id");
+fn stage_credstore_credential(name: &str, value: &str) -> Result<()> {
+    stage_credstore_credential_in(Path::new(STAGE0_CREDSTORE_DIR), name, value)
+}
+
+fn stage_credstore_credential_in(dir: &Path, name: &str, value: &str) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let path = dir.join(name);
+    std::fs::write(&path, value.as_bytes()).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -2041,6 +2037,23 @@ mod tests {
         let second = machine_id_from_serial("serial-2");
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn credstore_credential_writer_writes_exact_payload() {
+        let root = temp_root();
+        let credstore = root.join("run/credstore");
+        let machine_id = machine_id_from_serial("serial-1");
+
+        stage_credstore_credential_in(&credstore, "system.machine_id", &machine_id)
+            .expect("stage machine-id credential");
+
+        assert_eq!(
+            std::fs::read_to_string(credstore.join("system.machine_id"))
+                .expect("read machine-id credential"),
+            machine_id
+        );
+        std::fs::remove_dir_all(&root).expect("remove temp root");
     }
 
     #[test]
