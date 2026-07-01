@@ -149,6 +149,7 @@ pub async fn run_stage0(args: Stage0Args) -> Result<()> {
             kernel_modules,
             inject_mac: profile_stage0.inject_mac,
             kernel_override: profile_source_overrides.kernel_override,
+            abl_exorcist: None,
             dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
             dtbo_overlays,
             enable_serial: serial_enabled,

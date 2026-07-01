@@ -311,6 +311,7 @@ pub async fn boot_selected_device(
         kernel_modules,
         inject_mac: profile_stage0.inject_mac,
         kernel_override: None,
+        abl_exorcist: None,
         dtb_override: None,
         dtbo_overlays,
         enable_serial: boot_config.enable_serial,

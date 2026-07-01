@@ -34,7 +34,7 @@ Plymouth startup is opportunistic: stage0 requests target-root Plymouth units on
 
 - Device Profile (device identity and bootloader payload constraints)
 - Boot Profile stage0 settings (kernel modules, MAC injection, overlays, per-device cmdline)
-- CLI overrides (`--dtb`, `--dtbo`, `--require-module`, `--cmdline-append`, `--serial`)
+- CLI overrides (`--dtb`, `--dtbo`, `--require-module`, `--cmdline-append`, `--serial`, `--abl-exorcist` on `fastboop boot`)
 - Rootfs artifact source (direct image or compiled Boot Profile)
 
 ## Settings Channel
@@ -68,6 +68,9 @@ cargo run -p fastboop-cli -- stage0 <rootfs-or-bootprofile> --device-profile <id
 
 # build full boot payload without touching a device
 cargo run -p fastboop-cli -- boot <rootfs-or-bootprofile> --device-profile <id> --output /tmp/boot.img
+
+# wrap the kernel with a raw abl-exorcist Image shim before Android bootimg assembly
+cargo run -p fastboop-cli -- boot <rootfs-or-bootprofile> --device-profile google-sargo --abl-exorcist /path/to/abl-exorcist.bin --output /tmp/boot.img
 
 # targeted compile checks
 cargo check -p fastboop-stage0

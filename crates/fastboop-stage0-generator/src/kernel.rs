@@ -1,11 +1,13 @@
 extern crate alloc;
 
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use abl_exorcist_assembler::assemble;
 use fastboop_core::{Compression, DeviceProfile};
 use tracing::debug;
 
-use crate::Stage0Error;
+use crate::{Stage0AblExorcist, Stage0Error};
 
 const GZIP_MAGIC: [u8; 3] = [0x1f, 0x8b, 0x08];
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
@@ -23,16 +25,7 @@ enum KernelPayload {
 
 pub fn normalize_kernel(profile: &DeviceProfile, kernel: &[u8]) -> Result<Vec<u8>, Stage0Error> {
     debug!(bytes = kernel.len(), "kernel input");
-    let payload = if kernel.starts_with(&GZIP_MAGIC) {
-        debug!("kernel input already gzip");
-        KernelPayload::Gzip(kernel.to_vec())
-    } else if kernel.starts_with(&MZ_MAGIC) {
-        debug!("kernel input is PE");
-        extract_pe_recursive(kernel)?
-    } else {
-        debug!("kernel input treated as raw");
-        KernelPayload::Raw(kernel.to_vec())
-    };
+    let payload = detect_kernel_payload(kernel)?;
 
     let desired = profile
         .boot
@@ -53,6 +46,61 @@ pub fn normalize_kernel(profile: &DeviceProfile, kernel: &[u8]) -> Result<Vec<u8
         (Compression::Zstd, _) => Err(Stage0Error::KernelFormat(
             "zstd output compression not supported",
         )),
+    }
+}
+
+pub fn prepare_kernel(
+    profile: &DeviceProfile,
+    kernel: &[u8],
+    abl_exorcist: Option<&Stage0AblExorcist>,
+) -> Result<Vec<u8>, Stage0Error> {
+    let Some(abl_exorcist) = abl_exorcist else {
+        return normalize_kernel(profile, kernel);
+    };
+
+    let raw_kernel = extract_raw_arm64_kernel(kernel)?;
+    debug!(
+        kernel_bytes = raw_kernel.len(),
+        shim_bytes = abl_exorcist.image.len(),
+        "wrapping kernel with abl-exorcist"
+    );
+    let assembled = assemble(&raw_kernel, &abl_exorcist.image)
+        .map_err(|err| Stage0Error::AblExorcist(err.to_string()))?;
+    normalize_kernel(profile, &assembled)
+}
+
+fn detect_kernel_payload(kernel: &[u8]) -> Result<KernelPayload, Stage0Error> {
+    if kernel.starts_with(&GZIP_MAGIC) {
+        debug!("kernel input already gzip");
+        Ok(KernelPayload::Gzip(kernel.to_vec()))
+    } else if kernel.starts_with(&MZ_MAGIC) {
+        debug!("kernel input is PE");
+        extract_pe_recursive(kernel)
+    } else {
+        debug!("kernel input treated as raw");
+        Ok(KernelPayload::Raw(kernel.to_vec()))
+    }
+}
+
+fn extract_raw_arm64_kernel(kernel: &[u8]) -> Result<Vec<u8>, Stage0Error> {
+    let raw = kernel_payload_to_raw_image(detect_kernel_payload(kernel)?)?;
+    if !is_arm64_image(&raw) {
+        return Err(Stage0Error::KernelFormat(
+            "extracted kernel is not a raw arm64 Image",
+        ));
+    }
+    Ok(raw)
+}
+
+fn kernel_payload_to_raw_image(payload: KernelPayload) -> Result<Vec<u8>, Stage0Error> {
+    match payload {
+        KernelPayload::Raw(data) if data.starts_with(&MZ_MAGIC) => {
+            kernel_payload_to_raw_image(extract_pe_recursive(&data)?)
+        }
+        KernelPayload::Raw(data) => Ok(data),
+        KernelPayload::Gzip(data) => {
+            kernel_payload_to_raw_image(KernelPayload::Raw(gzip_decompress(&data)?))
+        }
     }
 }
 
@@ -256,6 +304,29 @@ fn decode_zstd(data: &[u8]) -> Result<Vec<u8>, Stage0Error> {
 }
 
 fn gzip_peek_header(data: &[u8]) -> Result<Option<Vec<u8>>, Stage0Error> {
+    let Some((offset, deflate_end)) = gzip_deflate_range(data)? else {
+        return Ok(None);
+    };
+    let deflate = &data[offset..deflate_end];
+    let limit = ARM64_MAGIC_OFFSET + 8;
+    match miniz_oxide::inflate::decompress_to_vec_with_limit(deflate, limit) {
+        Ok(out) => Ok(Some(out)),
+        Err(err) => Ok(Some(err.output)),
+    }
+}
+
+fn gzip_decompress(data: &[u8]) -> Result<Vec<u8>, Stage0Error> {
+    let Some((offset, deflate_end)) = gzip_deflate_range(data)? else {
+        return Err(Stage0Error::KernelFormat("invalid gzip kernel"));
+    };
+    let deflate = &data[offset..deflate_end];
+    let expected_len = u32::from_le_bytes(data[data.len() - 4..].try_into().unwrap()) as usize;
+    let limit = expected_len.max(ARM64_MAGIC_OFFSET + 8);
+    miniz_oxide::inflate::decompress_to_vec_with_limit(deflate, limit)
+        .map_err(|_| Stage0Error::KernelDecode("gzip decode failed"))
+}
+
+fn gzip_deflate_range(data: &[u8]) -> Result<Option<(usize, usize)>, Stage0Error> {
     if data.len() < 10 {
         return Ok(None);
     }
@@ -296,12 +367,7 @@ fn gzip_peek_header(data: &[u8]) -> Result<Option<Vec<u8>>, Stage0Error> {
         return Ok(None);
     }
     let deflate_end = data.len() - 8;
-    let deflate = &data[offset..deflate_end];
-    let limit = ARM64_MAGIC_OFFSET + 8;
-    match miniz_oxide::inflate::decompress_to_vec_with_limit(deflate, limit) {
-        Ok(out) => Ok(Some(out)),
-        Err(err) => Ok(Some(err.output)),
-    }
+    Ok(Some((offset, deflate_end)))
 }
 
 fn gzip_compress(data: &[u8]) -> Result<Vec<u8>, Stage0Error> {
@@ -356,4 +422,90 @@ fn read_u16_le(data: &[u8], offset: usize) -> Option<u16> {
 fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
     let bytes = data.get(offset..offset + 4)?;
     Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::String;
+    use alloc::vec;
+    use fastboop_core::{
+        AndroidBootImage, AndroidKernel, Boot, BootPayload, DeviceProfile, FastbootMatch,
+        KernelEncoding, MatchRule,
+    };
+
+    const PAYLOAD_OFFSET: usize = 0x40_0000;
+
+    #[test]
+    fn prepare_kernel_wraps_abl_exorcist_before_gzip_normalization() {
+        let profile = profile(KernelEncoding::ImageGzip);
+        let shim = image(0x1000, 128);
+        let kernel = image(0x2000, 256);
+        let exorcist = Stage0AblExorcist {
+            image: shim.clone(),
+        };
+
+        let prepared = prepare_kernel(&profile, &kernel, Some(&exorcist)).unwrap();
+        assert!(prepared.starts_with(&GZIP_MAGIC));
+
+        let raw = gzip_decompress(&prepared).unwrap();
+        assert_eq!(&raw[..shim.len()], shim.as_slice());
+        assert_eq!(
+            &raw[PAYLOAD_OFFSET..PAYLOAD_OFFSET + kernel.len()],
+            kernel.as_slice()
+        );
+    }
+
+    #[test]
+    fn prepare_kernel_rejects_non_arm64_kernel_when_wrapping() {
+        let profile = profile(KernelEncoding::Image);
+        let exorcist = Stage0AblExorcist {
+            image: image(0x1000, 128),
+        };
+
+        let err = prepare_kernel(&profile, &[0; 128], Some(&exorcist)).unwrap_err();
+
+        assert_eq!(
+            err,
+            Stage0Error::KernelFormat("extracted kernel is not a raw arm64 Image")
+        );
+    }
+
+    fn profile(encoding: KernelEncoding) -> DeviceProfile {
+        DeviceProfile {
+            id: String::from("test"),
+            display_name: None,
+            devicetree_name: String::from("test-dtb"),
+            r#match: vec![MatchRule {
+                fastboot: FastbootMatch {
+                    vid: 0x18d1,
+                    pid: 0x4ee0,
+                },
+            }],
+            probe: vec![],
+            boot: Boot {
+                fastboot_boot: BootPayload {
+                    android_bootimg: AndroidBootImage {
+                        header_version: 0,
+                        page_size: 4096,
+                        base: None,
+                        kernel_offset: None,
+                        dtb_offset: None,
+                        limits: None,
+                        kernel: AndroidKernel { encoding },
+                        initrd: None,
+                        cmdline_append: None,
+                    },
+                },
+            },
+        }
+    }
+
+    fn image(image_size: u64, file_len: usize) -> Vec<u8> {
+        let mut image = vec![0; file_len.max(64)];
+        image[16..24].copy_from_slice(&image_size.to_le_bytes());
+        image[ARM64_MAGIC_OFFSET..ARM64_MAGIC_OFFSET + ARM64_MAGIC.len()]
+            .copy_from_slice(&ARM64_MAGIC);
+        image
+    }
 }

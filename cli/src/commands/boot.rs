@@ -1,6 +1,6 @@
 #[cfg(feature = "tui")]
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::task::Poll;
 use std::thread;
@@ -14,7 +14,9 @@ use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::fastboot::{boot, download};
 use fastboop_core::{DeviceProfile, resolve_effective_boot_profile_stage0};
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
-use fastboop_stage0_generator::{Stage0Options, build_stage0, stage0_binary_ready};
+use fastboop_stage0_generator::{
+    Stage0AblExorcist, Stage0Options, build_stage0, stage0_binary_ready,
+};
 use gibblox_core::{BlockReader, block_identity_string};
 use gobblytes_core::OstreeFs as OstreeRootfs;
 use tokio_util::sync::CancellationToken;
@@ -109,6 +111,9 @@ pub struct BootArgs {
     /// Write boot image to a file and skip device detection/boot.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+    /// ABL exorcist raw arm64 Image shim to wrap around the selected kernel.
+    #[arg(long = "abl-exorcist", value_name = "PATH")]
+    pub abl_exorcist: Option<PathBuf>,
     /// Append host time to cmdline as systemd.clock_usec=... (use --system-time=false to disable).
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub system_time: bool,
@@ -313,6 +318,7 @@ async fn run_boot_inner(
     let existing = read_existing_initrd(&args.stage0.augment)?;
     let stage0_binary =
         load_stage0_binary_for_initrd(args.stage0.stage0.as_deref(), existing.as_deref())?;
+    let abl_exorcist_image = read_abl_exorcist(args.abl_exorcist.as_deref())?;
     let cli_cmdline_append = args
         .stage0
         .cmdline_append
@@ -378,6 +384,9 @@ async fn run_boot_inner(
             kernel_modules,
             inject_mac: profile_stage0.inject_mac,
             kernel_override: profile_source_overrides.kernel_override,
+            abl_exorcist: abl_exorcist_image.as_ref().map(|image| Stage0AblExorcist {
+                image: image.clone(),
+            }),
             dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
             dtbo_overlays,
             enable_serial: serial_enabled,
@@ -457,7 +466,7 @@ async fn run_boot_inner(
 
     let build = build.map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
 
-    let cmdline = join_cmdline(
+    let mut cmdline = join_cmdline(
         profile
             .boot
             .fastboot_boot
@@ -466,6 +475,9 @@ async fn run_boot_inner(
             .as_deref(),
         Some(build.kernel_cmdline_append.as_str()),
     );
+    if abl_exorcist_image.is_some() {
+        cmdline = wrap_abl_exorcist_cmdline(&cmdline);
+    }
 
     let mut kernel_image = build.kernel_image;
     if profile
@@ -903,6 +915,27 @@ fn system_time_cmdline() -> Result<String> {
     Ok(format!("systemd.clock_usec={usec}"))
 }
 
+fn read_abl_exorcist(path: Option<&Path>) -> Result<Option<Vec<u8>>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let data = std::fs::read(path)
+        .with_context(|| format!("reading abl-exorcist shim {}", path.display()))?;
+    if data.is_empty() {
+        bail!("abl-exorcist shim is empty: {}", path.display());
+    }
+    Ok(Some(data))
+}
+
+fn wrap_abl_exorcist_cmdline(cmdline: &str) -> String {
+    let cmdline = cmdline.trim();
+    if cmdline.is_empty() {
+        "<S> <E>".to_string()
+    } else {
+        format!("<S> {cmdline} <E>")
+    }
+}
+
 fn parse_nonzero_u16(input: &str) -> std::result::Result<u16, String> {
     let value = input.parse::<u16>().map_err(|err| err.to_string())?;
     if value == 0 {
@@ -966,5 +999,14 @@ mod tests {
     fn parse_nonzero_u16_rejects_zero() {
         assert_eq!(parse_nonzero_u16("1").unwrap(), 1);
         assert!(parse_nonzero_u16("0").is_err());
+    }
+
+    #[test]
+    fn wraps_abl_exorcist_cmdline_markers() {
+        assert_eq!(
+            wrap_abl_exorcist_cmdline("quiet foo=bar"),
+            "<S> quiet foo=bar <E>"
+        );
+        assert_eq!(wrap_abl_exorcist_cmdline("   "), "<S> <E>");
     }
 }

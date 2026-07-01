@@ -40,8 +40,14 @@ pub enum Stage0Error {
     InvalidCpio(&'static str),
     KernelFormat(&'static str),
     KernelDecode(&'static str),
+    AblExorcist(String),
     MissingStage0Binary,
     Stage0Binary(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct Stage0AblExorcist {
+    pub image: Vec<u8>,
 }
 
 pub struct Stage0Options {
@@ -49,6 +55,7 @@ pub struct Stage0Options {
     pub kernel_modules: Vec<String>,
     pub inject_mac: Option<InjectMac>,
     pub kernel_override: Option<Stage0KernelOverride>,
+    pub abl_exorcist: Option<Stage0AblExorcist>,
     pub dtb_override: Option<Vec<u8>>,
     pub dtbo_overlays: Vec<Vec<u8>>,
     pub enable_serial: bool,
@@ -261,7 +268,8 @@ where
         };
         let dtb_bytes = dtb_result?;
 
-        let kernel_image = kernel::normalize_kernel(profile, &kernel_image)?;
+        let kernel_image =
+            kernel::prepare_kernel(profile, &kernel_image, opts.abl_exorcist.as_ref())?;
         let dtb_bytes = apply_dtbo_overlays(&dtb_bytes, &opts.dtbo_overlays)?;
         let mac_seed = extra_stage0_settings
             .get("stage0.serial")
