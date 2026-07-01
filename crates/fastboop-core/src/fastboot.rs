@@ -139,6 +139,7 @@ pub async fn getvar<F: FastbootWire>(
         .send_command(&format!("getvar:{name}"))
         .await
         .map_err(FastbootProtocolError::Transport)?;
+    let response = read_after_intermediate(fastboot, response).await?;
     expect_okay(response)
 }
 
@@ -149,6 +150,7 @@ pub async fn boot<F: FastbootWire>(
         .send_command("boot")
         .await
         .map_err(FastbootProtocolError::Transport)?;
+    let response = read_after_intermediate(fastboot, response).await?;
     let _ = expect_okay(response)?;
     Ok(())
 }
@@ -165,9 +167,8 @@ pub async fn download<F: FastbootWire>(
         .send_command(&format!("download:{:08x}", data.len()))
         .await
         .map_err(FastbootProtocolError::Transport)?;
-    if response.status != "DATA" {
-        return Err(FastbootProtocolError::UnexpectedStatus(response.status));
-    }
+    let response = read_after_intermediate(fastboot, response).await?;
+    expect_data(response)?;
     for chunk in data.chunks(DEFAULT_DOWNLOAD_CHUNK_BYTES) {
         fastboot
             .send_data(chunk)
@@ -178,13 +179,43 @@ pub async fn download<F: FastbootWire>(
         .read_response()
         .await
         .map_err(FastbootProtocolError::Transport)?;
+    let response = read_after_intermediate(fastboot, response).await?;
     let _ = expect_okay(response)?;
     Ok(())
+}
+
+async fn read_after_intermediate<F: FastbootWire>(
+    fastboot: &mut F,
+    mut response: Response,
+) -> Result<Response, FastbootProtocolError<F::Error>> {
+    loop {
+        match response.status.as_str() {
+            "INFO" => {
+                debug!(payload = %response.payload.as_str(), "fastboot info");
+            }
+            "TEXT" => {
+                debug!(payload = %response.payload.as_str(), "fastboot text");
+            }
+            _ => return Ok(response),
+        }
+        response = fastboot
+            .read_response()
+            .await
+            .map_err(FastbootProtocolError::Transport)?;
+    }
 }
 
 fn expect_okay<E>(response: Response) -> Result<String, FastbootProtocolError<E>> {
     match response.status.as_str() {
         "OKAY" => Ok(response.payload),
+        "FAIL" => Err(FastbootProtocolError::Fail(response.payload)),
+        other => Err(FastbootProtocolError::UnexpectedStatus(other.to_string())),
+    }
+}
+
+fn expect_data<E>(response: Response) -> Result<(), FastbootProtocolError<E>> {
+    match response.status.as_str() {
+        "DATA" => Ok(()),
         "FAIL" => Err(FastbootProtocolError::Fail(response.payload)),
         other => Err(FastbootProtocolError::UnexpectedStatus(other.to_string())),
     }
@@ -353,4 +384,154 @@ pub async fn probe_profile_with_cache<F: FastbootWire>(
 fn is_missing_getvar(value: &str) -> bool {
     let trimmed = value.trim();
     trimmed.is_empty() || trimmed.eq_ignore_ascii_case("unknown")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::{String, ToString};
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct MockError;
+
+    struct MockWire {
+        command_responses: Vec<Response>,
+        read_responses: Vec<Response>,
+        sent_commands: Vec<String>,
+        sent_data: Vec<Vec<u8>>,
+    }
+
+    impl MockWire {
+        fn new(command_responses: Vec<Response>, read_responses: Vec<Response>) -> Self {
+            Self {
+                command_responses,
+                read_responses,
+                sent_commands: Vec::new(),
+                sent_data: Vec::new(),
+            }
+        }
+
+        fn command_response(&mut self) -> Response {
+            assert!(!self.command_responses.is_empty());
+            self.command_responses.remove(0)
+        }
+
+        fn next_read_response(&mut self) -> Response {
+            assert!(!self.read_responses.is_empty());
+            self.read_responses.remove(0)
+        }
+    }
+
+    impl FastbootWire for MockWire {
+        type Error = MockError;
+        type SendCommandFuture<'a>
+            = core::future::Ready<Result<Response, Self::Error>>
+        where
+            Self: 'a;
+        type SendDataFuture<'a>
+            = core::future::Ready<Result<(), Self::Error>>
+        where
+            Self: 'a;
+        type ReadResponseFuture<'a>
+            = core::future::Ready<Result<Response, Self::Error>>
+        where
+            Self: 'a;
+
+        fn send_command<'a>(&'a mut self, cmd: &'a str) -> Self::SendCommandFuture<'a> {
+            self.sent_commands.push(cmd.to_string());
+            core::future::ready(Ok(self.command_response()))
+        }
+
+        fn send_data<'a>(&'a mut self, data: &'a [u8]) -> Self::SendDataFuture<'a> {
+            self.sent_data.push(data.to_vec());
+            core::future::ready(Ok(()))
+        }
+
+        fn read_response<'a>(&'a mut self) -> Self::ReadResponseFuture<'a> {
+            core::future::ready(Ok(self.next_read_response()))
+        }
+    }
+
+    fn response(status: &str, payload: &str) -> Response {
+        Response {
+            status: status.to_string(),
+            payload: payload.to_string(),
+        }
+    }
+
+    fn block_on<F: Future>(mut fut: F) -> F::Output {
+        fn raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(_: *const ()) -> RawWaker {
+                raw_waker()
+            }
+            static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(core::ptr::null(), &VTABLE)
+        }
+
+        let waker = unsafe { Waker::from_raw(raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = unsafe { Pin::new_unchecked(&mut fut) };
+        loop {
+            match fut.as_mut().poll(&mut cx) {
+                Poll::Ready(val) => return val,
+                Poll::Pending => continue,
+            }
+        }
+    }
+
+    #[test]
+    fn boot_skips_intermediate_info_and_text_before_okay() {
+        let mut wire = MockWire::new(
+            vec![response(
+                "INFO",
+                "I don't like that your abootimg has no cmdline",
+            )],
+            vec![response("TEXT", "continuing\0"), response("OKAY", "")],
+        );
+
+        block_on(boot(&mut wire)).unwrap();
+
+        assert_eq!(wire.sent_commands, vec!["boot".to_string()]);
+        assert!(wire.sent_data.is_empty());
+    }
+
+    #[test]
+    fn download_skips_intermediate_responses_before_data_and_okay() {
+        let data = b"payload";
+        let mut wire = MockWire::new(
+            vec![response("INFO", "preparing download")],
+            vec![
+                response("DATA", "00000007"),
+                response("INFO", "writing image"),
+                response("OKAY", ""),
+            ],
+        );
+
+        block_on(download(&mut wire, data)).unwrap();
+
+        assert_eq!(wire.sent_commands, vec!["download:00000007".to_string()]);
+        assert_eq!(wire.sent_data, vec![data.to_vec()]);
+    }
+
+    #[test]
+    fn download_final_fail_after_intermediate_reports_fail() {
+        let mut wire = MockWire::new(
+            vec![response("DATA", "00000007")],
+            vec![
+                response("INFO", "bootloader is unhappy"),
+                response("FAIL", "nope"),
+            ],
+        );
+
+        let err = block_on(download(&mut wire, b"payload")).unwrap_err();
+
+        assert_eq!(err, FastbootProtocolError::Fail("nope".to_string()));
+        assert_eq!(wire.sent_data, vec![b"payload".to_vec()]);
+    }
 }
