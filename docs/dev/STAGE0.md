@@ -20,9 +20,11 @@ Stage0 PID1 (`fastboop-stage0`) does this in order:
 3. configure configfs/FunctionFS and spawn embedded `smoo-gadget-app`
 4. wait for exported block device (`/dev/ublkb0`)
 5. mount lower root (`erofs` or `ext4`) + tmpfs upper overlay
-6. stage a `system.machine_id` credential from `stage0.serial`, or ephemerally when no serial seed is available
-7. request target-root Plymouth units when they exist
-8. switch root and `exec` init (`/lib/systemd/systemd`, `/usr/lib/systemd/systemd`, or `/sbin/init`)
+6. switch root into the target root or selected OSTree deployment
+7. for OSTree deployments, publish `/run/ostree` and `/run/ostree-booted` runtime state
+8. stage a `system.machine_id` credential from `stage0.serial`, or ephemerally when no serial seed is available
+9. request target-root Plymouth units when they exist
+10. `exec` init (`/lib/systemd/systemd`, `/usr/lib/systemd/systemd`, or `/sbin/init`)
 
 If gadget startup or handoff fails, stage0 fails loudly.
 

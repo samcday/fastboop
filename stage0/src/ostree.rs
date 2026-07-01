@@ -3,8 +3,12 @@ use anyhow::{Context, Result, anyhow, ensure};
 use std::{
     ffi::OsStr,
     io,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
 };
+
+const OSTREE_RUN_DIR: &str = "ostree";
+const OSTREE_BOOTED_FILE: &str = "ostree-booted";
 
 #[derive(Clone, Debug)]
 pub(super) struct OstreeLayout {
@@ -278,9 +282,46 @@ pub(super) fn setup_ostree_runtime_mounts(layout: &OstreeLayout) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn stage_ostree_runtime_state() -> Result<()> {
+    stage_ostree_runtime_state_in(Path::new("/run"))
+}
+
+fn stage_ostree_runtime_state_in(run_dir: &Path) -> Result<()> {
+    let ostree_dir = run_dir.join(OSTREE_RUN_DIR);
+    std::fs::create_dir_all(&ostree_dir)
+        .with_context(|| format!("create {}", ostree_dir.display()))?;
+
+    let booted_path = run_dir.join(OSTREE_BOOTED_FILE);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o640)
+        .open(&booted_path)
+        .with_context(|| format!("create {}", booted_path.display()))?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o640))
+        .with_context(|| format!("chmod 0640 {}", booted_path.display()))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "fastboop-stage0-ostree-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create temp root");
+        root
+    }
 
     #[test]
     fn normalize_stage0_path_strips_root_prefix() {
@@ -314,5 +355,21 @@ mod tests {
             err.to_string().contains("missing deploy"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn ostree_runtime_state_writer_creates_empty_booted_marker() {
+        let root = temp_root();
+        let run_dir = root.join("run");
+
+        stage_ostree_runtime_state_in(&run_dir).expect("stage ostree runtime state");
+
+        assert!(run_dir.join("ostree").is_dir());
+        let booted = run_dir.join("ostree-booted");
+        let metadata = std::fs::metadata(&booted).expect("stat ostree-booted marker");
+        assert!(metadata.is_file());
+        assert_eq!(metadata.len(), 0);
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o640);
+        std::fs::remove_dir_all(&root).expect("remove temp root");
     }
 }

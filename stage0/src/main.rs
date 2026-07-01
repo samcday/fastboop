@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use clap::{Parser, ValueEnum};
 use drm::{ClientCapability, Device as _, buffer::Buffer as _, control::Device as _};
 mod ostree;
-use ostree::{detect_ostree_layout, setup_ostree_runtime_mounts};
+use ostree::{detect_ostree_layout, setup_ostree_runtime_mounts, stage_ostree_runtime_state};
 use std::io::{Read, Write};
 use std::{
     collections::{HashMap, HashSet},
@@ -502,6 +502,9 @@ fn run_pid1(args: &Args, cleaned_args: &[OsString]) -> Result<()> {
         info!("pid1: chrooting to bound deployment root");
         chroot_to(&deployment_bind_root_str).context("chroot to selected root")?;
         std::env::set_current_dir("/").ok();
+
+        stage_ostree_runtime_state().context("stage ostree runtime state")?;
+        info!("pid1: staged ostree runtime state");
     }
 
     ensure_proc_mountinfo_ready().context("ensure /proc mountinfo is available")?;
