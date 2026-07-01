@@ -41,23 +41,23 @@ serde_yaml = { workspace = true }
 hyper = { workspace = true, features = ["server", "http1", "tcp"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-gibblox-core = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-ext4 = { version = "0.0.2-rc.3" }
-gibblox-mbr = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-casync = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-casync-std = { version = "0.0.2-rc.3" }
-gibblox-file = { version = "0.0.2-rc.3" }
-gibblox-http = { version = "0.0.2-rc.3", default-features = false, features = ["native-client"] }
-gibblox-cache = { version = "0.0.2-rc.3" }
-gibblox-cache-store-std = { version = "0.0.2-rc.3" }
-gibblox-pipeline = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-android-sparse = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-tar = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-xz = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-zip = { version = "0.0.2-rc.3", features = ["std"] }
-gobblytes-core = { version = "0.0.2-rc.3" }
-gobblytes-erofs = { version = "0.0.2-rc.3" }
-gobblytes-fat = { version = "0.0.2-rc.3" }
+gibblox-core = { workspace = true, features = ["std"] }
+gibblox-ext4 = { workspace = true }
+gibblox-mbr = { workspace = true, features = ["std"] }
+gibblox-casync = { workspace = true, features = ["std"] }
+gibblox-casync-std = { workspace = true }
+gibblox-file = { workspace = true }
+gibblox-http = { workspace = true, default-features = false, features = ["native-client"] }
+gibblox-cache = { workspace = true }
+gibblox-cache-store-std = { workspace = true }
+gibblox-pipeline = { workspace = true, features = ["std"] }
+gibblox-android-sparse = { workspace = true, features = ["std"] }
+gibblox-tar = { workspace = true, features = ["std"] }
+gibblox-xz = { workspace = true, features = ["std"] }
+gibblox-zip = { workspace = true, features = ["std"] }
+gobblytes-core = { workspace = true }
+gobblytes-erofs = { workspace = true }
+gobblytes-fat = { workspace = true }
 smoo-host-core = { version = "0.0.2-rc.6" }
 smoo-host-session = { version = "0.0.2-rc.6" }
 smoo-host-transport-rusb = { version = "0.0.2-rc.6" }
