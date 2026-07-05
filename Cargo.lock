@@ -2136,7 +2136,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-bootpro"
-version = "0.0.1-rc.21"
+version = "0.0.1-rc.22"
 dependencies = [
  "anyhow",
  "fastboop-core",
@@ -2162,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-cli"
-version = "0.0.1-rc.21"
+version = "0.0.1-rc.22"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2209,7 +2209,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-core"
-version = "0.0.1-rc.21"
+version = "0.0.1-rc.22"
 dependencies = [
  "fastboop-schema",
  "futures-util",
@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-fastboot-rusb"
-version = "0.0.1-rc.21"
+version = "0.0.1-rc.22"
 dependencies = [
  "fastboop-core",
  "futures-channel",
@@ -2267,7 +2267,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-fastboot-webusb"
-version = "0.0.1-rc.21"
+version = "0.0.1-rc.22"
 dependencies = [
  "fastboop-core",
  "futures-channel",
@@ -2281,7 +2281,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-mobile"
-version = "0.0.1-rc.21"
+version = "0.0.1-rc.22"
 dependencies = [
  "dioxus",
  "tracing",
@@ -2291,7 +2291,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-schema"
-version = "0.0.1-rc.21"
+version = "0.0.1-rc.22"
 dependencies = [
  "gibblox-pipeline",
  "schemars",
@@ -2300,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-stage0"
-version = "0.0.1-rc.21"
+version = "0.0.1-rc.22"
 dependencies = [
  "anyhow",
  "clap",
@@ -2315,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-stage0-generator"
-version = "0.0.1-rc.21"
+version = "0.0.1-rc.22"
 dependencies = [
  "abl-exorcist-assembler",
  "dtoolkit",
@@ -2329,7 +2329,7 @@ dependencies = [
 
 [[package]]
 name = "fastboop-web"
-version = "0.0.1-rc.21"
+version = "0.0.1-rc.22"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7638,7 +7638,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "ui"
-version = "0.0.1-rc.21"
+version = "0.0.1-rc.22"
 dependencies = [
  "dioxus",
  "fastboop-core",
