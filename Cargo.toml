@@ -37,28 +37,28 @@ fastboop-environment-std = { path = "crates/fastboop-environment-std" }
 fastboop-environment-web = { path = "crates/fastboop-environment-web" }
 fastboop-schema = { path = "crates/fastboop-schema", default-features = false }
 fastboop-smoo-gibblox = { path = "crates/fastboop-smoo-gibblox" }
-gibblox-android-sparse = "0.0.2-rc.4"
-gibblox-blockreader-messageport = "0.0.2-rc.4"
-gibblox-cache = "0.0.2-rc.4"
-gibblox-cache-store-opfs = "0.0.2-rc.4"
-gibblox-cache-store-std = "0.0.2-rc.4"
-gibblox-casync = "0.0.2-rc.4"
-gibblox-casync-std = "0.0.2-rc.4"
-gibblox-casync-web = "0.0.2-rc.4"
-gibblox-core = { version = "0.0.2-rc.4", default-features = false }
-gibblox-ext4 = "0.0.2-rc.4"
-gibblox-file = "0.0.2-rc.4"
-gibblox-http = { version = "0.0.2-rc.4", default-features = false }
-gibblox-mbr = "0.0.2-rc.4"
-gibblox-optimizer = "0.0.2-rc.4"
-gibblox-pipeline = { version = "0.0.2-rc.4", default-features = false }
-gibblox-tar = "0.0.2-rc.4"
-gibblox-web-worker = "0.0.2-rc.4"
-gibblox-xz = "0.0.2-rc.4"
-gibblox-zip = "0.0.2-rc.4"
-gobblytes-core = "0.0.2-rc.4"
-gobblytes-erofs = "0.0.2-rc.4"
-gobblytes-fat = "0.0.2-rc.4"
+gibblox-android-sparse = "0.0.2-rc.3"
+gibblox-blockreader-messageport = "0.0.2-rc.3"
+gibblox-cache = "0.0.2-rc.3"
+gibblox-cache-store-opfs = "0.0.2-rc.3"
+gibblox-cache-store-std = "0.0.2-rc.3"
+gibblox-casync = "0.0.2-rc.3"
+gibblox-casync-std = "0.0.2-rc.3"
+gibblox-casync-web = "0.0.2-rc.3"
+gibblox-core = { version = "0.0.2-rc.3", default-features = false }
+gibblox-ext4 = "0.0.2-rc.3"
+gibblox-file = "0.0.2-rc.3"
+gibblox-http = { version = "0.0.2-rc.3", default-features = false }
+gibblox-mbr = "0.0.2-rc.3"
+gibblox-optimizer = "0.0.2-rc.3"
+gibblox-pipeline = { version = "0.0.2-rc.3", default-features = false }
+gibblox-tar = "0.0.2-rc.3"
+gibblox-web-worker = "0.0.2-rc.3"
+gibblox-xz = "0.0.2-rc.3"
+gibblox-zip = "0.0.2-rc.3"
+gobblytes-core = "0.0.2-rc.3"
+gobblytes-erofs = "0.0.2-rc.3"
+gobblytes-fat = "0.0.2-rc.3"
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 tokio = "1.48.0"
