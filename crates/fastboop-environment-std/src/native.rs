@@ -593,9 +593,8 @@ async fn build_stage0_artifacts(
         kernel_modules,
         inject_mac: profile_stage0.inject_mac.clone(),
         kernel_override: profile_source_overrides.kernel_override,
-        abl_exorcist: abl_exorcist_image.map(|image| fastboop_stage0_generator::Stage0AblExorcist {
-            image,
-        }),
+        abl_exorcist: abl_exorcist_image
+            .map(|image| fastboop_stage0_generator::Stage0AblExorcist { image }),
         dtb_override: cli_dtb_override.or(profile_source_overrides.dtb_override),
         dtbo_overlays,
         enable_serial: config.serial,
