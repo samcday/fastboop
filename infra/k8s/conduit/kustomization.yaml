@@ -3,5 +3,4 @@ kind: Kustomization
 namespace: fastboop
 resources:
   - conduit.yaml
-  - recovery-secret.yaml
   - well-known.yaml
