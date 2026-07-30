@@ -4,11 +4,9 @@ namespace: fastboop
 configurations:
   - kustomizeconfig.yaml
 resources:
-  - repositories.yaml
   - frontdoor
   - frontdoor-edge
   - image-automation
-  - conduit
   - gha-proxy
 configMapGenerator:
   - name: live-version
