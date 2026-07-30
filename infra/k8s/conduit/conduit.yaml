@@ -40,6 +40,11 @@ spec:
       type: Recreate
     env:
       CONDUIT_CONFIG: /etc/conduit/conduit.toml
+    envValueFrom:
+      CONDUIT_EMERGENCY_PASSWORD:
+        secretKeyRef:
+          name: conduit-recovery
+          key: emergency-password
     image:
       repository: docker.io/matrixconduit/matrix-conduit
       tag: latest
