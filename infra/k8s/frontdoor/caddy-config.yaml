@@ -19,11 +19,6 @@ data:
         reverse_proxy gha-proxy.fastboop.svc.cluster.local:80
       }
 
-      @matrix_well_known path /.well-known/matrix /.well-known/matrix/*
-      handle @matrix_well_known {
-        reverse_proxy matrix-well-known.fastboop.svc.cluster.local:80
-      }
-
       @device_permissions path /device-permissions /device-permissions/*
       handle @device_permissions {
         redir https://docs.fastboop.win/user/device-permissions/ 308
@@ -32,8 +27,4 @@ data:
       handle {
         redir https://www.fastboop.win{uri} 308
       }
-    }
-
-    http://matrix.fastboop.win {
-      reverse_proxy conduit-generic.fastboop.svc.cluster.local:80
     }
