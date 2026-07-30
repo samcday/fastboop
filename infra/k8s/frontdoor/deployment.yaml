@@ -9,6 +9,8 @@ spec:
       app.kubernetes.io/name: frontdoor
   template:
     metadata:
+      annotations:
+        fastboop.win/config-revision: remove-matrix
       labels:
         app.kubernetes.io/name: frontdoor
     spec:
