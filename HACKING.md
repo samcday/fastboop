@@ -71,6 +71,11 @@ or removing gibblox/smoo crates from the fastboop graph.
 
 ## Contributor workflow
 
+For PocketFed kernel and userspace trials, start with
+[`docs/dev/KERNEL_TRIALS.md`](docs/dev/KERNEL_TRIALS.md). It describes the local
+kboop pathway, reusable userspace fixtures, and the limits of USB-backed root
+storage for hardware testing.
+
 - Read `AGENTS.md` and use its read-on-demand doc index.
 - Keep diffs small and reviewable.
 - Prefer async-first and avoid blocking unless justified.
