@@ -7,10 +7,13 @@ result before promoting a candidate through COPR and the published image
 pipeline. Public CI, registry publication, and installation images are not
 prerequisites for these disposable trials.
 
-With sibling checkouts under `~/src`, start with
-`../pocketfed/tools/liveboot/README.md` in
-[PocketFed](https://github.com/samcday/pocketfed) and
-`../kboop/KERNEL-BUNDLES.md` in [kboop](https://github.com/samcday/kboop).
+The integration is under review in
+[PocketFed #61](https://github.com/samcday/pocketfed/pull/61) and
+[kboop #1](https://github.com/samcday/kboop/pull/1). Start with the
+[PocketFed liveboot guide](https://github.com/samcday/pocketfed/blob/codex/local-liveboot-trials/tools/liveboot/README.md)
+and [kboop kernel bundle contract](https://github.com/samcday/kboop/blob/codex/liveboot-review/KERNEL-BUNDLES.md)
+on those branches. With sibling checkouts under `~/src`, their paths are
+`../pocketfed/tools/liveboot/README.md` and `../kboop/KERNEL-BUNDLES.md`.
 PocketFed owns the device policy, fixture export, run records, UART ownership,
 and recovery commands. Its integrated runner currently calls the development
 kboop CLI and kboop-init; use the versions and arguments documented there.
