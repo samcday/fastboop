@@ -1066,9 +1066,9 @@ rootfs:
         );
 
         let stream = encode_channel_head(&[
-            ChannelHeadRecord::DeviceProfile(device),
-            ChannelHeadRecord::BootProfile(first),
-            ChannelHeadRecord::BootProfile(second),
+            ChannelHeadRecord::DeviceProfile(Box::new(device)),
+            ChannelHeadRecord::BootProfile(Box::new(first)),
+            ChannelHeadRecord::BootProfile(Box::new(second)),
         ])
         .unwrap();
         let stream_len = stream.len() as u64;
@@ -1100,7 +1100,8 @@ rootfs:
 "#,
         );
 
-        let indexed = encode_channel_head(&[ChannelHeadRecord::BootProfile(profile)]).unwrap();
+        let indexed =
+            encode_channel_head(&[ChannelHeadRecord::BootProfile(Box::new(profile))]).unwrap();
 
         // Append a fake EROFS body at the tail
         let mut trailing = vec![0u8; 2048];

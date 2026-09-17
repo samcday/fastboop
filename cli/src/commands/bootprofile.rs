@@ -404,6 +404,47 @@ rootfs:
     }
 
     #[test]
+    fn boot_profile_manifest_without_new_fields_defaults_yaml() {
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: local-erofs
+rootfs:
+  erofs:
+    file: ./images/rootfs.ero
+"#,
+        )
+        .expect("parse manifest");
+
+        assert_eq!(manifest.initrd, None);
+        assert_eq!(manifest.boot, fastboop_core::BootStrategy::Stage0);
+    }
+
+    #[test]
+    fn boot_profile_manifest_parses_initrd_and_strategy_yaml() {
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: pocketfed-liveboot-v2
+rootfs:
+  ext4:
+    file: ./images/rootfs.img
+kernel:
+  path: /vmlinuz
+  ext4:
+    file: ./images/kernel.img
+initrd:
+  path: /initrd.img
+  ext4:
+    file: ./images/initrd.img
+boot: initrd
+"#,
+        )
+        .expect("parse manifest");
+
+        assert!(manifest.initrd.is_some());
+        assert_eq!(manifest.boot, fastboop_core::BootStrategy::Initrd);
+    }
+
+    #[test]
     fn parses_stage0_kernel_modules_and_device_inject_mac_yaml() {
         let manifest: BootProfileManifest = serde_yaml::from_str(
             r#"

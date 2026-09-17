@@ -240,6 +240,9 @@ mod tests {
                         base: None,
                         kernel_offset: None,
                         dtb_offset: None,
+                        ramdisk_offset: None,
+                        second_offset: None,
+                        tags_offset: None,
                         limits: Some(BootLimits {
                             max_kernel_bytes: None,
                             max_initrd_bytes: None,
@@ -252,6 +255,7 @@ mod tests {
                         cmdline_append: None,
                     },
                 },
+                abl_exorcist: None,
             },
         }
     }

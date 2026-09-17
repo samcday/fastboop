@@ -367,4 +367,69 @@ stage0: {}
             "expected non-tty stdout to be allowed"
         );
     }
+
+    #[test]
+    fn parses_abl_exorcist_and_ramdisk_offset_yaml() {
+        let yaml = r#"
+id: sargo
+display_name: Google Pixel 3a
+devicetree_name: google/sargo
+match:
+  - fastboot:
+      vid: 0x18d1
+      pid: 0x4ee1
+probe: []
+boot:
+  abl_exorcist:
+    mode: ramdisk
+    shim: abl-exorcist.bin
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 4096
+      ramdisk_offset: 0x04000000
+      kernel:
+        encoding: image
+"#;
+
+        let profile: DeviceProfile = serde_yaml::from_str(yaml).expect("parse device profile");
+        assert_eq!(
+            profile.boot.abl_exorcist,
+            Some(fastboop_core::AblExorcist {
+                mode: fastboop_core::AblExorcistMode::Ramdisk,
+                shim: Some("abl-exorcist.bin".to_string()),
+            })
+        );
+        assert_eq!(
+            profile.boot.fastboot_boot.android_bootimg.ramdisk_offset,
+            Some(0x0400_0000)
+        );
+    }
+
+    #[test]
+    fn device_profile_without_new_fields_defaults_to_none_yaml() {
+        let yaml = r#"
+id: dev-one
+devicetree_name: oneplus,enchilada
+match:
+  - fastboot:
+      vid: 0x18d1
+      pid: 0x4ee1
+probe: []
+boot:
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 4096
+      kernel:
+        encoding: image
+"#;
+
+        let profile: DeviceProfile = serde_yaml::from_str(yaml).expect("parse device profile");
+        assert_eq!(profile.boot.abl_exorcist, None);
+        assert_eq!(
+            profile.boot.fastboot_boot.android_bootimg.ramdisk_offset,
+            None
+        );
+    }
 }

@@ -8,8 +8,8 @@ use fastboop_core::{
     BootProfileArtifactSourceMbrSource, BootProfileCodecError, BootProfileDevice,
     BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
     BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileRootfsFilesystemSource,
-    BootProfileRootfsOstreeSource, BootProfileStage0, BootProfileValidationError, InjectMac,
-    decode_boot_profile, decode_boot_profile_prefix, encode_boot_profile,
+    BootProfileRootfsOstreeSource, BootProfileStage0, BootProfileValidationError, BootStrategy,
+    InjectMac, decode_boot_profile, decode_boot_profile_prefix, encode_boot_profile,
     resolve_effective_boot_profile_stage0, validate_boot_profile,
 };
 use gibblox_pipeline::PipelineSourceContent;
@@ -21,6 +21,27 @@ fn boot_profile_roundtrip_binary_codec() {
     let encoded = encode_boot_profile(&profile).expect("encode boot profile");
     let decoded = decode_boot_profile(&encoded).expect("decode boot profile");
     assert_eq!(decoded, profile);
+}
+
+#[test]
+fn boot_profile_roundtrips_initrd_and_boot_strategy_binary_codec() {
+    let mut profile = sample_profile();
+    profile.initrd = Some(fastboop_core::BootProfileArtifactPathSource {
+        path: "/initrd.img".to_string(),
+        source: BootProfileRootfs::Erofs(BootProfileRootfsErofsSource {
+            erofs: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
+                file: "./initrd.img".to_string(),
+                content: None,
+            }),
+        }),
+    });
+    profile.boot = BootStrategy::Initrd;
+
+    let encoded = encode_boot_profile(&profile).expect("encode boot profile");
+    let decoded = decode_boot_profile(&encoded).expect("decode boot profile");
+    assert_eq!(decoded, profile);
+    assert_eq!(decoded.boot, BootStrategy::Initrd);
+    assert!(decoded.initrd.is_some());
 }
 
 #[test]
@@ -48,6 +69,8 @@ fn boot_profile_ext4_roundtrip_binary_codec() {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
@@ -103,6 +126,8 @@ fn rejects_casync_archive_indexes() {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
@@ -128,6 +153,8 @@ fn accepts_casync_blob_indexes() {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
@@ -167,6 +194,8 @@ fn accepts_gpt_over_casync_pipeline() {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
@@ -193,6 +222,8 @@ fn accepts_ostree_over_erofs_rootfs() {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
@@ -220,6 +251,8 @@ fn rejects_ostree_over_fat_rootfs_for_stage0_switchroot() {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
@@ -257,6 +290,8 @@ fn rejects_gpt_step_without_selector() {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
@@ -295,6 +330,8 @@ fn rejects_mbr_step_without_selector() {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
@@ -322,6 +359,8 @@ fn accepts_file_artifact_source() {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
@@ -343,6 +382,8 @@ fn accepts_ext4_rootfs_source() {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
@@ -364,6 +405,8 @@ fn rejects_fat_rootfs_for_stage0_switchroot() {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: Vec::new(),
         extra_cmdline: None,
@@ -425,6 +468,8 @@ fn sample_profile() -> BootProfile {
             }),
         }),
         kernel: None,
+        initrd: None,
+        boot: fastboop_core::BootStrategy::Stage0,
         dtbs: None,
         dt_overlays: vec![vec![0xAA]],
         extra_cmdline: Some("selinux=0".to_string()),
