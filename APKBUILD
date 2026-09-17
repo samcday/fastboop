@@ -15,7 +15,12 @@ makedepends="
 	rust"
 
 _gitrev=main
-source="https://github.com/samcday/fastboop/archive/$_gitrev/fastboop-$_gitrev.tar.gz"
+# Pinned to the gibblox/smoo submodule revisions recorded in git.
+_gibbloxrev=777a8781547a6d1941e880022a61feb1f4ea5dfe
+_smoorev=3fdcc7b9fa1585d3a725e20bb777113b302ed5eb
+source="https://github.com/samcday/fastboop/archive/$_gitrev/fastboop-$_gitrev.tar.gz
+	https://github.com/samcday/gibblox/archive/$_gibbloxrev/gibblox-$_gibbloxrev.tar.gz
+	https://github.com/samcday/smoo/archive/$_smoorev/smoo-$_smoorev.tar.gz"
 builddir="$srcdir/fastboop-${_gitrev#v}"
 options="net"
 
@@ -30,6 +35,13 @@ fi
 
 prepare() {
 	default_prepare
+
+	# Archive tarballs carry empty placeholders for the gibblox/smoo submodules,
+	# which [patch.crates-io] resolves as path dependencies. Fill them in.
+	rm -rf "$builddir"/gibblox "$builddir"/smoo
+	mv "$srcdir"/gibblox-"$_gibbloxrev" "$builddir"/gibblox
+	mv "$srcdir"/smoo-"$_smoorev" "$builddir"/smoo
+
 	cargo fetch --locked $_cargo_target_arg
 }
 

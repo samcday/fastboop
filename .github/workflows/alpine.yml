@@ -58,6 +58,15 @@ jobs:
           fi
         shell: alpine.sh --root {0}
 
+      - name: pin submodule revisions in APKBUILD
+        run: |
+          set -euo pipefail
+          sed -i \
+            -e "s/^_gibbloxrev=.*/_gibbloxrev=$(git rev-parse 'HEAD:gibblox')/" \
+            -e "s/^_smoorev=.*/_smoorev=$(git rev-parse 'HEAD:smoo')/" \
+            APKBUILD
+          grep -E '^_(gibblox|smoo)rev=' APKBUILD
+
       - name: set git revision for prerelease builds
         if: github.event_name != 'workflow_call' || inputs.release_mode != 'tag'
         run: |
