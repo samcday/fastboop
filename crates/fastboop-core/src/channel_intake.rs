@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -1103,11 +1104,11 @@ fn record_slice<'a>(
 
 enum DecodedIndexEntry {
     Boot {
-        profile: BootProfile,
+        profile: Box<BootProfile>,
         end: u64,
     },
     Dev {
-        profile: DeviceProfile,
+        profile: Box<DeviceProfile>,
         end: u64,
     },
     Hints {
@@ -1193,11 +1194,11 @@ async fn read_indexed_channel_stream_head_from_reader<R: BlockReader + ?Sized>(
     for decoded in results {
         match decoded {
             DecodedIndexEntry::Boot { profile, end } => {
-                out.boot_profiles.push(profile);
+                out.boot_profiles.push(*profile);
                 last_end = end;
             }
             DecodedIndexEntry::Dev { profile, end } => {
-                out.dev_profiles.push(profile);
+                out.dev_profiles.push(*profile);
                 last_end = end;
             }
             DecodedIndexEntry::Hints { record, end } => {
@@ -1270,7 +1271,10 @@ async fn decode_indexed_entry_from_reader<R: BlockReader + ?Sized>(
                     ),
                 })
             })?;
-            Ok(DecodedIndexEntry::Boot { profile, end })
+            Ok(DecodedIndexEntry::Boot {
+                profile: Box::new(profile),
+                end,
+            })
         }
         ChannelIndexEntryV0::DeviceProfile { offset, size, id } => {
             let absolute = base_offset
@@ -1314,7 +1318,10 @@ async fn decode_indexed_entry_from_reader<R: BlockReader + ?Sized>(
                     },
                 ));
             }
-            Ok(DecodedIndexEntry::Dev { profile, end })
+            Ok(DecodedIndexEntry::Dev {
+                profile: Box::new(profile),
+                end,
+            })
         }
         ChannelIndexEntryV0::PipelineHints {
             offset,

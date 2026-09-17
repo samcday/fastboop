@@ -491,12 +491,16 @@ mod tests {
                         base: None,
                         kernel_offset: None,
                         dtb_offset: None,
+                        ramdisk_offset: None,
+                        second_offset: None,
+                        tags_offset: None,
                         limits: None,
                         kernel: AndroidKernel { encoding },
                         initrd: None,
                         cmdline_append: None,
                     },
                 },
+                abl_exorcist: None,
             },
         }
     }

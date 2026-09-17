@@ -7,12 +7,13 @@ use gibblox_pipeline::bin::PipelineSourceBin;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Boot, BootProfile, BootProfileArtifactPathSource, BootProfileArtifactSource, BootProfileDevice,
-    BootProfileDeviceStage0, BootProfileRootfs, BootProfileRootfsErofsSource,
-    BootProfileRootfsExt4Source, BootProfileRootfsFatSource, BootProfileRootfsFilesystemSource,
-    BootProfileRootfsOstreeSource, BootProfileStage0, DeviceProfile, ExistsFlag, FastbootGetvarEq,
-    FastbootGetvarExists, FastbootGetvarNotEq, FastbootGetvarNotExists, FastbootGetvarStartsWith,
-    InjectMac, MatchRule, NotExistsFlag, ProbeStep,
+    AblExorcist, AblExorcistMode, Boot, BootPayload, BootProfile, BootProfileArtifactPathSource,
+    BootProfileArtifactSource, BootProfileDevice, BootProfileDeviceStage0, BootProfileRootfs,
+    BootProfileRootfsErofsSource, BootProfileRootfsExt4Source, BootProfileRootfsFatSource,
+    BootProfileRootfsFilesystemSource, BootProfileRootfsOstreeSource, BootProfileStage0,
+    BootStrategy, DeviceProfile, ExistsFlag, FastbootGetvarEq, FastbootGetvarExists,
+    FastbootGetvarNotEq, FastbootGetvarNotExists, FastbootGetvarStartsWith, InjectMac, MatchRule,
+    NotExistsFlag, ProbeStep,
 };
 
 // v0 wire formats are intentionally unstable while fastboop is unreleased.
@@ -31,6 +32,8 @@ pub struct BootProfileBin {
     pub display_name: Option<String>,
     pub rootfs: BootProfileRootfsBin,
     pub kernel: Option<BootProfileArtifactPathSourceBin>,
+    pub initrd: Option<BootProfileArtifactPathSourceBin>,
+    pub boot: BootStrategy,
     pub dtbs: Option<BootProfileArtifactPathSourceBin>,
     pub dt_overlays: Vec<Vec<u8>>,
     pub extra_cmdline: Option<String>,
@@ -92,7 +95,19 @@ pub struct DeviceProfileBin {
     pub devicetree_name: String,
     pub r#match: Vec<MatchRule>,
     pub probe: Vec<ProbeStepBin>,
-    pub boot: Boot,
+    pub boot: BootBin,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BootBin {
+    pub fastboot_boot: BootPayload,
+    pub abl_exorcist: Option<AblExorcistBin>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AblExorcistBin {
+    pub mode: AblExorcistMode,
+    pub shim: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -118,7 +133,7 @@ impl From<DeviceProfile> for DeviceProfileBin {
             devicetree_name: profile.devicetree_name,
             r#match: profile.r#match,
             probe: profile.probe.into_iter().map(ProbeStepBin::from).collect(),
-            boot: profile.boot,
+            boot: BootBin::from(profile.boot),
         }
     }
 }
@@ -131,7 +146,43 @@ impl From<DeviceProfileBin> for DeviceProfile {
             devicetree_name: profile.devicetree_name,
             r#match: profile.r#match,
             probe: profile.probe.into_iter().map(ProbeStep::from).collect(),
-            boot: profile.boot,
+            boot: Boot::from(profile.boot),
+        }
+    }
+}
+
+impl From<Boot> for BootBin {
+    fn from(boot: Boot) -> Self {
+        Self {
+            fastboot_boot: boot.fastboot_boot,
+            abl_exorcist: boot.abl_exorcist.map(AblExorcistBin::from),
+        }
+    }
+}
+
+impl From<BootBin> for Boot {
+    fn from(boot: BootBin) -> Self {
+        Self {
+            fastboot_boot: boot.fastboot_boot,
+            abl_exorcist: boot.abl_exorcist.map(AblExorcist::from),
+        }
+    }
+}
+
+impl From<AblExorcist> for AblExorcistBin {
+    fn from(abl_exorcist: AblExorcist) -> Self {
+        Self {
+            mode: abl_exorcist.mode,
+            shim: abl_exorcist.shim,
+        }
+    }
+}
+
+impl From<AblExorcistBin> for AblExorcist {
+    fn from(abl_exorcist: AblExorcistBin) -> Self {
+        Self {
+            mode: abl_exorcist.mode,
+            shim: abl_exorcist.shim,
         }
     }
 }
@@ -211,6 +262,8 @@ impl From<BootProfile> for BootProfileBin {
             display_name: profile.display_name,
             rootfs: BootProfileRootfsBin::from(profile.rootfs),
             kernel: profile.kernel.map(BootProfileArtifactPathSourceBin::from),
+            initrd: profile.initrd.map(BootProfileArtifactPathSourceBin::from),
+            boot: profile.boot,
             dtbs: profile.dtbs.map(BootProfileArtifactPathSourceBin::from),
             dt_overlays: profile.dt_overlays,
             extra_cmdline: profile.extra_cmdline,
@@ -226,6 +279,8 @@ impl From<BootProfileBin> for BootProfile {
             display_name: profile.display_name,
             rootfs: BootProfileRootfs::from(profile.rootfs),
             kernel: profile.kernel.map(BootProfileArtifactPathSource::from),
+            initrd: profile.initrd.map(BootProfileArtifactPathSource::from),
+            boot: profile.boot,
             dtbs: profile.dtbs.map(BootProfileArtifactPathSource::from),
             dt_overlays: profile.dt_overlays,
             extra_cmdline: profile.extra_cmdline,
