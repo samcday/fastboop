@@ -1244,6 +1244,11 @@ where
 pub struct BootProfileSourceOverrides {
     pub kernel_override: Option<Stage0KernelOverride>,
     pub dtb_override: Option<Vec<u8>>,
+    /// The initrd named by the boot profile, for the `initrd` boot strategy.
+    ///
+    /// Unlike the kernel, this is only meaningful when the profile asks to boot
+    /// the image's own initramfs; a stage0 boot generates its own.
+    pub initrd_override: Option<Vec<u8>>,
 }
 
 impl BootProfileSourceOverrides {
@@ -1251,6 +1256,7 @@ impl BootProfileSourceOverrides {
         Self {
             kernel_override: None,
             dtb_override: None,
+            initrd_override: None,
         }
     }
 }
@@ -1398,9 +1404,33 @@ where
         None
     };
 
+    let initrd_override = if let Some(initrd_source) = boot_profile.initrd.as_ref() {
+        let initrd_path = non_empty_profile_path(initrd_source.path.as_str(), "initrd.path")?;
+        let source_reader = opener
+            .open_boot_profile_artifact_source(initrd_source.artifact_source())
+            .await
+            .map_err(|source| ProfileSourceOverrideError::OpenArtifactSource { source })?;
+        let source_rootfs =
+            SourceRootfs::open_boot_profile_source(&initrd_source.source, source_reader)
+                .await
+                .map_err(|source| ProfileSourceOverrideError::OpenRootfs { source })?;
+        Some(
+            source_rootfs
+                .read_all(initrd_path)
+                .await
+                .map_err(|source| ProfileSourceOverrideError::ReadPath {
+                    path: initrd_path.to_string(),
+                    source,
+                })?,
+        )
+    } else {
+        None
+    };
+
     Ok(BootProfileSourceOverrides {
         kernel_override,
         dtb_override,
+        initrd_override,
     })
 }
 
