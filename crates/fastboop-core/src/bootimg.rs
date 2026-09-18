@@ -181,16 +181,17 @@ fn compute_addrs(boot: &AndroidBootImage) -> Result<(u32, u32, u32, u32), BootIm
     let ramdisk_offset = boot.ramdisk_offset.unwrap_or(DEFAULT_RAMDISK_OFFSET);
     let second_offset = boot.second_offset.unwrap_or(DEFAULT_SECOND_OFFSET);
     let tags_offset = boot.tags_offset.unwrap_or(DEFAULT_TAGS_OFFSET);
-    let kernel_addr = base + kernel_offset;
-    let ramdisk_addr = base + ramdisk_offset;
-    let second_addr = base + second_offset;
-    let tags_addr = base + tags_offset;
+    let addr = |offset: u64, name: &'static str| -> Result<u32, BootImageError> {
+        base.checked_add(offset)
+            .and_then(|addr| u32::try_from(addr).ok())
+            .ok_or(BootImageError::AddressOverflow(name))
+    };
 
     Ok((
-        u32::try_from(kernel_addr).map_err(|_| BootImageError::AddressOverflow("kernel"))?,
-        u32::try_from(ramdisk_addr).map_err(|_| BootImageError::AddressOverflow("ramdisk"))?,
-        u32::try_from(second_addr).map_err(|_| BootImageError::AddressOverflow("second"))?,
-        u32::try_from(tags_addr).map_err(|_| BootImageError::AddressOverflow("tags"))?,
+        addr(kernel_offset, "kernel")?,
+        addr(ramdisk_offset, "ramdisk")?,
+        addr(second_offset, "second")?,
+        addr(tags_offset, "tags")?,
     ))
 }
 
@@ -329,6 +330,18 @@ mod tests {
         assert_eq!(read_u32(&image, 20), 0x0100_0000);
         assert_eq!(read_u32(&image, 28), 0x00F0_0000);
         assert_eq!(read_u32(&image, 32), 0x0000_0100);
+    }
+
+    #[test]
+    fn a_base_plus_offset_that_wraps_u64_is_an_overflow_not_zero() {
+        let mut bootimg = bootimg_with_defaults();
+        bootimg.base = Some(u64::MAX);
+        bootimg.ramdisk_offset = Some(1);
+        let profile = profile_with_bootimg(bootimg);
+
+        let err = build_android_bootimg(&profile, &[0xAA; 16], &[0xBB; 16], None, "")
+            .expect_err("wrapping base + offset must not become address 0");
+        assert!(matches!(err, BootImageError::AddressOverflow(_)), "{err}");
     }
 
     #[test]
