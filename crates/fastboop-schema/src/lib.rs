@@ -122,6 +122,30 @@ pub struct NotExistsFlag;
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct Boot {
     pub fastboot_boot: BootPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abl_exorcist: Option<AblExorcist>,
+}
+
+/// abl-exorcist shim configuration for a device profile.
+///
+/// Resolution of `shim` is the caller's business; this schema only records that
+/// the device needs the shim and which ABLX mode it operates in.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AblExorcist {
+    pub mode: AblExorcistMode,
+    /// Where the shim binary comes from. Resolution is the caller's business.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shim: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum AblExorcistMode {
+    KernelWrap,
+    Ramdisk,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -151,6 +175,12 @@ pub struct AndroidBootImage {
     pub kernel_offset: Option<u64>,
     #[serde(default)]
     pub dtb_offset: Option<u64>,
+    #[serde(default)]
+    pub ramdisk_offset: Option<u64>,
+    #[serde(default)]
+    pub second_offset: Option<u64>,
+    #[serde(default)]
+    pub tags_offset: Option<u64>,
     #[serde(default)]
     pub limits: Option<BootLimits>,
     pub kernel: AndroidKernel,
@@ -249,6 +279,10 @@ pub struct BootProfileManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel: Option<BootProfileArtifactPathSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd: Option<BootProfileArtifactPathSource>,
+    #[serde(default, skip_serializing_if = "BootStrategy::is_default")]
+    pub boot: BootStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dtbs: Option<BootProfileArtifactPathSource>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dt_overlays: Vec<String>,
@@ -256,6 +290,24 @@ pub struct BootProfileManifest {
     pub extra_cmdline: Option<String>,
     #[serde(default, skip_serializing_if = "BootProfileManifestStage0::is_empty")]
     pub stage0: BootProfileManifestStage0,
+}
+
+/// How a boot profile produces the boot image it hands to fastboot.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum BootStrategy {
+    /// Generate a stage0 initrd (today's behaviour).
+    #[default]
+    Stage0,
+    /// Use the profile's own kernel and initrd artifacts.
+    Initrd,
+}
+
+impl BootStrategy {
+    pub fn is_default(&self) -> bool {
+        matches!(self, Self::Stage0)
+    }
 }
 
 impl BootProfileManifest {
@@ -292,6 +344,8 @@ impl BootProfileManifest {
             display_name: self.display_name.clone(),
             rootfs: self.rootfs.clone(),
             kernel: self.kernel.clone(),
+            initrd: self.initrd.clone(),
+            boot: self.boot,
             dtbs: self.dtbs.clone(),
             dt_overlays,
             extra_cmdline: self.extra_cmdline.clone(),
@@ -362,6 +416,10 @@ pub struct BootProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel: Option<BootProfileArtifactPathSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd: Option<BootProfileArtifactPathSource>,
+    #[serde(default, skip_serializing_if = "BootStrategy::is_default")]
+    pub boot: BootStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dtbs: Option<BootProfileArtifactPathSource>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dt_overlays: Vec<Vec<u8>>,
@@ -405,6 +463,8 @@ impl BootProfile {
             display_name: self.display_name.clone(),
             rootfs: self.rootfs.clone(),
             kernel: self.kernel.clone(),
+            initrd: self.initrd.clone(),
+            boot: self.boot,
             dtbs: self.dtbs.clone(),
             dt_overlays,
             extra_cmdline: self.extra_cmdline.clone(),
@@ -578,3 +638,67 @@ pub struct BootProfileRootfsFatSource {
 }
 
 pub mod bin;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    fn file_artifact(path: &str) -> BootProfileArtifactPathSource {
+        BootProfileArtifactPathSource {
+            path: path.to_string(),
+            source: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+                ext4: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
+                    file: path.to_string(),
+                    content: None,
+                }),
+            }),
+        }
+    }
+
+    fn rootfs() -> BootProfileRootfs {
+        BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+            ext4: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
+                file: "./rootfs.img".to_string(),
+                content: None,
+            }),
+        })
+    }
+
+    #[test]
+    fn compile_decompile_roundtrips_initrd_and_boot_strategy() {
+        let manifest = BootProfileManifest {
+            id: "liveboot-v2".to_string(),
+            display_name: None,
+            rootfs: rootfs(),
+            kernel: Some(file_artifact("/vmlinuz")),
+            initrd: Some(file_artifact("/initrd.img")),
+            boot: BootStrategy::Initrd,
+            dtbs: None,
+            dt_overlays: Vec::new(),
+            extra_cmdline: None,
+            stage0: BootProfileManifestStage0::default(),
+        };
+
+        let profile = manifest
+            .compile_dt_overlays(|_| Ok::<Vec<u8>, ()>(Vec::new()))
+            .expect("compile overlays");
+        assert_eq!(profile.initrd, manifest.initrd);
+        assert_eq!(profile.boot, BootStrategy::Initrd);
+        assert_eq!(profile.kernel, manifest.kernel);
+
+        let round_tripped = profile
+            .decompile_dt_overlays(|_| Ok::<String, ()>(String::new()))
+            .expect("decompile overlays");
+        assert_eq!(round_tripped.initrd, manifest.initrd);
+        assert_eq!(round_tripped.boot, BootStrategy::Initrd);
+        assert_eq!(round_tripped.kernel, manifest.kernel);
+    }
+
+    #[test]
+    fn boot_strategy_default_is_stage0() {
+        assert!(BootStrategy::default().is_default());
+        assert!(BootStrategy::Stage0.is_default());
+        assert!(!BootStrategy::Initrd.is_default());
+    }
+}

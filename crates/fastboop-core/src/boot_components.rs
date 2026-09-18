@@ -12,7 +12,8 @@ use crate::builtin::builtin_profiles;
 use crate::fastboot::{FastbootProtocolError, ProbeError};
 use crate::{
     BootProfile, BootProfileArtifactSource, BootProfileRootfs, BootProfileRootfsFilesystemSource,
-    CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamKind, DeviceProfile, classify_channel_prefix,
+    BootStrategy, CHANNEL_SNIFF_PREFIX_LEN, ChannelStreamKind, DeviceProfile,
+    classify_channel_prefix,
 };
 use async_trait::async_trait;
 use gibblox_core::{
@@ -1244,6 +1245,11 @@ where
 pub struct BootProfileSourceOverrides {
     pub kernel_override: Option<Stage0KernelOverride>,
     pub dtb_override: Option<Vec<u8>>,
+    /// The initrd named by the boot profile, for the `initrd` boot strategy.
+    ///
+    /// Unlike the kernel, this is only meaningful when the profile asks to boot
+    /// the image's own initramfs; a stage0 boot generates its own.
+    pub initrd_override: Option<Vec<u8>>,
 }
 
 impl BootProfileSourceOverrides {
@@ -1251,6 +1257,7 @@ impl BootProfileSourceOverrides {
         Self {
             kernel_override: None,
             dtb_override: None,
+            initrd_override: None,
         }
     }
 }
@@ -1398,9 +1405,39 @@ where
         None
     };
 
+    // Only the initrd strategy boots the profile's own initrd; stage0 builds
+    // its own, so a listed but unreadable initrd must not fail a stage0 boot.
+    let initrd_source = match boot_profile.boot {
+        BootStrategy::Initrd => boot_profile.initrd.as_ref(),
+        BootStrategy::Stage0 => None,
+    };
+    let initrd_override = if let Some(initrd_source) = initrd_source {
+        let initrd_path = non_empty_profile_path(initrd_source.path.as_str(), "initrd.path")?;
+        let source_reader = opener
+            .open_boot_profile_artifact_source(initrd_source.artifact_source())
+            .await
+            .map_err(|source| ProfileSourceOverrideError::OpenArtifactSource { source })?;
+        let source_rootfs =
+            SourceRootfs::open_boot_profile_source(&initrd_source.source, source_reader)
+                .await
+                .map_err(|source| ProfileSourceOverrideError::OpenRootfs { source })?;
+        Some(
+            source_rootfs
+                .read_all(initrd_path)
+                .await
+                .map_err(|source| ProfileSourceOverrideError::ReadPath {
+                    path: initrd_path.to_string(),
+                    source,
+                })?,
+        )
+    } else {
+        None
+    };
+
     Ok(BootProfileSourceOverrides {
         kernel_override,
         dtb_override,
+        initrd_override,
     })
 }
 
@@ -1631,6 +1668,134 @@ pub fn join_cmdline(left: Option<&str>, right: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    /// The resolver under test never truly waits, so a busy poll is enough.
+    fn block_on<F: Future>(mut fut: F) -> F::Output {
+        fn raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(_: *const ()) -> RawWaker {
+                raw_waker()
+            }
+            static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(core::ptr::null(), &VTABLE)
+        }
+
+        let waker = unsafe { Waker::from_raw(raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = unsafe { Pin::new_unchecked(&mut fut) };
+        loop {
+            if let Poll::Ready(val) = fut.as_mut().poll(&mut cx) {
+                return val;
+            }
+        }
+    }
+
+    /// An opener whose every artifact fails to open.
+    struct FailingOpener;
+
+    impl BootProfileArtifactSourceOpener for FailingOpener {
+        type Error = &'static str;
+
+        async fn open_boot_profile_artifact_source(
+            &mut self,
+            _source: &BootProfileArtifactSource,
+        ) -> Result<Arc<dyn BlockReader>, Self::Error> {
+            Err("unreadable")
+        }
+    }
+
+    /// Never reached: the failing opener stops the resolver first.
+    #[derive(Default)]
+    struct UnreachableFactory;
+
+    impl Stage0RootfsFactory for UnreachableFactory {
+        type Erofs = Ext4Rootfs;
+        type Fat = Ext4Rootfs;
+        type Error = &'static str;
+
+        async fn open_erofs(
+            &mut self,
+            _reader: Arc<dyn BlockReader>,
+            _image_size_bytes: u64,
+        ) -> Result<Self::Erofs, Self::Error> {
+            Err("unreachable")
+        }
+
+        async fn open_fat(
+            &mut self,
+            _reader: Arc<dyn BlockReader>,
+        ) -> Result<Self::Fat, Self::Error> {
+            Err("unreachable")
+        }
+    }
+
+    fn profile_with_unreadable_initrd(boot: BootStrategy) -> BootProfile {
+        let rootfs = BootProfileRootfs::Ext4(crate::BootProfileRootfsExt4Source {
+            ext4: BootProfileArtifactSource::Http(crate::BootProfileArtifactSourceHttpSource {
+                http: "https://example.invalid/rootfs.ext4".to_string(),
+                cors_safelisted_mode: false,
+                content: None,
+            }),
+        });
+        BootProfile {
+            id: "initrd-test".to_string(),
+            display_name: None,
+            rootfs: rootfs.clone(),
+            kernel: None,
+            initrd: Some(crate::BootProfileArtifactPathSource {
+                path: "/initrd.img".to_string(),
+                source: rootfs,
+            }),
+            boot,
+            dtbs: None,
+            dt_overlays: Vec::new(),
+            extra_cmdline: None,
+            stage0: crate::BootProfileStage0::default(),
+        }
+    }
+
+    fn any_device_profile() -> DeviceProfile {
+        builtin_profiles()
+            .expect("builtin profiles decode")
+            .into_iter()
+            .next()
+            .expect("at least one builtin profile")
+    }
+
+    #[test]
+    fn stage0_boot_ignores_an_unreadable_initrd_source() {
+        let profile = profile_with_unreadable_initrd(BootStrategy::Stage0);
+        let overrides = block_on(resolve_boot_profile_source_overrides_with::<
+            _,
+            Stage0RootfsProvider<UnreachableFactory>,
+        >(
+            Some(&profile), &any_device_profile(), &mut FailingOpener
+        ))
+        .expect("stage0 never touches the initrd source");
+        assert!(overrides.initrd_override.is_none());
+    }
+
+    #[test]
+    fn initrd_boot_reports_an_unreadable_initrd_source() {
+        let profile = profile_with_unreadable_initrd(BootStrategy::Initrd);
+        let err = block_on(resolve_boot_profile_source_overrides_with::<
+            _,
+            Stage0RootfsProvider<UnreachableFactory>,
+        >(
+            Some(&profile), &any_device_profile(), &mut FailingOpener
+        ))
+        .map(|_| ())
+        .expect_err("the initrd strategy needs the initrd");
+        assert!(matches!(
+            err,
+            ProfileSourceOverrideError::OpenArtifactSource {
+                source: "unreadable"
+            }
+        ));
+    }
 
     #[test]
     fn ostree_arg_normalizes_explicit_paths() {

@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -71,8 +72,8 @@ impl ChannelIndexEntryV0 {
 }
 
 pub enum ChannelHeadRecord {
-    BootProfile(BootProfile),
-    DeviceProfile(DeviceProfile),
+    BootProfile(Box<BootProfile>),
+    DeviceProfile(Box<DeviceProfile>),
     PipelineHints(PipelineHints),
 }
 
@@ -536,6 +537,8 @@ mod tests {
                 }),
             }),
             kernel: None,
+            initrd: None,
+            boot: crate::BootStrategy::Stage0,
             dtbs: None,
             dt_overlays: vec![],
             extra_cmdline: None,
@@ -563,6 +566,9 @@ mod tests {
                         base: None,
                         kernel_offset: None,
                         dtb_offset: None,
+                        ramdisk_offset: None,
+                        second_offset: None,
+                        tags_offset: None,
                         limits: None,
                         kernel: AndroidKernel {
                             encoding: KernelEncoding::Image,
@@ -571,6 +577,7 @@ mod tests {
                         cmdline_append: None,
                     },
                 },
+                abl_exorcist: None,
             },
         }
     }
@@ -611,8 +618,8 @@ mod tests {
     #[test]
     fn encode_channel_head_roundtrips_mixed_records() {
         let records = vec![
-            ChannelHeadRecord::DeviceProfile(sample_dev_profile("dev-one")),
-            ChannelHeadRecord::BootProfile(sample_boot_profile("boot-one")),
+            ChannelHeadRecord::DeviceProfile(Box::new(sample_dev_profile("dev-one"))),
+            ChannelHeadRecord::BootProfile(Box::new(sample_boot_profile("boot-one"))),
             ChannelHeadRecord::PipelineHints(sample_pipeline_hints()),
         ];
         let encoded = encode_channel_head(&records).expect("encode channel head");
@@ -751,8 +758,8 @@ mod tests {
     #[test]
     fn encode_channel_head_is_deterministic() {
         let records = vec![
-            ChannelHeadRecord::DeviceProfile(sample_dev_profile("dev-one")),
-            ChannelHeadRecord::BootProfile(sample_boot_profile("boot-one")),
+            ChannelHeadRecord::DeviceProfile(Box::new(sample_dev_profile("dev-one"))),
+            ChannelHeadRecord::BootProfile(Box::new(sample_boot_profile("boot-one"))),
         ];
         let first = encode_channel_head(&records).expect("encode 1");
         let second = encode_channel_head(&records).expect("encode 2");

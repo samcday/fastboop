@@ -5,7 +5,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::DeviceProfile;
+use crate::{AndroidBootImage, DeviceProfile};
 
 const ANDROID_MAGIC: &[u8; 8] = b"ANDROID!";
 const NAME_LEN: usize = 16;
@@ -108,8 +108,7 @@ pub fn build_android_bootimg(
     }
 
     let (cmdline_main, cmdline_extra) = split_cmdline(cmdline)?;
-    let (kernel_addr, ramdisk_addr, second_addr, tags_addr) =
-        compute_addrs(boot.base, boot.kernel_offset)?;
+    let (kernel_addr, ramdisk_addr, second_addr, tags_addr) = compute_addrs(boot)?;
     let dtb = if header_version >= 2 && !boot.kernel.encoding.append_dtb() {
         dtb
     } else {
@@ -176,22 +175,23 @@ pub fn build_android_bootimg(
     Ok(image)
 }
 
-fn compute_addrs(
-    base: Option<u64>,
-    kernel_offset: Option<u64>,
-) -> Result<(u32, u32, u32, u32), BootImageError> {
-    let base = base.unwrap_or(0);
-    let kernel_offset = kernel_offset.unwrap_or(DEFAULT_KERNEL_OFFSET);
-    let kernel_addr = base + kernel_offset;
-    let ramdisk_addr = base + DEFAULT_RAMDISK_OFFSET;
-    let second_addr = base + DEFAULT_SECOND_OFFSET;
-    let tags_addr = base + DEFAULT_TAGS_OFFSET;
+fn compute_addrs(boot: &AndroidBootImage) -> Result<(u32, u32, u32, u32), BootImageError> {
+    let base = boot.base.unwrap_or(0);
+    let kernel_offset = boot.kernel_offset.unwrap_or(DEFAULT_KERNEL_OFFSET);
+    let ramdisk_offset = boot.ramdisk_offset.unwrap_or(DEFAULT_RAMDISK_OFFSET);
+    let second_offset = boot.second_offset.unwrap_or(DEFAULT_SECOND_OFFSET);
+    let tags_offset = boot.tags_offset.unwrap_or(DEFAULT_TAGS_OFFSET);
+    let addr = |offset: u64, name: &'static str| -> Result<u32, BootImageError> {
+        base.checked_add(offset)
+            .and_then(|addr| u32::try_from(addr).ok())
+            .ok_or(BootImageError::AddressOverflow(name))
+    };
 
     Ok((
-        u32::try_from(kernel_addr).map_err(|_| BootImageError::AddressOverflow("kernel"))?,
-        u32::try_from(ramdisk_addr).map_err(|_| BootImageError::AddressOverflow("ramdisk"))?,
-        u32::try_from(second_addr).map_err(|_| BootImageError::AddressOverflow("second"))?,
-        u32::try_from(tags_addr).map_err(|_| BootImageError::AddressOverflow("tags"))?,
+        addr(kernel_offset, "kernel")?,
+        addr(ramdisk_offset, "ramdisk")?,
+        addr(second_offset, "second")?,
+        addr(tags_offset, "tags")?,
     ))
 }
 
@@ -276,4 +276,87 @@ fn pad_to_page(out: &mut Vec<u8>, page_size: u32) {
 fn push_section(out: &mut Vec<u8>, data: &[u8], page_size: u32) {
     out.extend_from_slice(data);
     pad_to_page(out, page_size);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AndroidKernel, Boot, BootPayload, KernelEncoding};
+
+    fn bootimg_with_defaults() -> AndroidBootImage {
+        AndroidBootImage {
+            header_version: 2,
+            page_size: 4096,
+            base: None,
+            kernel_offset: None,
+            dtb_offset: None,
+            ramdisk_offset: None,
+            second_offset: None,
+            tags_offset: None,
+            limits: None,
+            kernel: AndroidKernel {
+                encoding: KernelEncoding::Image,
+            },
+            initrd: None,
+            cmdline_append: None,
+        }
+    }
+
+    fn profile_with_bootimg(android_bootimg: AndroidBootImage) -> DeviceProfile {
+        DeviceProfile {
+            id: "test".to_string(),
+            display_name: None,
+            devicetree_name: "test".to_string(),
+            r#match: Vec::new(),
+            probe: Vec::new(),
+            boot: Boot {
+                fastboot_boot: BootPayload { android_bootimg },
+                abl_exorcist: None,
+            },
+        }
+    }
+
+    fn read_u32(image: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(image[offset..offset + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn default_offsets_match_legacy_addresses() {
+        let profile = profile_with_bootimg(bootimg_with_defaults());
+        let image = build_android_bootimg(&profile, &[0xAA; 16], &[0xBB; 16], None, "console=tty0")
+            .expect("build boot image");
+
+        assert_eq!(read_u32(&image, 12), 0x0000_8000);
+        assert_eq!(read_u32(&image, 20), 0x0100_0000);
+        assert_eq!(read_u32(&image, 28), 0x00F0_0000);
+        assert_eq!(read_u32(&image, 32), 0x0000_0100);
+    }
+
+    #[test]
+    fn a_base_plus_offset_that_wraps_u64_is_an_overflow_not_zero() {
+        let mut bootimg = bootimg_with_defaults();
+        bootimg.base = Some(u64::MAX);
+        bootimg.ramdisk_offset = Some(1);
+        let profile = profile_with_bootimg(bootimg);
+
+        let err = build_android_bootimg(&profile, &[0xAA; 16], &[0xBB; 16], None, "")
+            .expect_err("wrapping base + offset must not become address 0");
+        assert!(matches!(err, BootImageError::AddressOverflow(_)), "{err}");
+    }
+
+    #[test]
+    fn custom_offsets_are_written_to_header() {
+        let mut bootimg = bootimg_with_defaults();
+        bootimg.ramdisk_offset = Some(0x0400_0000);
+        bootimg.second_offset = Some(0x0500_0000);
+        bootimg.tags_offset = Some(0x0600_0000);
+        let profile = profile_with_bootimg(bootimg);
+        let image = build_android_bootimg(&profile, &[0xAA; 16], &[0xBB; 16], None, "")
+            .expect("build boot image");
+
+        assert_eq!(read_u32(&image, 12), 0x0000_8000);
+        assert_eq!(read_u32(&image, 20), 0x0400_0000);
+        assert_eq!(read_u32(&image, 28), 0x0500_0000);
+        assert_eq!(read_u32(&image, 32), 0x0600_0000);
+    }
 }
