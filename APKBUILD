@@ -50,7 +50,18 @@ build() {
 }
 
 check() {
-	cargo test --workspace --locked --frozen $_cargo_target_arg
+	# Only the crates that go into the fastboop binary: the rest of the
+	# workspace is the Dioxus desktop/mobile/web apps, which need glib, GTK
+	# and WebKit that this package neither depends on nor ships.
+	cargo test --locked --frozen $_cargo_target_arg \
+		-p fastboop-cli \
+		-p fastboop-core \
+		-p fastboop-bootpro \
+		-p fastboop-environment-std \
+		-p fastboop-schema \
+		-p fastboop-stage0-generator \
+		-p fastboop-smoo-gibblox \
+		-p fastboop-fastboot-rusb
 }
 
 package() {
