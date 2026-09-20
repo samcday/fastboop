@@ -488,3 +488,71 @@ fn sample_content() -> PipelineSourceContent {
         size_bytes: 123,
     }
 }
+
+#[test]
+fn initrd_strategy_requires_artifacts_and_validates_its_pipeline() {
+    let mut profile = sample_profile();
+    profile.boot = BootStrategy::Initrd;
+    profile.kernel = None;
+    assert_eq!(
+        validate_boot_profile(&profile),
+        Err(BootProfileValidationError::MissingInitrdKernel)
+    );
+    profile.kernel = Some(fastboop_core::BootProfileArtifactPathSource {
+        path: "/kernel".into(),
+        source: profile.rootfs.clone(),
+    });
+    profile.initrd = None;
+    assert_eq!(
+        validate_boot_profile(&profile),
+        Err(BootProfileValidationError::MissingInitrd)
+    );
+    profile.initrd = Some(fastboop_core::BootProfileArtifactPathSource {
+        path: "".into(),
+        source: profile.rootfs.clone(),
+    });
+    assert_eq!(
+        validate_boot_profile(&profile),
+        Err(BootProfileValidationError::EmptyInitrdPath)
+    );
+    let initrd = profile.initrd.as_mut().unwrap();
+    initrd.path = "/initrd".into();
+    initrd.source = BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+        ext4: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
+            file: "initrd-source.ext4".into(),
+            content: None,
+        }),
+    });
+    assert!(matches!(
+        validate_boot_profile(&profile),
+        Err(BootProfileValidationError::Pipeline(_))
+    ));
+    profile.boot = BootStrategy::Stage0;
+    assert!(
+        validate_boot_profile(&profile).is_ok(),
+        "stage0 does not consume initrd"
+    );
+}
+
+#[test]
+fn initrd_pipeline_participates_in_channel_hint_selection() {
+    let mut profile = sample_profile();
+    let before = fastboop_core::boot_profile_pipeline_identities(&profile);
+    profile.initrd = Some(fastboop_core::BootProfileArtifactPathSource {
+        path: "/initrd".into(),
+        source: BootProfileRootfs::Ext4(BootProfileRootfsExt4Source {
+            ext4: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
+                file: "separate-initrd-source.ext4".into(),
+                content: Some(sample_content()),
+            }),
+        }),
+    });
+    assert_eq!(
+        fastboop_core::boot_profile_pipeline_identities(&profile),
+        before
+    );
+    profile.boot = BootStrategy::Initrd;
+    let after = fastboop_core::boot_profile_pipeline_identities(&profile);
+    assert!(after.is_superset(&before));
+    assert!(after.len() > before.len());
+}

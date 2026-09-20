@@ -12,7 +12,7 @@ use tracing::info;
 
 #[derive(Args)]
 pub struct BootStage0Args {
-    /// Path or HTTP(S) URL to a channel artifact containing kernel/modules.
+    /// Path or HTTP(S) URL to a channel artifact or compiled boot profile.
     #[arg(value_name = "CHANNEL")]
     pub channel: PathBuf,
     /// Resolve kernel/modules inside this OSTree deployment path (`--ostree` auto-detects).
@@ -39,7 +39,7 @@ pub struct BootStage0Args {
     /// Extra required modules (repeatable).
     #[arg(long = "require-module")]
     pub require_modules: Vec<String>,
-    /// Extra kernel cmdline to append after generated stage0 arguments.
+    /// Extra kernel cmdline for the selected boot strategy.
     #[arg(long, alias = "cmdline")]
     pub cmdline_append: Option<String>,
     /// Enable CDC-ACM gadget (smoo.acm=1) and include usb_f_acm.

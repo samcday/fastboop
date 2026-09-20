@@ -8,8 +8,9 @@ use fastboop_core::device::{DeviceEvent, DeviceHandle as _, DeviceWatcher as _, 
 use fastboop_core::fastboot::{FastbootSession, profile_matches_vid_pid};
 use fastboop_core::prober::probe_candidates;
 use fastboop_core::{
-    BootImageComponents, DeviceProfile, Personalization, PreparedBoot, RuntimeExport,
-    Stage0ExtraCmdline, build_android_boot_payload_with_options, build_stage0_extra_cmdline,
+    BootImageComponents, BootProfileSourceOverrides, BootStrategy, DeviceProfile, Personalization,
+    PreparedBoot, RuntimeExport, Stage0ExtraCmdline, build_android_boot_payload_with_options,
+    build_stage0_extra_cmdline,
 };
 use fastboop_fastboot_rusb::{DeviceWatcher, FastbootRusb, RusbDeviceHandle};
 use fastboop_stage0_generator::{build_stage0, stage0_binary_ready};
@@ -19,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace};
 
 use crate::channel::{
-    ArtifactReaderResolver, OstreeArg, Stage0CoalescingFilesystem,
+    ArtifactReaderResolver, ChannelInput, OstreeArg, Stage0CoalescingFilesystem,
     auto_detect_ostree_deployment_path, format_probe_error, parse_ostree_arg, read_dtbo_overlays,
     read_existing_initrd, resolve_boot_profile_source_overrides, resolve_effective_ostree_arg,
 };
@@ -224,7 +225,31 @@ impl NativeBootEnvironment {
 
         let profile = profile.expect("profile resolved before build");
         log_detected_device(&profile, detected_device.as_ref());
-        tracing::info!(profile = %profile.id, "building stage0 payload");
+        tracing::info!(profile = %profile.id, "building boot payload");
+
+        let resolved =
+            resolve_boot_input(&mut artifact_resolver, &self.config.stage0, &profile).await?;
+        if resolved
+            .input
+            .boot_spec
+            .boot_profile()
+            .is_some_and(|p| p.boot == BootStrategy::Initrd)
+        {
+            let prepared = build_native_initrd_boot(
+                &self.config.stage0,
+                &profile,
+                resolved,
+                detected_device.as_ref(),
+                self.config
+                    .system_time
+                    .then(system_time_cmdline)
+                    .transpose()?
+                    .as_deref(),
+            )
+            .await?;
+            self.detected_device = detected_fastboot;
+            return Ok(prepared);
+        }
 
         let personalization = self
             .config
@@ -236,7 +261,7 @@ impl NativeBootEnvironment {
             None
         };
         let prepared = build_stage0_artifacts(
-            &mut artifact_resolver,
+            resolved,
             &self.config.stage0,
             &profile,
             detected_device.as_ref(),
@@ -510,8 +535,16 @@ pub async fn build_stage0_initrd(config: NativeBootStage0Config) -> Result<Stage
         .ok_or_else(|| anyhow!("--device-profile is required"))?;
     let profile = resolve_profile_in_pool(&pool, &devpro_dirs, requested)?;
 
-    let prepared =
-        build_stage0_artifacts(&mut artifact_resolver, &config, &profile, None, None, None).await?;
+    let resolved = resolve_boot_input(&mut artifact_resolver, &config, &profile).await?;
+    if resolved
+        .input
+        .boot_spec
+        .boot_profile()
+        .is_some_and(|p| p.boot == BootStrategy::Initrd)
+    {
+        bail!("fastboop stage0 cannot build a boot: initrd profile; use fastboop boot");
+    }
+    let prepared = build_stage0_artifacts(resolved, &config, &profile, None, None, None).await?;
     let build = prepared
         .build
         .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
@@ -522,6 +555,145 @@ pub async fn build_stage0_initrd(config: NativeBootStage0Config) -> Result<Stage
         kernel_path: build.kernel_path,
         kernel_image_len: build.kernel_image.len(),
         init_path: build.init_path,
+    })
+}
+
+struct ResolvedBootInput {
+    input: ChannelInput,
+    sources: BootProfileSourceOverrides,
+    export: RuntimeExport,
+}
+
+async fn resolve_boot_input(
+    resolver: &mut ArtifactReaderResolver,
+    config: &NativeBootStage0Config,
+    profile: &DeviceProfile,
+) -> Result<ResolvedBootInput> {
+    let input = resolver
+        .open_channel_input(&config.channel, profile, config.boot_profile.as_deref())
+        .await?;
+    let sources =
+        resolve_boot_profile_source_overrides(input.boot_spec.boot_profile(), profile, resolver)
+            .await?;
+    let size_bytes = input
+        .reader
+        .total_blocks()
+        .await?
+        .checked_mul(u64::from(input.reader.block_size()))
+        .ok_or_else(|| anyhow!("channel image size overflow"))?;
+    let export = RuntimeExport {
+        identity: block_identity_string(input.reader.as_ref()),
+        reader: input.reader.clone(),
+        size_bytes,
+    };
+    Ok(ResolvedBootInput {
+        input,
+        sources,
+        export,
+    })
+}
+
+async fn build_native_initrd_boot(
+    config: &NativeBootStage0Config,
+    profile: &DeviceProfile,
+    resolved: ResolvedBootInput,
+    detected_device: Option<&DetectedFastbootInfo>,
+    system_time: Option<&str>,
+) -> Result<PreparedBoot> {
+    if config.abl_exorcist.is_some() {
+        bail!("--abl-exorcist is not supported with boot: initrd");
+    }
+    if config.stage0.is_some()
+        || config.augment.is_some()
+        || !config.require_modules.is_empty()
+        || config.serial
+    {
+        bail!(
+            "boot: initrd uses a prepared initramfs; --stage0, --augment, --require-module and --serial apply only to stage0 generation"
+        );
+    }
+    if config.ostree != OstreeArg::Disabled {
+        bail!("boot: initrd takes its OSTree arguments from the boot profile command line");
+    }
+    let ResolvedBootInput {
+        input,
+        sources,
+        export,
+    } = resolved;
+    let settings = input.boot_spec.stage0();
+    if !settings.kernel_modules.is_empty() {
+        bail!(
+            "boot: initrd requires modules to be included in the supplied initramfs, not stage0.kernel_modules"
+        );
+    }
+    let kernel = sources
+        .kernel_override
+        .ok_or_else(|| anyhow!("boot: initrd requires a kernel artifact"))?;
+    let initrd = sources
+        .initrd_override
+        .ok_or_else(|| anyhow!("boot: initrd requires an initrd artifact"))?;
+    let dtb = match &config.dtb {
+        Some(path) => tokio::fs::read(path)
+            .await
+            .with_context(|| format!("reading dtb {}", path.display()))?,
+        None => sources.dtb_override.unwrap_or_default(),
+    };
+    let mut overlays = settings.dt_overlays.clone();
+    overlays.extend(read_dtbo_overlays(&config.dtbo)?);
+    let export_id = crate::native_smoo::runtime_export_id(&export)?;
+    let mut requested = fastboop_core::join_cmdline(config.cmdline_append.as_deref(), system_time);
+    for (key, value) in [
+        (
+            "rd.smoo.queue_count",
+            config.smoo_queue_count.map(u64::from),
+        ),
+        (
+            "rd.smoo.queue_depth",
+            config.smoo_queue_depth.map(u64::from),
+        ),
+        ("rd.smoo.max_io_bytes", config.smoo_max_io.map(|v| v as u64)),
+    ] {
+        if let Some(value) = value {
+            requested =
+                fastboop_core::join_cmdline(Some(&requested), Some(&format!("{key}={value}")));
+        }
+    }
+    let cmdline = fastboop_core::build_initrd_extra_cmdline(fastboop_core::InitrdCmdline {
+        device: profile
+            .boot
+            .fastboot_boot
+            .android_bootimg
+            .cmdline_append
+            .as_deref(),
+        profile: settings.extra_cmdline.as_deref(),
+        requested: Some(&requested),
+        export_id,
+        mimic_fastboot: config.impersonate_fastboot,
+    })
+    .map_err(|err| anyhow!(err))?;
+    tracing::info!(profile = %profile.id, export_id, kernel_bytes = kernel.image.len(),
+        initrd_bytes = initrd.len(), "preparing supplied initrd boot");
+    let components = fastboop_stage0_generator::prepare_supplied_initrd(
+        profile,
+        fastboop_stage0_generator::SuppliedInitrdOptions {
+            kernel: &kernel.image,
+            initrd,
+            dtb: &dtb,
+            overlays: &overlays,
+            inject_mac: &settings.inject_mac,
+            mac_seed: detected_device
+                .and_then(|d| d.serial.as_deref())
+                .unwrap_or("0"),
+            cmdline,
+        },
+    )
+    .map_err(|err| anyhow!("prepare supplied initrd: {err:?}"))?;
+    let boot_image = fastboop_core::build_android_boot_payload(profile, components)
+        .map_err(|err| anyhow!("bootimg build failed: {err}"))?;
+    Ok(PreparedBoot {
+        profile_id: profile.id.clone(),
+        boot_image,
+        export,
     })
 }
 
@@ -536,7 +708,7 @@ struct Stage0Artifacts {
 }
 
 async fn build_stage0_artifacts(
-    artifact_resolver: &mut ArtifactReaderResolver,
+    resolved: ResolvedBootInput,
     config: &NativeBootStage0Config,
     profile: &DeviceProfile,
     detected_device: Option<&DetectedFastbootInfo>,
@@ -561,23 +733,15 @@ async fn build_stage0_artifacts(
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    let input = artifact_resolver
-        .open_channel_input(&config.channel, profile, config.boot_profile.as_deref())
-        .await?;
+    let ResolvedBootInput {
+        input,
+        sources: profile_source_overrides,
+        export,
+    } = resolved;
     let boot_spec = input.boot_spec;
     let selected_boot_profile = boot_spec.boot_profile();
-    let profile_source_overrides =
-        resolve_boot_profile_source_overrides(selected_boot_profile, profile, artifact_resolver)
-            .await?;
     let profile_stage0 = boot_spec.stage0();
-    let reader = input.reader;
     let stage0_readers = input.stage0_readers;
-
-    let total_blocks = reader.total_blocks().await?;
-    let image_size_bytes = total_blocks
-        .checked_mul(reader.block_size() as u64)
-        .ok_or_else(|| anyhow!("channel image size overflow"))?;
-    let image_identity = block_identity_string(reader.as_ref());
     let provider = Stage0CoalescingFilesystem::open(stage0_readers)
         .await
         .map_err(|err| anyhow!(err.to_string()))?;
@@ -656,9 +820,9 @@ async fn build_stage0_artifacts(
     };
 
     Ok(Stage0Artifacts {
-        block_reader: reader,
-        image_size_bytes,
-        image_identity,
+        block_reader: export.reader,
+        image_size_bytes: export.size_bytes,
+        image_identity: export.identity,
         build,
     })
 }
@@ -1079,5 +1243,138 @@ fn nonempty(value: String) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+#[cfg(test)]
+mod initrd_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use fastboop_core::{BootProfileManifest, BootSpec, KernelEncoding, Stage0KernelOverride};
+    use gibblox_core::{GibbloxResult, ReadContext};
+    use std::sync::Arc;
+
+    struct UnreadRoot;
+
+    #[async_trait]
+    impl BlockReader for UnreadRoot {
+        fn block_size(&self) -> u32 {
+            512
+        }
+        async fn total_blocks(&self) -> GibbloxResult<u64> {
+            Ok(8)
+        }
+        async fn read_blocks(&self, _: u64, _: &mut [u8], _: ReadContext) -> GibbloxResult<usize> {
+            panic!("supplied artifacts must not trigger stage0 rootfs/module discovery");
+        }
+        fn write_identity(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+            out.write_str("test:root")
+        }
+    }
+
+    fn fixture() -> (DeviceProfile, ResolvedBootInput) {
+        let mut device = fastboop_core::builtin::builtin_profiles()
+            .unwrap()
+            .remove(0);
+        device.boot.fastboot_boot.android_bootimg.kernel.encoding = KernelEncoding::Image;
+        device.boot.fastboot_boot.android_bootimg.header_version = 2;
+        device.boot.fastboot_boot.android_bootimg.base = None;
+        device.boot.fastboot_boot.android_bootimg.ramdisk_offset = Some(0x04000000);
+        device.boot.fastboot_boot.android_bootimg.cmdline_append = Some("console=tty0".into());
+        let manifest: BootProfileManifest = serde_yaml::from_str(
+            r#"
+id: supplied
+boot: initrd
+rootfs:
+  ext4:
+    file: root.ext4
+extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
+"#,
+        )
+        .unwrap();
+        let profile = manifest
+            .compile_dt_overlays(|_| Ok::<_, anyhow::Error>(Vec::new()))
+            .unwrap();
+        let reader: Arc<dyn BlockReader> = Arc::new(UnreadRoot);
+        let input = ChannelInput {
+            boot_spec: BootSpec::new(device.clone(), Some(profile)),
+            reader: reader.clone(),
+            stage0_readers: Vec::new(),
+        };
+        let resolved = ResolvedBootInput {
+            input,
+            sources: BootProfileSourceOverrides {
+                kernel_override: Some(Stage0KernelOverride {
+                    path: "/kernel".into(),
+                    image: vec![0x5a; 128],
+                }),
+                initrd_override: Some(b"opaque supplied initrd".to_vec()),
+                dtb_override: None,
+            },
+            export: RuntimeExport {
+                reader,
+                size_bytes: 4096,
+                identity: "test:root".into(),
+            },
+        };
+        (device, resolved)
+    }
+
+    #[tokio::test]
+    async fn supplied_initrd_build_matches_registered_export_without_stage0() {
+        let (device, resolved) = fixture();
+        let mut sources = std::collections::BTreeMap::new();
+        let mut entries = Vec::new();
+        let source = fastboop_smoo_gibblox::GibbloxBlockSource::new(
+            resolved.export.reader.clone(),
+            resolved.export.identity.clone(),
+        );
+        smoo_host_core::register_export(
+            &mut sources,
+            &mut entries,
+            smoo_host_core::BlockSourceHandle::new(source, resolved.export.identity.clone()),
+            resolved.export.identity.clone(),
+            512,
+            4096,
+        )
+        .unwrap();
+        let mut config = NativeBootStage0Config::from_raw_ostree("unused".into(), None).unwrap();
+        config.impersonate_fastboot = false;
+        let prepared = build_native_initrd_boot(&config, &device, resolved, None, None)
+            .await
+            .unwrap();
+        let bytes = &prepared.boot_image;
+        let u32_at =
+            |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        assert_eq!(&bytes[..8], b"ANDROID!");
+        assert_eq!(u32_at(20), 0x04000000);
+        let page = u32_at(36);
+        assert_eq!(&bytes[page..page + 128], &[0x5a; 128]);
+        let initrd_offset = page + u32_at(8).div_ceil(page) * page;
+        assert_eq!(
+            &bytes[initrd_offset..initrd_offset + u32_at(16)],
+            b"opaque supplied initrd"
+        );
+        let cmdline = std::str::from_utf8(&bytes[64..576])
+            .unwrap()
+            .trim_end_matches('\0');
+        assert!(
+            cmdline.contains(&format!("rd.smoo.root={}", entries[0].export_id)),
+            "{cmdline}"
+        );
+        assert!(cmdline.contains("rd.smoo.mimic_fastboot=0"));
+        assert!(cmdline.contains("rd.smoo.cow=1"));
+        assert!(cmdline.contains("rd.smoo.cow.size=2G ostree=true"));
+        assert_eq!(prepared.export.identity, "test:root");
+        assert_eq!(prepared.export.size_bytes, 4096);
+    }
+
+    #[tokio::test]
+    async fn supplied_initrd_rejects_stage0_only_options() {
+        let (device, resolved) = fixture();
+        let mut config = NativeBootStage0Config::from_raw_ostree("unused".into(), None).unwrap();
+        config.augment = Some("must-not-open.cpio".into());
+        let result = build_native_initrd_boot(&config, &device, resolved, None, None).await;
+        assert!(result.err().unwrap().to_string().contains("--augment"));
     }
 }

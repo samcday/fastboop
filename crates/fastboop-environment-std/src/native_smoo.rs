@@ -74,6 +74,20 @@ pub struct NativeSmooExport {
     pub export_id: Option<u32>,
 }
 
+/// Use the same source identity and geometry as smoo's export registration.
+pub(crate) fn runtime_export_id(export: &fastboop_core::RuntimeExport) -> Result<u32> {
+    let block_size = export.reader.block_size();
+    ensure!(
+        block_size > 0 && export.size_bytes.is_multiple_of(u64::from(block_size)),
+        "root export size must align to a nonzero block size"
+    );
+    Ok(smoo_host_core::derive_export_id(
+        &export.identity,
+        block_size,
+        export.size_bytes / u64::from(block_size),
+    ))
+}
+
 pub async fn run_native_smoo_host(
     reader: Arc<dyn BlockReader>,
     size_bytes: u64,

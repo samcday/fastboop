@@ -1,7 +1,6 @@
 use fastboop_core::{
-    AblExorcist, AblExorcistMode, AndroidBootImage, AndroidKernel, Boot, BootPayload,
-    DeviceProfile, FastbootMatch, KernelEncoding, MatchRule, decode_dev_profile,
-    encode_dev_profile,
+    AndroidBootImage, AndroidKernel, Boot, BootPayload, DeviceProfile, FastbootMatch,
+    KernelEncoding, MatchRule, decode_dev_profile, encode_dev_profile,
 };
 
 fn sample_profile() -> DeviceProfile {
@@ -35,29 +34,17 @@ fn sample_profile() -> DeviceProfile {
                     cmdline_append: None,
                 },
             },
-            abl_exorcist: Some(AblExorcist {
-                mode: AblExorcistMode::Ramdisk,
-                shim: Some("abl-exorcist.bin".to_string()),
-            }),
         },
     }
 }
 
 #[test]
-fn device_profile_roundtrips_abl_exorcist_and_offsets_binary_codec() {
+fn device_profile_roundtrips_offsets_binary_codec() {
     let profile = sample_profile();
     let encoded = encode_dev_profile(&profile).expect("encode device profile");
     let decoded = decode_dev_profile(&encoded).expect("decode device profile");
 
     assert_eq!(decoded.id, profile.id);
-    assert_eq!(
-        decoded.boot.abl_exorcist,
-        Some(AblExorcist {
-            mode: AblExorcistMode::Ramdisk,
-            shim: Some("abl-exorcist.bin".to_string()),
-        })
-    );
-
     let bootimg = &decoded.boot.fastboot_boot.android_bootimg;
     assert_eq!(bootimg.ramdisk_offset, Some(0x0400_0000));
     assert_eq!(bootimg.second_offset, Some(0x00F0_0000));
@@ -67,7 +54,6 @@ fn device_profile_roundtrips_abl_exorcist_and_offsets_binary_codec() {
 #[test]
 fn device_profile_without_new_fields_roundtrips_as_none_binary_codec() {
     let mut profile = sample_profile();
-    profile.boot.abl_exorcist = None;
     let bootimg = &mut profile.boot.fastboot_boot.android_bootimg;
     bootimg.ramdisk_offset = None;
     bootimg.second_offset = None;
@@ -76,7 +62,6 @@ fn device_profile_without_new_fields_roundtrips_as_none_binary_codec() {
     let encoded = encode_dev_profile(&profile).expect("encode device profile");
     let decoded = decode_dev_profile(&encoded).expect("decode device profile");
 
-    assert_eq!(decoded.boot.abl_exorcist, None);
     let bootimg = &decoded.boot.fastboot_boot.android_bootimg;
     assert_eq!(bootimg.ramdisk_offset, None);
     assert_eq!(bootimg.second_offset, None);

@@ -852,6 +852,29 @@ rootfs:
         let _ = fs::remove_file(kernel_path);
     }
 
+    #[test]
+    fn compiles_separate_initrd_source_with_content_identity() {
+        let root_path = temp_path("root-input");
+        let initrd_path = temp_path("initrd-input");
+        fs::write(&root_path, b"root image").unwrap();
+        fs::write(&initrd_path, b"separate boot filesystem image").unwrap();
+        let yaml = format!(
+            "id: supplied\nboot: initrd\nrootfs:\n  ext4:\n    file: '{}'\nkernel:\n  path: /kernel\n  ext4:\n    file: '{}'\ninitrd:\n  path: /initrd\n  ext4:\n    file: '{}'\n",
+            root_path.display(),
+            root_path.display(),
+            initrd_path.display(),
+        );
+        let compiled = compile_manifest_yaml(yaml.as_bytes()).unwrap();
+        let source = compiled.profile.initrd.as_ref().unwrap().artifact_source();
+        let BootProfileArtifactSource::File(file) = source else {
+            panic!("expected file");
+        };
+        assert_eq!(file.content.as_ref().unwrap().size_bytes, 30);
+        assert!(file.content.as_ref().unwrap().digest.starts_with("sha512:"));
+        fs::remove_file(root_path).unwrap();
+        fs::remove_file(initrd_path).unwrap();
+    }
+
     const SPARSE_MAGIC: u32 = 0xED26_FF3A;
     const SPARSE_MAJOR_VERSION: u16 = 1;
     const CHUNK_TYPE_RAW: u16 = 0xCAC1;

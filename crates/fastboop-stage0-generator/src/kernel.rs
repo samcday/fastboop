@@ -37,7 +37,7 @@ pub fn normalize_kernel(profile: &DeviceProfile, kernel: &[u8]) -> Result<Vec<u8
 
     match (desired, payload) {
         (Compression::None, KernelPayload::Raw(data)) => Ok(data),
-        (Compression::None, KernelPayload::Gzip(data)) => Ok(data),
+        (Compression::None, KernelPayload::Gzip(data)) => gzip_decompress(&data),
         (Compression::Gzip, KernelPayload::Gzip(data)) => Ok(data),
         (Compression::Gzip, KernelPayload::Raw(data)) => gzip_compress(&data),
         (Compression::Lz4, _) => Err(Stage0Error::KernelFormat(
@@ -370,7 +370,7 @@ fn gzip_deflate_range(data: &[u8]) -> Result<Option<(usize, usize)>, Stage0Error
     Ok(Some((offset, deflate_end)))
 }
 
-fn gzip_compress(data: &[u8]) -> Result<Vec<u8>, Stage0Error> {
+pub(super) fn gzip_compress(data: &[u8]) -> Result<Vec<u8>, Stage0Error> {
     debug!(bytes = data.len(), "gzip compress");
     let deflated = miniz_oxide::deflate::compress_to_vec(data, GZIP_LEVEL_FAST);
     let mut out = Vec::with_capacity(10 + deflated.len() + 8);
@@ -500,7 +500,6 @@ mod tests {
                         cmdline_append: None,
                     },
                 },
-                abl_exorcist: None,
             },
         }
     }

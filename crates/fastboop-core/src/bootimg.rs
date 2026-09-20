@@ -311,7 +311,6 @@ mod tests {
             probe: Vec::new(),
             boot: Boot {
                 fastboot_boot: BootPayload { android_bootimg },
-                abl_exorcist: None,
             },
         }
     }

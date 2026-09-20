@@ -122,30 +122,6 @@ pub struct NotExistsFlag;
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct Boot {
     pub fastboot_boot: BootPayload,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub abl_exorcist: Option<AblExorcist>,
-}
-
-/// abl-exorcist shim configuration for a device profile.
-///
-/// Resolution of `shim` is the caller's business; this schema only records that
-/// the device needs the shim and which ABLX mode it operates in.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct AblExorcist {
-    pub mode: AblExorcistMode,
-    /// Where the shim binary comes from. Resolution is the caller's business.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shim: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(rename_all = "kebab-case")]
-pub enum AblExorcistMode {
-    KernelWrap,
-    Ramdisk,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

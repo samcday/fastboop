@@ -1357,6 +1357,14 @@ async fn decode_indexed_entry_from_reader<R: BlockReader + ?Sized>(
 pub fn boot_profile_pipeline_identities(profile: &BootProfile) -> BTreeSet<String> {
     let mut identities = BTreeSet::new();
     collect_boot_profile_pipeline_identities_from_source(profile.rootfs.source(), &mut identities);
+    if profile.boot == crate::BootStrategy::Initrd
+        && let Some(initrd) = profile.initrd.as_ref()
+    {
+        collect_boot_profile_pipeline_identities_from_source(
+            initrd.artifact_source(),
+            &mut identities,
+        );
+    }
     if let Some(kernel) = profile.kernel.as_ref() {
         collect_boot_profile_pipeline_identities_from_source(
             kernel.artifact_source(),

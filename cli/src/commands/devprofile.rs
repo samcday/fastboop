@@ -369,7 +369,7 @@ stage0: {}
     }
 
     #[test]
-    fn parses_abl_exorcist_and_ramdisk_offset_yaml() {
+    fn parses_ramdisk_offset_yaml() {
         let yaml = r#"
 id: sargo
 display_name: Google Pixel 3a
@@ -380,9 +380,6 @@ match:
       pid: 0x4ee1
 probe: []
 boot:
-  abl_exorcist:
-    mode: ramdisk
-    shim: abl-exorcist.bin
   fastboot_boot:
     android_bootimg:
       header_version: 2
@@ -393,13 +390,6 @@ boot:
 "#;
 
         let profile: DeviceProfile = serde_yaml::from_str(yaml).expect("parse device profile");
-        assert_eq!(
-            profile.boot.abl_exorcist,
-            Some(fastboop_core::AblExorcist {
-                mode: fastboop_core::AblExorcistMode::Ramdisk,
-                shim: Some("abl-exorcist.bin".to_string()),
-            })
-        );
         assert_eq!(
             profile.boot.fastboot_boot.android_bootimg.ramdisk_offset,
             Some(0x0400_0000)
@@ -426,7 +416,6 @@ boot:
 "#;
 
         let profile: DeviceProfile = serde_yaml::from_str(yaml).expect("parse device profile");
-        assert_eq!(profile.boot.abl_exorcist, None);
         assert_eq!(
             profile.boot.fastboot_boot.android_bootimg.ramdisk_offset,
             None
