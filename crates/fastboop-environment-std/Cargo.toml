@@ -13,10 +13,10 @@ embed-stage0 = []
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-fastboop-core = { path = "../fastboop-core", version = "0.0.1-rc.12" }
-fastboop-fastboot-rusb = { path = "../fastboop-fastboot-rusb", version = "0.0.1-rc.12" }
+fastboop-core = { path = "../fastboop-core", version = "0.0.1-rc.21" }
+fastboop-fastboot-rusb = { path = "../fastboop-fastboot-rusb", version = "0.0.1-rc.21" }
 fastboop-smoo-gibblox = { workspace = true }
-fastboop-stage0-generator = { path = "../fastboop-stage0-generator", version = "0.0.1-rc.12" }
+fastboop-stage0-generator = { path = "../fastboop-stage0-generator", version = "0.0.1-rc.21" }
 gibblox-android-sparse = { version = "0.0.2-rc.3", features = ["std"] }
 gibblox-casync = { version = "0.0.2-rc.3", features = ["std"] }
 gibblox-casync-std = { version = "0.0.2-rc.3" }

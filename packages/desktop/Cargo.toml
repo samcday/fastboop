@@ -12,7 +12,7 @@ dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
 fastboop-core = { workspace = true }
 fastboop-environment-std = { workspace = true }
-fastboop-fastboot-rusb = { path = "../../crates/fastboop-fastboot-rusb" }
+fastboop-fastboot-rusb = { path = "../../crates/fastboop-fastboot-rusb", version = "0.0.1-rc.21" }
 gobblytes-core = { workspace = true }
 gobblytes-erofs = { workspace = true }
 gobblytes-fat = { workspace = true }

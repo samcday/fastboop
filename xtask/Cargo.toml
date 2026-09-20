@@ -6,3 +6,5 @@ publish = false
 
 [dependencies]
 notify = { version = "8", features = ["macos_fsevent"] }
+serde_json = "1.0"
+toml_edit = "0.25"

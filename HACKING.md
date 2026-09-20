@@ -69,6 +69,24 @@ contract, but day-to-day fastboop CI and development use the pinned submodule
 snapshots. Update the submodule pins and root patch table together when adding
 or removing gibblox/smoo crates from the fastboop graph.
 
+## Preparing a release version
+
+Run `cargo xtask bump <X.Y.Z[-rc.N]>` from the workspace and review the diff
+before opening a release PR. The command updates the shared Cargo version,
+version requirements for path dependencies on members inheriting that version,
+and the workspace lockfile. Cargo workspace membership bounds the changes;
+excluded submodules and vendored manifests are not rewritten.
+
+RPM and Debian use `X.Y.Z~rcN`, while Alpine uses `X.Y.Z_rcN` (with the existing
+`_git` development suffix, removed by tag packaging). Source and asset URLs use
+the separate upstream version `X.Y.Z-rc.N`. Alpine CI overrides the source ref
+with the commit under test for development builds.
+
+The bump prepends a dated Debian changelog entry using the existing maintainer
+identity. Repeating the same version leaves that entry and its date unchanged.
+This command prepares version metadata only; dependency publication, packaged
+content verification, and distro build checks remain separate release gates.
+
 ## Contributor workflow
 
 - Read `AGENTS.md` and use its read-on-demand doc index.

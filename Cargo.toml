@@ -30,13 +30,13 @@ repository = "https://github.com/samcday/fastboop"
 
 [workspace.dependencies]
 dioxus = { version = "0.7.1" }
-ui = { path = "packages/ui" }
-fastboop-core = { path = "crates/fastboop-core" }
-fastboop-bootpro = { path = "crates/fastboop-bootpro", version = "0.0.1-rc.19" }
-fastboop-environment-std = { path = "crates/fastboop-environment-std" }
-fastboop-environment-web = { path = "crates/fastboop-environment-web" }
-fastboop-schema = { path = "crates/fastboop-schema", default-features = false }
-fastboop-smoo-gibblox = { path = "crates/fastboop-smoo-gibblox" }
+ui = { path = "packages/ui", version = "0.0.1-rc.21" }
+fastboop-core = { path = "crates/fastboop-core", version = "0.0.1-rc.21" }
+fastboop-bootpro = { path = "crates/fastboop-bootpro", version = "0.0.1-rc.21" }
+fastboop-environment-std = { path = "crates/fastboop-environment-std", version = "0.0.1-rc.21" }
+fastboop-environment-web = { path = "crates/fastboop-environment-web", version = "0.0.1-rc.21" }
+fastboop-schema = { path = "crates/fastboop-schema", default-features = false, version = "0.0.1-rc.21" }
+fastboop-smoo-gibblox = { path = "crates/fastboop-smoo-gibblox", version = "0.0.1-rc.21" }
 gibblox-android-sparse = "0.0.2-rc.3"
 gibblox-blockreader-messageport = "0.0.2-rc.3"
 gibblox-cache = "0.0.2-rc.3"

@@ -8,7 +8,7 @@ description = "std boot profile compilation and optimization helpers for fastboo
 
 [dependencies]
 anyhow = { workspace = true }
-fastboop-core = { path = "../fastboop-core", version = "0.0.1-rc.17" }
+fastboop-core = { path = "../fastboop-core", version = "0.0.1-rc.21" }
 gibblox-android-sparse = { workspace = true, features = ["std"] }
 gibblox-cache = { workspace = true }
 gibblox-cache-store-std = { workspace = true }
