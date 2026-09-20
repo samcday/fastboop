@@ -76,6 +76,11 @@ fn hydrate_profile_file_content(profile: &mut BootProfile) -> Result<()> {
     if let Some(kernel) = profile.kernel.as_mut() {
         hydrate_pipeline_file_content(kernel.artifact_source_mut(), &mut cache)?;
     }
+    if profile.boot == fastboop_core::BootStrategy::Initrd
+        && let Some(initrd) = profile.initrd.as_mut()
+    {
+        hydrate_pipeline_file_content(initrd.artifact_source_mut(), &mut cache)?;
+    }
     if let Some(dtbs) = profile.dtbs.as_mut() {
         hydrate_pipeline_file_content(dtbs.artifact_source_mut(), &mut cache)?;
     }
@@ -155,6 +160,19 @@ async fn collect_profile_pipeline_hints(
         )
         .await
         .context("materializing kernel pipeline hints")?;
+    }
+
+    if profile.boot == fastboop_core::BootStrategy::Initrd
+        && let Some(initrd) = profile.initrd.as_ref()
+    {
+        collect_artifact_source_pipeline_hints(
+            initrd.artifact_source(),
+            &local_artifacts,
+            materialized_cache_dir.clone(),
+            &mut entries,
+        )
+        .await
+        .context("materializing initrd pipeline hints")?;
     }
 
     if let Some(dtbs) = profile.dtbs.as_ref() {

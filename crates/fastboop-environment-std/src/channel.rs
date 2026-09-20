@@ -199,7 +199,11 @@ impl ArtifactReaderResolver {
                 .await?
         };
 
-        let stage0_readers = derive_stage0_readers(reader.clone()).await?;
+        let stage0_readers = if boot_profile.boot == fastboop_core::BootStrategy::Initrd {
+            Vec::new()
+        } else {
+            derive_stage0_readers(reader.clone()).await?
+        };
         Ok(ChannelInput {
             reader,
             stage0_readers,

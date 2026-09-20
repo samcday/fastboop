@@ -577,7 +577,6 @@ mod tests {
                         cmdline_append: None,
                     },
                 },
-                abl_exorcist: None,
             },
         }
     }

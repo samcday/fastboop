@@ -353,6 +353,9 @@ async fn build_stage0_artifacts(
     boot_spec: &BootSpec,
 ) -> Result<Stage0Artifacts> {
     let selected_boot_profile = boot_spec.boot_profile();
+    if selected_boot_profile.is_some_and(|p| p.boot == fastboop_core::BootStrategy::Initrd) {
+        anyhow::bail!("boot: initrd currently requires native fastboop");
+    }
     let mut opts = stage0_options_for_web_boot(env, selected_device, boot_spec);
     let gibblox_worker = spawn_gibblox_worker(channel.to_string(), 0, None)
         .await

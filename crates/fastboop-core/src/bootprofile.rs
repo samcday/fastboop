@@ -7,7 +7,7 @@ use fastboop_schema::bin::{
 };
 use fastboop_schema::{
     BootProfile, BootProfileArtifactPathSource, BootProfileRootfs,
-    BootProfileRootfsFilesystemSource, InjectMac,
+    BootProfileRootfsFilesystemSource, BootStrategy, InjectMac,
 };
 use gibblox_pipeline::{PipelineValidationError, validate_pipeline};
 
@@ -139,6 +139,9 @@ pub enum BootProfileValidationError {
     UnsupportedRootfsFilesystem { filesystem: &'static str },
     Pipeline(PipelineValidationError),
     EmptyKernelPath,
+    EmptyInitrdPath,
+    MissingInitrdKernel,
+    MissingInitrd,
     EmptyDtbsPath,
 }
 
@@ -153,6 +156,9 @@ impl core::fmt::Display for BootProfileValidationError {
             Self::EmptyKernelPath => {
                 write!(f, "boot profile kernel path must not be empty")
             }
+            Self::EmptyInitrdPath => write!(f, "boot profile initrd path must not be empty"),
+            Self::MissingInitrdKernel => write!(f, "boot: initrd requires a kernel artifact"),
+            Self::MissingInitrd => write!(f, "boot: initrd requires an initrd artifact"),
             Self::EmptyDtbsPath => {
                 write!(f, "boot profile dtbs path must not be empty")
             }
@@ -161,6 +167,16 @@ impl core::fmt::Display for BootProfileValidationError {
 }
 
 pub fn validate_boot_profile(profile: &BootProfile) -> Result<(), BootProfileValidationError> {
+    if profile.boot == BootStrategy::Initrd {
+        if profile.kernel.is_none() {
+            return Err(BootProfileValidationError::MissingInitrdKernel);
+        }
+        let initrd = profile
+            .initrd
+            .as_ref()
+            .ok_or(BootProfileValidationError::MissingInitrd)?;
+        validate_profile_artifact_path_source(initrd, BootProfileValidationError::EmptyInitrdPath)?;
+    }
     if !rootfs_supports_stage0_switchroot(&profile.rootfs) {
         return Err(BootProfileValidationError::UnsupportedRootfsFilesystem { filesystem: "fat" });
     }

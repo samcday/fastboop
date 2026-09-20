@@ -144,3 +144,73 @@ cargo run -p fastboop-cli -- bootprofile optimize /tmp/profile.fbp -o /tmp/profi
 # exercise stage0 path through compiled profile
 cargo run -p fastboop-cli -- stage0 /tmp/profile.fbp --device-profile <id> > /tmp/stage0.cpio
 ```
+
+## Booting a supplied initramfs (native)
+
+Set `boot: initrd` to boot the image's own kernel and prepared initramfs.
+Both artifact sources are required. Each names a file inside an EROFS, ext4,
+or FAT pipeline, just like the existing kernel source:
+
+```yaml
+id: supplied-initrd
+boot: initrd
+rootfs:
+  ext4:
+    file: ./rootfs.ext4
+kernel:
+  path: /boot/vmlinuz
+  ext4:
+    file: ./boot-artifacts.ext4
+initrd:
+  path: /boot/initramfs.img
+  ext4:
+    file: ./boot-artifacts.ext4
+dtbs:
+  path: /boot/dtbs
+  ext4:
+    file: ./boot-artifacts.ext4
+extra_cmdline: rd.smoo.cow.size=2G rd.smoo.rootfstype=ext4
+```
+
+The initramfs must already contain smoo's root-storage dracut module, gadget
+binary, the device's required kernel modules, and the components needed to mount
+the root with a disposable dm-snapshot/brd COW layer. Image preparation owns those
+contents and any SELinux policy. Fastboop passes the initramfs bytes unchanged,
+including their compression, and never reads or injects a stage0 binary.
+
+Fastboop resolves the profile's inputs, normalizes the kernel to the DevPro's
+encoding, applies supplied DT overlays/MAC settings, and constructs a new Android
+boot image using the device's geometry. It then uses its existing fastboot RAM
+boot and smoo host lifecycle. The root export remains read-only.
+
+The generated command line selects `root=/dev/smoo-root`, enables
+`rd.smoo=1`, `rd.smoo.force_root=1` and `rd.smoo.cow=1`, and sets
+`rd.smoo.root` from the same identity and geometry used for host export
+registration. `rd.smoo.mimic_fastboot` matches the host's
+`--impersonate-fastboot` setting. Conflicting or duplicate values for these
+arguments fail preparation. Image-specific settings such as the COW size, root
+filesystem type and OSTree arguments belong in `extra_cmdline`.
+Explicit smoo queue/depth/max-I/O CLI options become the corresponding
+`rd.smoo.*` arguments.
+
+```sh
+fastboop bootprofile create ./supplied-initrd.yaml -o /tmp/supplied-initrd.fbp
+
+# Prepare and inspect a payload without accessing USB:
+fastboop boot /tmp/supplied-initrd.fbp --device-profile <device> \
+  --system-time=false --output /tmp/boot.img
+
+# RAM boot the same inputs and keep serving the root:
+fastboop boot /tmp/supplied-initrd.fbp --device-profile <device>
+```
+
+Stage0-only options (`--stage0`, `--augment`, `--require-module`,
+`--serial`, `--ostree`, and `stage0.kernel_modules`) are rejected for this
+strategy. Host firstboot credentials are not injected into a supplied initramfs.
+The existing `--abl-exorcist` stage0 option is also unsupported here; shim
+composition is a separate feature. Web boot currently reports that this strategy
+requires native fastboop.
+
+The added fields change the intentionally unstable v0 binary profile layout.
+Regenerate compiled profiles and channel records with the matching fastboop
+version.

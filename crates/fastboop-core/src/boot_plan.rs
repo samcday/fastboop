@@ -175,6 +175,12 @@ impl BootSpec {
                 .as_ref()
                 .and_then(|profile| profile.kernel.as_ref())
                 .map(|source| source.artifact_source()),
+            initrd: self
+                .boot_profile
+                .as_ref()
+                .filter(|profile| profile.boot == crate::BootStrategy::Initrd)
+                .and_then(|profile| profile.initrd.as_ref())
+                .map(|source| source.artifact_source()),
             dtbs: self
                 .boot_profile
                 .as_ref()
@@ -188,6 +194,7 @@ impl BootSpec {
 pub struct BootSpecPipelines<'a> {
     pub rootfs: Option<&'a BootProfileArtifactSource>,
     pub kernel: Option<&'a BootProfileArtifactSource>,
+    pub initrd: Option<&'a BootProfileArtifactSource>,
     pub dtbs: Option<&'a BootProfileArtifactSource>,
 }
 

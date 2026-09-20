@@ -20,6 +20,7 @@ pub mod channel_stream;
 pub mod device;
 pub mod devpro;
 pub mod fastboot;
+pub mod initrd;
 pub mod personalization;
 pub mod prober;
 
@@ -36,6 +37,7 @@ pub use channel_profile_bundle::*;
 pub use channel_stream::*;
 pub use device::*;
 pub use devpro::*;
+pub use initrd::*;
 pub use personalization::*;
 pub use prober::*;
 

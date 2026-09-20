@@ -3,6 +3,8 @@
 extern crate alloc;
 
 mod kernel;
+mod supplied_initrd;
+pub use supplied_initrd::{SuppliedInitrdOptions, prepare_supplied_initrd};
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
