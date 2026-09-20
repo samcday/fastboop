@@ -110,7 +110,7 @@ stage0:
 ## Validation Highlights
 
 - `rootfs` schema supports `erofs`, `ext4`, and `fat`.
-- Stage0 lower-root currently accepts `erofs` and `ext4`; use `fat` for kernel/dtbs source pipelines.
+- Stage0 lower-root currently accepts `erofs` and `ext4`; use `fat` for kernel/dtbs source pipelines. Supplied-initrd profiles may also export a FAT root (including OSTree-over-FAT); the supplied initramfs owns filesystem support.
 - `stage0.kernel_modules` may be global or scoped under `stage0.devices.<device-profile-id>.stage0`; device-specific modules append to global modules.
 - `stage0.devices.<device-profile-id>.stage0.inject_mac` is device-scoped only. It identifies target nodes by `compatible` string for the selected device DTB.
 - Artifact pipeline validation/limits come from `gibblox-pipeline` (`MAX_PIPELINE_DEPTH=16`).
@@ -177,6 +177,9 @@ binary, the device's required kernel modules, and the components needed to mount
 the root with a disposable dm-snapshot/brd COW layer. Image preparation owns those
 contents and any SELinux policy. Fastboop passes the initramfs bytes unchanged,
 including their compression, and never reads or injects a stage0 binary.
+The initramfs is read in bounded chunks, stopping at a positive DevPro
+`limits.max_initrd_bytes`, or 512 MiB when that limit is absent or zero.
+Oversized files fail during reading, before the whole artifact is allocated.
 
 Fastboop resolves the profile's inputs, normalizes the kernel to the DevPro's
 encoding, applies supplied DT overlays/MAC settings, and constructs a new Android
@@ -210,6 +213,8 @@ strategy. Host firstboot credentials are not injected into a supplied initramfs.
 The existing `--abl-exorcist` stage0 option is also unsupported here; shim
 composition is a separate feature. Web boot currently reports that this strategy
 requires native fastboop.
+`fastboop stage0` rejects a selected supplied-initrd profile before opening its
+root, kernel, or initrd artifact pipelines.
 
 The added fields change the intentionally unstable v0 binary profile layout.
 Regenerate compiled profiles and channel records with the matching fastboop

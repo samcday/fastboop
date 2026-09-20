@@ -1298,6 +1298,9 @@ pub enum ProfileSourceOverrideError<ArtifactError, RootfsError> {
         field: &'static str,
     },
     EmptyDeviceTreeName,
+    InitrdReadLimitExceeded {
+        limit: u64,
+    },
     MissingDtb {
         dtbs_base: String,
         devicetree_name: String,
@@ -1324,6 +1327,9 @@ where
             }
             Self::EmptyProfilePath { field } => write!(f, "boot profile {field} must not be empty"),
             Self::EmptyDeviceTreeName => write!(f, "device profile devicetree_name is empty"),
+            Self::InitrdReadLimitExceeded { limit } => {
+                write!(f, "supplied initrd exceeds read limit {limit} bytes")
+            }
             Self::MissingDtb {
                 dtbs_base,
                 devicetree_name,
@@ -1421,15 +1427,7 @@ where
             SourceRootfs::open_boot_profile_source(&initrd_source.source, source_reader)
                 .await
                 .map_err(|source| ProfileSourceOverrideError::OpenRootfs { source })?;
-        Some(
-            source_rootfs
-                .read_all(initrd_path)
-                .await
-                .map_err(|source| ProfileSourceOverrideError::ReadPath {
-                    path: initrd_path.to_string(),
-                    source,
-                })?,
-        )
+        Some(read_profile_initrd(&source_rootfs, initrd_path, device_profile).await?)
     } else {
         None
     };
@@ -1439,6 +1437,48 @@ where
         dtb_override,
         initrd_override,
     })
+}
+
+const DEFAULT_MAX_SUPPLIED_INITRD_BYTES: u64 = 512 * 1024 * 1024;
+const INITRD_READ_CHUNK_BYTES: usize = 64 * 1024;
+
+async fn read_profile_initrd<ArtifactError, Rootfs: Filesystem>(
+    rootfs: &Rootfs,
+    path: &str,
+    device_profile: &DeviceProfile,
+) -> Result<Vec<u8>, ProfileSourceOverrideError<ArtifactError, Rootfs::Error>> {
+    let limit = device_profile
+        .boot
+        .fastboot_boot
+        .android_bootimg
+        .limits
+        .as_ref()
+        .and_then(|limits| limits.max_initrd_bytes)
+        .filter(|limit| *limit > 0)
+        .unwrap_or(DEFAULT_MAX_SUPPLIED_INITRD_BYTES);
+    let mut out = Vec::new();
+    loop {
+        // Probe one byte beyond the limit to distinguish exact-size input from
+        // oversized input. Never allocate from a filesystem entry's size claim.
+        let remaining = limit - out.len() as u64;
+        let len = remaining
+            .saturating_add(1)
+            .min(INITRD_READ_CHUNK_BYTES as u64) as usize;
+        let chunk = rootfs
+            .read_range(path, out.len() as u64, len)
+            .await
+            .map_err(|source| ProfileSourceOverrideError::ReadPath {
+                path: path.to_string(),
+                source,
+            })?;
+        if chunk.is_empty() {
+            return Ok(out);
+        }
+        if chunk.len() as u64 > remaining {
+            return Err(ProfileSourceOverrideError::InitrdReadLimitExceeded { limit });
+        }
+        out.extend_from_slice(&chunk);
+    }
 }
 
 fn non_empty_profile_path<'a, ArtifactError, RootfsError>(
@@ -1795,6 +1835,102 @@ mod tests {
                 source: "unreadable"
             }
         ));
+    }
+
+    struct SizedInitrd {
+        size: u64,
+        reads: core::cell::RefCell<Vec<(u64, usize)>>,
+    }
+
+    impl Filesystem for SizedInitrd {
+        type Error = &'static str;
+
+        async fn read_all(&self, _: &str) -> Result<Vec<u8>, Self::Error> {
+            panic!("initrd reads must be bounded");
+        }
+
+        async fn read_range(
+            &self,
+            _: &str,
+            offset: u64,
+            len: usize,
+        ) -> Result<Vec<u8>, Self::Error> {
+            assert!(len <= INITRD_READ_CHUNK_BYTES);
+            self.reads.borrow_mut().push((offset, len));
+            // Short reads are legal and must not be mistaken for EOF.
+            Ok(vec![
+                0x5a;
+                self.size.saturating_sub(offset).min(len as u64).min(7)
+                    as usize
+            ])
+        }
+
+        async fn read_dir(&self, _: &str) -> Result<Vec<String>, Self::Error> {
+            unreachable!()
+        }
+        async fn entry_type(&self, _: &str) -> Result<Option<FilesystemEntryType>, Self::Error> {
+            unreachable!()
+        }
+        async fn read_link(&self, _: &str) -> Result<String, Self::Error> {
+            unreachable!()
+        }
+        async fn exists(&self, _: &str) -> Result<bool, Self::Error> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn supplied_initrd_read_enforces_limit_before_materializing_file() {
+        let mut device = any_device_profile();
+        device.boot.fastboot_boot.android_bootimg.limits = Some(crate::BootLimits {
+            max_kernel_bytes: None,
+            max_initrd_bytes: Some(32),
+            max_total_bytes: None,
+        });
+        for size in [0, 31, 32, 33, u64::MAX] {
+            let rootfs = SizedInitrd {
+                size,
+                reads: Default::default(),
+            };
+            let result = block_on(read_profile_initrd::<(), _>(&rootfs, "/initrd", &device));
+            if size <= 32 {
+                assert_eq!(result.unwrap(), vec![0x5a; size as usize]);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(ProfileSourceOverrideError::InitrdReadLimitExceeded { limit: 32 })
+                ));
+            }
+            for &(offset, len) in rootfs.reads.borrow().iter() {
+                assert!(
+                    offset + len as u64 <= 33,
+                    "never request beyond the limit plus one"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn supplied_initrd_read_handles_unset_and_zero_limits_without_large_requests() {
+        let mut device = any_device_profile();
+        for limits in [
+            None,
+            Some(crate::BootLimits {
+                max_kernel_bytes: None,
+                max_initrd_bytes: Some(0),
+                max_total_bytes: None,
+            }),
+        ] {
+            device.boot.fastboot_boot.android_bootimg.limits = limits;
+            let rootfs = SizedInitrd {
+                size: 19,
+                reads: Default::default(),
+            };
+            assert_eq!(
+                block_on(read_profile_initrd::<(), _>(&rootfs, "/initrd", &device)).unwrap(),
+                vec![0x5a; 19]
+            );
+        }
     }
 
     #[test]
