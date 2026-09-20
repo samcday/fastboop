@@ -16,6 +16,9 @@ const MIN_KERNEL_BYTES: usize = 1024 * 1024;
 const ARM64_MAGIC_OFFSET: usize = 0x38;
 const ARM64_MAGIC: [u8; 4] = [0x41, 0x52, 0x4d, 0x64]; // "ARM\x64"
 const GZIP_LEVEL_FAST: u8 = 1;
+// Host-side decoding ceiling, independent of the bootloader's encoded payload
+// limit. In particular, an image.gz kernel can be larger than that limit in RAM.
+const DEFAULT_MAX_DECOMPRESSED_KERNEL_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug)]
 enum KernelPayload {
@@ -37,7 +40,9 @@ pub fn normalize_kernel(profile: &DeviceProfile, kernel: &[u8]) -> Result<Vec<u8
 
     match (desired, payload) {
         (Compression::None, KernelPayload::Raw(data)) => Ok(data),
-        (Compression::None, KernelPayload::Gzip(data)) => gzip_decompress(&data),
+        (Compression::None, KernelPayload::Gzip(data)) => {
+            gzip_decompress(&data, kernel_decompression_limit(profile))
+        }
         (Compression::Gzip, KernelPayload::Gzip(data)) => Ok(data),
         (Compression::Gzip, KernelPayload::Raw(data)) => gzip_compress(&data),
         (Compression::Lz4, _) => Err(Stage0Error::KernelFormat(
@@ -58,7 +63,7 @@ pub fn prepare_kernel(
         return normalize_kernel(profile, kernel);
     };
 
-    let raw_kernel = extract_raw_arm64_kernel(kernel)?;
+    let raw_kernel = extract_raw_arm64_kernel(kernel, kernel_decompression_limit(profile))?;
     debug!(
         kernel_bytes = raw_kernel.len(),
         shim_bytes = abl_exorcist.image.len(),
@@ -82,8 +87,22 @@ fn detect_kernel_payload(kernel: &[u8]) -> Result<KernelPayload, Stage0Error> {
     }
 }
 
-fn extract_raw_arm64_kernel(kernel: &[u8]) -> Result<Vec<u8>, Stage0Error> {
-    let raw = kernel_payload_to_raw_image(detect_kernel_payload(kernel)?)?;
+fn kernel_decompression_limit(profile: &DeviceProfile) -> usize {
+    let boot = &profile.boot.fastboot_boot.android_bootimg;
+    if boot.kernel.encoding.compression() == Compression::None
+        && let Some(limit) = boot
+            .limits
+            .as_ref()
+            .and_then(|limits| limits.max_kernel_bytes)
+        && limit > 0
+    {
+        return usize::try_from(limit).unwrap_or(usize::MAX);
+    }
+    DEFAULT_MAX_DECOMPRESSED_KERNEL_BYTES
+}
+
+fn extract_raw_arm64_kernel(kernel: &[u8], limit: usize) -> Result<Vec<u8>, Stage0Error> {
+    let raw = kernel_payload_to_raw_image(detect_kernel_payload(kernel)?, limit)?;
     if !is_arm64_image(&raw) {
         return Err(Stage0Error::KernelFormat(
             "extracted kernel is not a raw arm64 Image",
@@ -92,14 +111,17 @@ fn extract_raw_arm64_kernel(kernel: &[u8]) -> Result<Vec<u8>, Stage0Error> {
     Ok(raw)
 }
 
-fn kernel_payload_to_raw_image(payload: KernelPayload) -> Result<Vec<u8>, Stage0Error> {
+fn kernel_payload_to_raw_image(
+    payload: KernelPayload,
+    limit: usize,
+) -> Result<Vec<u8>, Stage0Error> {
     match payload {
         KernelPayload::Raw(data) if data.starts_with(&MZ_MAGIC) => {
-            kernel_payload_to_raw_image(extract_pe_recursive(&data)?)
+            kernel_payload_to_raw_image(extract_pe_recursive(&data)?, limit)
         }
         KernelPayload::Raw(data) => Ok(data),
         KernelPayload::Gzip(data) => {
-            kernel_payload_to_raw_image(KernelPayload::Raw(gzip_decompress(&data)?))
+            kernel_payload_to_raw_image(KernelPayload::Raw(gzip_decompress(&data, limit)?), limit)
         }
     }
 }
@@ -315,15 +337,21 @@ fn gzip_peek_header(data: &[u8]) -> Result<Option<Vec<u8>>, Stage0Error> {
     }
 }
 
-fn gzip_decompress(data: &[u8]) -> Result<Vec<u8>, Stage0Error> {
+fn gzip_decompress(data: &[u8], output_limit: usize) -> Result<Vec<u8>, Stage0Error> {
     let Some((offset, deflate_end)) = gzip_deflate_range(data)? else {
         return Err(Stage0Error::KernelFormat("invalid gzip kernel"));
     };
     let deflate = &data[offset..deflate_end];
     let expected_len = u32::from_le_bytes(data[data.len() - 4..].try_into().unwrap()) as usize;
-    let limit = expected_len.max(ARM64_MAGIC_OFFSET + 8);
-    miniz_oxide::inflate::decompress_to_vec_with_limit(deflate, limit)
-        .map_err(|_| Stage0Error::KernelDecode("gzip decode failed"))
+    let limit = expected_len.max(ARM64_MAGIC_OFFSET + 8).min(output_limit);
+    miniz_oxide::inflate::decompress_to_vec_with_limit(deflate, limit).map_err(|err| {
+        match err.status {
+            miniz_oxide::inflate::TINFLStatus::HasMoreOutput if limit == output_limit => {
+                Stage0Error::KernelDecode("gzip kernel exceeds decompression limit")
+            }
+            _ => Stage0Error::KernelDecode("gzip decode failed"),
+        }
+    })
 }
 
 fn gzip_deflate_range(data: &[u8]) -> Result<Option<(usize, usize)>, Stage0Error> {
@@ -436,6 +464,71 @@ mod tests {
 
     const PAYLOAD_OFFSET: usize = 0x40_0000;
 
+    fn with_kernel_limit(encoding: KernelEncoding, limit: u64) -> DeviceProfile {
+        let mut profile = profile(encoding);
+        profile.boot.fastboot_boot.android_bootimg.limits = Some(fastboop_core::BootLimits {
+            max_kernel_bytes: Some(limit),
+            max_initrd_bytes: None,
+            max_total_bytes: None,
+        });
+        profile
+    }
+
+    #[test]
+    fn gzip_normalization_stops_at_the_raw_kernel_limit() {
+        let profile = with_kernel_limit(KernelEncoding::Image, 128);
+        let raw = image(256, 256);
+        let mut gzip = gzip_compress(&raw).unwrap();
+        assert!(normalize_kernel(&profile, &gzip).is_err());
+
+        // An artifact-controlled ISIZE must not raise the trusted ceiling.
+        let footer = gzip.len() - 4;
+        gzip[footer..].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(normalize_kernel(&profile, &gzip).is_err());
+
+        let at_limit = image(128, 128);
+        assert_eq!(
+            normalize_kernel(&profile, &gzip_compress(&at_limit).unwrap()).unwrap(),
+            at_limit
+        );
+    }
+
+    #[test]
+    fn raw_kernel_extraction_stops_before_assembly_when_over_limit() {
+        let profile = with_kernel_limit(KernelEncoding::Image, 128);
+        let kernel = gzip_compress(&image(256, 256)).unwrap();
+        let exorcist = Stage0AblExorcist {
+            image: image(128, 128),
+        };
+        assert!(prepare_kernel(&profile, &kernel, Some(&exorcist)).is_err());
+    }
+
+    #[test]
+    fn compressed_kernel_limit_does_not_limit_the_raw_image() {
+        let raw = image(65536, 65536);
+        let compressed = gzip_compress(&raw).unwrap();
+        let profile = with_kernel_limit(KernelEncoding::ImageGzip, 32768);
+        let exorcist = Stage0AblExorcist {
+            image: image(128, 128),
+        };
+        let prepared = prepare_kernel(&profile, &compressed, Some(&exorcist)).unwrap();
+        fastboop_core::bootimg::build_android_bootimg(&profile, &prepared, &[], None, "").unwrap();
+    }
+
+    #[test]
+    fn absent_or_zero_kernel_limit_uses_a_finite_decoding_default() {
+        for profile in [
+            profile(KernelEncoding::Image),
+            with_kernel_limit(KernelEncoding::Image, 0),
+            with_kernel_limit(KernelEncoding::ImageGzip, 128),
+        ] {
+            assert_eq!(
+                kernel_decompression_limit(&profile),
+                DEFAULT_MAX_DECOMPRESSED_KERNEL_BYTES
+            );
+        }
+    }
+
     #[test]
     fn prepare_kernel_wraps_abl_exorcist_before_gzip_normalization() {
         let profile = profile(KernelEncoding::ImageGzip);
@@ -448,7 +541,7 @@ mod tests {
         let prepared = prepare_kernel(&profile, &kernel, Some(&exorcist)).unwrap();
         assert!(prepared.starts_with(&GZIP_MAGIC));
 
-        let raw = gzip_decompress(&prepared).unwrap();
+        let raw = gzip_decompress(&prepared, DEFAULT_MAX_DECOMPRESSED_KERNEL_BYTES).unwrap();
         assert_eq!(&raw[..shim.len()], shim.as_slice());
         assert_eq!(
             &raw[PAYLOAD_OFFSET..PAYLOAD_OFFSET + kernel.len()],
