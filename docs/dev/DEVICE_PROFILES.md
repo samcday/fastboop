@@ -86,6 +86,13 @@ For current fastboop flows, this is `boot.fastboot_boot.android_bootimg`.
 This section captures concrete constraints (for example `header_version`, `page_size`, kernel encoding)
 so payload generation can be deterministic.
 
+`limits.max_kernel_bytes` bounds the final encoded kernel payload; zero or an
+absent value leaves that bootloader limit unset. Gzip kernel decompression also
+has a host-side ceiling: the positive kernel limit when the device expects an
+uncompressed Image, otherwise 256 MiB. Compressed output uses the separate
+256 MiB ceiling because its uncompressed input may legitimately exceed the
+bootloader's encoded-payload limit. The gzip trailer cannot raise this ceiling.
+
 Treat this as a hardware contract, not distro policy:
 
 - Include fields required by the target bootloader.
