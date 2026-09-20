@@ -177,7 +177,7 @@ pub fn validate_boot_profile(profile: &BootProfile) -> Result<(), BootProfileVal
             .ok_or(BootProfileValidationError::MissingInitrd)?;
         validate_profile_artifact_path_source(initrd, BootProfileValidationError::EmptyInitrdPath)?;
     }
-    if !rootfs_supports_stage0_switchroot(&profile.rootfs) {
+    if profile.boot == BootStrategy::Stage0 && !rootfs_supports_stage0_switchroot(&profile.rootfs) {
         return Err(BootProfileValidationError::UnsupportedRootfsFilesystem { filesystem: "fat" });
     }
     validate_pipeline(profile.rootfs.source()).map_err(BootProfileValidationError::Pipeline)?;

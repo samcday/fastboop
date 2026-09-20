@@ -556,3 +556,35 @@ fn initrd_pipeline_participates_in_channel_hint_selection() {
     assert!(after.is_superset(&before));
     assert!(after.len() > before.len());
 }
+
+#[test]
+fn initrd_strategy_owns_root_filesystem_support() {
+    let fat = BootProfileRootfsFatSource {
+        fat: BootProfileArtifactSource::File(BootProfileArtifactSourceFileSource {
+            file: "root.fat".into(),
+            content: Some(sample_content()),
+        }),
+    };
+    for rootfs in [
+        BootProfileRootfs::Fat(fat.clone()),
+        BootProfileRootfs::Ostree(BootProfileRootfsOstreeSource {
+            ostree: BootProfileRootfsFilesystemSource::Fat(fat),
+        }),
+    ] {
+        let mut profile = sample_profile();
+        let artifact = fastboop_core::BootProfileArtifactPathSource {
+            path: "/artifact".into(),
+            source: profile.rootfs.clone(),
+        };
+        profile.kernel = Some(artifact.clone());
+        profile.initrd = Some(artifact);
+        profile.rootfs = rootfs;
+        profile.boot = BootStrategy::Initrd;
+        validate_boot_profile(&profile).unwrap();
+        profile.boot = BootStrategy::Stage0;
+        assert_eq!(
+            validate_boot_profile(&profile),
+            Err(BootProfileValidationError::UnsupportedRootfsFilesystem { filesystem: "fat" })
+        );
+    }
+}

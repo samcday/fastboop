@@ -535,15 +535,16 @@ pub async fn build_stage0_initrd(config: NativeBootStage0Config) -> Result<Stage
         .ok_or_else(|| anyhow!("--device-profile is required"))?;
     let profile = resolve_profile_in_pool(&pool, &devpro_dirs, requested)?;
 
-    let resolved = resolve_boot_input(&mut artifact_resolver, &config, &profile).await?;
-    if resolved
-        .input
-        .boot_spec
-        .boot_profile()
+    let selected = fastboop_core::Channel::new(None, channel_head)
+        .resolve_boot_profile(&profile.id, config.boot_profile.as_deref())
+        .map_err(|err| anyhow!(err.to_string()))?;
+    if selected
+        .as_ref()
         .is_some_and(|p| p.boot == BootStrategy::Initrd)
     {
         bail!("fastboop stage0 cannot build a boot: initrd profile; use fastboop boot");
     }
+    let resolved = resolve_boot_input(&mut artifact_resolver, &config, &profile).await?;
     let prepared = build_stage0_artifacts(resolved, &config, &profile, None, None, None).await?;
     let build = prepared
         .build
@@ -1367,6 +1368,50 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
         assert!(cmdline.contains("rd.smoo.cow.size=2G ostree=true"));
         assert_eq!(prepared.export.identity, "test:root");
         assert_eq!(prepared.export.size_bytes, 4096);
+    }
+
+    #[tokio::test]
+    async fn stage0_rejects_initrd_before_opening_any_artifact() {
+        let (device, resolved) = fixture();
+        let mut profile = resolved.input.boot_spec.boot_profile().unwrap().clone();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("fastboop-stage0-reject-{nonce}"));
+        std::fs::create_dir(&dir).unwrap();
+        profile.rootfs =
+            fastboop_core::BootProfileRootfs::Ext4(fastboop_core::BootProfileRootfsExt4Source {
+                ext4: fastboop_core::BootProfileArtifactSource::File(
+                    fastboop_core::BootProfileArtifactSourceFileSource {
+                        file: dir.join("missing.ext4").to_string_lossy().into_owned(),
+                        content: Some(gibblox_pipeline::PipelineSourceContent {
+                            digest: format!("sha512:{}", "1".repeat(128)),
+                            size_bytes: 4096,
+                        }),
+                    },
+                ),
+            });
+        let artifact = fastboop_core::BootProfileArtifactPathSource {
+            path: "/artifact".into(),
+            source: profile.rootfs.clone(),
+        };
+        profile.kernel = Some(artifact.clone());
+        profile.initrd = Some(artifact);
+        let channel = dir.join("profile.fbp");
+        std::fs::write(
+            &channel,
+            fastboop_core::encode_boot_profile(&profile).unwrap(),
+        )
+        .unwrap();
+        let mut config = NativeBootStage0Config::from_raw_ostree(channel, None).unwrap();
+        config.device_profile = Some(device.id);
+        let result = build_stage0_initrd(config).await;
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "fastboop stage0 cannot build a boot: initrd profile; use fastboop boot"
+        );
     }
 
     #[tokio::test]
