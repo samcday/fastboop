@@ -1,17 +1,18 @@
 %bcond_without check
 %bcond_without vendor
 %global cargo_install_lib 0
+%global upstream_version 0.0.1-rc.21
 %if %{with vendor}
 %global _cargo_generate_buildrequires 0
 %endif
 
 Name:           fastboop
-Version:        0.0.1_rc21
+Version:        0.0.1~rc21
 Release:        %autorelease
 Summary:        Ephemeral Linux boot tool for USB-enabled pocket computers
 License:        GPL-3.0-only
 URL:            https://github.com/samcday/fastboop
-Source:         %{url}/archive/v%{version}/%{name}-v%{version}.tar.gz
+Source:         %{url}/archive/v%{upstream_version}/%{name}-v%{upstream_version}.tar.gz
 
 BuildRequires:  cargo-rpm-macros >= 24
 BuildRequires:  clang-devel
@@ -22,7 +23,7 @@ BuildRequires:  curl
 #   rpmbuild --define 'fastboop_stage0_embed_path /path/to/fastboop-stage0-aarch64-unknown-linux-musl' ...
 # If the define is omitted, %%{_sourcedir}/fastboop-stage0-aarch64-unknown-linux-musl
 # is used when present. If neither is present, %build downloads the release asset
-# matching %%{version} (normalization: v0.0.1.rc.7 -> 0.0.1-rc.7).
+# matching %%{upstream_version}.
 %global stage0_embed_asset fastboop-stage0-aarch64-unknown-linux-musl
 %global stage0_embed_default %{_sourcedir}/%{stage0_embed_asset}
 
@@ -32,7 +33,7 @@ a non-mutating USB-enabled bootloader interface (i.e. fastboot), without
 flashing or permanently modifying the device.
 
 %prep
-%autosetup -n %{name}-v%{version} -p1
+%autosetup -n %{name}-%{upstream_version} -p1
 %if %{with vendor}
 %{__cargo} vendor --locked --versioned-dirs vendor
 %cargo_prep -v vendor
@@ -48,7 +49,7 @@ if [ -z "$stage0_embed_path" ] && [ -f "%{stage0_embed_default}" ]; then
   stage0_embed_path="%{stage0_embed_default}"
 fi
 if [ -z "$stage0_embed_path" ]; then
-  stage0_release_tag="$(printf '%s' '%{version}' | sed -E 's/^v//; s/_/-/g; s/([0-9])[.-]?rc[.-]?([0-9]+)/\1-rc.\2/')"
+  stage0_release_tag="%{upstream_version}"
   stage0_embed_url="%{url}/releases/download/v${stage0_release_tag}/%{stage0_embed_asset}"
   stage0_embed_path="${PWD}/%{stage0_embed_asset}"
   rm -f "$stage0_embed_path"
@@ -82,7 +83,7 @@ if [ -z "$stage0_embed_path" ] && [ -f "${PWD}/%{stage0_embed_asset}" ]; then
   stage0_embed_path="${PWD}/%{stage0_embed_asset}"
 fi
 if [ -z "$stage0_embed_path" ]; then
-  stage0_release_tag="$(printf '%s' '%{version}' | sed -E 's/^v//; s/_/-/g; s/([0-9])[.-]?rc[.-]?([0-9]+)/\1-rc.\2/')"
+  stage0_release_tag="%{upstream_version}"
   stage0_embed_url="%{url}/releases/download/v${stage0_release_tag}/%{stage0_embed_asset}"
   stage0_embed_path="${PWD}/%{stage0_embed_asset}"
   rm -f "$stage0_embed_path"

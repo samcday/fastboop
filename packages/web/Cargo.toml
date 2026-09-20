@@ -9,10 +9,10 @@ publish = false
 anyhow = { workspace = true }
 dioxus = { workspace = true, features = ["router"] }
 ui = { workspace = true }
-fastboop-core = { path = "../../crates/fastboop-core" }
+fastboop-core = { path = "../../crates/fastboop-core", version = "0.0.1-rc.21" }
 fastboop-environment-web = { workspace = true }
-fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator" }
-fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb" }
+fastboop-stage0-generator = { path = "../../crates/fastboop-stage0-generator", version = "0.0.1-rc.21" }
+fastboop-fastboot-webusb = { path = "../../crates/fastboop-fastboot-webusb", version = "0.0.1-rc.21" }
 gobblytes-erofs = { workspace = true }
 gobblytes-core = { workspace = true }
 gobblytes-fat = { workspace = true }
