@@ -19,6 +19,8 @@ const GZIP_LEVEL_FAST: u8 = 1;
 // Host-side decoding ceiling, independent of the bootloader's encoded payload
 // limit. In particular, an image.gz kernel can be larger than that limit in RAM.
 const DEFAULT_MAX_DECOMPRESSED_KERNEL_BYTES: usize = 256 * 1024 * 1024;
+const ZSTD_DECOMPRESSION_LIMIT: Stage0Error =
+    Stage0Error::KernelDecode("zstd kernel exceeds decompression limit");
 
 #[derive(Debug)]
 enum KernelPayload {
@@ -28,7 +30,8 @@ enum KernelPayload {
 
 pub fn normalize_kernel(profile: &DeviceProfile, kernel: &[u8]) -> Result<Vec<u8>, Stage0Error> {
     debug!(bytes = kernel.len(), "kernel input");
-    let payload = detect_kernel_payload(kernel)?;
+    let limit = kernel_decompression_limit(profile);
+    let payload = detect_kernel_payload(kernel, limit)?;
 
     let desired = profile
         .boot
@@ -40,9 +43,7 @@ pub fn normalize_kernel(profile: &DeviceProfile, kernel: &[u8]) -> Result<Vec<u8
 
     match (desired, payload) {
         (Compression::None, KernelPayload::Raw(data)) => Ok(data),
-        (Compression::None, KernelPayload::Gzip(data)) => {
-            gzip_decompress(&data, kernel_decompression_limit(profile))
-        }
+        (Compression::None, KernelPayload::Gzip(data)) => gzip_decompress(&data, limit),
         (Compression::Gzip, KernelPayload::Gzip(data)) => Ok(data),
         (Compression::Gzip, KernelPayload::Raw(data)) => gzip_compress(&data),
         (Compression::Lz4, _) => Err(Stage0Error::KernelFormat(
@@ -74,13 +75,13 @@ pub fn prepare_kernel(
     normalize_kernel(profile, &assembled)
 }
 
-fn detect_kernel_payload(kernel: &[u8]) -> Result<KernelPayload, Stage0Error> {
+fn detect_kernel_payload(kernel: &[u8], limit: usize) -> Result<KernelPayload, Stage0Error> {
     if kernel.starts_with(&GZIP_MAGIC) {
         debug!("kernel input already gzip");
         Ok(KernelPayload::Gzip(kernel.to_vec()))
     } else if kernel.starts_with(&MZ_MAGIC) {
         debug!("kernel input is PE");
-        extract_pe_recursive(kernel)
+        extract_pe_recursive(kernel, limit)
     } else {
         debug!("kernel input treated as raw");
         Ok(KernelPayload::Raw(kernel.to_vec()))
@@ -108,7 +109,7 @@ pub(super) fn prepare_ramdisk_kernel(kernel: &[u8]) -> Result<Vec<u8>, Stage0Err
 }
 
 fn extract_raw_arm64_kernel(kernel: &[u8], limit: usize) -> Result<Vec<u8>, Stage0Error> {
-    let raw = kernel_payload_to_raw_image(detect_kernel_payload(kernel)?, limit)?;
+    let raw = kernel_payload_to_raw_image(detect_kernel_payload(kernel, limit)?, limit)?;
     if !is_arm64_image(&raw) {
         return Err(Stage0Error::KernelFormat(
             "extracted kernel is not a raw arm64 Image",
@@ -126,7 +127,7 @@ fn kernel_payload_to_raw_image(
         // first instruction is also the PE "MZ" signature. Re-extracting one
         // returns the same bytes and would otherwise recurse indefinitely.
         KernelPayload::Raw(data) if data.starts_with(&MZ_MAGIC) && !is_arm64_image(&data) => {
-            kernel_payload_to_raw_image(extract_pe_recursive(&data)?, limit)
+            kernel_payload_to_raw_image(extract_pe_recursive(&data, limit)?, limit)
         }
         KernelPayload::Raw(data) => Ok(data),
         KernelPayload::Gzip(data) => {
@@ -135,7 +136,7 @@ fn kernel_payload_to_raw_image(
     }
 }
 
-fn extract_pe_recursive(kernel: &[u8]) -> Result<KernelPayload, Stage0Error> {
+fn extract_pe_recursive(kernel: &[u8], limit: usize) -> Result<KernelPayload, Stage0Error> {
     let mut current = kernel.to_vec();
     for _ in 0..4 {
         if is_arm64_image(&current) {
@@ -146,7 +147,7 @@ fn extract_pe_recursive(kernel: &[u8]) -> Result<KernelPayload, Stage0Error> {
             return Ok(KernelPayload::Raw(current));
         }
         debug!(bytes = current.len(), "pe layer");
-        match extract_pe_payload(&current)? {
+        match extract_pe_payload(&current, limit)? {
             KernelPayload::Raw(next) => current = next,
             KernelPayload::Gzip(next) => return Ok(KernelPayload::Gzip(next)),
         }
@@ -156,7 +157,7 @@ fn extract_pe_recursive(kernel: &[u8]) -> Result<KernelPayload, Stage0Error> {
     ))
 }
 
-fn extract_pe_payload(kernel: &[u8]) -> Result<KernelPayload, Stage0Error> {
+fn extract_pe_payload(kernel: &[u8], limit: usize) -> Result<KernelPayload, Stage0Error> {
     let pe_offset = read_u32_le(kernel, 0x3c)
         .ok_or(Stage0Error::KernelFormat("PE header offset out of range"))?
         as usize;
@@ -176,15 +177,15 @@ fn extract_pe_payload(kernel: &[u8]) -> Result<KernelPayload, Stage0Error> {
     let sections = parse_sections(kernel, sections_offset, num_sections)?;
     debug!(sections = sections.len(), bytes = kernel.len(), "pe parsed");
 
-    if let Some(payload) = search_sections_for_payload(kernel, &sections, Some(".text"))? {
+    if let Some(payload) = search_sections_for_payload(kernel, &sections, Some(".text"), limit)? {
         debug!("payload found in .text");
         return Ok(payload);
     }
-    if let Some(payload) = search_sections_for_payload(kernel, &sections, None)? {
+    if let Some(payload) = search_sections_for_payload(kernel, &sections, None, limit)? {
         debug!("payload found in other section");
         return Ok(payload);
     }
-    if let Some(payload) = search_bytes_for_payload(kernel)? {
+    if let Some(payload) = search_bytes_for_payload(kernel, limit)? {
         debug!("payload found in full PE scan");
         return Ok(payload);
     }
@@ -241,10 +242,11 @@ fn search_sections_for_payload(
     data: &[u8],
     sections: &[Section<'_>],
     preferred: Option<&str>,
+    limit: usize,
 ) -> Result<Option<KernelPayload>, Stage0Error> {
     if let Some(name) = preferred {
         for section in sections.iter().filter(move |s| s.name == name) {
-            if let Some(payload) = extract_section_payload(data, section)? {
+            if let Some(payload) = extract_section_payload(data, section, limit)? {
                 return Ok(Some(payload));
             }
         }
@@ -252,7 +254,7 @@ fn search_sections_for_payload(
     }
 
     for section in sections {
-        if let Some(payload) = extract_section_payload(data, section)? {
+        if let Some(payload) = extract_section_payload(data, section, limit)? {
             return Ok(Some(payload));
         }
     }
@@ -262,11 +264,12 @@ fn search_sections_for_payload(
 fn extract_section_payload(
     data: &[u8],
     section: &Section<'_>,
+    limit: usize,
 ) -> Result<Option<KernelPayload>, Stage0Error> {
     let start = section.raw_offset;
     let end = start + section.raw_size;
     let bytes = &data[start..end];
-    let result = search_bytes_for_payload(bytes)?;
+    let result = search_bytes_for_payload(bytes, limit)?;
     if result.is_some() {
         debug!(
             section = section.name,
@@ -277,7 +280,10 @@ fn extract_section_payload(
     Ok(result)
 }
 
-fn search_bytes_for_payload(data: &[u8]) -> Result<Option<KernelPayload>, Stage0Error> {
+fn search_bytes_for_payload(
+    data: &[u8],
+    limit: usize,
+) -> Result<Option<KernelPayload>, Stage0Error> {
     let zstd_hits = find_all_magics(data, &ZSTD_MAGIC);
     let gzip_hits = find_all_magics(data, &GZIP_MAGIC);
     debug!(
@@ -289,15 +295,19 @@ fn search_bytes_for_payload(data: &[u8]) -> Result<Option<KernelPayload>, Stage0
     let mut best_raw: Option<Vec<u8>> = None;
     let mut best_raw_len = 0usize;
     for idx in zstd_hits {
-        if let Ok(payload) = decode_zstd(&data[idx..]) {
-            debug!(bytes = payload.len(), "zstd decoded");
-            if payload.starts_with(&MZ_MAGIC) || is_arm64_image(&payload) {
-                return Ok(Some(KernelPayload::Raw(payload)));
-            }
-            if payload.len() > best_raw_len {
-                best_raw_len = payload.len();
-                best_raw = Some(payload);
-            }
+        let payload = match decode_zstd(&data[idx..], limit) {
+            Ok(payload) => payload,
+            // A resource limit is terminal, not a false-positive magic hit.
+            Err(err) if err == ZSTD_DECOMPRESSION_LIMIT => return Err(err),
+            Err(_) => continue,
+        };
+        debug!(bytes = payload.len(), "zstd decoded");
+        if payload.starts_with(&MZ_MAGIC) || is_arm64_image(&payload) {
+            return Ok(Some(KernelPayload::Raw(payload)));
+        }
+        if payload.len() > best_raw_len {
+            best_raw_len = payload.len();
+            best_raw = Some(payload);
         }
     }
     if let Some(payload) = best_raw
@@ -317,7 +327,19 @@ fn search_bytes_for_payload(data: &[u8]) -> Result<Option<KernelPayload>, Stage0
     Ok(None)
 }
 
-fn decode_zstd(data: &[u8]) -> Result<Vec<u8>, Stage0Error> {
+fn decode_zstd(data: &[u8], output_limit: usize) -> Result<Vec<u8>, Stage0Error> {
+    // StreamingDecoder retains the frame's history window before yielding
+    // output. Bound it before initialization as well as counting emitted bytes.
+    let (frame, _) = ruzstd::frame::read_frame_header(data)
+        .map_err(|_| Stage0Error::KernelDecode("zstd init"))?;
+    let window = frame
+        .header
+        .window_size()
+        .map_err(|_| Stage0Error::KernelDecode("zstd window"))?;
+    let window_limit = (output_limit as u64).max(ruzstd::frame::MIN_WINDOW_SIZE);
+    if window > window_limit || frame.header.frame_content_size() > output_limit as u64 {
+        return Err(ZSTD_DECOMPRESSION_LIMIT);
+    }
     let mut decoder =
         ruzstd::StreamingDecoder::new(data).map_err(|_| Stage0Error::KernelDecode("zstd init"))?;
     let mut out = Vec::new();
@@ -327,6 +349,9 @@ fn decode_zstd(data: &[u8]) -> Result<Vec<u8>, Stage0Error> {
             .map_err(|_| Stage0Error::KernelDecode("zstd decode failed"))?;
         if n == 0 {
             break;
+        }
+        if n > output_limit.saturating_sub(out.len()) {
+            return Err(ZSTD_DECOMPRESSION_LIMIT);
         }
         out.extend_from_slice(&buf[..n]);
     }
@@ -479,6 +504,151 @@ mod tests {
             max_total_bytes: None,
         });
         profile
+    }
+
+    // Unknown content size and a 1 KiB window: the decoder must count actual
+    // output, not rely on a frame's declared size. RLE blocks expand cheaply.
+    fn zstd_frame(prefix: &[u8], zeroes: usize) -> Vec<u8> {
+        assert!(prefix.len() <= 1024);
+        let mut frame = ZSTD_MAGIC.to_vec();
+        frame.extend_from_slice(&[0, 0]);
+        let header = ((prefix.len() as u32) << 3) | u32::from(zeroes == 0);
+        frame.extend_from_slice(&header.to_le_bytes()[..3]);
+        frame.extend_from_slice(prefix);
+        let mut remaining = zeroes;
+        while remaining > 0 {
+            let count = remaining.min(1024);
+            remaining -= count;
+            let header = ((count as u32) << 3) | 2 | u32::from(remaining == 0);
+            frame.extend_from_slice(&header.to_le_bytes()[..3]);
+            frame.push(0);
+        }
+        frame
+    }
+
+    fn pe_payload(payload: &[u8], section: Option<&[u8]>) -> Vec<u8> {
+        let mut pe = vec![0; 128];
+        pe[..2].copy_from_slice(&MZ_MAGIC);
+        pe[0x3c..0x40].copy_from_slice(&64u32.to_le_bytes());
+        pe[64..68].copy_from_slice(b"PE\0\0");
+        if let Some(name) = section {
+            pe[70..72].copy_from_slice(&1u16.to_le_bytes());
+            pe[88..88 + name.len()].copy_from_slice(name);
+            pe[104..108].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            pe[108..112].copy_from_slice(&128u32.to_le_bytes());
+        }
+        pe.extend_from_slice(payload);
+        pe
+    }
+
+    #[test]
+    fn embedded_zstd_normalization_obeys_the_raw_kernel_limit() {
+        let raw = image(16384, 16384);
+        let frame = zstd_frame(&raw[..64], raw.len() - 64);
+        for section in [Some(b".text".as_slice()), Some(b".data".as_slice()), None] {
+            let pe = pe_payload(&frame, section);
+            let profile = with_kernel_limit(KernelEncoding::Image, raw.len() as u64);
+            assert_eq!(normalize_kernel(&profile, &pe).unwrap(), raw);
+            let profile = with_kernel_limit(KernelEncoding::Image, (raw.len() - 1) as u64);
+            assert_eq!(
+                normalize_kernel(&profile, &pe).unwrap_err(),
+                ZSTD_DECOMPRESSION_LIMIT
+            );
+        }
+    }
+
+    #[test]
+    fn zstd_decoding_checks_each_chunk_before_reading_to_eof() {
+        let frame = zstd_frame(&[], 32768);
+        for limit in [0, 1, 8191, 8192, 8193, 32767] {
+            assert_eq!(
+                decode_zstd(&frame, limit).unwrap_err(),
+                ZSTD_DECOMPRESSION_LIMIT
+            );
+        }
+        assert_eq!(decode_zstd(&frame, 32768).unwrap(), vec![0; 32768]);
+        assert!(decode_zstd(&zstd_frame(&[], 0), 0).unwrap().is_empty());
+
+        // The truncated last block would fail if decoding continued to EOF.
+        let truncated = &frame[..frame.len() - 1];
+        assert_eq!(
+            decode_zstd(truncated, 8192).unwrap_err(),
+            ZSTD_DECOMPRESSION_LIMIT
+        );
+        assert_eq!(
+            decode_zstd(truncated, 32768).unwrap_err(),
+            Stage0Error::KernelDecode("zstd decode failed")
+        );
+    }
+
+    #[test]
+    fn zstd_limits_survive_nested_pe_and_gzip_extraction() {
+        let raw = image(16384, 16384);
+        let inner = pe_payload(&zstd_frame(&raw[..64], raw.len() - 64), Some(b".text"));
+        let nested = pe_payload(&zstd_frame(&inner, 0), Some(b".text"));
+        let gzip = gzip_compress(&inner).unwrap();
+        let profile = with_kernel_limit(KernelEncoding::Image, (raw.len() - 1) as u64);
+        let exorcist = Stage0AblExorcist {
+            image: image(128, 128),
+        };
+        for input in [&inner, &nested, &gzip] {
+            assert_eq!(extract_raw_arm64_kernel(input, raw.len()).unwrap(), raw);
+            assert_eq!(
+                prepare_kernel(&profile, input, Some(&exorcist)).unwrap_err(),
+                ZSTD_DECOMPRESSION_LIMIT
+            );
+        }
+    }
+
+    #[test]
+    fn zstd_window_and_declared_size_are_bounded_before_decoding() {
+        // No content size, but a 512 MiB history window. Reject the header
+        // before trying to decode even though no blocks follow it.
+        let mut frame = ZSTD_MAGIC.to_vec();
+        frame.extend_from_slice(&[0, 19 << 3]);
+        let pe = pe_payload(&frame, Some(b".text"));
+        assert_eq!(
+            prepare_ramdisk_kernel(&pe).unwrap_err(),
+            ZSTD_DECOMPRESSION_LIMIT
+        );
+        assert_eq!(
+            normalize_kernel(&profile(KernelEncoding::ImageGzip), &pe).unwrap_err(),
+            ZSTD_DECOMPRESSION_LIMIT
+        );
+
+        // Independent of its small window, a declared content size cannot
+        // raise the ceiling either (descriptor 0x80 carries a u32 size).
+        frame.truncate(4);
+        frame.extend_from_slice(&[0x80, 0]);
+        frame.extend_from_slice(&16385u32.to_le_bytes());
+        assert_eq!(
+            decode_zstd(&frame, 16384).unwrap_err(),
+            ZSTD_DECOMPRESSION_LIMIT
+        );
+    }
+
+    #[test]
+    fn zstd_linux_kernel_size_is_independent_of_encoded_section_limits() {
+        let raw = image(16384, 16384);
+        let pe = pe_payload(&zstd_frame(&raw[..64], raw.len() - 64), Some(b".text"));
+        let profile = with_kernel_limit(KernelEncoding::ImageGzip, 128);
+        let gzip = normalize_kernel(&profile, &pe).unwrap();
+        assert_eq!(gzip_decompress(&gzip, raw.len()).unwrap(), raw);
+        assert_eq!(prepare_ramdisk_kernel(&pe).unwrap(), raw);
+    }
+
+    #[test]
+    fn pe_scanning_skips_invalid_zstd_candidates_but_propagates_limits() {
+        let raw = image(16384, 16384);
+        let mut candidates = ZSTD_MAGIC.to_vec();
+        candidates.extend_from_slice(&[0, 0, 7, 0, 0]); // Reserved block type.
+        candidates.extend_from_slice(&zstd_frame(&raw[..64], raw.len() - 64));
+        let pe = pe_payload(&candidates, Some(b".text"));
+        assert_eq!(extract_raw_arm64_kernel(&pe, raw.len()).unwrap(), raw);
+        assert_eq!(
+            extract_raw_arm64_kernel(&pe, raw.len() - 1).unwrap_err(),
+            ZSTD_DECOMPRESSION_LIMIT
+        );
     }
 
     #[test]
