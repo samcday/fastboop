@@ -33,9 +33,9 @@ gobblytes-erofs = { version = "0.0.2-rc.3" }
 gobblytes-fat = { version = "0.0.2-rc.3" }
 hyper = { workspace = true, features = ["server", "http1", "tcp"] }
 serde_yaml = { workspace = true }
-smoo-host-core = { version = "0.0.2-rc.6" }
-smoo-host-session = { version = "0.0.2-rc.6" }
-smoo-host-transport-rusb = { version = "0.0.2-rc.6" }
+smoo-host-core = { workspace = true }
+smoo-host-session = { workspace = true }
+smoo-host-transport-rusb = { workspace = true }
 tokio = { workspace = true, features = ["rt", "signal", "time"] }
 tokio-util = { workspace = true }
 tracing = "0.1.44"

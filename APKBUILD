@@ -18,7 +18,7 @@ _upstream=0.0.1-rc.21
 _gitrev=v$_upstream
 # Pinned to the gibblox/smoo submodule revisions recorded in git.
 _gibbloxrev=777a8781547a6d1941e880022a61feb1f4ea5dfe
-_smoorev=3fdcc7b9fa1585d3a725e20bb777113b302ed5eb
+_smoorev=e043554829aa35131c69a576bd7c4f358aac8e3a
 source="https://github.com/samcday/fastboop/archive/$_gitrev/fastboop-$_gitrev.tar.gz
 	https://github.com/samcday/gibblox/archive/$_gibbloxrev/gibblox-$_gibbloxrev.tar.gz
 	https://github.com/samcday/smoo/archive/$_smoorev/smoo-$_smoorev.tar.gz"
