@@ -4,8 +4,12 @@ version = 4
 
 [[package]]
 name = "abl-exorcist-assembler"
-version = "0.1.0"
-source = "git+https://github.com/samcday/abl-exorcist#62af65062053c19609382e8cf38075fa39f457f6"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77bf29fdf09d944f48dd0e214ca6d853ed596b379f543f991de5a6801a44b977"
+dependencies = [
+ "lz4_flex",
+]
 
 [[package]]
 name = "adler2"
@@ -2274,6 +2278,7 @@ dependencies = [
  "fastboop-core",
  "futures-util",
  "gobblytes-core",
+ "lz4_flex",
  "miniz_oxide 0.8.9",
  "ruzstd 0.7.3",
  "tracing",

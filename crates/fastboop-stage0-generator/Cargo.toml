@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Builds fastboop stage0 payloads from upstream rootfs artifacts."
 
 [dependencies]
-abl-exorcist-assembler = { git = "https://github.com/samcday/abl-exorcist", default-features = false }
+abl-exorcist-assembler = { version = "0.0.1", default-features = false }
 dtoolkit = { version = "0.1.1", features = ["write"] }
 fastboop-core = { path = "../fastboop-core", version = "0.0.1-rc.21" }
 gobblytes-core = { workspace = true }
@@ -15,6 +15,9 @@ futures-util = { workspace = true, features = ["alloc"] }
 miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
 ruzstd = { version = "0.7.3", default-features = false }
 tracing = { version = "0.1.44", default-features = false }
+
+[dev-dependencies]
+lz4_flex = { version = "0.12.2", default-features = false, features = ["safe-decode"] }
 
 [features]
 default = []

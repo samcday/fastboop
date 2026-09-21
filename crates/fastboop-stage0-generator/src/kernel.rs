@@ -462,8 +462,6 @@ mod tests {
         KernelEncoding, MatchRule,
     };
 
-    const PAYLOAD_OFFSET: usize = 0x40_0000;
-
     fn with_kernel_limit(encoding: KernelEncoding, limit: u64) -> DeviceProfile {
         let mut profile = profile(encoding);
         profile.boot.fastboot_boot.android_bootimg.limits = Some(fastboop_core::BootLimits {
@@ -530,23 +528,44 @@ mod tests {
     }
 
     #[test]
-    fn prepare_kernel_wraps_abl_exorcist_before_gzip_normalization() {
-        let profile = profile(KernelEncoding::ImageGzip);
-        let shim = image(0x1000, 128);
+    fn prepare_kernel_wraps_abl_exorcist_package_before_normalization() {
+        // The v0.0.1 shim locates ABLXPKG1 at its image_size rounded up to 4 KiB.
+        // Use a non-aligned image_size to exercise that contract.
+        let shim = image(0x1801, 128);
         let kernel = image(0x2000, 256);
+        let compressed_kernel = gzip_compress(&kernel).unwrap();
         let exorcist = Stage0AblExorcist {
             image: shim.clone(),
         };
 
-        let prepared = prepare_kernel(&profile, &kernel, Some(&exorcist)).unwrap();
-        assert!(prepared.starts_with(&GZIP_MAGIC));
+        for encoding in [KernelEncoding::Image, KernelEncoding::ImageGzip] {
+            let profile = profile(encoding);
+            for input in [&kernel, &compressed_kernel] {
+                let prepared = prepare_kernel(&profile, input, Some(&exorcist)).unwrap();
+                let raw = match profile.boot.fastboot_boot.android_bootimg.kernel.encoding {
+                    KernelEncoding::ImageGzip => {
+                        assert!(prepared.starts_with(&GZIP_MAGIC));
+                        gzip_decompress(&prepared, DEFAULT_MAX_DECOMPRESSED_KERNEL_BYTES).unwrap()
+                    }
+                    _ => prepared,
+                };
 
-        let raw = gzip_decompress(&prepared, DEFAULT_MAX_DECOMPRESSED_KERNEL_BYTES).unwrap();
-        assert_eq!(&raw[..shim.len()], shim.as_slice());
-        assert_eq!(
-            &raw[PAYLOAD_OFFSET..PAYLOAD_OFFSET + kernel.len()],
-            kernel.as_slice()
-        );
+                assert_eq!(&raw[..shim.len()], shim.as_slice());
+                assert!(raw[shim.len()..0x2000].iter().all(|byte| *byte == 0));
+                let package = &raw[0x2000..];
+                assert_eq!(&package[..8], b"ABLXPKG1");
+                assert_eq!(read_u32_le(package, 8), Some(48));
+                assert_eq!(read_u32_le(package, 12), Some(2)); // raw LZ4 block
+                let field =
+                    |offset| u64::from_le_bytes(package[offset..offset + 8].try_into().unwrap());
+                assert_eq!(field(16), (package.len() - 48) as u64);
+                assert_eq!(field(24), kernel.len() as u64);
+                assert_eq!(field(32), 0x2000); // kernel image_size, not file length
+                assert_eq!(field(40), 0); // reserved
+                let decoded = lz4_flex::block::decompress(&package[48..], kernel.len()).unwrap();
+                assert_eq!(decoded, kernel);
+            }
+        }
     }
 
     #[test]
