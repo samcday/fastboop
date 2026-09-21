@@ -48,6 +48,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Test publish preflight
+        run: python3 -m unittest discover -s tools/tests -v
+
   web-build:
     runs-on: ubuntu-latest
     needs: stage0-static

@@ -155,18 +155,41 @@ jobs:
     with:
       release_mode: ${{ needs.gate.outputs.mode }}
 
-  publish-crates:
-    needs: [gate, release, ci, publish-assets, publish-release]
+  publish-preflight:
+    needs: gate
     if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - if: needs.gate.outputs.mode == 'pr'
-        name: Validate crate publish (dry-run)
+      - name: Install crate verification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev pkg-config
+
+      - name: Verify packaged crates and CLI lockfile
         run: cargo xtask publish-dry-run
+
+  publish-crates:
+    needs: [gate, release, ci, publish-preflight, publish-assets, publish-release]
+    if: needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - if: needs.gate.outputs.mode == 'tag'
+        name: Install crate verification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev pkg-config
 
       - if: needs.gate.outputs.mode == 'tag'
         name: Require crates.io token
@@ -337,7 +360,7 @@ jobs:
 
   pass:
     name: "✅ Pass"
-    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine, flatpak, publish-assets, publish-release, publish-crates, bump-web-version]
+    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine, flatpak, publish-preflight, publish-assets, publish-release, publish-crates, bump-web-version]
     runs-on: ubuntu-latest
     if: always() && needs.gate.outputs.enabled == 'true'
     steps:
@@ -347,7 +370,7 @@ jobs:
           allowed-skips: bump-web-version
 
   publish-release:
-    needs: [gate, release, publish-assets]
+    needs: [gate, release, publish-preflight, publish-assets]
     if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     steps:

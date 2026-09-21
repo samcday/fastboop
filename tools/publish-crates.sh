@@ -18,71 +18,33 @@ case "$mode" in
         ;;
 esac
 
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 metadata_file="$(mktemp)"
-cleanup_files=("$metadata_file")
-
+packages_file="$(mktemp)"
 cleanup() {
-    rm -f "${cleanup_files[@]}"
+    rm -f "$metadata_file" "$packages_file"
 }
 trap cleanup EXIT
 
-cargo metadata --format-version 1 >"$metadata_file"
+cargo metadata --locked --no-deps --format-version 1 >"$metadata_file"
+# Keep this a foreground command: process substitution hides planner failures.
+python3 "$script_dir/publish-preflight.py" plan "$metadata_file" >"$packages_file"
+mapfile -t packages <"$packages_file"
+echo "==> publish order: ${packages[*]}"
 
-mapfile -t packages < <(python - "$metadata_file" <<'PY'
-import collections
-import json
-import pathlib
-import sys
+# Cargo stages sibling crates in a temporary registry and verifies their packaged
+# contents together. Do not inject config patches or disable this compilation.
+package_args=()
+for package in "${packages[@]}"; do
+    package_args+=(-p "$package")
+done
+echo "==> cargo package --locked ${package_args[*]}"
+cargo package --locked "${package_args[@]}"
+python3 "$script_dir/publish-preflight.py" verify "$metadata_file"
 
-metadata_path = pathlib.Path(sys.argv[1])
-metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-local_names = set()
-packages = {pkg["name"]: pkg for pkg in metadata["packages"]}
-workspace_member_ids = set(metadata.get("workspace_members", []))
-
-for pkg in metadata["packages"]:
-    if pkg["id"] not in workspace_member_ids:
-        continue
-    if pkg.get("source") is not None:
-        continue
-    if pkg.get("publish") == []:
-        continue
-    local_names.add(pkg["name"])
-
-deps = {name: set() for name in local_names}
-reverse = {name: set() for name in local_names}
-
-for name in local_names:
-    for dep in packages[name].get("dependencies", []):
-        if dep.get("kind") in (None, "build") and dep["name"] in local_names:
-            deps[name].add(dep["name"])
-            reverse[dep["name"]].add(name)
-
-indegree = {name: len(deps[name]) for name in local_names}
-queue = collections.deque(sorted(name for name, degree in indegree.items() if degree == 0))
-order = []
-
-while queue:
-    name = queue.popleft()
-    order.append(name)
-    for dependent in sorted(reverse[name]):
-        indegree[dependent] -= 1
-        if indegree[dependent] == 0:
-            queue.append(dependent)
-
-if len(order) != len(local_names):
-    raise SystemExit("publish aborted: local publish graph has a cycle")
-
-print("\n".join(order))
-PY
-)
-
-if [[ ${#packages[@]} -eq 0 ]]; then
-    echo "No local publishable packages found"
+if [[ "$mode" == "--dry-run" ]]; then
     exit 0
 fi
-
-echo "==> publish order: ${packages[*]}"
 
 is_already_uploaded_error() {
     local output="$1"
@@ -90,7 +52,7 @@ is_already_uploaded_error() {
 }
 
 extract_retry_after_epoch() {
-    python -c '
+    python3 -c '
 import datetime
 import email.utils
 import re
@@ -123,99 +85,43 @@ print(int(parsed.timestamp()))
 '
 }
 
+# All crates have passed the same preflight before the first upload.
 for package in "${packages[@]}"; do
-    if [[ "$mode" == "--dry-run" ]]; then
-        patch_file="$(mktemp)"
-        cleanup_files+=("$patch_file")
-
-        python - "$metadata_file" "$package" "$patch_file" <<'PY'
-import json
-import pathlib
-import sys
-
-metadata_path = pathlib.Path(sys.argv[1])
-current_package = sys.argv[2]
-patch_path = pathlib.Path(sys.argv[3])
-
-metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-local_packages = {}
-workspace_member_ids = set(metadata.get("workspace_members", []))
-for pkg in metadata["packages"]:
-    if pkg["id"] not in workspace_member_ids:
+    echo "==> cargo publish -p $package --locked --no-verify"
+    if output="$(cargo publish -p "$package" --locked --no-verify 2>&1)"; then
+        printf '%s\n' "$output"
         continue
-    if pkg.get("source") is not None:
+    fi
+
+    printf '%s\n' "$output" >&2
+    if is_already_uploaded_error "$output"; then
+        echo "==> crate $package already published; continuing"
         continue
-    if pkg.get("publish") == []:
-        continue
-    local_packages[pkg["name"]] = pkg
+    fi
 
-if current_package not in local_packages:
-    raise SystemExit(f"package {current_package!r} is not a local publishable package")
+    if retry_after_epoch="$(extract_retry_after_epoch <<<"$output")"; then
+        now_epoch="$(date -u +%s)"
+        wait_seconds=$((retry_after_epoch - now_epoch + 1))
 
-needed = set()
-stack = [
-    dep["name"]
-    for dep in local_packages[current_package].get("dependencies", [])
-    if dep.get("kind") in (None, "build") and dep["name"] in local_packages
-]
+        if (( wait_seconds > 0 )); then
+            echo "==> crates.io rate limit for $package; waiting ${wait_seconds}s for scheduled retry"
+            sleep "$wait_seconds"
+        else
+            echo "==> crates.io scheduled retry time already passed for $package; retrying now"
+        fi
 
-while stack:
-    name = stack.pop()
-    if name in needed:
-        continue
-    needed.add(name)
-    for dep in local_packages[name].get("dependencies", []):
-        if dep.get("kind") in (None, "build") and dep["name"] in local_packages:
-            stack.append(dep["name"])
-
-lines = ["[patch.crates-io]"]
-for name in sorted(needed):
-    manifest_path = pathlib.Path(local_packages[name]["manifest_path"]).resolve()
-    lines.append(name + ' = { path = "' + manifest_path.parent.as_posix() + '" }')
-
-patch_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-PY
-
-        echo "==> cargo package -p $package --locked --no-verify"
-        cargo package -p "$package" --locked --no-verify --config "$patch_file"
-        rm -f "$patch_file"
-    else
-        echo "==> cargo publish -p $package --locked --no-verify --allow-dirty"
-        if output="$(cargo publish -p "$package" --locked --no-verify --allow-dirty 2>&1)"; then
-            printf '%s\n' "$output"
+        echo "==> cargo publish -p $package --locked --no-verify (scheduled retry)"
+        if retry_output="$(cargo publish -p "$package" --locked --no-verify 2>&1)"; then
+            printf '%s\n' "$retry_output"
             continue
         fi
 
-        printf '%s\n' "$output" >&2
-        if is_already_uploaded_error "$output"; then
+        printf '%s\n' "$retry_output" >&2
+        if is_already_uploaded_error "$retry_output"; then
             echo "==> crate $package already published; continuing"
             continue
         fi
-
-        if retry_after_epoch="$(extract_retry_after_epoch <<<"$output")"; then
-            now_epoch="$(date -u +%s)"
-            wait_seconds=$((retry_after_epoch - now_epoch + 1))
-
-            if (( wait_seconds > 0 )); then
-                echo "==> crates.io rate limit for $package; waiting ${wait_seconds}s for scheduled retry"
-                sleep "$wait_seconds"
-            else
-                echo "==> crates.io scheduled retry time already passed for $package; retrying now"
-            fi
-
-            echo "==> cargo publish -p $package --locked --no-verify --allow-dirty (scheduled retry)"
-            if retry_output="$(cargo publish -p "$package" --locked --no-verify --allow-dirty 2>&1)"; then
-                printf '%s\n' "$retry_output"
-                continue
-            fi
-
-            printf '%s\n' "$retry_output" >&2
-            if is_already_uploaded_error "$retry_output"; then
-                echo "==> crate $package already published; continuing"
-                continue
-            fi
-        fi
-
-        exit 1
     fi
+
+    exit 1
 done
