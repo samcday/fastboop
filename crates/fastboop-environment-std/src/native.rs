@@ -145,9 +145,7 @@ impl NativeBootEnvironment {
         tracing::info!("loading profiles");
 
         let devpro_dirs = resolve_devpro_dirs()?;
-        let mut artifact_resolver = ArtifactReaderResolver::with_local_artifacts(
-            self.config.stage0.local_artifact.as_slice(),
-        )?;
+        let artifact_resolver = ArtifactReaderResolver::new();
         let channel_head = artifact_resolver
             .read_channel_stream_head(&self.config.stage0.channel)
             .await
@@ -200,6 +198,13 @@ impl NativeBootEnvironment {
             );
         }
 
+        let channel = fastboop_core::Channel::new(None, channel_head);
+        let candidates = profile
+            .as_ref()
+            .map(std::slice::from_ref)
+            .unwrap_or(&matching_pool);
+        validate_native_boot_candidates(&self.config.stage0, &channel, candidates)?;
+
         let mut detected_fastboot = None;
         let detected_device = if self.config.boot_device {
             if let Some(selected_device) = selected_device {
@@ -224,9 +229,17 @@ impl NativeBootEnvironment {
         };
 
         let profile = profile.expect("profile resolved before build");
+        validate_native_boot_candidates(
+            &self.config.stage0,
+            &channel,
+            std::slice::from_ref(&profile),
+        )?;
         log_detected_device(&profile, detected_device.as_ref());
         tracing::info!(profile = %profile.id, "building boot payload");
 
+        let mut artifact_resolver = ArtifactReaderResolver::with_local_artifacts(
+            self.config.stage0.local_artifact.as_slice(),
+        )?;
         let resolved =
             resolve_boot_input(&mut artifact_resolver, &self.config.stage0, &profile).await?;
         if resolved
@@ -594,13 +607,50 @@ async fn resolve_boot_input(
     })
 }
 
-async fn build_native_initrd_boot(
+fn validate_native_boot_candidates(
     config: &NativeBootStage0Config,
-    profile: &DeviceProfile,
-    resolved: ResolvedBootInput,
-    detected_device: Option<&DetectedFastbootInfo>,
-    system_time: Option<&str>,
-) -> Result<PreparedBoot> {
+    channel: &fastboop_core::Channel,
+    candidates: &[DeviceProfile],
+) -> Result<()> {
+    let mut first_error = None;
+    let mut selection_error = None;
+    for device in candidates {
+        let selected =
+            match channel.resolve_boot_profile(&device.id, config.boot_profile.as_deref()) {
+                Ok(selected) => selected,
+                Err(err) => {
+                    selection_error.get_or_insert_with(|| anyhow!(err.to_string()));
+                    continue;
+                }
+            };
+        let result = if let Some(selected) = selected
+            && selected.boot == BootStrategy::Initrd
+        {
+            validate_initrd_boot_options(
+                config,
+                &fastboop_core::resolve_effective_boot_profile_stage0(&selected, &device.id),
+            )
+        } else {
+            Ok(())
+        };
+        match result {
+            // Before detection, do not reject an invocation that is valid for
+            // another candidate. Recheck the actual device before opening inputs.
+            Ok(()) => return Ok(()),
+            Err(err) if first_error.is_none() => first_error = Some(err),
+            Err(_) => {}
+        }
+    }
+    match first_error.or(selection_error) {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+fn validate_initrd_boot_options(
+    config: &NativeBootStage0Config,
+    settings: &fastboop_core::EffectiveBootProfileStage0,
+) -> Result<()> {
     if config.abl_exorcist.is_some() {
         bail!("--abl-exorcist is not supported with boot: initrd");
     }
@@ -616,17 +666,28 @@ async fn build_native_initrd_boot(
     if config.ostree != OstreeArg::Disabled {
         bail!("boot: initrd takes its OSTree arguments from the boot profile command line");
     }
+    if !settings.kernel_modules.is_empty() {
+        bail!(
+            "boot: initrd requires modules to be included in the supplied initramfs, not stage0.kernel_modules"
+        );
+    }
+    Ok(())
+}
+
+async fn build_native_initrd_boot(
+    config: &NativeBootStage0Config,
+    profile: &DeviceProfile,
+    resolved: ResolvedBootInput,
+    detected_device: Option<&DetectedFastbootInfo>,
+    system_time: Option<&str>,
+) -> Result<PreparedBoot> {
     let ResolvedBootInput {
         input,
         sources,
         export,
     } = resolved;
     let settings = input.boot_spec.stage0();
-    if !settings.kernel_modules.is_empty() {
-        bail!(
-            "boot: initrd requires modules to be included in the supplied initramfs, not stage0.kernel_modules"
-        );
-    }
+    validate_initrd_boot_options(config, &settings)?;
     let kernel = sources
         .kernel_override
         .ok_or_else(|| anyhow!("boot: initrd requires a kernel artifact"))?;
@@ -1371,7 +1432,7 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
     }
 
     #[tokio::test]
-    async fn stage0_rejects_initrd_before_opening_any_artifact() {
+    async fn initrd_rejects_invalid_invocations_before_device_wait_or_artifact_io() {
         let (device, resolved) = fixture();
         let mut profile = resolved.input.boot_spec.boot_profile().unwrap().clone();
         let nonce = std::time::SystemTime::now()
@@ -1406,12 +1467,123 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
         .unwrap();
         let mut config = NativeBootStage0Config::from_raw_ostree(channel, None).unwrap();
         config.device_profile = Some(device.id);
-        let result = build_stage0_initrd(config).await;
-        std::fs::remove_dir_all(&dir).unwrap();
+        let result = build_stage0_initrd(config.clone()).await;
         assert_eq!(
             result.err().unwrap().to_string(),
             "fastboop stage0 cannot build a boot: initrd profile; use fastboop boot"
         );
+        for option in [
+            "--augment",
+            "--stage0",
+            "--require-module",
+            "--serial",
+            "OSTree",
+            "--abl-exorcist",
+        ] {
+            for (boot_device, auto_detect) in [(false, false), (true, false), (true, true)] {
+                let mut stage0 = config.clone();
+                if auto_detect {
+                    stage0.device_profile = None;
+                }
+                match option {
+                    "--augment" => stage0.augment = Some("missing.cpio".into()),
+                    "--stage0" => stage0.stage0 = Some("missing-stage0".into()),
+                    "--require-module" => stage0.require_modules.push("dummy".into()),
+                    "--serial" => stage0.serial = true,
+                    "OSTree" => stage0.ostree = OstreeArg::AutoDetect,
+                    "--abl-exorcist" => stage0.abl_exorcist = Some("missing-shim".into()),
+                    _ => unreachable!(),
+                }
+                let mut environment = NativeBootEnvironment::new(
+                    NativeBootConfig {
+                        stage0,
+                        boot_device,
+                        system_time: false,
+                        systemd_firstboot: false,
+                        wait: Duration::ZERO,
+                        smoo_metrics_port: 0,
+                    },
+                    CancellationToken::new(),
+                );
+                let error =
+                    tokio::time::timeout(Duration::from_secs(1), environment.prepare_boot())
+                        .await
+                        .expect("invalid invocation must not wait for a device")
+                        .err()
+                        .expect("unsupported option should fail")
+                        .to_string();
+                assert!(error.contains(option), "{option}: {error}");
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn early_validation_respects_mixed_strategies_and_device_specific_settings() {
+        let (initrd_device, resolved) = fixture();
+        let mut stage0_device = initrd_device.clone();
+        stage0_device.id = "stage0-device".into();
+        let mut initrd = resolved.input.boot_spec.boot_profile().unwrap().clone();
+        initrd
+            .stage0
+            .devices
+            .insert(initrd_device.id.clone(), Default::default());
+        let mut stage0 = initrd.clone();
+        stage0.id = "generated".into();
+        stage0.boot = BootStrategy::Stage0;
+        stage0.stage0.devices.clear();
+        stage0
+            .stage0
+            .devices
+            .insert(stage0_device.id.clone(), Default::default());
+        let channel = fastboop_core::Channel::new(
+            None,
+            fastboop_core::ChannelStreamHead {
+                boot_profiles: vec![initrd.clone(), stage0],
+                ..Default::default()
+            },
+        );
+        let mut config = NativeBootStage0Config::from_raw_ostree("unused".into(), None).unwrap();
+        config.augment = Some("stage0-extra.cpio".into());
+        let candidates = [initrd_device.clone(), stage0_device.clone()];
+        validate_native_boot_candidates(&config, &channel, &candidates).unwrap();
+        validate_native_boot_candidates(&config, &channel, &[stage0_device]).unwrap();
+        assert!(
+            validate_native_boot_candidates(
+                &config,
+                &channel,
+                std::slice::from_ref(&initrd_device)
+            )
+            .is_err()
+        );
+        config.boot_profile = Some(initrd.id.clone());
+        assert!(validate_native_boot_candidates(&config, &channel, &candidates).is_err());
+        let reversed = [candidates[1].clone(), candidates[0].clone()];
+        assert!(
+            validate_native_boot_candidates(&config, &channel, &reversed)
+                .unwrap_err()
+                .to_string()
+                .contains("--augment")
+        );
+
+        config.augment = None;
+        initrd
+            .stage0
+            .devices
+            .get_mut(&initrd_device.id)
+            .unwrap()
+            .stage0
+            .kernel_modules
+            .push("dummy".into());
+        let channel = fastboop_core::Channel::new(
+            None,
+            fastboop_core::ChannelStreamHead {
+                boot_profiles: vec![initrd],
+                ..Default::default()
+            },
+        );
+        let err = validate_native_boot_candidates(&config, &channel, &[initrd_device]).unwrap_err();
+        assert!(err.to_string().contains("stage0.kernel_modules"));
     }
 
     #[tokio::test]

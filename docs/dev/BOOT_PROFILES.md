@@ -210,6 +210,10 @@ fastboop boot /tmp/supplied-initrd.fbp --device-profile <device>
 Stage0-only options (`--stage0`, `--augment`, `--require-module`,
 `--serial`, `--ostree`, and `stage0.kernel_modules`) are rejected for this
 strategy. Host firstboot credentials are not injected into a supplied initramfs.
+Native boot checks these options against the channel's candidate profiles before
+waiting for USB or opening artifact pipelines. If device detection is needed to
+choose between stage0 and initrd profiles, it checks the selected profile again
+before reading artifacts.
 The existing `--abl-exorcist` stage0 option is also unsupported here; shim
 composition is a separate feature. Web boot currently reports that this strategy
 requires native fastboop.
