@@ -87,11 +87,15 @@ This section captures concrete constraints (for example `header_version`, `page_
 so payload generation can be deterministic.
 
 `limits.max_kernel_bytes` bounds the final encoded kernel payload; zero or an
-absent value leaves that bootloader limit unset. Gzip kernel decompression also
-has a host-side ceiling: the positive kernel limit when the device expects an
-uncompressed Image, otherwise 256 MiB. Compressed output uses the separate
-256 MiB ceiling because its uncompressed input may legitimately exceed the
-bootloader's encoded-payload limit. The gzip trailer cannot raise this ceiling.
+absent value leaves that bootloader limit unset. Gzip and embedded Zstandard
+kernel decompression also have a host-side ceiling: the positive kernel limit
+when the device expects an uncompressed Image, otherwise 256 MiB. Compressed
+output uses the separate 256 MiB ceiling because its uncompressed input may
+legitimately exceed the bootloader's encoded-payload limit. Artifact-declared
+sizes cannot raise this ceiling. Zstandard history windows are checked before decoding, and output is
+checked as it is decoded, including through nested PE wrappers. ABLX ramdisk
+mode uses the separate 256 MiB ceiling for the Linux kernel because the
+bootloader's kernel-section limit applies to the shim.
 
 Treat this as a hardware contract, not distro policy:
 
