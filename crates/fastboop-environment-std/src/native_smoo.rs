@@ -165,6 +165,7 @@ async fn run_native_smoo_host_async(
         let (transport, control) = match RusbTransport::open_matching(
             None,
             None,
+            None,
             SMOO_INTERFACE_CLASS,
             interface_subclass,
             interface_protocol,

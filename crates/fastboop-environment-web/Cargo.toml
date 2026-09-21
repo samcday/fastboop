@@ -34,9 +34,9 @@ gobblytes-erofs = { version = "0.0.2-rc.3" }
 gobblytes-fat = { version = "0.0.2-rc.3" }
 js-sys = { workspace = true }
 serde_json = "1.0.145"
-smoo-host-core = { version = "0.0.2-rc.6" }
-smoo-host-session = { version = "0.0.2-rc.6" }
-smoo-host-webusb = { version = "0.0.2-rc.6" }
+smoo-host-core = { workspace = true }
+smoo-host-session = { workspace = true }
+smoo-host-webusb = { workspace = true }
 url = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
