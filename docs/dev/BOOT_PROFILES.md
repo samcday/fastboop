@@ -253,3 +253,15 @@ existing ABLX kernel-wrap behavior.
 The added fields change the intentionally unstable v0 binary profile layout.
 Regenerate compiled profiles and channel records with the matching fastboop
 version.
+
+## Profile bundle codec
+
+`encode_channel_profile_bundle` and `decode_channel_profile_bundle` use the
+same binary-safe profile representations as individual profile records. The
+unreleased bundle payload layout changed to support nonempty bundles; regenerate
+any saved bundles with the matching fastboop version. No legacy decoder is kept.
+
+Bundles have a standalone codec and format discriminator. Native boot intake
+currently accepts concatenated `encode_dev_profile` / `encode_boot_profile`
+records, not bundle bytes; fixing the bundle codec does not add a new boot input
+format.
