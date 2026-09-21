@@ -204,7 +204,8 @@ fastboop boot /tmp/supplied-initrd.fbp --device-profile <device> \
   --system-time=false --output /tmp/boot.img
 
 # RAM boot the same inputs and keep serving the root:
-fastboop boot /tmp/supplied-initrd.fbp --device-profile <device>
+fastboop boot /tmp/supplied-initrd.fbp --device-profile <device> \
+  --smoo-serial <runtime-usb-serial>
 ```
 
 Stage0-only options (`--stage0`, `--augment`, `--require-module`,
@@ -217,6 +218,36 @@ before reading artifacts.
 Web boot currently reports that this strategy requires native fastboop.
 `fastboop stage0` rejects a selected supplied-initrd profile before opening its
 root, kernel, or initrd artifact pipelines.
+
+### Native runtime device selection
+
+Native boot retains an exact runtime USB descriptor serial for smoo discovery
+and every reconnect. Generated stage0 uses the selected fastboot device's USB
+serial and configures its gadget with that value. `--smoo-serial SERIAL` can
+override it, or supply one when the bootloader exposes no USB serial.
+
+For `boot: initrd`, `--smoo-serial SERIAL` is required when actually booting.
+It must name the unique serial that the prepared initramfs exposes at runtime;
+fastboop does not assume it equals the bootloader's USB serial or `getvar serialno`.
+This option selects the runtime gadget; it does not modify a supplied initrd or
+configure its gadget. Image preparation must provide a distinct gadget serial
+for each device. The old single-target setup with a shared default gadget serial
+is not sufficient for reliable multi-device operation. `--output` can still
+build a payload without a runtime selector or connected device.
+
+Discovery waits for the requested serial even if another gadget appears first,
+and rejects duplicate matching serials rather than choosing the first device.
+The serial must remain stable across gadget restarts. Unreadable descriptors
+on matching runtime interfaces cause a discovery error rather than an unfiltered
+fallback. Native library consumers must retain `NativeBootEnvironment::smoo_host_options()`
+when handing a prepared boot to a background host task; low-level host options
+also require a nonempty serial. The desktop retains these options for generated
+stage0 boots. Supplied-initrd boots requiring an explicit serial currently use
+the CLI/native API; the desktop has no runtime-serial input yet.
+
+These checks use USB descriptors, not authenticated hardware identity. Devices
+must have unique serials; concurrent replacement with an identically configured
+gadget cannot be distinguished through this interface.
 
 ### Supplied initramfs with an ABLX shim
 

@@ -85,6 +85,9 @@ pub struct BootArgs {
     /// Expose fastboop's smoo host metrics on this TCP port (0 disables).
     #[arg(long = "smoo-metrics-port", default_value_t = 0)]
     pub smoo_metrics_port: u16,
+    /// Runtime gadget USB serial. Required for supplied initrds; configures generated stage0.
+    #[arg(long = "smoo-serial", value_name = "SERIAL")]
+    pub smoo_serial: Option<String>,
 }
 
 pub async fn run_boot(args: BootArgs) -> Result<()> {
@@ -142,6 +145,7 @@ fn native_boot_config_from_args(args: &BootArgs) -> Result<NativeBootConfig> {
         systemd_firstboot: args.systemd_firstboot,
         wait: Duration::from_secs(args.wait),
         smoo_metrics_port: args.smoo_metrics_port,
+        smoo_serial: args.smoo_serial.clone(),
     })
 }
 

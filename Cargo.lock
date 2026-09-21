@@ -2153,6 +2153,7 @@ dependencies = [
  "gobblytes-erofs",
  "gobblytes-fat",
  "hyper 0.14.32",
+ "rusb",
  "serde_yaml",
  "smoo-host-core",
  "smoo-host-session",
