@@ -37,6 +37,12 @@ Plymouth startup is opportunistic: stage0 requests target-root Plymouth units on
 - CLI overrides (`--dtb`, `--dtbo`, `--require-module`, `--cmdline-append`, `--serial`, `--abl-exorcist` on `fastboop boot`)
 - Rootfs artifact source (direct image or compiled Boot Profile)
 
+`--abl-exorcist` uses the `abl-exorcist-assembler` 0.0.1 kernel-wrap format:
+an `ABLXPKG1` header and raw LZ4 kernel block placed after the shim at its
+4 KiB-aligned `image_size`. Supply a device-appropriate shim from abl-exorcist
+v0.0.1 that understands this format. The final wrapped kernel is then encoded
+according to the Device Profile; the generated initramfs remains separate.
+
 ## Settings Channel
 
 Stage0 reads runtime settings from files under `/etc/stage0` in the generated initramfs.
