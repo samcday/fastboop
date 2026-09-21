@@ -17,6 +17,7 @@ boot:
       header_version: 0
       page_size: 4096
       kernel_offset: 0x00008000
+      ramdisk_offset: 0x04000000
 
       kernel:
         encoding: image.gz+dtb

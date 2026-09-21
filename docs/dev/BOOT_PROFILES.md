@@ -214,11 +214,41 @@ Native boot checks these options against the channel's candidate profiles before
 waiting for USB or opening artifact pipelines. If device detection is needed to
 choose between stage0 and initrd profiles, it checks the selected profile again
 before reading artifacts.
-The existing `--abl-exorcist` stage0 option is also unsupported here; shim
-composition is a separate feature. Web boot currently reports that this strategy
-requires native fastboop.
+Web boot currently reports that this strategy requires native fastboop.
 `fastboop stage0` rejects a selected supplied-initrd profile before opening its
 root, kernel, or initrd artifact pipelines.
+
+### Supplied initramfs with an ABLX shim
+
+Pass `--abl-exorcist /path/to/abl-exorcist.bin` to use a raw, device-appropriate
+arm64 shim from abl-exorcist v0.0.1. For `boot: initrd`, fastboop normalizes the
+supplied Linux kernel to a raw Image and uses the portable assembler to create
+an `ABLXRD1` ramdisk containing its LZ4-compressed kernel and the byte-for-byte
+unchanged initramfs. The shim occupies the Android kernel section, encoded as
+specified by the DevPro (gzip for sargo). DTBs retain the DevPro's appended or
+separate-section placement. All inputs are separate artifacts; no existing
+Android boot image is read or repacked.
+
+Fastboop encloses the complete command line, including the device arguments and
+generated smoo root/export arguments, in one `<S> ... <E>` pair for the shim's
+bootloader-argument filtering. Do not supply these markers yourself; marker
+strings in caller-provided arguments are rejected. Payload size limits apply
+to the encoded shim, complete ABLXRD1 container, and final Android boot image.
+Linux kernel decompression has a separate 256 MiB ceiling in this mode.
+
+```sh
+# The profile supplies the prepared smoo-aware initrd, kernel, root, and DTB.
+fastboop boot /tmp/supplied-initrd.fbp --device-profile google-sargo \
+  --abl-exorcist /path/to/abl-exorcist.bin --system-time=false \
+  --output /tmp/boot.img
+
+# Omit --output to RAM boot and serve the read-only root export through smoo.
+```
+
+The built-in sargo profile uses ramdisk address `0x04000000`. Image producers
+remain responsible for preparing smoo/dracut support and SELinux policy; adding
+the shim does not modify the supplied initramfs. Stage0 profiles retain their
+existing ABLX kernel-wrap behavior.
 
 The added fields change the intentionally unstable v0 binary profile layout.
 Regenerate compiled profiles and channel records with the matching fastboop

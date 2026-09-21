@@ -1658,6 +1658,9 @@ pub fn build_android_boot_payload_with_options(
         Some(components.kernel_cmdline_append.as_str()),
     );
     if wrap_abl_exorcist_cmdline {
+        if cmdline.contains("<S>") || cmdline.contains("<E>") {
+            return Err(BootImageError::ReservedAblExorcistMarker);
+        }
         cmdline = wrap_abl_exorcist_cmdline_markers(&cmdline);
     }
 

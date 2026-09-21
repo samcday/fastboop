@@ -43,6 +43,7 @@ pub enum BootImageError {
     UnsupportedHeaderVersion(u32),
     InvalidPageSize(u32),
     CmdlineTooLong(usize),
+    ReservedAblExorcistMarker,
     AddressOverflow(&'static str),
     ExceedsKernelLimit { size: usize, limit: u64 },
     ExceedsInitrdLimit { size: usize, limit: u64 },
@@ -57,6 +58,10 @@ impl fmt::Display for BootImageError {
             }
             Self::InvalidPageSize(size) => write!(f, "invalid page size {size}"),
             Self::CmdlineTooLong(len) => write!(f, "cmdline too long: {len} bytes"),
+            Self::ReservedAblExorcistMarker => write!(
+                f,
+                "ABLX command line must not contain <S> or <E>; fastboop adds these markers"
+            ),
             Self::AddressOverflow(name) => write!(f, "{name} address overflows u32"),
             Self::ExceedsKernelLimit { size, limit } => {
                 write!(f, "kernel size {size} exceeds limit {limit}")
