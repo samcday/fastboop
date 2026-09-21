@@ -1,3 +1,6 @@
+mod target;
+pub(crate) use target::validate_runtime_serial;
+
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -34,10 +37,12 @@ const DISCOVERY_RETRY: Duration = Duration::from_millis(500);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const STATUS_RETRY_ATTEMPTS: usize = 5;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SmooHostOptions {
     pub impersonate_fastboot: bool,
     pub metrics_port: u16,
+    /// Unique runtime USB descriptor serial, retained across every reconnect.
+    pub serial: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,10 +134,16 @@ async fn run_native_smoo_host_async(
         !exports.is_empty(),
         "smoo host requires at least one export"
     );
+    validate_runtime_serial(&options.serial)?;
+    tracing::info!(serial = %options.serial, "serving only the selected smoo gadget");
+    let shutdown = shutdown.child_token();
+    let _shutdown_guard = shutdown.clone().drop_guard();
     let shutdown_watch = shutdown.clone();
     tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        shutdown_watch.cancel();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => shutdown_watch.cancel(),
+            _ = shutdown_watch.cancelled() => {},
+        }
     });
 
     let metrics = SmooMetricsRegistry::default();
@@ -175,75 +186,92 @@ async fn run_native_smoo_host_async(
         (SMOO_INTERFACE_SUBCLASS, SMOO_INTERFACE_PROTOCOL)
     };
 
-    while !shutdown.is_cancelled() {
-        let (transport, control) = match RusbTransport::open_matching(
-            None,
-            None,
-            None,
-            SMOO_INTERFACE_CLASS,
-            interface_subclass,
-            interface_protocol,
-            TRANSFER_TIMEOUT,
-        )
-        .await
-        {
-            Ok(pair) => pair,
-            Err(err) => {
-                if shutdown.is_cancelled() {
-                    break;
+    let result = async {
+        while !shutdown.is_cancelled() {
+            let target = target::discover_runtime_device(
+                options.serial.clone(),
+                SMOO_INTERFACE_CLASS,
+                interface_subclass,
+                interface_protocol,
+            )
+            .await?;
+            let Some(target) = target else {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    _ = tokio::time::sleep(DISCOVERY_RETRY) => continue,
                 }
-                emit(
-                    &events,
-                    SmooHostEvent::Log(format!("smoo gadget not ready: {err}")),
-                );
-                tokio::time::sleep(DISCOVERY_RETRY).await;
-                continue;
-            }
-        };
+            };
+            let (transport, control) = match RusbTransport::open_matching(
+                Some(target.vendor),
+                Some(target.product),
+                Some(options.serial.clone()),
+                SMOO_INTERFACE_CLASS,
+                interface_subclass,
+                interface_protocol,
+                TRANSFER_TIMEOUT,
+            )
+            .await
+            {
+                Ok(pair) => pair,
+                Err(err) => {
+                    if shutdown.is_cancelled() {
+                        break;
+                    }
+                    emit(
+                        &events,
+                        SmooHostEvent::Log(format!("smoo gadget not ready: {err}")),
+                    );
+                    tokio::time::sleep(DISCOVERY_RETRY).await;
+                    continue;
+                }
+            };
 
-        let outcome = run_session(
-            transport,
-            control,
-            exports.clone(),
-            SessionRuntime {
-                shutdown: shutdown.clone(),
-                events: events.clone(),
-                metrics: metrics.clone(),
-            },
-        )
-        .await;
-        match outcome {
-            Ok(SessionEnd::Shutdown) => break,
-            Ok(SessionEnd::TransportLost) => {
-                if shutdown.is_cancelled() {
-                    break;
+            let outcome = run_session(
+                transport,
+                control,
+                exports.clone(),
+                SessionRuntime {
+                    shutdown: shutdown.clone(),
+                    events: events.clone(),
+                    metrics: metrics.clone(),
+                },
+            )
+            .await;
+            match outcome {
+                Ok(SessionEnd::Shutdown) => break,
+                Ok(SessionEnd::TransportLost) => {
+                    if shutdown.is_cancelled() {
+                        break;
+                    }
+                    emit(
+                        &events,
+                        SmooHostEvent::Log(
+                            "smoo gadget disconnected; waiting to reconnect...".to_string(),
+                        ),
+                    );
                 }
-                emit(
-                    &events,
-                    SmooHostEvent::Log(
-                        "smoo gadget disconnected; waiting to reconnect...".to_string(),
-                    ),
-                );
-            }
-            Err(err) => {
-                if shutdown.is_cancelled() {
-                    break;
+                Err(err) => {
+                    if shutdown.is_cancelled() {
+                        break;
+                    }
+                    emit(
+                        &events,
+                        SmooHostEvent::Log(format!("smoo host session ended with error: {err}")),
+                    );
+                    tokio::time::sleep(DISCOVERY_RETRY).await;
                 }
-                emit(
-                    &events,
-                    SmooHostEvent::Log(format!("smoo host session ended with error: {err}")),
-                );
-                tokio::time::sleep(DISCOVERY_RETRY).await;
             }
         }
-    }
 
+        Ok(())
+    }
+    .await;
     metrics_shutdown.cancel();
     if let Some(task) = metrics_task {
         let _ = task.await;
     }
 
-    Ok(())
+    result
 }
 
 enum SessionEnd {

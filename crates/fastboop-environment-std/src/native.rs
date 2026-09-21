@@ -87,6 +87,8 @@ pub struct NativeBootConfig {
     pub systemd_firstboot: bool,
     pub wait: Duration,
     pub smoo_metrics_port: u16,
+    /// Expected runtime USB descriptor serial; required for supplied initrds.
+    pub smoo_serial: Option<String>,
 }
 
 pub struct NativeBootEnvironment {
@@ -94,6 +96,7 @@ pub struct NativeBootEnvironment {
     shutdown: CancellationToken,
     selected_device: Option<NativeSelectedFastbootDevice>,
     detected_device: Option<DetectedFastbootDevice>,
+    runtime_serial: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -134,6 +137,7 @@ impl NativeBootEnvironment {
             shutdown,
             selected_device: None,
             detected_device: None,
+            runtime_serial: None,
         }
     }
 
@@ -142,6 +146,10 @@ impl NativeBootEnvironment {
         self
     }
     pub async fn prepare_boot(&mut self) -> Result<PreparedBoot> {
+        self.runtime_serial = None;
+        if let Some(serial) = self.config.smoo_serial.as_deref() {
+            crate::native_smoo::validate_runtime_serial(serial)?;
+        }
         tracing::info!("loading profiles");
 
         let devpro_dirs = resolve_devpro_dirs()?;
@@ -237,17 +245,23 @@ impl NativeBootEnvironment {
         log_detected_device(&profile, detected_device.as_ref());
         tracing::info!(profile = %profile.id, "building boot payload");
 
+        let strategy = channel
+            .resolve_boot_profile(&profile.id, self.config.stage0.boot_profile.as_deref())
+            .map_err(|err| anyhow!(err.to_string()))?
+            .map(|p| p.boot)
+            .unwrap_or_default();
+        let runtime_serial = resolve_runtime_serial(
+            strategy,
+            self.config.smoo_serial.as_deref(),
+            detected_device.as_ref().and_then(|d| d.serial.as_deref()),
+            self.config.boot_device,
+        )?;
         let mut artifact_resolver = ArtifactReaderResolver::with_local_artifacts(
             self.config.stage0.local_artifact.as_slice(),
         )?;
         let resolved =
             resolve_boot_input(&mut artifact_resolver, &self.config.stage0, &profile).await?;
-        if resolved
-            .input
-            .boot_spec
-            .boot_profile()
-            .is_some_and(|p| p.boot == BootStrategy::Initrd)
-        {
+        if strategy == BootStrategy::Initrd {
             let prepared = build_native_initrd_boot(
                 &self.config.stage0,
                 &profile,
@@ -261,6 +275,7 @@ impl NativeBootEnvironment {
             )
             .await?;
             self.detected_device = detected_fastboot;
+            self.runtime_serial = runtime_serial;
             return Ok(prepared);
         }
 
@@ -278,6 +293,7 @@ impl NativeBootEnvironment {
             &self.config.stage0,
             &profile,
             detected_device.as_ref(),
+            runtime_serial.as_deref(),
             personalization,
             system_time_part.as_deref(),
         )
@@ -299,6 +315,7 @@ impl NativeBootEnvironment {
         .map_err(|e| anyhow::anyhow!("bootimg build failed: {e}"))?;
 
         self.detected_device = detected_fastboot;
+        self.runtime_serial = runtime_serial;
         Ok(PreparedBoot {
             profile_id: profile.id,
             boot_image: bootimg,
@@ -326,7 +343,19 @@ impl NativeBootEnvironment {
         Err(anyhow!("fastboot device was not prepared for boot handoff"))
     }
 
+    /// Retain these options when moving a prepared boot into a background host task.
+    pub fn smoo_host_options(&self) -> Result<SmooHostOptions> {
+        Ok(SmooHostOptions {
+            impersonate_fastboot: self.config.stage0.impersonate_fastboot,
+            metrics_port: self.config.smoo_metrics_port,
+            serial: self.runtime_serial.clone().ok_or_else(|| {
+                anyhow!("prepare a targeted boot before starting the smoo runtime")
+            })?,
+        })
+    }
+
     pub async fn serve_runtime(&mut self, export: RuntimeExport) -> Result<()> {
+        let options = self.smoo_host_options()?;
         let (tx, rx) = std::sync::mpsc::channel::<SmooHostEvent>();
         let forwarder = std::thread::spawn(move || {
             while let Ok(event) = rx.recv() {
@@ -338,10 +367,7 @@ impl NativeBootEnvironment {
             export.reader,
             export.size_bytes,
             export.identity,
-            SmooHostOptions {
-                impersonate_fastboot: self.config.stage0.impersonate_fastboot,
-                metrics_port: self.config.smoo_metrics_port,
-            },
+            options,
             tx,
             self.shutdown.clone(),
         )
@@ -351,6 +377,29 @@ impl NativeBootEnvironment {
         let _ = forwarder.join();
         result
     }
+}
+
+fn resolve_runtime_serial(
+    strategy: BootStrategy,
+    explicit: Option<&str>,
+    fastboot_usb_serial: Option<&str>,
+    boot_device: bool,
+) -> Result<Option<String>> {
+    let serial = explicit.or_else(|| {
+        (strategy == BootStrategy::Stage0)
+            .then_some(fastboot_usb_serial)
+            .flatten()
+    });
+    if let Some(serial) = serial {
+        crate::native_smoo::validate_runtime_serial(serial)?;
+        return Ok(Some(serial.to_owned()));
+    }
+    if boot_device {
+        bail!(
+            "runtime USB identity is unknown; supply --smoo-serial with the gadget's unique USB descriptor serial (a supplied initrd need not use the fastboot serial)"
+        );
+    }
+    Ok(None)
 }
 
 pub struct Stage0InitrdOutput {
@@ -558,7 +607,8 @@ pub async fn build_stage0_initrd(config: NativeBootStage0Config) -> Result<Stage
         bail!("fastboop stage0 cannot build a boot: initrd profile; use fastboop boot");
     }
     let resolved = resolve_boot_input(&mut artifact_resolver, &config, &profile).await?;
-    let prepared = build_stage0_artifacts(resolved, &config, &profile, None, None, None).await?;
+    let prepared =
+        build_stage0_artifacts(resolved, &config, &profile, None, None, None, None).await?;
     let build = prepared
         .build
         .map_err(|e| anyhow::anyhow!("stage0 build failed: {e:?}"))?;
@@ -773,6 +823,7 @@ async fn build_stage0_artifacts(
     config: &NativeBootStage0Config,
     profile: &DeviceProfile,
     detected_device: Option<&DetectedFastbootInfo>,
+    runtime_serial: Option<&str>,
     personalization: Option<Personalization>,
     system_time_part: Option<&str>,
 ) -> Result<Stage0Artifacts> {
@@ -826,7 +877,7 @@ async fn build_stage0_artifacts(
         mimic_fastboot: config.impersonate_fastboot,
         smoo_vendor: detected_device.map(|device| device.vid),
         smoo_product: detected_device.map(|device| device.pid),
-        stage0_serial: detected_device.and_then(|device| device.serial.clone()),
+        stage0_serial: runtime_serial.map(str::to_owned),
         personalization,
     };
 
@@ -1583,6 +1634,7 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
                         systemd_firstboot: false,
                         wait: Duration::ZERO,
                         smoo_metrics_port: 0,
+                        smoo_serial: None,
                     },
                     CancellationToken::new(),
                 );
@@ -1597,6 +1649,75 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
             }
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn runtime_identity_is_explicit_for_supplied_initrd() {
+        assert!(
+            resolve_runtime_serial(BootStrategy::Initrd, None, Some("bootloader"), true).is_err()
+        );
+        assert_eq!(
+            resolve_runtime_serial(
+                BootStrategy::Initrd,
+                Some("gadget"),
+                Some("bootloader"),
+                true
+            )
+            .unwrap(),
+            Some("gadget".into())
+        );
+        assert_eq!(
+            resolve_runtime_serial(BootStrategy::Initrd, None, None, false).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn stage0_runtime_identity_matches_the_configured_gadget() {
+        assert_eq!(
+            resolve_runtime_serial(BootStrategy::Stage0, None, Some("bootloader"), true).unwrap(),
+            Some("bootloader".into())
+        );
+        assert_eq!(
+            resolve_runtime_serial(
+                BootStrategy::Stage0,
+                Some("override"),
+                Some("bootloader"),
+                true
+            )
+            .unwrap(),
+            Some("override".into())
+        );
+        assert!(resolve_runtime_serial(BootStrategy::Stage0, None, None, true).is_err());
+        assert!(
+            resolve_runtime_serial(BootStrategy::Stage0, Some(""), Some("bootloader"), true)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn runtime_options_survive_fastboot_handle_handoff() {
+        let mut env = NativeBootEnvironment::new(
+            NativeBootConfig {
+                stage0: NativeBootStage0Config::from_raw_ostree(PathBuf::from("unused"), None)
+                    .unwrap(),
+                boot_device: true,
+                system_time: false,
+                systemd_firstboot: false,
+                wait: Duration::ZERO,
+                smoo_metrics_port: 0,
+                smoo_serial: Some("gadget".into()),
+            },
+            CancellationToken::new(),
+        );
+        assert!(env.smoo_host_options().is_err());
+        // A completed prepare retains runtime identity separately from USB
+        // handles, which connect_fastboot consumes before serving begins.
+        env.runtime_serial = Some("gadget".into());
+        env.selected_device = None;
+        env.detected_device = None;
+        assert_eq!(env.smoo_host_options().unwrap().serial, "gadget");
+        assert_eq!(env.smoo_host_options().unwrap().serial, "gadget");
     }
 
     #[test]

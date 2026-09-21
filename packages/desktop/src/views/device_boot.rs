@@ -78,11 +78,13 @@ pub async fn boot_selected_device(
         .await
         .map_err(|err| anyhow!("fastboot handoff failed: {err}"))?;
 
+    let smoo_options = env.smoo_host_options()?;
     let export = prepared.export;
     Ok(BootRuntime {
         reader: export.reader,
         size_bytes: export.size_bytes,
         identity: export.identity,
+        smoo_options,
         smoo_stats: SmooStatsHandle::new(),
     })
 }
@@ -92,6 +94,7 @@ pub fn run_rusb_host_daemon(
     size_bytes: u64,
     identity: String,
     smoo_stats: SmooStatsHandle,
+    smoo_options: SmooHostOptions,
 ) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -110,10 +113,7 @@ pub fn run_rusb_host_daemon(
         reader,
         size_bytes,
         identity,
-        SmooHostOptions {
-            impersonate_fastboot: true,
-            metrics_port: DEFAULT_SMOO_METRICS_PORT,
-        },
+        smoo_options,
         tx,
         CancellationToken::new(),
     ));
@@ -153,6 +153,7 @@ fn native_boot_config_for_session(session: &DeviceSession) -> Result<NativeBootC
         systemd_firstboot: true,
         wait: std::time::Duration::ZERO,
         smoo_metrics_port: DEFAULT_SMOO_METRICS_PORT,
+        smoo_serial: None,
     })
 }
 

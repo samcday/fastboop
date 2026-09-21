@@ -242,6 +242,7 @@ fn BootedDevice(session_id: String) -> Element {
                     runtime_for_host.size_bytes,
                     runtime_for_host.identity,
                     runtime_for_host.smoo_stats,
+                    runtime_for_host.smoo_options,
                 ) {
                     error!(%err, "desktop smoo host daemon stopped");
                 }

@@ -26,6 +26,7 @@ pub struct BootRuntime {
     pub reader: Arc<dyn BlockReader>,
     pub size_bytes: u64,
     pub identity: String,
+    pub smoo_options: fastboop_environment_std::SmooHostOptions,
     pub smoo_stats: SmooStatsHandle,
 }
 
