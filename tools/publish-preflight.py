@@ -18,7 +18,7 @@ def publishable_packages(metadata):
         for package in metadata["packages"]
         if package["id"] in members
         and package["source"] is None
-        and package["publish"] != []
+        and (package["publish"] is None or "crates-io" in package["publish"])
     }
     if not packages:
         raise ValueError("no publishable workspace packages found")

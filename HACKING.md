@@ -97,7 +97,9 @@ lock, and changed registry checksums. The CLI itself is the only source-less
 package allowed in its archive's lockfile.
 
 Both dry-run and live publication run this preflight before any upload. Release
-CI starts the dry-run independently of distro packaging and requires it before
+planning includes only packages allowed on crates.io, and packaging and uploads
+explicitly select crates.io even if the caller configured another default registry.
+Release CI starts the dry-run independently of distro packaging and requires it before
 publishing the GitHub release. Until upstream dependencies are released and the
 manifests point at them, a failed preflight is an outstanding release blocker.
 
