@@ -38,8 +38,8 @@ package_args=()
 for package in "${packages[@]}"; do
     package_args+=(-p "$package")
 done
-echo "==> cargo package --locked ${package_args[*]}"
-cargo package --locked "${package_args[@]}"
+echo "==> cargo package --registry crates-io --locked ${package_args[*]}"
+cargo package --registry crates-io --locked "${package_args[@]}"
 python3 "$script_dir/publish-preflight.py" verify "$metadata_file"
 
 if [[ "$mode" == "--dry-run" ]]; then
@@ -87,8 +87,8 @@ print(int(parsed.timestamp()))
 
 # All crates have passed the same preflight before the first upload.
 for package in "${packages[@]}"; do
-    echo "==> cargo publish -p $package --locked --no-verify"
-    if output="$(cargo publish -p "$package" --locked --no-verify 2>&1)"; then
+    echo "==> cargo publish --registry crates-io -p $package --locked --no-verify"
+    if output="$(cargo publish --registry crates-io -p "$package" --locked --no-verify 2>&1)"; then
         printf '%s\n' "$output"
         continue
     fi
@@ -110,8 +110,8 @@ for package in "${packages[@]}"; do
             echo "==> crates.io scheduled retry time already passed for $package; retrying now"
         fi
 
-        echo "==> cargo publish -p $package --locked --no-verify (scheduled retry)"
-        if retry_output="$(cargo publish -p "$package" --locked --no-verify 2>&1)"; then
+        echo "==> cargo publish --registry crates-io -p $package --locked --no-verify (scheduled retry)"
+        if retry_output="$(cargo publish --registry crates-io -p "$package" --locked --no-verify 2>&1)"; then
             printf '%s\n' "$retry_output"
             continue
         fi

@@ -15,6 +15,23 @@ preflight = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preflight)
 
 
+class PlanTests(unittest.TestCase):
+    def test_only_packages_allowed_on_crates_io_are_planned(self):
+        policies = {
+            "unrestricted": None,
+            "public": ["crates-io"],
+            "both": ["internal", "crates-io"],
+            "private": [],
+            "internal": ["internal"],
+        }
+        metadata = {"workspace_members": list(policies), "packages": [
+            {"id": name, "name": name, "source": None, "publish": policy,
+             "dependencies": []}
+            for name, policy in policies.items()
+        ]}
+        self.assertEqual(preflight.publish_order(metadata), ["both", "public", "unrestricted"])
+
+
 class LockTests(unittest.TestCase):
     def setUp(self):
         self.versions = {"fastboop-cli": "99.0.0", "fastboop-core": "99.0.0"}
@@ -73,6 +90,8 @@ class CargoTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.env = dict(os.environ)
+        # CI forces ANSI colors, which must not affect diagnostic assertions.
+        self.env["CARGO_TERM_COLOR"] = "never"
         # Fixtures must use the repository's toolchain, even outside its tree.
         toolchain = (TOOLS.parent / "rust-toolchain.toml").read_text()
         self.write("rust-toolchain.toml", toolchain)
@@ -102,6 +121,8 @@ class CargoTests(unittest.TestCase):
     def test_packages_and_compiles_unpublished_siblings_and_reads_cli_archive(self):
         # Exercise the metadata target_directory, rather than assuming ./target.
         self.env["CARGO_TARGET_DIR"] = str(self.root / "custom-target")
+        # A caller's default registry must not redirect this crates.io preflight.
+        self.env["CARGO_REGISTRY_DEFAULT"] = "unconfigured-internal-registry"
         output = self.dry_run(success=True)
         self.assertIn("Verifying fastboop-cli", output)
         self.assertIn("packaged CLI lockfile matches", output)
