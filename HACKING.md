@@ -87,6 +87,26 @@ identity. Repeating the same version leaves that entry and its date unchanged.
 This command prepares version metadata only; dependency publication, packaged
 content verification, and distro build checks remain separate release gates.
 
+`cargo xtask publish-dry-run` packages all publishable workspace crates together
+with `cargo package --locked` and compiles their packaged contents. Cargo stages
+unpublished sibling crates in a temporary registry; external dependencies must
+be available from the registry. The script does not inject Cargo config patches
+or skip verification. It also reads `Cargo.lock` directly from the CLI's `.crate`
+archive and rejects non-crates.io dependencies, version drift from the workspace
+lock, and changed registry checksums. The CLI itself is the only source-less
+package allowed in its archive's lockfile.
+
+Both dry-run and live publication run this preflight before any upload. Release
+CI starts the dry-run independently of distro packaging and requires it before
+publishing the GitHub release. Until upstream dependencies are released and the
+manifests point at them, a failed preflight is an outstanding release blocker.
+
+The scripts require Python 3.11+ for `tomllib`. Run their regression suite with
+`python3 -m unittest discover -s tools/tests -v`. Tests package small temporary
+workspaces with the repository's Rust toolchain and may read the crates.io index;
+they never upload crates. This includes verifying that a Cargo config patch
+cannot hide a local dependency in the packaged CLI lockfile.
+
 ## Contributor workflow
 
 - Read `AGENTS.md` and use its read-on-demand doc index.
