@@ -70,7 +70,7 @@ pub struct BootArgs {
     /// Write boot image to a file and skip device detection/boot.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
-    /// ABL exorcist raw arm64 Image shim to wrap around the selected kernel.
+    /// Raw ABLX shim: wraps the stage0 kernel, or uses ABLXRD1 ramdisk placement for boot: initrd.
     #[arg(long = "abl-exorcist", value_name = "PATH")]
     pub abl_exorcist: Option<PathBuf>,
     /// Append host time to cmdline as systemd.clock_usec=... (use --system-time=false to disable).

@@ -651,9 +651,6 @@ fn validate_initrd_boot_options(
     config: &NativeBootStage0Config,
     settings: &fastboop_core::EffectiveBootProfileStage0,
 ) -> Result<()> {
-    if config.abl_exorcist.is_some() {
-        bail!("--abl-exorcist is not supported with boot: initrd");
-    }
     if config.stage0.is_some()
         || config.augment.is_some()
         || !config.require_modules.is_empty()
@@ -688,6 +685,7 @@ async fn build_native_initrd_boot(
     } = resolved;
     let settings = input.boot_spec.stage0();
     validate_initrd_boot_options(config, &settings)?;
+    let shim = read_abl_exorcist(config.abl_exorcist.as_deref()).await?;
     let kernel = sources
         .kernel_override
         .ok_or_else(|| anyhow!("boot: initrd requires a kernel artifact"))?;
@@ -747,10 +745,11 @@ async fn build_native_initrd_boot(
                 .and_then(|d| d.serial.as_deref())
                 .unwrap_or("0"),
             cmdline,
+            abl_exorcist: shim.as_deref(),
         },
     )
     .map_err(|err| anyhow!("prepare supplied initrd: {err:?}"))?;
-    let boot_image = fastboop_core::build_android_boot_payload(profile, components)
+    let boot_image = build_android_boot_payload_with_options(profile, components, shim.is_some())
         .map_err(|err| anyhow!("bootimg build failed: {err}"))?;
     Ok(PreparedBoot {
         profile_id: profile.id.clone(),
@@ -784,7 +783,7 @@ async fn build_stage0_artifacts(
         None => None,
     };
     let cli_dtbo_overlays = read_dtbo_overlays(&config.dtbo)?;
-    let abl_exorcist_image = read_abl_exorcist(config.abl_exorcist.as_deref())?;
+    let abl_exorcist_image = read_abl_exorcist(config.abl_exorcist.as_deref()).await?;
     let existing = read_existing_initrd(&config.augment)?;
     let stage0_binary =
         load_stage0_binary_for_initrd(config.stage0.as_deref(), existing.as_deref())?;
@@ -889,11 +888,12 @@ async fn build_stage0_artifacts(
     })
 }
 
-fn read_abl_exorcist(path: Option<&Path>) -> Result<Option<Vec<u8>>> {
+async fn read_abl_exorcist(path: Option<&Path>) -> Result<Option<Vec<u8>>> {
     let Some(path) = path else {
         return Ok(None);
     };
-    let data = std::fs::read(path)
+    let data = tokio::fs::read(path)
+        .await
         .with_context(|| format!("reading abl-exorcist shim {}", path.display()))?;
     if data.is_empty() {
         bail!("abl-exorcist shim is empty: {}", path.display());
@@ -1432,6 +1432,89 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
     }
 
     #[tokio::test]
+    async fn supplied_initrd_ablx_wraps_complete_cmdline_and_preserves_export() {
+        let (mut device, mut resolved) = fixture();
+        device.boot.fastboot_boot.android_bootimg.kernel.encoding = KernelEncoding::ImageGzip;
+        let mut raw = vec![0x5a; 128];
+        raw[16..24].copy_from_slice(&128u64.to_le_bytes());
+        raw[56..60].copy_from_slice(b"ARM\x64");
+        resolved.sources.kernel_override.as_mut().unwrap().image = raw.clone();
+        let export_id = crate::native_smoo::runtime_export_id(&resolved.export).unwrap();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let shim_path = std::env::temp_dir().join(format!("fastboop-initrd-shim-{nonce}"));
+        tokio::fs::write(&shim_path, &raw).await.unwrap();
+        let mut config = NativeBootStage0Config::from_raw_ostree("unused".into(), None).unwrap();
+        config.abl_exorcist = Some(shim_path.clone());
+        config.cmdline_append = Some(format!("pocketfed.liveboot=trial note={}", "x".repeat(600)));
+        config.impersonate_fastboot = false;
+        let result = build_native_initrd_boot(
+            &config,
+            &device,
+            resolved,
+            None,
+            Some("systemd.clock_usec=42"),
+        )
+        .await;
+        tokio::fs::remove_file(&shim_path).await.unwrap();
+        let prepared = result.unwrap();
+        let bytes = &prepared.boot_image;
+        let u32_at =
+            |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        let page = u32_at(36);
+        assert_eq!(&bytes[page..page + 3], &[0x1f, 0x8b, 0x08]);
+        assert_eq!(u32_at(20), 0x04000000);
+        let ramdisk_start = page + u32_at(8).div_ceil(page) * page;
+        let ramdisk = &bytes[ramdisk_start..ramdisk_start + u32_at(16)];
+        assert_eq!(&ramdisk[..8], b"ABLXRD1\0");
+        let initrd_offset = u64::from_le_bytes(ramdisk[48..56].try_into().unwrap()) as usize;
+        assert_eq!(&ramdisk[initrd_offset..], b"opaque supplied initrd");
+        let mut cmdline = bytes[64..576].to_vec();
+        cmdline.extend_from_slice(&bytes[608..1632]);
+        let cmdline = std::str::from_utf8(&cmdline)
+            .unwrap()
+            .trim_end_matches('\0');
+        assert!(cmdline.len() > 512);
+        assert!(cmdline.starts_with("<S> console=tty0 "));
+        assert!(cmdline.ends_with(" <E>"));
+        assert_eq!(cmdline.matches("<S>").count(), 1);
+        assert_eq!(cmdline.matches("<E>").count(), 1);
+        assert_eq!(cmdline.matches("console=tty0").count(), 1);
+        assert!(cmdline.contains(&format!("rd.smoo.root={export_id}")));
+        assert!(cmdline.contains("root=/dev/smoo-root"));
+        assert!(cmdline.contains("rd.smoo.cow=1"));
+        assert!(cmdline.contains("rd.smoo.mimic_fastboot=0"));
+        assert!(cmdline.contains("pocketfed.liveboot=trial"));
+        assert!(cmdline.contains("systemd.clock_usec=42"));
+        assert_eq!(prepared.export.identity, "test:root");
+        assert_eq!(prepared.export.size_bytes, 4096);
+    }
+
+    #[tokio::test]
+    async fn supplied_initrd_reports_missing_or_empty_shim() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("fastboop-bad-initrd-shim-{nonce}"));
+        let mut config = NativeBootStage0Config::from_raw_ostree("unused".into(), None).unwrap();
+        config.abl_exorcist = Some(path.clone());
+        let (device, resolved) = fixture();
+        let error = build_native_initrd_boot(&config, &device, resolved, None, None)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("reading abl-exorcist shim"));
+        tokio::fs::write(&path, &[]).await.unwrap();
+        let (device, resolved) = fixture();
+        let result = build_native_initrd_boot(&config, &device, resolved, None, None).await;
+        tokio::fs::remove_file(&path).await.unwrap();
+        assert!(result.err().unwrap().to_string().contains("shim is empty"));
+    }
+
+    #[tokio::test]
     async fn initrd_rejects_invalid_invocations_before_device_wait_or_artifact_io() {
         let (device, resolved) = fixture();
         let mut profile = resolved.input.boot_spec.boot_profile().unwrap().clone();
@@ -1478,7 +1561,6 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
             "--require-module",
             "--serial",
             "OSTree",
-            "--abl-exorcist",
         ] {
             for (boot_device, auto_detect) in [(false, false), (true, false), (true, true)] {
                 let mut stage0 = config.clone();
@@ -1491,7 +1573,6 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
                     "--require-module" => stage0.require_modules.push("dummy".into()),
                     "--serial" => stage0.serial = true,
                     "OSTree" => stage0.ostree = OstreeArg::AutoDetect,
-                    "--abl-exorcist" => stage0.abl_exorcist = Some("missing-shim".into()),
                     _ => unreachable!(),
                 }
                 let mut environment = NativeBootEnvironment::new(

@@ -101,6 +101,12 @@ fn kernel_decompression_limit(profile: &DeviceProfile) -> usize {
     DEFAULT_MAX_DECOMPRESSED_KERNEL_BYTES
 }
 
+/// The bootloader's kernel-section limit applies to the shim in ramdisk mode,
+/// not to the Linux kernel carried inside ABLXRD1.
+pub(super) fn prepare_ramdisk_kernel(kernel: &[u8]) -> Result<Vec<u8>, Stage0Error> {
+    extract_raw_arm64_kernel(kernel, DEFAULT_MAX_DECOMPRESSED_KERNEL_BYTES)
+}
+
 fn extract_raw_arm64_kernel(kernel: &[u8], limit: usize) -> Result<Vec<u8>, Stage0Error> {
     let raw = kernel_payload_to_raw_image(detect_kernel_payload(kernel)?, limit)?;
     if !is_arm64_image(&raw) {
@@ -116,7 +122,10 @@ fn kernel_payload_to_raw_image(
     limit: usize,
 ) -> Result<Vec<u8>, Stage0Error> {
     match payload {
-        KernelPayload::Raw(data) if data.starts_with(&MZ_MAGIC) => {
+        // EFI-stub ARM64 Images are already usable kernels even though their
+        // first instruction is also the PE "MZ" signature. Re-extracting one
+        // returns the same bytes and would otherwise recurse indefinitely.
+        KernelPayload::Raw(data) if data.starts_with(&MZ_MAGIC) && !is_arm64_image(&data) => {
             kernel_payload_to_raw_image(extract_pe_recursive(&data)?, limit)
         }
         KernelPayload::Raw(data) => Ok(data),
