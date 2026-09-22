@@ -2768,7 +2768,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-android-sparse"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2778,7 +2778,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-blockreader-messageport"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "futures-channel",
@@ -2792,7 +2792,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-cache"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2804,7 +2804,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-cache-store-opfs"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "futures-channel",
@@ -2818,7 +2818,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-cache-store-std"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "gibblox-cache",
@@ -2828,7 +2828,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-casync"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -2838,7 +2838,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-casync-std"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "flate2",
@@ -2854,7 +2854,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-casync-web"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "flate2",
@@ -2872,7 +2872,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-core"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2882,7 +2882,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-ext4"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "ext4plus",
@@ -2893,7 +2893,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-file"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -2902,7 +2902,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-http"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2921,18 +2921,20 @@ dependencies = [
 
 [[package]]
 name = "gibblox-mbr"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "bytemuck",
  "gibblox-core",
+ "hadris-io",
+ "hadris-macros",
  "hadris-part",
  "tracing",
 ]
 
 [[package]]
 name = "gibblox-optimizer"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "anyhow",
  "gibblox-android-sparse",
@@ -2945,7 +2947,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-pipeline"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "anyhow",
  "gibblox-android-sparse",
@@ -2971,7 +2973,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-schema"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "postcard",
  "serde",
@@ -2979,7 +2981,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-tar"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -2988,7 +2990,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-web-worker"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -3005,7 +3007,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-xz"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3017,7 +3019,7 @@ dependencies = [
 
 [[package]]
 name = "gibblox-zip"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "async-trait",
  "gibblox-core",
@@ -3178,11 +3180,11 @@ dependencies = [
 
 [[package]]
 name = "gobblytes-core"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 
 [[package]]
 name = "gobblytes-erofs"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3204,11 +3206,14 @@ dependencies = [
 
 [[package]]
 name = "gobblytes-fat"
-version = "0.0.2-rc.3"
+version = "0.0.2-rc.5"
 dependencies = [
  "gibblox-core",
  "gobblytes-core",
+ "hadris-common",
  "hadris-fat",
+ "hadris-io",
+ "hadris-macros",
  "tracing",
 ]
 

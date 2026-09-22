@@ -17,20 +17,20 @@ fastboop-core = { path = "../fastboop-core", version = "0.0.1-rc.21" }
 fastboop-fastboot-rusb = { path = "../fastboop-fastboot-rusb", version = "0.0.1-rc.21" }
 fastboop-smoo-gibblox = { workspace = true }
 fastboop-stage0-generator = { path = "../fastboop-stage0-generator", version = "0.0.1-rc.21" }
-gibblox-android-sparse = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-casync = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-casync-std = { version = "0.0.2-rc.3" }
-gibblox-core = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-ext4 = { version = "0.0.2-rc.3" }
-gibblox-file = { version = "0.0.2-rc.3" }
-gibblox-http = { version = "0.0.2-rc.3", default-features = false, features = ["native-client"] }
-gibblox-mbr = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-pipeline = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-xz = { version = "0.0.2-rc.3", features = ["std"] }
-gibblox-zip = { version = "0.0.2-rc.3", features = ["std"] }
-gobblytes-core = { version = "0.0.2-rc.3" }
-gobblytes-erofs = { version = "0.0.2-rc.3" }
-gobblytes-fat = { version = "0.0.2-rc.3" }
+gibblox-android-sparse = { version = "0.0.2-rc.5", features = ["std"] }
+gibblox-casync = { version = "0.0.2-rc.5", features = ["std"] }
+gibblox-casync-std = { version = "0.0.2-rc.5" }
+gibblox-core = { version = "0.0.2-rc.5", features = ["std"] }
+gibblox-ext4 = { version = "0.0.2-rc.5" }
+gibblox-file = { version = "0.0.2-rc.5" }
+gibblox-http = { version = "0.0.2-rc.5", default-features = false, features = ["native-client"] }
+gibblox-mbr = { version = "0.0.2-rc.5", features = ["std"] }
+gibblox-pipeline = { version = "0.0.2-rc.5", features = ["std"] }
+gibblox-xz = { version = "0.0.2-rc.5", features = ["std"] }
+gibblox-zip = { version = "0.0.2-rc.5", features = ["std"] }
+gobblytes-core = { version = "0.0.2-rc.5" }
+gobblytes-erofs = { version = "0.0.2-rc.5" }
+gobblytes-fat = { version = "0.0.2-rc.5" }
 hyper = { workspace = true, features = ["server", "http1", "tcp"] }
 serde_yaml = { workspace = true }
 # Inspect serials and retain the exact USB handle passed to smoo for claiming.
