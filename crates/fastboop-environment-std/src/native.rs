@@ -217,6 +217,7 @@ impl NativeBootEnvironment {
             &channel,
             candidates,
             missing_runtime_serial,
+            self.config.smoo_serial.as_deref(),
         )?;
 
         let mut detected_fastboot = None;
@@ -248,34 +249,27 @@ impl NativeBootEnvironment {
             &channel,
             std::slice::from_ref(&profile),
             missing_runtime_serial,
+            self.config.smoo_serial.as_deref(),
         )?;
         log_detected_device(&profile, detected_device.as_ref());
         tracing::info!(profile = %profile.id, "building boot payload");
 
-        let selected_boot_profile = channel
-            .resolve_boot_profile(&profile.id, self.config.stage0.boot_profile.as_deref())
-            .map_err(|err| anyhow!(err.to_string()))?;
-        let strategy = selected_boot_profile
-            .as_ref()
-            .map(|p| p.boot)
-            .unwrap_or_default();
-        let profile_stage0 = selected_boot_profile
-            .as_ref()
-            .map(|p| fastboop_core::resolve_effective_boot_profile_stage0(p, &profile.id))
-            .unwrap_or_default();
-        let runtime_serial = resolve_runtime_serial(
-            strategy,
-            self.config.smoo_serial.as_deref(),
-            detected_device.as_ref().and_then(|d| d.serial.as_deref()),
-            self.config.boot_device,
-            profile_stage0.extra_cmdline.as_deref(),
-            self.config.stage0.cmdline_append.as_deref(),
-        )?;
         let mut artifact_resolver = ArtifactReaderResolver::with_local_artifacts(
             self.config.stage0.local_artifact.as_slice(),
         )?;
         let resolved =
             resolve_boot_input(&mut artifact_resolver, &self.config.stage0, &profile).await?;
+        // The channel can change while waiting for USB. Build routing and the
+        // retained host identity must come from the same snapshot as the payload.
+        let (strategy, runtime_serial) = resolve_runtime_target(
+            &self.config.stage0,
+            &resolved.input.boot_spec,
+            self.config.smoo_serial.as_deref(),
+            detected_device
+                .as_ref()
+                .and_then(|device| device.serial.as_deref()),
+            self.config.boot_device,
+        )?;
         if strategy == BootStrategy::Initrd {
             let prepared = build_native_initrd_boot(
                 &self.config.stage0,
@@ -392,6 +386,28 @@ impl NativeBootEnvironment {
         let _ = forwarder.join();
         result
     }
+}
+
+fn resolve_runtime_target(
+    config: &NativeBootStage0Config,
+    boot_spec: &fastboop_core::BootSpec,
+    explicit: Option<&str>,
+    fastboot_usb_serial: Option<&str>,
+    boot_device: bool,
+) -> Result<(BootStrategy, Option<String>)> {
+    let strategy = boot_spec.boot_profile().map(|p| p.boot).unwrap_or_default();
+    if strategy == BootStrategy::Initrd {
+        validate_initrd_boot_options(config, boot_spec.stage0())?;
+    }
+    let serial = resolve_runtime_serial(
+        strategy,
+        explicit,
+        fastboot_usb_serial,
+        boot_device,
+        boot_spec.stage0().extra_cmdline.as_deref(),
+        config.cmdline_append.as_deref(),
+    )?;
+    Ok((strategy, serial))
 }
 
 fn resolve_runtime_serial(
@@ -695,6 +711,7 @@ fn validate_native_boot_candidates(
     channel: &fastboop_core::Channel,
     candidates: &[DeviceProfile],
     missing_runtime_serial: bool,
+    explicit_serial: Option<&str>,
 ) -> Result<()> {
     let mut first_error = None;
     let mut selection_error = None;
@@ -707,26 +724,18 @@ fn validate_native_boot_candidates(
                     continue;
                 }
             };
-        let result = if let Some(selected) = selected
-            && selected.boot == BootStrategy::Initrd
-        {
-            validate_initrd_boot_options(
-                config,
-                &fastboop_core::resolve_effective_boot_profile_stage0(&selected, &device.id),
-            )
-            .and_then(|()| {
-                if missing_runtime_serial {
-                    bail!("boot: initrd requires --smoo-serial with the gadget's unique USB descriptor serial");
-                }
-                Ok(())
-            })
-        } else {
-            Ok(())
-        };
+        let requires_serial = missing_runtime_serial
+            && selected
+                .as_ref()
+                .is_some_and(|p| p.boot == BootStrategy::Initrd);
+        let spec = fastboop_core::BootSpec::new(device.clone(), selected);
+        // Stage0 may learn its serial from USB later, but any supplied serial
+        // and host/gadget conflict can already be validated for this candidate.
+        let result = resolve_runtime_target(config, &spec, explicit_serial, None, requires_serial);
         match result {
             // Before detection, do not reject an invocation that is valid for
             // another candidate. Recheck the actual device before opening inputs.
-            Ok(()) => return Ok(()),
+            Ok(_) => return Ok(()),
             Err(err) if first_error.is_none() => first_error = Some(err),
             Err(_) => {}
         }
@@ -1852,6 +1861,157 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
         );
     }
 
+    #[tokio::test]
+    async fn invalid_stage0_serials_fail_before_usb_discovery() {
+        let (device, resolved) = fixture();
+        let mut profile = resolved.input.boot_spec.boot_profile().unwrap().clone();
+        profile.boot = BootStrategy::Stage0;
+        profile.rootfs =
+            fastboop_core::BootProfileRootfs::Ext4(fastboop_core::BootProfileRootfsExt4Source {
+                ext4: fastboop_core::BootProfileArtifactSource::File(
+                    fastboop_core::BootProfileArtifactSourceFileSource {
+                        file: "must-not-open.ext4".into(),
+                        content: Some(gibblox_pipeline::PipelineSourceContent {
+                            digest: format!("sha512:{}", "1".repeat(128)),
+                            size_bytes: 4096,
+                        }),
+                    },
+                ),
+            });
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let channel = std::env::temp_dir().join(format!("fastboop-serial-preflight-{nonce}.fbp"));
+        for (profile_cmdline, cli_cmdline, explicit, expected) in [
+            ("stage0.serial=café", None, None, "ASCII"),
+            ("quiet", Some("stage0.serial=café"), None, "ASCII"),
+            ("stage0.serial=profile", None, Some("host"), "conflicts"),
+            (
+                "quiet",
+                Some("stage0.serial=cli"),
+                Some("host"),
+                "conflicts",
+            ),
+        ] {
+            profile.extra_cmdline = Some(profile_cmdline.into());
+            std::fs::write(
+                &channel,
+                fastboop_core::encode_boot_profile(&profile).unwrap(),
+            )
+            .unwrap();
+            for auto_detect in [false, true] {
+                let mut stage0 =
+                    NativeBootStage0Config::from_raw_ostree(channel.clone(), None).unwrap();
+                stage0.device_profile = (!auto_detect).then(|| device.id.clone());
+                stage0.cmdline_append = cli_cmdline.map(str::to_owned);
+                let mut env = NativeBootEnvironment::new(
+                    NativeBootConfig {
+                        stage0,
+                        boot_device: true,
+                        system_time: false,
+                        systemd_firstboot: false,
+                        wait: Duration::ZERO,
+                        smoo_metrics_port: 0,
+                        smoo_serial: explicit.map(str::to_owned),
+                    },
+                    CancellationToken::new(),
+                );
+                let error = tokio::time::timeout(Duration::from_secs(1), env.prepare_boot())
+                    .await
+                    .expect("invalid serial must not wait for USB")
+                    .err()
+                    .expect("must reject serial");
+                assert!(error.to_string().contains(expected), "{error:#}");
+            }
+        }
+        std::fs::remove_file(channel).unwrap();
+    }
+
+    #[test]
+    fn runtime_target_uses_the_resolved_payload_snapshot() {
+        let (device, mut resolved) = fixture();
+        let mut profile = resolved.input.boot_spec.boot_profile().unwrap().clone();
+        profile.boot = BootStrategy::Stage0;
+        profile.extra_cmdline = Some("stage0.serial=preview".into());
+        let preview = fastboop_core::Channel::new(
+            None,
+            fastboop_core::ChannelStreamHead {
+                boot_profiles: vec![profile.clone()],
+                ..Default::default()
+            },
+        );
+        let config = NativeBootStage0Config::from_raw_ostree("unused".into(), None).unwrap();
+        validate_native_boot_candidates(
+            &config,
+            &preview,
+            std::slice::from_ref(&device),
+            true,
+            None,
+        )
+        .unwrap();
+        // A reread changed the serial. The host must follow the payload's spec.
+        profile.extra_cmdline = Some("stage0.serial=payload".into());
+        resolved.input.boot_spec = BootSpec::new(device.clone(), Some(profile.clone()));
+        assert_eq!(
+            resolve_runtime_target(
+                &config,
+                &resolved.input.boot_spec,
+                None,
+                Some("bootloader"),
+                true
+            )
+            .unwrap(),
+            (BootStrategy::Stage0, Some("payload".into()))
+        );
+        assert!(
+            resolve_runtime_target(
+                &config,
+                &resolved.input.boot_spec,
+                Some("preview"),
+                None,
+                true
+            )
+            .is_err()
+        );
+        // A strategy change must revalidate options and require an initrd selector.
+        profile.boot = BootStrategy::Initrd;
+        resolved.input.boot_spec = BootSpec::new(device, Some(profile));
+        assert!(
+            resolve_runtime_target(
+                &config,
+                &resolved.input.boot_spec,
+                None,
+                Some("bootloader"),
+                true
+            )
+            .is_err()
+        );
+        assert_eq!(
+            resolve_runtime_target(
+                &config,
+                &resolved.input.boot_spec,
+                Some("initrd"),
+                None,
+                true
+            )
+            .unwrap(),
+            (BootStrategy::Initrd, Some("initrd".into()))
+        );
+        let mut unsupported = config;
+        unsupported.augment = Some("must-not-build.cpio".into());
+        assert!(
+            resolve_runtime_target(
+                &unsupported,
+                &resolved.input.boot_spec,
+                Some("initrd"),
+                None,
+                true
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn runtime_options_survive_fastboot_handle_handoff() {
         let mut env = NativeBootEnvironment::new(
@@ -1905,13 +2065,14 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
         let candidates = [initrd_device.clone(), stage0_device.clone()];
         // An unknown device can still choose generated stage0, which derives
         // its serial after detection. Only initrd-only candidates fail early.
-        validate_native_boot_candidates(&config, &channel, &candidates, true).unwrap();
+        validate_native_boot_candidates(&config, &channel, &candidates, true, None).unwrap();
         assert!(
             validate_native_boot_candidates(
                 &config,
                 &channel,
                 std::slice::from_ref(&initrd_device),
-                true
+                true,
+                None,
             )
             .unwrap_err()
             .to_string()
@@ -1922,25 +2083,29 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
             &channel,
             std::slice::from_ref(&initrd_device),
             false,
+            None,
         )
         .unwrap();
         config.augment = Some("stage0-extra.cpio".into());
-        validate_native_boot_candidates(&config, &channel, &candidates, false).unwrap();
-        validate_native_boot_candidates(&config, &channel, &[stage0_device], false).unwrap();
+        validate_native_boot_candidates(&config, &channel, &candidates, false, None).unwrap();
+        validate_native_boot_candidates(&config, &channel, &[stage0_device], false, None).unwrap();
         assert!(
             validate_native_boot_candidates(
                 &config,
                 &channel,
                 std::slice::from_ref(&initrd_device),
                 false,
+                None,
             )
             .is_err()
         );
         config.boot_profile = Some(initrd.id.clone());
-        assert!(validate_native_boot_candidates(&config, &channel, &candidates, false).is_err());
+        assert!(
+            validate_native_boot_candidates(&config, &channel, &candidates, false, None).is_err()
+        );
         let reversed = [candidates[1].clone(), candidates[0].clone()];
         assert!(
-            validate_native_boot_candidates(&config, &channel, &reversed, false)
+            validate_native_boot_candidates(&config, &channel, &reversed, false, None)
                 .unwrap_err()
                 .to_string()
                 .contains("--augment")
@@ -1962,7 +2127,7 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
                 ..Default::default()
             },
         );
-        let err = validate_native_boot_candidates(&config, &channel, &[initrd_device], false)
+        let err = validate_native_boot_candidates(&config, &channel, &[initrd_device], false, None)
             .unwrap_err();
         assert!(err.to_string().contains("stage0.kernel_modules"));
     }
