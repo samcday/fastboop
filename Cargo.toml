@@ -37,13 +37,11 @@ fastboop-environment-std = { path = "crates/fastboop-environment-std", version =
 fastboop-environment-web = { path = "crates/fastboop-environment-web", version = "0.0.1-rc.21" }
 fastboop-schema = { path = "crates/fastboop-schema", default-features = false, version = "0.0.1-rc.21" }
 fastboop-smoo-gibblox = { path = "crates/fastboop-smoo-gibblox", version = "0.0.1-rc.21" }
-smoo-gadget-app = "0.0.2-rc.7"
-smoo-host-core = "0.0.2-rc.7"
-smoo-host-session = "0.0.2-rc.7"
-# Landing/release prerequisite: bump to a published release with open_handle.
-# Development uses the pinned smoo snapshot below; crates.io rc.7 lacks this API.
-smoo-host-transport-rusb = "0.0.2-rc.7"
-smoo-host-webusb = "0.0.2-rc.7"
+smoo-gadget-app = "0.0.2-rc.8"
+smoo-host-core = "0.0.2-rc.8"
+smoo-host-session = "0.0.2-rc.8"
+smoo-host-transport-rusb = "0.0.2-rc.8"
+smoo-host-webusb = "0.0.2-rc.8"
 gibblox-android-sparse = "0.0.2-rc.3"
 gibblox-blockreader-messageport = "0.0.2-rc.3"
 gibblox-cache = "0.0.2-rc.3"
