@@ -6506,7 +6506,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "smoo-gadget-app"
-version = "0.0.2-rc.7"
+version = "0.0.2-rc.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6525,7 +6525,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-gadget-core"
-version = "0.0.2-rc.7"
+version = "0.0.2-rc.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6547,7 +6547,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-gadget-ublk"
-version = "0.0.2-rc.7"
+version = "0.0.2-rc.8"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -6559,7 +6559,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-core"
-version = "0.0.2-rc.7"
+version = "0.0.2-rc.8"
 dependencies = [
  "async-trait",
  "futures-channel",
@@ -6570,7 +6570,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-session"
-version = "0.0.2-rc.7"
+version = "0.0.2-rc.8"
 dependencies = [
  "futures-util",
  "smoo-host-core",
@@ -6580,7 +6580,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-transport-rusb"
-version = "0.0.2-rc.7"
+version = "0.0.2-rc.8"
 dependencies = [
  "async-trait",
  "crossbeam-channel",
@@ -6592,7 +6592,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-host-webusb"
-version = "0.0.2-rc.7"
+version = "0.0.2-rc.8"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -6606,7 +6606,7 @@ dependencies = [
 
 [[package]]
 name = "smoo-proto"
-version = "0.0.2-rc.7"
+version = "0.0.2-rc.8"
 dependencies = [
  "heapless 0.8.0",
 ]
