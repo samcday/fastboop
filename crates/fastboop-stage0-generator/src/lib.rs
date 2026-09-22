@@ -474,7 +474,13 @@ fn write_stage0_settings(
         let path = format!("{STAGE0_CONFIG_DIR}/{key}");
         let mut data = value.as_bytes().to_vec();
         data.push(b'\n');
-        image.ensure_file(path.as_str(), 0o100644, &data)?;
+        if key == "stage0.serial" {
+            // The host targets this generated serial. An augmented archive's
+            // previous identity must not override the selected device.
+            image.replace_file(path.as_str(), 0o100644, &data);
+        } else {
+            image.ensure_file(path.as_str(), 0o100644, &data)?;
+        }
     }
     Ok(())
 }
@@ -1374,6 +1380,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn augmentation_replaces_serial_but_preserves_other_files() {
+        let mut original = CpioImage::new();
+        original
+            .ensure_file("etc/stage0/stage0.serial", 0o100644, b"old\n")
+            .unwrap();
+        for path in [
+            "./etc/stage0/stage0.serial",
+            "/etc/stage0/stage0.serial",
+            "etc//stage0/stage0.serial",
+        ] {
+            original.ensure_file(path, 0o100644, b"also-old\n").unwrap();
+        }
+        original
+            .ensure_file("etc/stage0/smoo.log", 0o100644, b"debug\n")
+            .unwrap();
+        let mut augmented = CpioImage::from_bytes(&original.finish().unwrap()).unwrap();
+        write_stage0_settings(
+            &mut augmented,
+            &BTreeMap::from([
+                ("stage0.serial".into(), "selected".into()),
+                ("smoo.log".into(), "info".into()),
+            ]),
+        )
+        .unwrap();
+        let entries = parse_cpio_newc(&augmented.finish().unwrap()).unwrap();
+        let serials: Vec<_> = entries
+            .iter()
+            .filter(|e| e.path == "etc/stage0/stage0.serial")
+            .collect();
+        assert_eq!(serials.len(), 1);
+        assert_eq!(serials[0].data, b"selected\n");
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|e| e.path.ends_with("/stage0.serial"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .find(|e| e.path == "etc/stage0/smoo.log")
+                .unwrap()
+                .data,
+            b"debug\n"
+        );
+    }
+
     fn add_compatible(tree: &mut DeviceTree, path: &str, compat: &str) {
         let node = tree
             .find_node_mut(path)
@@ -1649,6 +1704,24 @@ impl CpioImage {
             data: data.to_vec(),
         });
         Ok(())
+    }
+
+    fn replace_file(&mut self, path: &str, mode: u32, data: &[u8]) {
+        // Match equivalent archive spellings too, so an old ./etc/... entry
+        // cannot overwrite the replacement during initramfs extraction.
+        let same_path = |existing: &str| {
+            existing
+                .split('/')
+                .filter(|part| !part.is_empty() && *part != ".")
+                .eq(path.split('/'))
+        };
+        self.entries.retain(|entry| !same_path(&entry.path));
+        self.index.retain(|existing| !same_path(existing));
+        self.push(CpioEntry {
+            path: path.to_string(),
+            mode,
+            data: data.to_vec(),
+        });
     }
 
     fn finish(self) -> Result<Vec<u8>, Stage0Error> {

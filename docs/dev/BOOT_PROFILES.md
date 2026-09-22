@@ -229,6 +229,11 @@ order (the last nonempty assignment wins). Without that setting, it uses
 `--smoo-serial` must agree with any effective `stage0.serial`; conflicting
 values fail before booting. Both options can supply a runtime identity when
 the bootloader exposes no USB serial.
+Invalid or conflicting stage0 serial settings are checked before waiting for
+USB when no candidate profile can accept them. After reopening a channel,
+fastboop derives the final strategy and serial from the profile snapshot used
+to build the payload. When augmenting a stage0 initrd, the selected serial
+replaces its previous `/etc/stage0/stage0.serial` entry.
 
 For `boot: initrd`, `--smoo-serial SERIAL` is required when actually booting.
 When the profile candidates already determine a supplied-initrd boot, a missing
@@ -248,9 +253,11 @@ It retains and claims the inspected USB handle without enumerating again. If
 that device disconnects before claiming, discovery retries with the same serial;
 the claim cannot substitute a newly arrived device.
 The serial must be nonempty ASCII without surrounding whitespace or control
-characters, and must remain stable across gadget restarts. Unreadable descriptors
-on matching runtime interfaces cause a discovery error rather than an unfiltered
-fallback. Native library consumers must retain `NativeBootEnvironment::smoo_host_options()`
+characters, and must remain stable across gadget restarts. Transient USB I/O,
+timeout, busy, and disconnect errors discard the entire scan and retry after a
+cancellable delay. An incomplete scan never claims a device. Duplicate serials,
+invalid selectors, and permanent errors such as access denial or malformed
+descriptors still stop serving. Native library consumers must retain `NativeBootEnvironment::smoo_host_options()`
 when handing a prepared boot to a background host task; low-level host options
 also require a nonempty serial. The desktop retains these options for generated
 stage0 boots. Supplied-initrd boots requiring an explicit serial currently use
