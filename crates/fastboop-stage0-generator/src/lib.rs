@@ -412,6 +412,14 @@ pub fn stage0_binary_ready(
     core::future::ready(Ok(stage0_binary))
 }
 
+/// Return the serial that extra command-line settings will write into stage0.
+///
+/// Uses the same parsing as image generation: the last nonempty
+/// `stage0.serial=VALUE` wins, overriding [`Stage0Options::stage0_serial`].
+pub fn stage0_serial_override(extra: &str) -> Option<String> {
+    split_extra_cmdline(extra).0.remove("stage0.serial")
+}
+
 fn split_extra_cmdline(extra: &str) -> (BTreeMap<String, String>, Vec<String>) {
     let mut stage0_settings = BTreeMap::new();
     let mut passthrough = Vec::new();

@@ -245,16 +245,24 @@ impl NativeBootEnvironment {
         log_detected_device(&profile, detected_device.as_ref());
         tracing::info!(profile = %profile.id, "building boot payload");
 
-        let strategy = channel
+        let selected_boot_profile = channel
             .resolve_boot_profile(&profile.id, self.config.stage0.boot_profile.as_deref())
-            .map_err(|err| anyhow!(err.to_string()))?
+            .map_err(|err| anyhow!(err.to_string()))?;
+        let strategy = selected_boot_profile
+            .as_ref()
             .map(|p| p.boot)
+            .unwrap_or_default();
+        let profile_stage0 = selected_boot_profile
+            .as_ref()
+            .map(|p| fastboop_core::resolve_effective_boot_profile_stage0(p, &profile.id))
             .unwrap_or_default();
         let runtime_serial = resolve_runtime_serial(
             strategy,
             self.config.smoo_serial.as_deref(),
             detected_device.as_ref().and_then(|d| d.serial.as_deref()),
             self.config.boot_device,
+            profile_stage0.extra_cmdline.as_deref(),
+            self.config.stage0.cmdline_append.as_deref(),
         )?;
         let mut artifact_resolver = ArtifactReaderResolver::with_local_artifacts(
             self.config.stage0.local_artifact.as_slice(),
@@ -384,8 +392,26 @@ fn resolve_runtime_serial(
     explicit: Option<&str>,
     fastboot_usb_serial: Option<&str>,
     boot_device: bool,
+    profile_cmdline: Option<&str>,
+    requested_cmdline: Option<&str>,
 ) -> Result<Option<String>> {
-    let serial = explicit.or_else(|| {
+    let configured = (strategy == BootStrategy::Stage0)
+        .then(|| {
+            [profile_cmdline, requested_cmdline]
+                .into_iter()
+                .flatten()
+                .filter_map(fastboop_stage0_generator::stage0_serial_override)
+                .next_back()
+        })
+        .flatten();
+    if let (Some(explicit), Some(configured)) = (explicit, configured.as_deref())
+        && explicit != configured
+    {
+        bail!(
+            "--smoo-serial '{explicit}' conflicts with stage0.serial='{configured}'; use the same serial for the host and generated gadget"
+        );
+    }
+    let serial = explicit.or(configured.as_deref()).or_else(|| {
         (strategy == BootStrategy::Stage0)
             .then_some(fastboot_usb_serial)
             .flatten()
@@ -1654,20 +1680,30 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
     #[test]
     fn runtime_identity_is_explicit_for_supplied_initrd() {
         assert!(
-            resolve_runtime_serial(BootStrategy::Initrd, None, Some("bootloader"), true).is_err()
+            resolve_runtime_serial(
+                BootStrategy::Initrd,
+                None,
+                Some("bootloader"),
+                true,
+                None,
+                None
+            )
+            .is_err()
         );
         assert_eq!(
             resolve_runtime_serial(
                 BootStrategy::Initrd,
                 Some("gadget"),
                 Some("bootloader"),
-                true
+                true,
+                None,
+                None,
             )
             .unwrap(),
             Some("gadget".into())
         );
         assert_eq!(
-            resolve_runtime_serial(BootStrategy::Initrd, None, None, false).unwrap(),
+            resolve_runtime_serial(BootStrategy::Initrd, None, None, false, None, None).unwrap(),
             None
         );
     }
@@ -1675,7 +1711,15 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
     #[test]
     fn stage0_runtime_identity_matches_the_configured_gadget() {
         assert_eq!(
-            resolve_runtime_serial(BootStrategy::Stage0, None, Some("bootloader"), true).unwrap(),
+            resolve_runtime_serial(
+                BootStrategy::Stage0,
+                None,
+                Some("bootloader"),
+                true,
+                None,
+                None
+            )
+            .unwrap(),
             Some("bootloader".into())
         );
         assert_eq!(
@@ -1683,15 +1727,109 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
                 BootStrategy::Stage0,
                 Some("override"),
                 Some("bootloader"),
-                true
+                true,
+                None,
+                None,
             )
             .unwrap(),
             Some("override".into())
         );
-        assert!(resolve_runtime_serial(BootStrategy::Stage0, None, None, true).is_err());
         assert!(
-            resolve_runtime_serial(BootStrategy::Stage0, Some(""), Some("bootloader"), true)
-                .is_err()
+            resolve_runtime_serial(BootStrategy::Stage0, None, None, true, None, None).is_err()
+        );
+        assert!(
+            resolve_runtime_serial(
+                BootStrategy::Stage0,
+                Some(""),
+                Some("bootloader"),
+                true,
+                None,
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn runtime_identity_honors_stage0_profile_and_cli_settings() {
+        for (profile, cli, expected) in [
+            (Some("stage0.serial=profile"), None, "profile"),
+            (
+                Some("stage0.serial=profile stage0.serial=device"),
+                None,
+                "device",
+            ),
+            (
+                Some("stage0.serial=profile"),
+                Some("quiet stage0.serial=cli"),
+                "cli",
+            ),
+            (
+                Some("stage0.serial=profile"),
+                Some("stage0.serial="),
+                "profile",
+            ),
+            (None, Some("stage0.serial=first stage0.serial=last"), "last"),
+        ] {
+            for bootloader in [None, Some("bootloader")] {
+                assert_eq!(
+                    resolve_runtime_serial(
+                        BootStrategy::Stage0,
+                        None,
+                        bootloader,
+                        true,
+                        profile,
+                        cli
+                    )
+                    .unwrap(),
+                    Some(expected.into()),
+                );
+            }
+            assert_eq!(
+                resolve_runtime_serial(
+                    BootStrategy::Stage0,
+                    Some(expected),
+                    None,
+                    true,
+                    profile,
+                    cli
+                )
+                .unwrap(),
+                Some(expected.into()),
+            );
+            let error = resolve_runtime_serial(
+                BootStrategy::Stage0,
+                Some("conflict"),
+                None,
+                true,
+                profile,
+                cli,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("conflicts with stage0.serial"));
+        }
+        assert!(
+            resolve_runtime_serial(
+                BootStrategy::Stage0,
+                None,
+                Some("bootloader"),
+                true,
+                Some("stage0.serial=café"),
+                None
+            )
+            .is_err()
+        );
+        // Supplied initrds own their identity; stage0 hints must not select it.
+        assert!(
+            resolve_runtime_serial(
+                BootStrategy::Initrd,
+                None,
+                None,
+                true,
+                Some("stage0.serial=profile"),
+                None
+            )
+            .is_err()
         );
     }
 

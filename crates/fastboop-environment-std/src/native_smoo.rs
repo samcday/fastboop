@@ -201,10 +201,8 @@ async fn run_native_smoo_host_async(
                     _ = tokio::time::sleep(DISCOVERY_RETRY) => continue,
                 }
             };
-            let (transport, control) = match RusbTransport::open_matching(
-                Some(target.vendor),
-                Some(target.product),
-                Some(options.serial.clone()),
+            let (transport, control) = match RusbTransport::open_handle(
+                target,
                 SMOO_INTERFACE_CLASS,
                 interface_subclass,
                 interface_protocol,

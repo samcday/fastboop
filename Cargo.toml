@@ -40,6 +40,8 @@ fastboop-smoo-gibblox = { path = "crates/fastboop-smoo-gibblox", version = "0.0.
 smoo-gadget-app = "0.0.2-rc.7"
 smoo-host-core = "0.0.2-rc.7"
 smoo-host-session = "0.0.2-rc.7"
+# Landing/release prerequisite: bump to a published release with open_handle.
+# Development uses the pinned smoo snapshot below; crates.io rc.7 lacks this API.
 smoo-host-transport-rusb = "0.0.2-rc.7"
 smoo-host-webusb = "0.0.2-rc.7"
 gibblox-android-sparse = "0.0.2-rc.3"

@@ -33,7 +33,7 @@ gobblytes-erofs = { version = "0.0.2-rc.3" }
 gobblytes-fat = { version = "0.0.2-rc.3" }
 hyper = { workspace = true, features = ["server", "http1", "tcp"] }
 serde_yaml = { workspace = true }
-# Descriptor preflight detects ambiguous serials before the smoo opener claims USB.
+# Inspect serials and retain the exact USB handle passed to smoo for claiming.
 rusb = "0.9.4"
 smoo-host-core = { workspace = true }
 smoo-host-session = { workspace = true }
