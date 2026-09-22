@@ -59,4 +59,4 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "
 tokio-util = { workspace = true }
 
 [dev-dependencies]
-gibblox-pipeline = { version = "0.0.2-rc.3", features = ["std"] }
+gibblox-pipeline = { version = "0.0.2-rc.5", features = ["std"] }

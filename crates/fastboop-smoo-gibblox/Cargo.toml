@@ -8,5 +8,5 @@ description = "fastboop adapter from gibblox BlockReader to smoo BlockSource."
 
 [dependencies]
 async-trait = { workspace = true }
-gibblox-core = { version = "0.0.2-rc.3", default-features = false }
+gibblox-core = { version = "0.0.2-rc.5", default-features = false }
 smoo-host-core = { workspace = true }

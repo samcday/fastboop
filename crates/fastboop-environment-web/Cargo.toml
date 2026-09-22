@@ -13,25 +13,25 @@ fastboop-fastboot-webusb = { path = "../fastboop-fastboot-webusb", version = "0.
 fastboop-smoo-gibblox = { workspace = true }
 fastboop-stage0-generator = { path = "../fastboop-stage0-generator", version = "0.0.1-rc.21" }
 futures-channel = { workspace = true }
-gibblox-core = { version = "0.0.2-rc.3" }
+gibblox-core = { version = "0.0.2-rc.5" }
 tracing = "0.1.44"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-util = { workspace = true, features = ["alloc", "async-await"] }
-gibblox-blockreader-messageport = { version = "0.0.2-rc.3" }
-gibblox-cache = { version = "0.0.2-rc.3" }
-gibblox-cache-store-opfs = { version = "0.0.2-rc.3" }
-gibblox-casync = { version = "0.0.2-rc.3" }
-gibblox-casync-web = { version = "0.0.2-rc.3" }
-gibblox-ext4 = { version = "0.0.2-rc.3" }
-gibblox-http = { version = "0.0.2-rc.3", default-features = false, features = ["wasm-client"] }
-gibblox-pipeline = { version = "0.0.2-rc.3", features = ["web"] }
-gibblox-web-worker = { version = "0.0.2-rc.3" }
-gibblox-zip = { version = "0.0.2-rc.3" }
+gibblox-blockreader-messageport = { version = "0.0.2-rc.5" }
+gibblox-cache = { version = "0.0.2-rc.5" }
+gibblox-cache-store-opfs = { version = "0.0.2-rc.5" }
+gibblox-casync = { version = "0.0.2-rc.5" }
+gibblox-casync-web = { version = "0.0.2-rc.5" }
+gibblox-ext4 = { version = "0.0.2-rc.5" }
+gibblox-http = { version = "0.0.2-rc.5", default-features = false, features = ["wasm-client"] }
+gibblox-pipeline = { version = "0.0.2-rc.5", features = ["web"] }
+gibblox-web-worker = { version = "0.0.2-rc.5" }
+gibblox-zip = { version = "0.0.2-rc.5" }
 gloo-timers = { version = "0.3.0", features = ["futures"] }
-gobblytes-core = { version = "0.0.2-rc.3" }
-gobblytes-erofs = { version = "0.0.2-rc.3" }
-gobblytes-fat = { version = "0.0.2-rc.3" }
+gobblytes-core = { version = "0.0.2-rc.5" }
+gobblytes-erofs = { version = "0.0.2-rc.5" }
+gobblytes-fat = { version = "0.0.2-rc.5" }
 js-sys = { workspace = true }
 serde_json = "1.0.145"
 smoo-host-core = { workspace = true }
