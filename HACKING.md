@@ -103,6 +103,18 @@ Release CI starts the dry-run independently of distro packaging and requires it 
 publishing the GitHub release. Until upstream dependencies are released and the
 manifests point at them, a failed preflight is an outstanding release blocker.
 
+For rc.22, desktop and Flatpak delivery are out of scope. Release CI excludes
+`fastboop-desktop` from Cargo check/Clippy/tests and skips its Dioxus build;
+ordinary development CI still checks it. Flatpak remains available through its
+standalone workflow, but is neither required nor attached to releases.
+
+Tag releases stage assets on a draft, publish crates to crates.io, and only then
+make the GitHub release public and advance the live web version. An upload
+failure leaves the GitHub release in draft; crates already uploaded cannot be
+rolled back, and the publish script skips them on retry. Release PRs rehearse
+asset assembly and verified packaging without publishing either crates or a
+GitHub release.
+
 The scripts require Python 3.11+ for `tomllib`. Run their regression suite with
 `python3 -m unittest discover -s tools/tests -v`. Tests package small temporary
 workspaces with the repository's Rust toolchain and may read the crates.io index;
