@@ -46,6 +46,9 @@ according to the Device Profile; the generated initramfs remains separate.
 ## Settings Channel
 
 Stage0 reads runtime settings from files under `/etc/stage0` in the generated initramfs.
+When augmenting an existing initramfs, an explicitly generated `stage0.serial`
+replaces any previous serial entry so the runtime gadget agrees with the host's
+selected identity. Other existing settings retain their usual preservation behavior.
 
 Notable keys include:
 
