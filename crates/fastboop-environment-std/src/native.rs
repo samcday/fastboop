@@ -211,7 +211,13 @@ impl NativeBootEnvironment {
             .as_ref()
             .map(std::slice::from_ref)
             .unwrap_or(&matching_pool);
-        validate_native_boot_candidates(&self.config.stage0, &channel, candidates)?;
+        let missing_runtime_serial = self.config.boot_device && self.config.smoo_serial.is_none();
+        validate_native_boot_candidates(
+            &self.config.stage0,
+            &channel,
+            candidates,
+            missing_runtime_serial,
+        )?;
 
         let mut detected_fastboot = None;
         let detected_device = if self.config.boot_device {
@@ -241,6 +247,7 @@ impl NativeBootEnvironment {
             &self.config.stage0,
             &channel,
             std::slice::from_ref(&profile),
+            missing_runtime_serial,
         )?;
         log_detected_device(&profile, detected_device.as_ref());
         tracing::info!(profile = %profile.id, "building boot payload");
@@ -687,6 +694,7 @@ fn validate_native_boot_candidates(
     config: &NativeBootStage0Config,
     channel: &fastboop_core::Channel,
     candidates: &[DeviceProfile],
+    missing_runtime_serial: bool,
 ) -> Result<()> {
     let mut first_error = None;
     let mut selection_error = None;
@@ -706,6 +714,12 @@ fn validate_native_boot_candidates(
                 config,
                 &fastboop_core::resolve_effective_boot_profile_stage0(&selected, &device.id),
             )
+            .and_then(|()| {
+                if missing_runtime_serial {
+                    bail!("boot: initrd requires --smoo-serial with the gadget's unique USB descriptor serial");
+                }
+                Ok(())
+            })
         } else {
             Ok(())
         };
@@ -1638,8 +1652,12 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
             "--require-module",
             "--serial",
             "OSTree",
+            "--smoo-serial",
         ] {
             for (boot_device, auto_detect) in [(false, false), (true, false), (true, true)] {
+                if option == "--smoo-serial" && !boot_device {
+                    continue;
+                }
                 let mut stage0 = config.clone();
                 if auto_detect {
                     stage0.device_profile = None;
@@ -1650,6 +1668,7 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
                     "--require-module" => stage0.require_modules.push("dummy".into()),
                     "--serial" => stage0.serial = true,
                     "OSTree" => stage0.ostree = OstreeArg::AutoDetect,
+                    "--smoo-serial" => {}
                     _ => unreachable!(),
                 }
                 let mut environment = NativeBootEnvironment::new(
@@ -1855,7 +1874,6 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
         env.selected_device = None;
         env.detected_device = None;
         assert_eq!(env.smoo_host_options().unwrap().serial, "gadget");
-        assert_eq!(env.smoo_host_options().unwrap().serial, "gadget");
     }
 
     #[test]
@@ -1884,23 +1902,45 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
             },
         );
         let mut config = NativeBootStage0Config::from_raw_ostree("unused".into(), None).unwrap();
-        config.augment = Some("stage0-extra.cpio".into());
         let candidates = [initrd_device.clone(), stage0_device.clone()];
-        validate_native_boot_candidates(&config, &channel, &candidates).unwrap();
-        validate_native_boot_candidates(&config, &channel, &[stage0_device]).unwrap();
+        // An unknown device can still choose generated stage0, which derives
+        // its serial after detection. Only initrd-only candidates fail early.
+        validate_native_boot_candidates(&config, &channel, &candidates, true).unwrap();
         assert!(
             validate_native_boot_candidates(
                 &config,
                 &channel,
-                std::slice::from_ref(&initrd_device)
+                std::slice::from_ref(&initrd_device),
+                true
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("--smoo-serial")
+        );
+        validate_native_boot_candidates(
+            &config,
+            &channel,
+            std::slice::from_ref(&initrd_device),
+            false,
+        )
+        .unwrap();
+        config.augment = Some("stage0-extra.cpio".into());
+        validate_native_boot_candidates(&config, &channel, &candidates, false).unwrap();
+        validate_native_boot_candidates(&config, &channel, &[stage0_device], false).unwrap();
+        assert!(
+            validate_native_boot_candidates(
+                &config,
+                &channel,
+                std::slice::from_ref(&initrd_device),
+                false,
             )
             .is_err()
         );
         config.boot_profile = Some(initrd.id.clone());
-        assert!(validate_native_boot_candidates(&config, &channel, &candidates).is_err());
+        assert!(validate_native_boot_candidates(&config, &channel, &candidates, false).is_err());
         let reversed = [candidates[1].clone(), candidates[0].clone()];
         assert!(
-            validate_native_boot_candidates(&config, &channel, &reversed)
+            validate_native_boot_candidates(&config, &channel, &reversed, false)
                 .unwrap_err()
                 .to_string()
                 .contains("--augment")
@@ -1922,7 +1962,8 @@ extra_cmdline: "rd.smoo.cow.size=2G ostree=true"
                 ..Default::default()
             },
         );
-        let err = validate_native_boot_candidates(&config, &channel, &[initrd_device]).unwrap_err();
+        let err = validate_native_boot_candidates(&config, &channel, &[initrd_device], false)
+            .unwrap_err();
         assert!(err.to_string().contains("stage0.kernel_modules"));
     }
 
