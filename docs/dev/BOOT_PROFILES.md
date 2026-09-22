@@ -231,6 +231,9 @@ values fail before booting. Both options can supply a runtime identity when
 the bootloader exposes no USB serial.
 
 For `boot: initrd`, `--smoo-serial SERIAL` is required when actually booting.
+When the profile candidates already determine a supplied-initrd boot, a missing
+selector is reported before waiting for USB. Mixed strategies are checked again
+after device detection; output-only builds do not require a selector.
 It must name the unique serial that the prepared initramfs exposes at runtime;
 fastboop does not assume it equals the bootloader's USB serial or `getvar serialno`.
 This option selects the runtime gadget; it does not modify a supplied initrd or
