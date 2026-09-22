@@ -44,7 +44,7 @@ pub(super) async fn discover_runtime_device(
     subclass: u8,
     protocol: u8,
 ) -> Result<Option<rusb::DeviceHandle<rusb::Context>>> {
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let context = rusb::Context::new().context("create runtime USB context")?;
         let devices = context.devices().context("enumerate runtime USB devices")?;
         let mut candidates = Vec::new();
@@ -100,7 +100,36 @@ pub(super) async fn discover_runtime_device(
         select_runtime_device(&serial, candidates)
     })
     .await
-    .context("runtime USB discovery task")?
+    .context("runtime USB discovery task")?;
+    finish_discovery_attempt(result)
+}
+
+fn finish_discovery_attempt<H>(result: Result<Option<H>>) -> Result<Option<H>> {
+    match result {
+        Err(err)
+            if matches!(
+                err.downcast_ref::<rusb::Error>(),
+                Some(
+                    rusb::Error::Io
+                        | rusb::Error::NoDevice
+                        | rusb::Error::NotFound
+                        | rusb::Error::Busy
+                        | rusb::Error::Timeout
+                        | rusb::Error::Overflow
+                        | rusb::Error::Pipe
+                        | rusb::Error::Interrupted
+                        | rusb::Error::Other
+                )
+            ) =>
+        {
+            // Discard the whole incomplete scan, even if it found a target
+            // before failing. The caller's cancellable delay precedes a fresh
+            // scan and duplicate check; no partial result can claim a device.
+            tracing::warn!(error = ?err, "transient runtime USB discovery failure; retrying");
+            Ok(None)
+        }
+        result => result,
+    }
 }
 
 fn has_smoo_endpoints(endpoints: impl Iterator<Item = (TransferType, Direction)>) -> bool {
@@ -161,6 +190,53 @@ mod tests {
             "", " target", "target ", "target\n", "tar\0get", "café", "📱",
         ] {
             assert!(select_runtime_device::<u8>(serial, Vec::new()).is_err());
+        }
+    }
+
+    #[test]
+    fn transient_scan_failure_retries_without_claiming_a_partial_target() {
+        for error in [
+            rusb::Error::Io,
+            rusb::Error::Timeout,
+            rusb::Error::Interrupted,
+            rusb::Error::Pipe,
+            rusb::Error::Busy,
+            rusb::Error::Other,
+        ] {
+            // A scan error carries context and must discard any partial result.
+            let failed_scan: Result<Option<u8>> = Err(error).context("read runtime USB serial");
+            assert_eq!(finish_discovery_attempt(failed_scan).unwrap(), None);
+            assert_eq!(
+                finish_discovery_attempt(select_runtime_device("target", vec![device("other")]))
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                finish_discovery_attempt(select_runtime_device("target", vec![device("target")]))
+                    .unwrap(),
+                Some(1)
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_ambiguous_and_permanent_discovery_errors_remain_fatal() {
+        assert!(finish_discovery_attempt(select_runtime_device::<u8>("", Vec::new())).is_err());
+        assert!(
+            finish_discovery_attempt(select_runtime_device(
+                "target",
+                vec![device("target"), device("target")]
+            ))
+            .is_err()
+        );
+        for error in [
+            rusb::Error::Access,
+            rusb::Error::InvalidParam,
+            rusb::Error::BadDescriptor,
+            rusb::Error::NoMem,
+            rusb::Error::NotSupported,
+        ] {
+            assert!(finish_discovery_attempt::<u8>(Err(error).context("read descriptor")).is_err());
         }
     }
 
