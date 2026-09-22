@@ -2,24 +2,26 @@ use anyhow::{Context as _, Result, ensure};
 use rusb::{Direction, TransferType, UsbContext};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct RuntimeUsbIdentity {
-    pub vendor: u16,
-    pub product: u16,
+struct RuntimeUsbDevice<H> {
     pub serial: String,
+    pub handle: H,
 }
 
 pub(crate) fn validate_runtime_serial(serial: &str) -> Result<()> {
     ensure!(
-        !serial.is_empty() && serial.trim() == serial && !serial.chars().any(char::is_control),
-        "smoo runtime serial must be nonempty, without surrounding whitespace or control characters"
+        !serial.is_empty()
+            && serial.is_ascii()
+            && serial.trim() == serial
+            && !serial.chars().any(char::is_control),
+        "smoo runtime serial must be nonempty ASCII, without surrounding whitespace or control characters"
     );
     Ok(())
 }
 
-fn select_runtime_device(
+fn select_runtime_device<H>(
     serial: &str,
-    candidates: impl IntoIterator<Item = RuntimeUsbIdentity>,
-) -> Result<Option<RuntimeUsbIdentity>> {
+    candidates: impl IntoIterator<Item = RuntimeUsbDevice<H>>,
+) -> Result<Option<H>> {
     validate_runtime_serial(serial)?;
     let mut matches = candidates
         .into_iter()
@@ -29,18 +31,19 @@ fn select_runtime_device(
         matches.next().is_none(),
         "multiple smoo gadgets have runtime serial '{serial}'; configure a unique gadget serial before serving a root"
     );
-    Ok(selected)
+    Ok(selected.map(|device| device.handle))
 }
 
 // Discovery only reads descriptors. libusb is blocking, so keep the complete
-// scan (including serial reads) off the async executor. Count all matches before
-// allowing smoo's first-match opener to claim an interface.
+// scan (including serial reads) off the async executor. Count all matches and
+// retain the inspected handle, so claiming it never rescans or selects another
+// device if the USB inventory changes in between.
 pub(super) async fn discover_runtime_device(
     serial: String,
     class: u8,
     subclass: u8,
     protocol: u8,
-) -> Result<Option<RuntimeUsbIdentity>> {
+) -> Result<Option<rusb::DeviceHandle<rusb::Context>>> {
     tokio::task::spawn_blocking(move || {
         let context = rusb::Context::new().context("create runtime USB context")?;
         let devices = context.devices().context("enumerate runtime USB devices")?;
@@ -89,10 +92,9 @@ pub(super) async fn discover_runtime_device(
                 Err(rusb::Error::NoDevice) => continue,
                 Err(err) => return Err(err).context("read runtime USB serial"),
             };
-            candidates.push(RuntimeUsbIdentity {
-                vendor: descriptor.vendor_id(),
-                product: descriptor.product_id(),
+            candidates.push(RuntimeUsbDevice {
                 serial: actual,
+                handle,
             });
         }
         select_runtime_device(&serial, candidates)
@@ -119,25 +121,25 @@ fn has_smoo_endpoints(endpoints: impl Iterator<Item = (TransferType, Direction)>
 mod tests {
     use super::*;
 
-    fn device(serial: &str) -> RuntimeUsbIdentity {
-        RuntimeUsbIdentity {
-            vendor: 0x1209,
-            product: 0xbeef,
+    fn device(serial: &str) -> RuntimeUsbDevice<u8> {
+        RuntimeUsbDevice {
             serial: serial.into(),
+            handle: 1,
         }
     }
 
     #[test]
     fn selection_waits_for_requested_device_and_never_switches_on_reconnect() {
-        let other = device("other");
+        let mut other = device("other");
+        other.handle = 2;
         let target = device("target");
         // The unrelated gadget arrives first. The target disconnects and later
         // returns with the other gadget still present and first in enumeration.
         for (candidates, expected) in [
             (vec![other.clone()], None),
-            (vec![other.clone(), target.clone()], Some(target.clone())),
+            (vec![other.clone(), target.clone()], Some(target.handle)),
             (vec![other.clone()], None),
-            (vec![other, target.clone()], Some(target)),
+            (vec![other, target.clone()], Some(target.handle)),
         ] {
             assert_eq!(
                 select_runtime_device("target", candidates).unwrap(),
@@ -147,16 +149,18 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_serial_is_rejected_even_across_different_vid_pids() {
+    fn duplicate_serial_is_rejected_across_distinct_devices() {
         let mut duplicate = device("target");
-        duplicate.product += 1;
+        duplicate.handle += 1;
         assert!(select_runtime_device("target", vec![device("target"), duplicate]).is_err());
     }
 
     #[test]
     fn selector_is_never_empty_or_silently_normalized() {
-        for serial in ["", " target", "target ", "target\n", "tar\0get"] {
-            assert!(select_runtime_device(serial, Vec::new()).is_err());
+        for serial in [
+            "", " target", "target ", "target\n", "tar\0get", "café", "📱",
+        ] {
+            assert!(select_runtime_device::<u8>(serial, Vec::new()).is_err());
         }
     }
 

@@ -222,9 +222,13 @@ root, kernel, or initrd artifact pipelines.
 ### Native runtime device selection
 
 Native boot retains an exact runtime USB descriptor serial for smoo discovery
-and every reconnect. Generated stage0 uses the selected fastboot device's USB
-serial and configures its gadget with that value. `--smoo-serial SERIAL` can
-override it, or supply one when the bootloader exposes no USB serial.
+and every reconnect. Generated stage0 uses the effective `stage0.serial` from
+the BootProfile, its device-specific settings, and `--cmdline-append`, in that
+order (the last nonempty assignment wins). Without that setting, it uses
+`--smoo-serial SERIAL` or the selected fastboot device's USB serial.
+`--smoo-serial` must agree with any effective `stage0.serial`; conflicting
+values fail before booting. Both options can supply a runtime identity when
+the bootloader exposes no USB serial.
 
 For `boot: initrd`, `--smoo-serial SERIAL` is required when actually booting.
 It must name the unique serial that the prepared initramfs exposes at runtime;
@@ -237,7 +241,11 @@ build a payload without a runtime selector or connected device.
 
 Discovery waits for the requested serial even if another gadget appears first,
 and rejects duplicate matching serials rather than choosing the first device.
-The serial must remain stable across gadget restarts. Unreadable descriptors
+It retains and claims the inspected USB handle without enumerating again. If
+that device disconnects before claiming, discovery retries with the same serial;
+the claim cannot substitute a newly arrived device.
+The serial must be nonempty ASCII without surrounding whitespace or control
+characters, and must remain stable across gadget restarts. Unreadable descriptors
 on matching runtime interfaces cause a discovery error rather than an unfiltered
 fallback. Native library consumers must retain `NativeBootEnvironment::smoo_host_options()`
 when handing a prepared boot to a background host task; low-level host options

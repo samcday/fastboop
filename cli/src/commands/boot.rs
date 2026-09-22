@@ -85,7 +85,8 @@ pub struct BootArgs {
     /// Expose fastboop's smoo host metrics on this TCP port (0 disables).
     #[arg(long = "smoo-metrics-port", default_value_t = 0)]
     pub smoo_metrics_port: u16,
-    /// Runtime gadget USB serial. Required for supplied initrds; configures generated stage0.
+    /// Runtime gadget USB serial (ASCII). Required for supplied initrds;
+    /// must agree with any stage0.serial setting for generated stage0.
     #[arg(long = "smoo-serial", value_name = "SERIAL")]
     pub smoo_serial: Option<String>,
 }
