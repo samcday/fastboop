@@ -38,7 +38,7 @@ rusb = "0.9.4"
 smoo-host-core = { workspace = true }
 smoo-host-session = { workspace = true }
 smoo-host-transport-rusb = { workspace = true }
-tokio = { workspace = true, features = ["rt", "signal", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "signal", "time"] }
 tokio-util = { workspace = true }
 tracing = "0.1.44"
 url = { workspace = true }
