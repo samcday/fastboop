@@ -95,13 +95,18 @@ impl RuntimeDiscovery {
         }
         // Visible duplicates are fatal even when other devices were skipped.
         let selected = select_runtime_device(serial, scan.candidates)?;
-        if selected.is_some() && !scan.uninspected.is_empty() {
-            // Fail closed: a device that could not be inspected may be a
-            // second gadget with the requested serial. Drop the handle and
-            // claim only after a pass that inspected every device.
+        let deferring = scan
+            .uninspected
+            .iter()
+            .filter(|device| device.failure.defers_claim())
+            .count();
+        if selected.is_some() && deferring > 0 {
+            // Fail closed: a smoo-class device whose serial could not be read
+            // may be a second gadget with the requested serial. Drop the
+            // handle and claim only after a pass that read every such serial.
             tracing::debug!(
-                uninspected = scan.uninspected.len(),
-                "found the runtime gadget; deferring its claim until every USB device can be inspected"
+                deferring,
+                "found the runtime gadget; deferring its claim until every smoo-class USB device can be inspected"
             );
             return Ok(None);
         }
@@ -134,6 +139,12 @@ fn warn_uninspected(device: &UninspectedDevice) {
         address,
         failure,
     } = *device;
+    let consequence = if failure.defers_claim() {
+        "It exposes a smoo interface, so no smoo gadget is claimed until it can be inspected \
+         or is removed"
+    } else {
+        "It is skipped until its descriptors can be read"
+    };
     if failure.error == rusb::Error::Access {
         tracing::warn!(
             bus,
@@ -141,8 +152,7 @@ fn warn_uninspected(device: &UninspectedDevice) {
             step = %failure.step,
             "permission denied inspecting USB device {bus:03}:{address:03} for the smoo runtime \
              serial; install udev rules that grant this user access (for example \
-             TAG+=\"uaccess\"), see {DEVICE_PERMISSIONS_URL}. No smoo gadget is claimed until \
-             this device can be inspected or is removed"
+             TAG+=\"uaccess\"), see {DEVICE_PERMISSIONS_URL}. {consequence}"
         );
     } else {
         tracing::warn!(
@@ -150,8 +160,8 @@ fn warn_uninspected(device: &UninspectedDevice) {
             address,
             step = %failure.step,
             error = %failure.error,
-            "cannot inspect USB device {bus:03}:{address:03} for the smoo runtime serial. No \
-             smoo gadget is claimed until this device can be inspected or is removed"
+            "cannot inspect USB device {bus:03}:{address:03} for the smoo runtime serial. \
+             {consequence}"
         );
     }
 }
@@ -194,6 +204,15 @@ impl InspectError {
             (_, rusb::Error::NoDevice) | (InspectStep::ActiveConfig, rusb::Error::NotFound)
         )
     }
+
+    /// Open and serial failures come from a device that exposes a smoo
+    /// interface and a serial, so it may be a second gadget with the requested
+    /// serial. A device whose descriptors cannot be read may be any USB device
+    /// on the host, and cannot be claimed either, so it does not hold back a
+    /// visible target.
+    fn defers_claim(self) -> bool {
+        matches!(self.step, InspectStep::Open | InspectStep::Serial)
+    }
 }
 
 type Inspection<H> = Result<Option<RuntimeUsbDevice<H>>, InspectError>;
@@ -208,6 +227,7 @@ struct UninspectedDevice {
 
 /// Result of one pass over the USB inventory. A device that fails inspection
 /// is skipped without aborting the pass, so every other device is inspected.
+/// Only failures that [`InspectError::defers_claim`] hold back a found target.
 #[derive(Debug)]
 struct RuntimeScan<H> {
     candidates: Vec<RuntimeUsbDevice<H>>,
@@ -350,6 +370,9 @@ mod tests {
         InspectStep::Serial,
     ];
 
+    // Steps reached only by a device exposing a smoo interface with a serial.
+    const SMOO_CLASS_STEPS: [InspectStep; 2] = [InspectStep::Open, InspectStep::Serial];
+
     // Every libusb error other than a disconnect.
     const INSPECT_ERRORS: [rusb::Error; 12] = [
         rusb::Error::Access,
@@ -435,9 +458,8 @@ mod tests {
     fn uninspectable_device_is_skipped_while_the_scan_continues() {
         for step in INSPECT_STEPS {
             for error in INSPECT_ERRORS {
-                let mut discovery = RuntimeDiscovery::default();
                 // The failing device enumerates first; the rest of the pass is
-                // still inspected, and neither an error nor a claim results.
+                // still inspected, and no error results.
                 let scan = RuntimeScan::collect([
                     failed(2, step, error),
                     found(3, "other"),
@@ -445,7 +467,21 @@ mod tests {
                 ]);
                 assert_eq!(scan.candidates.len(), 2, "{step} {error}");
                 assert_eq!(scan.uninspected, [uninspected(2, step, error)]);
-                assert_eq!(discovery.select("target", scan).unwrap(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn uninspectable_smoo_class_device_defers_the_claim() {
+        for step in SMOO_CLASS_STEPS {
+            for error in INSPECT_ERRORS {
+                let mut discovery = RuntimeDiscovery::default();
+                let scan = RuntimeScan::collect([
+                    failed(2, step, error),
+                    found(3, "other"),
+                    found(4, "target"),
+                ]);
+                assert_eq!(discovery.select("target", scan).unwrap(), None, "{step}");
 
                 // The next poll inspects every device and claims the target.
                 let scan = RuntimeScan::collect([
@@ -454,6 +490,35 @@ mod tests {
                     found(4, "target"),
                 ]);
                 assert_eq!(discovery.select("target", scan).unwrap(), Some(4));
+            }
+        }
+    }
+
+    #[test]
+    fn unreadable_descriptors_do_not_defer_the_claim() {
+        for step in INSPECT_STEPS
+            .into_iter()
+            .filter(|step| !SMOO_CLASS_STEPS.contains(step))
+        {
+            for error in INSPECT_ERRORS {
+                // The class of a device whose descriptors cannot be read is
+                // unknown; it must not hold back a visible target forever.
+                let mut discovery = RuntimeDiscovery::default();
+                for _ in 0..=WARN_AFTER_FAILED_PASSES {
+                    let scan = RuntimeScan::collect([failed(2, step, error), found(4, "target")]);
+                    assert_eq!(
+                        discovery.select("target", scan).unwrap(),
+                        Some(4),
+                        "{step} {error}"
+                    );
+                }
+                // A smoo-class failure in the same pass still defers.
+                let scan = RuntimeScan::collect([
+                    failed(2, step, error),
+                    failed(3, InspectStep::Open, rusb::Error::Access),
+                    found(4, "target"),
+                ]);
+                assert_eq!(discovery.select("target", scan).unwrap(), None);
             }
         }
     }
