@@ -16,6 +16,33 @@ For tag `vX.Y.Z` (or `vX.Y.Z-rc.N`), assets are published alongside other releas
 
 Checksums are recorded in release `SHA256SUMS`.
 
+## Building Stage0
+
+`tools/build-stage0.sh` is the stage0 build recipe. CI builds the release artifacts with it, and distro packaging and local builds should use it too, so every consumer builds stage0 the same way.
+
+```sh
+# aarch64-unknown-linux-musl, left in target/aarch64-unknown-linux-musl/release/
+tools/build-stage0.sh
+
+# Another target, copied to dist/fastboop-stage0-x86_64-unknown-linux-musl
+tools/build-stage0.sh --target x86_64-unknown-linux-musl --out dist/
+
+# Capture the path of the verified binary; build output goes to stderr
+stage0="$(tools/build-stage0.sh --out "$PWD/stage0-aarch64")"
+```
+
+The script:
+
+- runs `cargo build -p fastboop-stage0 --release --locked --target <triple>` from the workspace root, so `rust-toolchain.toml` and `.cargo/config.toml` apply;
+- links with `rust-lld` unless `CARGO_TARGET_<TRIPLE>_LINKER` is already set;
+- adds `-C target-feature=+crt-static` to whichever rustflags source Cargo uses (`CARGO_ENCODED_RUSTFLAGS`, then `RUSTFLAGS`, then `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`), so exported `RUSTFLAGS` cannot silently drop it;
+- fails unless `readelf` shows an ELF executable for the target's machine with no `PT_INTERP` program header and no `DT_NEEDED` entries;
+- copies the binary to `--out` when given (an existing directory, or a path ending in `/`, receives `fastboop-stage0-<triple>`) and prints the final path on stdout.
+
+`--target` and `--out` fall back to `FASTBOOP_STAGE0_TARGET` and `FASTBOOP_STAGE0_OUT`. Arguments after `--` go to `cargo build`, for example `--frozen` for offline package builds. `CARGO_TARGET_DIR` is honoured. The script does not change stripping; with the default release profile the binary keeps its symbol table.
+
+Requirements: the Rust standard library for the target (`rustup target add <triple>`), `rust-lld` (shipped with rustup toolchains) and a GNU-compatible `readelf` (binutils, or set `READELF`). No C toolchain for the target is needed. Stage0's dependency graph has no C build steps, so `musl-gcc` (`musl-tools`) and musl kernel header symlinks are unnecessary. Both release targets were built with the script in a clean `rust:1.91` container that had neither.
+
 ## Generator Input
 
 `crates/fastboop-stage0-generator` does not build, download, or embed stage0 at Cargo build time.

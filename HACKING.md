@@ -34,6 +34,11 @@ Stage0 details are normative in `docs/dev/STAGE0.md`; this is the short operatio
 
 If gadget runtime fails before handoff, stage0 fails loudly.
 
+Build the static stage0 binary with `tools/build-stage0.sh`. It defaults to
+`aarch64-unknown-linux-musl`; `--target` picks another triple and `--out` copies
+the verified result. CI builds the release artifacts with the same script; see
+`docs/dev/STAGE0_DISTRIBUTION.md`.
+
 ## DevPro and boot constraints
 
 - DevPro describes how to safely boot a device, not distro policy.
