@@ -35,6 +35,9 @@ fi
 
 export LC_ALL=C
 umask 022
+# Archive the checkout this script runs in, even when invoked from a Git hook
+# or wrapper that points Git at another repository or index.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
 
 mkdir -p -- "$outdir"
 outdir="$(cd -- "$outdir" && pwd)"
