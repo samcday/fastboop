@@ -115,11 +115,29 @@ rolled back, and the publish script skips them on retry. Release PRs rehearse
 asset assembly and verified packaging without publishing either crates or a
 GitHub release.
 
+Release tags pin the `gibblox` and `smoo` submodules at the exact upstream
+release tags whose versions the manifests require from crates.io, so a release
+builds from the same code its published crates depend on. Before tagging, check
+each pin with `git -C <submodule> describe --exact-match --tags`.
+
+Distro packaging builds from the `fastboop-<X.Y.Z[-rc.N]>-src.tar.gz` release
+asset, not from GitHub's generated archives, which omit submodules. The release
+`source-tarball` job produces it with `tools/source-tarball.sh <version> <outdir>`,
+checks that the extracted tree loads the locked workspace, and attaches it
+(listed in `SHA256SUMS`). The script archives `HEAD` plus every submodule at the
+commit its superproject records, ignoring uncommitted changes, and refuses
+uninitialized, diverged, conflicted, or staged-but-uncommitted submodules.
+Entry order, mtime (the commit date), ownership and modes are normalized and
+gzip omits its timestamp, so one commit yields identical bytes with the same tar
+and gzip versions. `infra/` is `export-ignore`d; it is not part of the workspace.
+
 The scripts require Python 3.11+ for `tomllib`. Run their regression suite with
 `python3 -m unittest discover -s tools/tests -v`. Tests package small temporary
 workspaces with the repository's Rust toolchain and may read the crates.io index;
 they never upload crates. This includes verifying that a Cargo config patch
-cannot hide a local dependency in the packaged CLI lockfile.
+cannot hide a local dependency in the packaged CLI lockfile. Source tarball
+tests build throwaway local git repositories with nested submodules and need
+GNU tar.
 
 ## Contributor workflow
 
