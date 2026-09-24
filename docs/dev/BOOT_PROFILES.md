@@ -299,18 +299,42 @@ remain responsible for preparing smoo/dracut support and SELinux policy; adding
 the shim does not modify the supplied initramfs. Stage0 profiles retain their
 existing ABLX kernel-wrap behavior.
 
-The added fields change the intentionally unstable v0 binary profile layout.
-Regenerate compiled profiles and channel records with the matching fastboop
-version.
+The added boot profile and DevPro fields changed both binary profile layouts
+and bumped their format versions; see
+[Binary record formats](#binary-record-formats).
 
 ## Profile bundle codec
 
 `encode_channel_profile_bundle` and `decode_channel_profile_bundle` use the
 same binary-safe profile representations as individual profile records. The
-unreleased bundle payload layout changed to support nonempty bundles; regenerate
-any saved bundles with the matching fastboop version. No legacy decoder is kept.
+bundle payload layout changed to support nonempty bundles, which moved bundles
+to format version 2. No legacy decoder is kept.
 
 Bundles have a standalone codec and format discriminator. Native boot intake
 currently accepts concatenated `encode_dev_profile` / `encode_boot_profile`
 records, not bundle bytes; fixing the bundle codec does not add a new boot input
 format.
+
+## Binary record formats
+
+Each compiled record starts with a magic and a little-endian `u16` format
+version, followed by a [postcard](https://docs.rs/postcard) payload. Postcard
+is positional: adding, removing or reordering a field anywhere in a payload,
+including in nested schema types, requires a format version bump. These formats
+stay intentionally unstable while fastboop is unreleased.
+
+| Record | Magic | Format version | Written by |
+| --- | --- | --- | --- |
+| Boot profile | `FBOOPROF` | 1 | `fastboop bootprofile create` |
+| Device profile | `FBOODEVP` | 1 | `fastboop devprofile create` |
+| Pipeline hints | `FBPHINT0` | 0 | `fastboop bootprofile optimize` |
+| Channel index | `FBCHIDX0` | 0 | `fastboop channel index` |
+| Profile bundle | `FBCH` | 2 | `encode_channel_profile_bundle` |
+
+v0.0.1-rc.21 wrote boot and device profile records as version 0 and bundles as
+version 1; the pipeline hints and channel index layouts are unchanged since
+then. Decoders reject any other version with an error naming the version found
+and the version supported, rather than decoding shifted fields. A channel
+containing a boot or device profile record of another version fails to load
+with that error, even when records before it decode. Recompile the profiles
+with the matching fastboop version and rebuild the channel.
