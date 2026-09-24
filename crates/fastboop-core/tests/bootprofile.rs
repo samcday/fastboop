@@ -12,6 +12,7 @@ use fastboop_core::{
     InjectMac, decode_boot_profile, decode_boot_profile_prefix, encode_boot_profile,
     resolve_effective_boot_profile_stage0, validate_boot_profile,
 };
+use fastboop_schema::bin::BOOT_PROFILE_BIN_FORMAT_VERSION;
 use gibblox_pipeline::PipelineSourceContent;
 use gibblox_pipeline::PipelineValidationError;
 
@@ -90,6 +91,49 @@ fn rejects_boot_profile_with_invalid_magic() {
 
     let err = decode_boot_profile(&tampered).expect_err("invalid magic should fail decode");
     assert!(matches!(err, BootProfileCodecError::InvalidMagic));
+}
+
+#[test]
+fn encodes_current_boot_profile_format_version() {
+    let encoded = encode_boot_profile(&sample_profile()).expect("encode boot profile");
+    assert_eq!(&encoded[..8], b"FBOOPROF");
+    assert_eq!(
+        u16::from_le_bytes([encoded[8], encoded[9]]),
+        BOOT_PROFILE_BIN_FORMAT_VERSION
+    );
+}
+
+#[test]
+fn rejects_boot_profile_with_previous_format_version() {
+    // v0.0.1-rc.21 wrote format version 0 records, whose payload has no
+    // `initrd` or `boot` fields.
+    let mut stale = encode_boot_profile(&sample_profile()).expect("encode boot profile");
+    stale[8..10].copy_from_slice(&0u16.to_le_bytes());
+
+    let err = decode_boot_profile(&stale).expect_err("stale format version should fail decode");
+    assert!(matches!(
+        err,
+        BootProfileCodecError::UnsupportedFormatVersion(0)
+    ));
+    let err = decode_boot_profile_prefix(&stale)
+        .expect_err("stale format version should fail prefix decode");
+    assert!(matches!(
+        err,
+        BootProfileCodecError::UnsupportedFormatVersion(0)
+    ));
+
+    let message = err.to_string();
+    assert!(message.contains("format version 0"), "{message}");
+    assert!(
+        message.contains(&format!(
+            "supports version {BOOT_PROFILE_BIN_FORMAT_VERSION}"
+        )),
+        "{message}"
+    );
+    assert!(
+        message.contains("recompile the boot profile with this fastboop version"),
+        "{message}"
+    );
 }
 
 #[test]
