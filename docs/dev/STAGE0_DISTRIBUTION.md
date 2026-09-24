@@ -81,7 +81,7 @@ Release tarballs may also place `fastboop-stage0-*` beside `fastboop` or under a
 
 ## CI and Release Flow
 
-- `.github/workflows/ci.yml` builds stage0 static artifacts in a dedicated `stage0-static` matrix.
+- `.github/workflows/ci.yml` builds stage0 static artifacts in a dedicated `stage0-static` matrix that runs `tools/build-stage0.sh` for each target.
 - `.github/workflows/release.yml` runs `stage0-preflight` before downstream packaging jobs.
 - `stage0-preflight` verifies both required stage0 artifacts exist and are static/static-pie linked.
 - Release asset fan-in includes stage0 binaries and `SHA256SUMS`.
