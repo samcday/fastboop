@@ -1,0 +1,55 @@
+name: stage0 sidecar
+description: >
+  Provide the static stage0 binary that distro packages install as the
+  fastboop stage0 sidecar. Release runs (pr/tag) reuse the stage0 artifact
+  built by ci.yml in the same workflow run, so packages ship exactly the
+  released stage0; other runs build it with tools/build-stage0.sh.
+
+inputs:
+  release-mode:
+    description: release.yml gate mode (pr, tag); anything else builds from source
+    required: false
+    default: ""
+  target:
+    description: stage0 target triple
+    required: false
+    default: aarch64-unknown-linux-musl
+  artifact:
+    description: ci.yml artifact holding the prebuilt stage0 (release modes)
+    required: false
+    default: fastboop-stage0-aarch64
+
+outputs:
+  path:
+    description: absolute path of the verified static stage0 binary
+    value: ${{ steps.result.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.release-mode == 'pr' || inputs.release-mode == 'tag'
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/stage0-sidecar
+
+    - if: inputs.release-mode != 'pr' && inputs.release-mode != 'tag'
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        set -euo pipefail
+        # rust-toolchain.toml pins the toolchain and installs the musl target.
+        tools/build-stage0.sh --target "$TARGET" --out "$RUNNER_TEMP/stage0-sidecar/"
+
+    - id: result
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        set -euo pipefail
+        bin="$RUNNER_TEMP/stage0-sidecar/fastboop-stage0-$TARGET"
+        test -s "$bin"
+        file "$bin"
+        file "$bin" | grep -Eq 'statically linked|static-pie linked'
+        echo "path=$bin" >> "$GITHUB_OUTPUT"
