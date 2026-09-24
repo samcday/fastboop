@@ -16,25 +16,32 @@ read_contract:
 topology:
   parent_cluster:
     repo: ~/src/infra
-    reconciler: Flux kustomize-controller
+    access: ~/src/infra/scripts/ik --context=hub
+    reconciler: Flux helm-controller
     source:
-      kind: Kustomization
-      namespace: flux-system
-      name: fastboop
-      path: hub/cluster/fastboop
+      kind: HelmRelease
+      namespace: cloud-cluster
+      name: fastboop-tenant
+      chart: charts/managed-cluster-tenant
+      path: hub/cluster/cloud-cluster/tenants/fastboop.yaml
     role: >-
-      Manages the fastboop child control-plane stack and bootstrap resources.
+      Hosts the shared cloud cluster control plane (namespace cloud-cluster)
+      and provisions the fastboop tenant on it.
   child_cluster:
     repo: this repository (samcday/fastboop)
+    access: ~/src/infra/scripts/ik --context=cloud
+    nodes: >-
+      Shared Hetzner cloud cluster, provisioned by cluster-autoscaler; kubelets
+      reach cloud-cluster-apiserver.tailnet.hub.samcday.com over Headscale.
     reconciler: Flux kustomize-controller
     source:
       kind: GitRepository
-      namespace: flux-system
+      namespace: fastboop
       name: fastboop
       url: https://github.com/samcday/fastboop
     kustomization:
       kind: Kustomization
-      namespace: flux-system
+      namespace: fastboop
       name: fastboop
       path: ./infra/k8s
       interval: 5m
@@ -132,4 +139,4 @@ scope_boundaries:
 
 validation:
   local_render: kustomize build infra/k8s
-  child_cluster_reconcile: kubectl get kustomization -n flux-system fastboop
+  child_cluster_reconcile: ~/src/infra/scripts/ik --context=cloud get kustomization -n fastboop fastboop
