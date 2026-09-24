@@ -53,7 +53,13 @@ class SourceTarballTests(unittest.TestCase):
         # commits predate super's HEAD, whose date alone must reach the archive.
         self.env = git_env(SUBMODULE_COMMIT_DATE)
         deep = self.repo("deep", {"README": "deep v1\n"})
-        lib = self.repo("lib", {"lib.txt": "lib v1\n", "run.sh": "#!/bin/sh\n"}, executable=["run.sh"])
+        lib = self.repo("lib", {
+            # export-ignore empties state/, but git archive still writes the directory.
+            ".gitattributes": "*.tfstate export-ignore\n",
+            "state/terraform.tfstate": "encrypted\n",
+            "lib.txt": "lib v1\n",
+            "run.sh": "#!/bin/sh\n",
+        }, executable=["run.sh"])
         self.git(lib, "submodule", "add", "-q", str(deep), "vendor/deep")
         self.git(lib, "commit", "-qm", "add deep")
         self.lib_v1 = self.git(lib, "rev-parse", "HEAD")
@@ -155,6 +161,8 @@ class SourceTarballTests(unittest.TestCase):
             self.assertEqual(archive.getmember(f"{TOP}/third_party/lib/run.sh").mode, 0o755)
         self.assertNotIn(f"{TOP}/third_party/lib/untracked.txt", names)
         self.assertFalse(any(name.startswith(f"{TOP}/infra") for name in names), names)
+        self.assertIn(f"{TOP}/third_party/lib/state", names)
+        self.assertNotIn(f"{TOP}/third_party/lib/state/terraform.tfstate", names)
 
     def test_rejects_uninitialized_submodules(self):
         # Nested first: deinitializing lib would also hide vendor/deep.
@@ -178,11 +186,14 @@ class SourceTarballTests(unittest.TestCase):
         self.assertIn(f"staged at {self.lib_v2} but committed at {self.lib_v1}", result.stderr)
 
     def test_rejects_committed_submodule_missing_from_the_index(self):
-        # Status and foreach only list index entries; HEAD still has the gitlink.
-        self.git(self.super, "rm", "-q", "--cached", "third_party/lib")
-        result, _ = self.run_script(self.root / "out", success=False)
-        self.assertIn(f"{TOP}/third_party/lib\n", result.stderr)
-        self.assertIn("unpopulated submodule", result.stderr)
+        # Status and foreach only list index entries; the commit still has the gitlink.
+        for superproject, path in [(self.sub, "vendor/deep"), (self.super, "third_party/lib")]:
+            with self.subTest(path=path):
+                self.git(superproject, "rm", "-q", "--cached", path)
+                result, _ = self.run_script(self.root / "out", success=False)
+                display = "third_party/lib/vendor/deep" if path == "vendor/deep" else path
+                self.assertRegex(result.stderr, rf"(?m)^{re.escape(f'{TOP}/{display}')}$")
+                self.assertIn("committed submodules were not archived", result.stderr)
 
 
 class RepositoryArchiveTests(unittest.TestCase):

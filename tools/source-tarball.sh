@@ -62,7 +62,21 @@ archive() {
         | tar -xf - -C "$stage"
 }
 
+# Append each gitlink committed in <commit> of <repo> to $gitlinks, as a path
+# relative to the superproject root.
+gitlinks=()
+collect_gitlinks() {
+    local repo="$1" commit="$2" prefix="$3" entry
+    git -C "$repo" ls-tree -r -z "$commit" >"$work/tree"
+    while IFS= read -r -d '' entry; do
+        if [[ "$entry" == "160000 "* ]]; then
+            gitlinks+=("${prefix}${entry#*$'\t'}")
+        fi
+    done <"$work/tree"
+}
+
 archive "$repo_root" HEAD "${name}/"
+collect_gitlinks "$repo_root" HEAD ""
 
 # $sha1 comes from the superproject's index; require it to match the committed
 # gitlink so that a staged but uncommitted submodule bump cannot leak in.
@@ -72,6 +86,7 @@ git submodule --quiet foreach --recursive \
     'printf "%s\0%s\0%s\0%s\0" "$displaypath" "$sha1" "$toplevel" "$sm_path"' \
     >"$work/submodules"
 mapfile -d '' -t records <"$work/submodules"
+declare -A archived=()
 for ((i = 0; i < ${#records[@]}; i += 4)); do
     displaypath="${records[i]}"
     sha1="${records[i + 1]}"
@@ -84,14 +99,22 @@ for ((i = 0; i < ${#records[@]}; i += 4)); do
     fi
     echo "==> $displaypath @ $sha1" >&2
     archive "$repo_root/$displaypath" "$sha1" "${name}/${displaypath}/"
+    archived["$displaypath"]=1
+    collect_gitlinks "$repo_root/$displaypath" "$sha1" "${displaypath}/"
 done
 
-# git archive writes each gitlink as an empty directory, and git cannot track
-# other empty directories, so any left over is a submodule that was not filled.
-empty="$(find "$stage" -type d -empty -print)"
-if [[ -n "$empty" ]]; then
-    printf '%s\n' "${empty//"$stage/"/}" >&2
-    die "unpopulated submodule directories in the source tree"
+# foreach and status only visit submodules in the index, so a gitlink that is
+# committed but missing from the index would be left as an empty directory.
+# (Scanning for empty directories instead misfires: export-ignore can empty one.)
+missing=()
+for path in "${gitlinks[@]}"; do
+    if [[ -z "${archived["$path"]+set}" ]]; then
+        missing+=("${name}/${path}")
+    fi
+done
+if ((${#missing[@]})); then
+    printf '%s\n' "${missing[@]}" >&2
+    die "committed submodules were not archived"
 fi
 
 mtime="$(git show --no-patch --format=%ct HEAD)"
