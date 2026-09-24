@@ -64,6 +64,10 @@ const STAGE0_ROLE_KMSG_CHILD: &str = "kmsg-child";
 const STAGE0_ROLE_FRAMEBUFFER_CHILD: &str = "framebuffer-child";
 const STAGE0_CONFIG_DIR: &str = "/etc/stage0";
 const STAGE0_CREDSTORE_DIR: &str = "/run/credstore";
+/// systemd PID1 imports this directory into its system credentials after the
+/// initrd to host transition, before it initializes the machine ID. Service
+/// credential stores such as /run/credstore are never consulted for that.
+const STAGE0_INITRD_CREDENTIALS_DIR: &str = "/run/credentials/@initrd";
 const MACHINE_ID_SERIAL_DOMAIN: &str = "fastboop-stage0-machine-id-v1";
 const FNV1A64_OFFSET: u64 = 0xcbf29ce484222325;
 const FNV1A64_PRIME: u64 = 0x100000001b3;
@@ -788,8 +792,15 @@ fn stage_firstboot_credentials() -> Result<()> {
 
 fn stage_machine_id_credential() -> Result<()> {
     let machine_id = generate_machine_id().context("generate machine-id")?;
-    stage_credstore_credential("system.machine_id", &machine_id)?;
-    info!("pid1: staged system.machine_id credential");
+    stage_credstore_credential_in(
+        Path::new(STAGE0_INITRD_CREDENTIALS_DIR),
+        "system.machine_id",
+        &machine_id,
+    )?;
+    info!(
+        dir = STAGE0_INITRD_CREDENTIALS_DIR,
+        "pid1: staged system.machine_id credential"
+    );
     Ok(())
 }
 
@@ -2047,14 +2058,14 @@ mod tests {
     #[test]
     fn credstore_credential_writer_writes_exact_payload() {
         let root = temp_root();
-        let credstore = root.join("run/credstore");
+        let credentials = root.join(STAGE0_INITRD_CREDENTIALS_DIR.trim_start_matches('/'));
         let machine_id = machine_id_from_serial("serial-1");
 
-        stage_credstore_credential_in(&credstore, "system.machine_id", &machine_id)
+        stage_credstore_credential_in(&credentials, "system.machine_id", &machine_id)
             .expect("stage machine-id credential");
 
         assert_eq!(
-            std::fs::read_to_string(credstore.join("system.machine_id"))
+            std::fs::read_to_string(credentials.join("system.machine_id"))
                 .expect("read machine-id credential"),
             machine_id
         );
