@@ -9,6 +9,8 @@ import tarfile
 import tomllib
 
 CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
+# Mirrors crates/fastboop-core/build.rs: top-level files with these suffixes.
+DEVPRO_SUFFIXES = (".yaml", ".yml", ".json")
 
 
 def publishable_packages(metadata):
@@ -86,13 +88,41 @@ def verify_cli_lock(workspace, packaged, versions):
         raise ValueError("packaged lockfile is missing the fastboop-cli release root")
 
 
+def verify_core_profiles(package_dir, version):
+    """Require the built-in DevPros inside the fastboop-core archive itself.
+
+    Cargo verifies packages extracted under the target directory, so a build
+    script that looks outside its manifest directory can still find the
+    repository copy there. crates.io users only get the archive contents.
+    """
+    stem = f"fastboop-core-{version}"
+    archive = package_dir / f"{stem}.crate"
+    prefix = f"{stem}/devprofiles.d/"
+    with tarfile.open(archive, "r:gz") as crate:
+        profiles = [
+            member.name
+            for member in crate.getmembers()
+            if member.isfile()
+            and member.name.startswith(prefix)
+            and "/" not in member.name[len(prefix):]
+            and member.name.endswith(DEVPRO_SUFFIXES)
+        ]
+    if not profiles:
+        raise ValueError(f"no built-in device profiles in devprofiles.d/ of {archive}")
+    return len(profiles)
+
+
 def verify_archive(metadata):
     packages = publishable_packages(metadata)
     versions = {name: package["version"] for name, package in packages.items()}
-    if "fastboop-cli" not in versions:
-        raise ValueError("fastboop-cli is missing from the publish plan")
+    for name in ["fastboop-cli", "fastboop-core"]:
+        if name not in versions:
+            raise ValueError(f"{name} is missing from the publish plan")
+    package_dir = Path(metadata["target_directory"]) / "package"
+    count = verify_core_profiles(package_dir, versions["fastboop-core"])
+    print(f"==> packaged fastboop-core ships {count} built-in device profiles")
     stem = f"fastboop-cli-{versions['fastboop-cli']}"
-    archive = Path(metadata["target_directory"]) / "package" / f"{stem}.crate"
+    archive = package_dir / f"{stem}.crate"
     with tarfile.open(archive, "r:gz") as crate:
         lock = crate.extractfile(f"{stem}/Cargo.lock")
         if lock is None:

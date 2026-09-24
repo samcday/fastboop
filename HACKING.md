@@ -96,7 +96,9 @@ be available from the registry. The script does not inject Cargo config patches
 or skip verification. It also reads `Cargo.lock` directly from the CLI's `.crate`
 archive and rejects non-crates.io dependencies, version drift from the workspace
 lock, and changed registry checksums. The CLI itself is the only source-less
-package allowed in its archive's lockfile.
+package allowed in its archive's lockfile. The `fastboop-core` archive must
+contain its `devprofiles.d/` profiles, because its verification build under the
+target directory is not proof that crates.io users receive them.
 
 Both dry-run and live publication run this preflight before any upload. Release
 planning includes only packages allowed on crates.io, and packaging and uploads
