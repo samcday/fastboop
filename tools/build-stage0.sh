@@ -26,7 +26,13 @@ Environment:
   CARGO, RUSTC, READELF  Tools to run (default: cargo, rustc, readelf).
   CARGO_TARGET_DIR       Honoured as usual by cargo.
   CARGO_TARGET_<TRIPLE>_LINKER
-                         Linker for TRIPLE (default: rust-lld).
+                         Linker for TRIPLE (default: rust-lld, which also
+                         replaces target.<triple>.linker from Cargo config).
+  RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS, CARGO_TARGET_<TRIPLE>_RUSTFLAGS
+                         Extra rustflags; crt-static is appended to the one
+                         Cargo uses. build.rustflags from Cargo config files
+                         is ignored; CARGO_BUILD_RUSTFLAGS is carried over
+                         when none of these three is set.
 EOF
 }
 
@@ -116,13 +122,18 @@ rustflags_var="CARGO_TARGET_${target_env}_RUSTFLAGS"
 crt_static="-C target-feature=+crt-static"
 unit_sep=$'\x1f'
 
+log "building fastboop-stage0 for $target"
+
+# The environment variable beats target.<triple>.linker in Cargo config files, so
+# the rust-lld default also replaces a linker set there. Callers who want
+# another linker set CARGO_TARGET_<TRIPLE>_LINKER.
 export "${linker_var}=${!linker_var:-rust-lld}"
 
 # Cargo takes rustflags from the first source that is set, even if empty:
 # CARGO_ENCODED_RUSTFLAGS, then RUSTFLAGS, then target.<triple>.rustflags
-# (which CARGO_TARGET_<TRIPLE>_RUSTFLAGS feeds). Append crt-static to the source
-# that is in effect so it is not silently dropped, for example when CI exports
-# RUSTFLAGS.
+# (which CARGO_TARGET_<TRIPLE>_RUSTFLAGS feeds, merged with Cargo config files),
+# then build.rustflags. Append crt-static to the source that is in effect so it
+# is not silently dropped, for example when CI exports RUSTFLAGS.
 if [[ -v CARGO_ENCODED_RUSTFLAGS ]]; then
     CARGO_ENCODED_RUSTFLAGS="${CARGO_ENCODED_RUSTFLAGS:+$CARGO_ENCODED_RUSTFLAGS$unit_sep}${crt_static// /$unit_sep}"
     export CARGO_ENCODED_RUSTFLAGS
@@ -131,13 +142,23 @@ elif [[ -v RUSTFLAGS ]]; then
     export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$crt_static"
     rustflags_source="RUSTFLAGS"
 else
+    # Setting target rustflags makes Cargo ignore build.rustflags. Carry
+    # CARGO_BUILD_RUSTFLAGS over when no target rustflags are set in the
+    # environment. build.rustflags from Cargo config files or --config cannot be
+    # read here and is dropped; see docs/dev/STAGE0_DISTRIBUTION.md.
+    if [[ ! -v "$rustflags_var" && -n "${CARGO_BUILD_RUSTFLAGS:-}" ]]; then
+        log "carrying CARGO_BUILD_RUSTFLAGS over to $rustflags_var"
+        export "${rustflags_var}=$CARGO_BUILD_RUSTFLAGS"
+    fi
     export "${rustflags_var}=${!rustflags_var:+${!rustflags_var} }$crt_static"
     rustflags_source="$rustflags_var"
 fi
 
-log "building fastboop-stage0 for $target"
 log "$linker_var=${!linker_var}"
 log "$rustflags_source=${!rustflags_source//$unit_sep/ }"
+if [[ "$rustflags_source" == "$rustflags_var" ]]; then
+    log "Cargo ignores build.rustflags while $rustflags_var is set"
+fi
 # Cargo prints diagnostics to stderr as usual and JSON build messages to stdout.
 # The executable that this build reports is the one to verify, wherever
 # CARGO_TARGET_DIR, --target-dir or --config put it.

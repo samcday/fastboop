@@ -34,12 +34,14 @@ stage0="$(tools/build-stage0.sh --out "$PWD/stage0-aarch64")"
 The script:
 
 - runs `cargo build -p fastboop-stage0 --release --locked --target <triple>` from the workspace root, so `rust-toolchain.toml` and `.cargo/config.toml` apply;
-- links with `rust-lld` unless `CARGO_TARGET_<TRIPLE>_LINKER` is already set;
-- adds `-C target-feature=+crt-static` to whichever rustflags source Cargo uses (`CARGO_ENCODED_RUSTFLAGS`, then `RUSTFLAGS`, then `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`), so exported `RUSTFLAGS` cannot silently drop it;
+- links with `rust-lld` unless `CARGO_TARGET_<TRIPLE>_LINKER` is already set. The variable takes precedence over `target.<triple>.linker` in Cargo config files, so a linker set there is replaced by `rust-lld`;
+- adds `-C target-feature=+crt-static` to whichever rustflags source Cargo uses (`CARGO_ENCODED_RUSTFLAGS`, then `RUSTFLAGS`, then `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`), so exported `RUSTFLAGS` cannot silently drop it. In the last case Cargo ignores `build.rustflags`, so the script carries `CARGO_BUILD_RUSTFLAGS` over into `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` when that is not already set;
 - verifies the executable that `cargo build` reports in its JSON messages, and fails unless `readelf` shows an ELF executable for the target's machine with no `PT_INTERP` program header and no `DT_NEEDED` entries;
 - copies the binary to `--out` when given (an existing directory, or a path ending in `/`, receives `fastboop-stage0-<triple>`) and prints the final path on stdout.
 
 `--target` and `--out` fall back to `FASTBOOP_STAGE0_TARGET` and `FASTBOOP_STAGE0_OUT`. Arguments after `--` go to `cargo build`, for example `--frozen` for offline package builds. `CARGO_TARGET_DIR`, `--target-dir` and `build.target-dir` are honoured, because the script checks the path Cargo reports rather than a guessed one. The script passes `--message-format` itself, so it cannot be given after `--`. The script does not change stripping; with the default release profile the binary keeps its symbol table.
+
+Because the script always sets a rustflags source that takes precedence over `build.rustflags`, `[build] rustflags` from a Cargo config file (including the one in `$CARGO_HOME`) or from `--config` never reaches the stage0 build. When the script uses `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, `target.<triple>.rustflags` from config files still applies, merged with the variable. Packagers pass extra flags through `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` or `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, and the linker through `CARGO_TARGET_<TRIPLE>_LINKER`. Build environments that write their flags into `[build] rustflags`, as Debian's cargo wrapper does, must decide which of them belong in stage0 and export those. A host `-C linker=` among them, for example, is wrong for a cross-built target.
 
 Requirements: the Rust standard library for the target (`rustup target add <triple>`), `rust-lld` (shipped with rustup toolchains) and a GNU-compatible `readelf` (binutils, or set `READELF`). No C toolchain for the target is needed. Stage0's dependency graph has no C build steps, so `musl-gcc` (`musl-tools`) and musl kernel header symlinks are unnecessary. Both release targets were built with the script in a clean `rust:1.91` container that had neither.
 
