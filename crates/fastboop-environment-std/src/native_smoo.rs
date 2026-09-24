@@ -186,15 +186,17 @@ async fn run_native_smoo_host_async(
         (SMOO_INTERFACE_SUBCLASS, SMOO_INTERFACE_PROTOCOL)
     };
 
+    let mut discovery = target::RuntimeDiscovery::default();
     let result = async {
         while !shutdown.is_cancelled() {
-            let target = target::discover_runtime_device(
-                options.serial.clone(),
-                SMOO_INTERFACE_CLASS,
-                interface_subclass,
-                interface_protocol,
-            )
-            .await?;
+            let target = discovery
+                .discover(
+                    &options.serial,
+                    SMOO_INTERFACE_CLASS,
+                    interface_subclass,
+                    interface_protocol,
+                )
+                .await?;
             let Some(target) = target else {
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
