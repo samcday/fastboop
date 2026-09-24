@@ -4,6 +4,7 @@ import fnmatch
 import io
 import os
 from pathlib import Path
+import posixpath
 import re
 import subprocess
 import tarfile
@@ -19,9 +20,10 @@ VERSION = "1.2.3-rc.4"
 TOP = f"fastboop-{VERSION}"
 COMMIT_DATE = "2001-02-03T04:05:06Z"
 COMMIT_EPOCH = 981173106
+SUBMODULE_COMMIT_DATE = "2000-01-02T03:04:05Z"
 
 
-def git_env():
+def git_env(commit_date=COMMIT_DATE):
     # Hermetic git: no caller hooks/GIT_DIR, user config (signing) or system config.
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(
@@ -33,10 +35,10 @@ def git_env():
         GIT_CONFIG_VALUE_0="always",
         GIT_AUTHOR_NAME="fastboop test",
         GIT_AUTHOR_EMAIL="test@example.invalid",
-        GIT_AUTHOR_DATE=COMMIT_DATE,
+        GIT_AUTHOR_DATE=commit_date,
         GIT_COMMITTER_NAME="fastboop test",
         GIT_COMMITTER_EMAIL="test@example.invalid",
-        GIT_COMMITTER_DATE=COMMIT_DATE,
+        GIT_COMMITTER_DATE=commit_date,
     )
     return env
 
@@ -46,9 +48,10 @@ class SourceTarballTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(prefix="fastboop-source-tarball-test-")
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
-        self.env = git_env()
 
-        # super/third_party/lib is a submodule, which nests lib/vendor/deep.
+        # super/third_party/lib is a submodule, which nests lib/vendor/deep. Their
+        # commits predate super's HEAD, whose date alone must reach the archive.
+        self.env = git_env(SUBMODULE_COMMIT_DATE)
         deep = self.repo("deep", {"README": "deep v1\n"})
         lib = self.repo("lib", {"lib.txt": "lib v1\n", "run.sh": "#!/bin/sh\n"}, executable=["run.sh"])
         self.git(lib, "submodule", "add", "-q", str(deep), "vendor/deep")
@@ -58,10 +61,14 @@ class SourceTarballTests(unittest.TestCase):
         self.git(lib, "commit", "-qam", "v2")
         self.lib_v2 = self.git(lib, "rev-parse", "HEAD")
 
+        self.env = git_env()
         self.super = self.repo("super", {
             ".gitattributes": (REPO / ".gitattributes").read_text(),
             "Cargo.toml": "[workspace]\n",
             "infra/tofu/terraform.tfstate": "encrypted\n",
+            # git sorts trees as "name/", so git archive emits third_party.md
+            # before third_party/: extraction order is not name order.
+            "third_party.md": "notes\n",
         })
         self.git(self.super, "submodule", "add", "-q", str(lib), "third_party/lib")
         # Record lib v1 although the submodule clone also has v2.
@@ -112,12 +119,22 @@ class SourceTarballTests(unittest.TestCase):
         self.assertEqual(first.read_bytes(), second.read_bytes())
 
         with tarfile.open(first) as archive:
-            for member in archive.getmembers():
+            members = archive.getmembers()
+            for member in members:
                 with self.subTest(member=member.name):
                     self.assertTrue(member.name == TOP or member.name.startswith(f"{TOP}/"))
                     self.assertEqual((member.uid, member.gid, member.uname, member.gname), (0, 0, "", ""))
                     self.assertEqual(member.mtime, COMMIT_EPOCH)
                     self.assertIn(member.mode, (0o644, 0o755))
+
+        # Each directory's entries are in byte order, whatever order readdir gives.
+        children = {}
+        for member in members:
+            parent, child = posixpath.split(member.name)
+            children.setdefault(parent, []).append(os.fsencode(child))
+        for parent, names in children.items():
+            with self.subTest(directory=parent):
+                self.assertEqual(names, sorted(names))
 
     def test_submodules_are_archived_at_their_recorded_commits(self):
         # The clone's newer commit and uncommitted edits must not reach the archive.
