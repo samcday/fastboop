@@ -2,7 +2,7 @@
 
 Device Profiles (`DevPro`s) are fastboop's hardware playbook: they tell fastboop how to recognize a device and how to boot it safely without touching persistent storage.
 
-If you want concrete examples, start with the bundled profiles in [`devprofiles.d/`](https://github.com/samcday/fastboop/tree/main/devprofiles.d). Those built-ins are always loaded by fastboop (CLI, desktop, and web).
+If you want concrete examples, start with the bundled profiles in [`crates/fastboop-core/devprofiles.d/`](https://github.com/samcday/fastboop/tree/main/crates/fastboop-core/devprofiles.d). Those built-ins are always loaded by fastboop (CLI, desktop, and web).
 
 For local authoring and iteration, `fastboop` also loads profiles from:
 
@@ -111,7 +111,7 @@ As always, keep profiles non-mutating: no write/flash semantics.
 
 ## Building a new Device Profile
 
-Start from a profile for a similar device in [`devprofiles.d/`](https://github.com/samcday/fastboop/tree/main/devprofiles.d). Copy it to `~/.config/fastboop/devpro/your-device.yaml` and update the `id:` + `display_name:` + `devicetree_name:` fields.
+Start from a profile for a similar device in [`crates/fastboop-core/devprofiles.d/`](https://github.com/samcday/fastboop/tree/main/crates/fastboop-core/devprofiles.d). Copy it to `~/.config/fastboop/devpro/your-device.yaml` and update the `id:` + `display_name:` + `devicetree_name:` fields.
 
 Ensure `match` + `probe` match your device. Test with the real device:
 
@@ -132,5 +132,5 @@ fastboop boot profile.fbp --device-profile your-device --output /tmp/boot.img
 ## Source of Truth
 
 - Schema types: [`crates/fastboop-schema/src/lib.rs`](https://github.com/samcday/fastboop/blob/main/crates/fastboop-schema/src/lib.rs)
-- Built-in profiles (latest on main): [`devprofiles.d/`](https://github.com/samcday/fastboop/tree/main/devprofiles.d)
+- Built-in profiles (latest on main): [`crates/fastboop-core/devprofiles.d/`](https://github.com/samcday/fastboop/tree/main/crates/fastboop-core/devprofiles.d)
 - Profile loading logic: [`cli/src/devpros.rs`](https://github.com/samcday/fastboop/blob/main/cli/src/devpros.rs)

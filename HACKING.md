@@ -51,7 +51,9 @@ See `docs/dev/DEVICE_PROFILES.md` for schema and semantics.
 - `crates/fastboop-stage0-generator/`: stage0 image synthesis.
 - `crates/fastboop-core/`: core model/state-machine traits.
 - `packages/*`: desktop/web/mobile/ui frontends.
-- `devprofiles.d/`: device profile definitions.
+- `crates/fastboop-core/devprofiles.d/`: built-in device profiles, embedded by
+  `fastboop-core`'s build script and shipped in its crate. The root
+  `devprofiles.d` is a symlink to it.
 - `smoo/`: checked-in smoo submodule used for development snapshot builds.
 - `gibblox/`: checked-in gibblox submodule used for development snapshot builds.
 
