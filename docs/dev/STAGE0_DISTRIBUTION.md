@@ -36,10 +36,10 @@ The script:
 - runs `cargo build -p fastboop-stage0 --release --locked --target <triple>` from the workspace root, so `rust-toolchain.toml` and `.cargo/config.toml` apply;
 - links with `rust-lld` unless `CARGO_TARGET_<TRIPLE>_LINKER` is already set;
 - adds `-C target-feature=+crt-static` to whichever rustflags source Cargo uses (`CARGO_ENCODED_RUSTFLAGS`, then `RUSTFLAGS`, then `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`), so exported `RUSTFLAGS` cannot silently drop it;
-- fails unless `readelf` shows an ELF executable for the target's machine with no `PT_INTERP` program header and no `DT_NEEDED` entries;
+- verifies the executable that `cargo build` reports in its JSON messages, and fails unless `readelf` shows an ELF executable for the target's machine with no `PT_INTERP` program header and no `DT_NEEDED` entries;
 - copies the binary to `--out` when given (an existing directory, or a path ending in `/`, receives `fastboop-stage0-<triple>`) and prints the final path on stdout.
 
-`--target` and `--out` fall back to `FASTBOOP_STAGE0_TARGET` and `FASTBOOP_STAGE0_OUT`. Arguments after `--` go to `cargo build`, for example `--frozen` for offline package builds. `CARGO_TARGET_DIR` is honoured. The script does not change stripping; with the default release profile the binary keeps its symbol table.
+`--target` and `--out` fall back to `FASTBOOP_STAGE0_TARGET` and `FASTBOOP_STAGE0_OUT`. Arguments after `--` go to `cargo build`, for example `--frozen` for offline package builds. `CARGO_TARGET_DIR`, `--target-dir` and `build.target-dir` are honoured, because the script checks the path Cargo reports rather than a guessed one. The script passes `--message-format` itself, so it cannot be given after `--`. The script does not change stripping; with the default release profile the binary keeps its symbol table.
 
 Requirements: the Rust standard library for the target (`rustup target add <triple>`), `rust-lld` (shipped with rustup toolchains) and a GNU-compatible `readelf` (binutils, or set `READELF`). No C toolchain for the target is needed. Stage0's dependency graph has no C build steps, so `musl-gcc` (`musl-tools`) and musl kernel header symlinks are unnecessary. Both release targets were built with the script in a clean `rust:1.91` container that had neither.
 

@@ -19,7 +19,8 @@ Options:
   --out PATH       Copy the verified binary to PATH. An existing directory, or
                    a PATH ending in /, receives fastboop-stage0-TRIPLE.
                    Defaults to $FASTBOOP_STAGE0_OUT; unset means no copy.
-  -- CARGO_ARGS    Extra arguments for cargo build, for example --frozen.
+  -- CARGO_ARGS    Extra arguments for cargo build, for example --frozen or
+                   --target-dir DIR. The script sets --message-format itself.
 
 Environment:
   CARGO, RUSTC, READELF  Tools to run (default: cargo, rustc, readelf).
@@ -137,17 +138,26 @@ fi
 log "building fastboop-stage0 for $target"
 log "$linker_var=${!linker_var}"
 log "$rustflags_source=${!rustflags_source//$unit_sep/ }"
-"$cargo" build \
+# Cargo prints diagnostics to stderr as usual and JSON build messages to stdout.
+# The executable that this build reports is the one to verify, wherever
+# CARGO_TARGET_DIR, --target-dir or --config put it.
+build_messages="$("$cargo" build \
     -p fastboop-stage0 \
     --release \
     --target "$target" \
     --locked \
-    ${cargo_args[@]+"${cargo_args[@]}"}
+    --message-format=json-render-diagnostics \
+    ${cargo_args[@]+"${cargo_args[@]}"})"
 
-metadata="$("$cargo" metadata --format-version 1 --no-deps --locked)"
-target_dir="$(sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p' <<<"$metadata")"
-[[ -n "$target_dir" ]] || die "could not read target_directory from cargo metadata"
-bin="$target_dir/$target/release/fastboop-stage0"
+mapfile -t bins < <(
+    grep -F '"reason":"compiler-artifact"' <<<"$build_messages" |
+        grep -F '"kind":["bin"]' |
+        grep -F '"name":"fastboop-stage0"' |
+        sed -n 's/.*"executable":"\([^"\\]*\)".*/\1/p'
+)
+[[ ${#bins[@]} -eq 1 ]] ||
+    die "expected cargo to report one fastboop-stage0 executable, got ${#bins[@]}"
+bin="${bins[0]}"
 
 log "verifying $bin"
 [[ -s "$bin" ]] || die "$bin is missing or empty"
