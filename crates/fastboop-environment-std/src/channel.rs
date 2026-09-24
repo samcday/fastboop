@@ -307,7 +307,7 @@ async fn unwrap_channel_reader(
     for _depth in 0..CHANNEL_UNWRAP_MAX_DEPTH {
         let kind = classify_channel_reader(reader.as_ref()).await?;
         match kind {
-            ChannelStreamKind::ProfileBundleV1 => {
+            ChannelStreamKind::ProfileBundle => {
                 bail!(
                     "channel is a profile bundle; boot/stage0 commands require an artifact channel"
                 )

@@ -96,7 +96,7 @@ import sys
 
 out_dir = pathlib.Path(sys.argv[1])
 
-(out_dir / "profile-bundle-v1.bin").write_bytes(b"FBCH" + struct.pack("<H", 1) + b"\x00\x00" + b"fixture-profile")
+(out_dir / "profile-bundle.bin").write_bytes(b"FBCH" + struct.pack("<H", 2) + b"\x00\x00" + b"fixture-profile")
 
 sparse = bytearray(4096)
 sparse[0:4] = struct.pack("<I", 0xED26FF3A)

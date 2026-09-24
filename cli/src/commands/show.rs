@@ -139,7 +139,7 @@ fn render_show_report(
 
 fn render_kind(kind: ChannelStreamKind) -> &'static str {
     match kind {
-        ChannelStreamKind::ProfileBundleV1 => "profile-bundle-v1",
+        ChannelStreamKind::ProfileBundle => "profile-bundle",
         ChannelStreamKind::Xz => "xz",
         ChannelStreamKind::Zip => "zip",
         ChannelStreamKind::AndroidSparse => "android-sparse",
