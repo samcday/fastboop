@@ -283,6 +283,12 @@ impl FastbootRusb {
         self.timeout = timeout;
     }
 
+    /// Read the USB serial through this already-open handle, so a device that
+    /// could be opened for fastboot is not reopened for its serial.
+    pub fn usb_serial_number(&self) -> Result<Option<String>, rusb::Error> {
+        read_usb_serial_number(&self.handle)
+    }
+
     pub fn interface(&self) -> FastbootInterface {
         FastbootInterface {
             interface: self.interface,
@@ -331,16 +337,23 @@ impl RusbDeviceHandle {
     }
 
     pub fn usb_serial_number(&self) -> Option<String> {
-        let descriptor = self.device.device_descriptor().ok()?;
         let handle = self.device.open().ok()?;
-        let serial = handle.read_serial_number_string_ascii(&descriptor).ok()?;
-        let serial = serial.trim();
-        if serial.is_empty() {
-            None
-        } else {
-            Some(serial.to_string())
-        }
+        read_usb_serial_number(&handle).ok()?
     }
+}
+
+/// Read the device's USB serial string; `None` when it has none.
+fn read_usb_serial_number(handle: &DeviceHandle<Context>) -> Result<Option<String>, rusb::Error> {
+    let descriptor = handle.device().device_descriptor()?;
+    if descriptor
+        .serial_number_string_index()
+        .is_none_or(|i| i == 0)
+    {
+        return Ok(None);
+    }
+    let serial = handle.read_serial_number_string_ascii(&descriptor)?;
+    let serial = serial.trim();
+    Ok((!serial.is_empty()).then(|| serial.to_string()))
 }
 
 impl DeviceHandleTrait for RusbDeviceHandle {
