@@ -150,6 +150,47 @@ jobs:
       release_mode: ${{ needs.gate.outputs.mode }}
     secrets: inherit
 
+  source-tarball:
+    needs: [gate, release]
+    if: needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - name: Build self-contained source tarball
+        id: tarball
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          tarball="$(tools/source-tarball.sh "$VERSION" dist)"
+          echo "path=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the workspace loads from the source tarball
+        env:
+          TARBALL: ${{ steps.tarball.outputs.path }}
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          extract_dir="$RUNNER_TEMP/fastboop-src"
+          mkdir -p "$extract_dir"
+          tar -xzf "$TARBALL" -C "$extract_dir"
+          cd "$extract_dir/fastboop-$VERSION"
+          cargo metadata --locked --format-version 1 >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fastboop-src
+          path: ${{ steps.tarball.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+
   publish-preflight:
     needs: gate
     if: needs.gate.outputs.enabled == 'true'
@@ -206,7 +247,7 @@ jobs:
           cargo xtask publish
 
   publish-assets:
-    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine]
+    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine, source-tarball]
     if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -265,6 +306,11 @@ jobs:
           name: fastboop-docs
           path: release-artifacts/fastboop-docs
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: fastboop-src
+          path: release-artifacts/fastboop-src
+
       - name: Prepare release assets
         run: |
           set -euo pipefail
@@ -286,6 +332,8 @@ jobs:
           tar -C release-artifacts/fastboop-web -czf "release-assets/fastboop-web-${{ needs.gate.outputs.tag }}.tar.gz" .
           tar -C release-artifacts/fastboop-docs -czf "release-assets/fastboop-docs-${{ needs.gate.outputs.tag }}.tar.gz" .
 
+          cp "release-artifacts/fastboop-src/fastboop-${{ needs.gate.outputs.version }}-src.tar.gz" release-assets/
+
           (
             cd release-assets
             sha256sum * > SHA256SUMS
@@ -300,6 +348,7 @@ jobs:
           test -f release-assets/fastboop-stage0-x86_64-unknown-linux-musl
           test -f release-assets/fastboop-stage0-aarch64-unknown-linux-musl
           test -f release-assets/APKBUILD
+          test -f "release-assets/fastboop-${{ needs.gate.outputs.version }}-src.tar.gz"
           test -f release-assets/SHA256SUMS
 
           compgen -G 'release-assets/*.deb' >/dev/null
@@ -334,11 +383,12 @@ jobs:
             release-assets/*.apk
             release-assets/fastboop-web-*.tar.gz
             release-assets/fastboop-docs-*.tar.gz
+            release-assets/fastboop-${{ needs.gate.outputs.version }}-src.tar.gz
             release-assets/SHA256SUMS
 
   pass:
     name: "✅ Pass"
-    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine, publish-preflight, publish-assets, publish-release, publish-crates, bump-web-version]
+    needs: [gate, release, ci, docs, stage0-preflight, debian, alpine, source-tarball, publish-preflight, publish-assets, publish-release, publish-crates, bump-web-version]
     runs-on: ubuntu-latest
     if: always() && needs.gate.outputs.enabled == 'true'
     steps:
