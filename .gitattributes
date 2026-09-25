@@ -1,0 +1,4 @@
+# Deployment infrastructure is neither a workspace member nor needed to build;
+# keep it (including encrypted OpenTofu state) out of `git archive` source
+# tarballs. See tools/source-tarball.sh.
+/infra/ export-ignore
