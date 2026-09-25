@@ -2,10 +2,12 @@
 
 import copy
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -84,6 +86,33 @@ class LockTests(unittest.TestCase):
             self.verify()
 
 
+class CoreProfileArchiveTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="fastboop-publish-archive-")
+        self.addCleanup(self.tmp.cleanup)
+        self.package_dir = Path(self.tmp.name)
+
+    def verify(self, *members):
+        stem = "fastboop-core-99.0.0"
+        with tarfile.open(self.package_dir / f"{stem}.crate", "w:gz") as crate:
+            for name in ["src/lib.rs", *members]:
+                data = b"id: fixture\n"
+                info = tarfile.TarInfo(f"{stem}/{name}")
+                info.size = len(data)
+                crate.addfile(info, io.BytesIO(data))
+        return preflight.verify_core_profiles(self.package_dir, "99.0.0")
+
+    def test_counts_top_level_profiles(self):
+        self.assertEqual(self.verify("devprofiles.d/a.yaml", "devprofiles.d/b.yml"), 2)
+
+    def test_rejects_archives_without_loadable_profiles(self):
+        for members in [[], ["devprofiles.d/README.md"], ["devprofiles.d/nested/a.yaml"],
+                        ["other/devprofiles.d/a.yaml"]]:
+            with self.subTest(members=members):
+                with self.assertRaisesRegex(ValueError, "no built-in device profiles"):
+                    self.verify(*members)
+
+
 class CargoTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="fastboop-publish-test-")
@@ -100,6 +129,7 @@ class CargoTests(unittest.TestCase):
         self.write("Cargo.toml", '[workspace]\nmembers = ["core", "cli"]\nresolver = "2"\n')
         self.write("core/Cargo.toml", '[package]\nname = "fastboop-core"\nversion = "99.0.0"\nedition = "2021"\n')
         self.write("core/src/lib.rs", "pub fn answer() -> u8 { 42 }\n")
+        self.write("core/devprofiles.d/fixture.yaml", "id: fixture\n")
         self.write("cli/Cargo.toml", '[package]\nname = "fastboop-cli"\nversion = "99.0.0"\nedition = "2021"\n[dependencies]\nfastboop-core = { path = "../core", version = "99.0.0" }\n')
         self.write("cli/src/main.rs", "fn main() { assert_eq!(fastboop_core::answer(), 42); }\n")
         self.run_command(["cargo", "generate-lockfile", "--offline"], success=True)
@@ -125,6 +155,7 @@ class CargoTests(unittest.TestCase):
         self.env["CARGO_REGISTRY_DEFAULT"] = "unconfigured-internal-registry"
         output = self.dry_run(success=True)
         self.assertIn("Verifying fastboop-cli", output)
+        self.assertIn("packaged fastboop-core ships 1 built-in device profiles", output)
         self.assertIn("packaged CLI lockfile matches", output)
         self.assertTrue((self.root / "custom-target/package/fastboop-cli-99.0.0.crate").is_file())
 
@@ -155,6 +186,26 @@ class CargoTests(unittest.TestCase):
         self.run_command(["cargo", "check", "--locked", "--offline"], success=True)
         output = self.dry_run(success=False)
         self.assertIn("implementation.rs", output)
+
+    def test_core_profiles_outside_the_package_fail_even_when_verification_finds_them(self):
+        # Regression: fastboop-core's build script once searched ancestor
+        # directories and silently built no profiles when none were found. Its
+        # verification build under target/package found the repository's copy,
+        # so packaging passed while the archive itself shipped none.
+        (self.root / "core/devprofiles.d/fixture.yaml").unlink()
+        (self.root / "core/devprofiles.d").rmdir()
+        self.write("devprofiles.d/fixture.yaml", "id: fixture\n")
+        self.write("core/build.rs", """fn main() {
+    let mut dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    while !dir.join("devprofiles.d").is_dir() && dir.pop() {}
+}
+""")
+        self.run_command(["cargo", "check", "--locked", "--offline"], success=True)
+        output = self.dry_run(success=False)
+        self.assertIn("Verifying fastboop-core", output)
+        self.assertIn("no built-in device profiles", output)
+        self.assertIn("fastboop-core-99.0.0.crate", output)
+        self.assertNotIn("packaged CLI lockfile matches", output)
 
     def test_config_patch_cannot_pass_as_a_registry_dependency(self):
         # Unlike manifest patches, Cargo config patches can reach verification.

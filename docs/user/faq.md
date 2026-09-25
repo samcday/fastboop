@@ -10,4 +10,4 @@ No. fastboop is a live-boot pipeline, not an installer and not a policy manager.
 
 ## Which devices are supported?
 
-Support is profile-driven. See `devprofiles.d/` and the developer docs for profile semantics.
+Support is profile-driven. See `crates/fastboop-core/devprofiles.d/` and the developer docs for profile semantics.
