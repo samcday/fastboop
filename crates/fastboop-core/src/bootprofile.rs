@@ -2,7 +2,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use fastboop_schema::bin::{
-    BOOT_PROFILE_BIN_FORMAT_V0, BOOT_PROFILE_BIN_V0_HEADER_LEN, BOOT_PROFILE_BIN_V0_MAGIC,
+    BOOT_PROFILE_BIN_FORMAT_VERSION, BOOT_PROFILE_BIN_HEADER_LEN, BOOT_PROFILE_BIN_MAGIC,
     BootProfileBin,
 };
 use fastboop_schema::{
@@ -15,6 +15,9 @@ use gibblox_pipeline::{PipelineValidationError, validate_pipeline};
 pub enum BootProfileCodecError {
     Decode(postcard::Error),
     InvalidMagic,
+    /// The record was written for a format version other than
+    /// [`BOOT_PROFILE_BIN_FORMAT_VERSION`], typically by another fastboop
+    /// version. Carries the version found in the record header.
     UnsupportedFormatVersion(u16),
 }
 
@@ -25,13 +28,13 @@ impl core::fmt::Display for BootProfileCodecError {
             Self::InvalidMagic => {
                 write!(
                     f,
-                    "invalid boot profile magic (expected {BOOT_PROFILE_BIN_V0_MAGIC:?})"
+                    "invalid boot profile magic (expected {BOOT_PROFILE_BIN_MAGIC:?})"
                 )
             }
             Self::UnsupportedFormatVersion(version) => {
                 write!(
                     f,
-                    "unsupported boot profile format version {version} (expected {BOOT_PROFILE_BIN_FORMAT_V0})"
+                    "unsupported boot profile format version {version} (this fastboop supports version {BOOT_PROFILE_BIN_FORMAT_VERSION}); recompile the boot profile with this fastboop version (`fastboop bootprofile create`) and rebuild any channel that embeds it"
                 )
             }
         }
@@ -45,16 +48,7 @@ impl From<postcard::Error> for BootProfileCodecError {
 }
 
 pub fn decode_boot_profile(bytes: &[u8]) -> Result<BootProfile, BootProfileCodecError> {
-    let Some(format_version) = boot_profile_bin_header_version(bytes) else {
-        return Err(BootProfileCodecError::InvalidMagic);
-    };
-    if format_version != BOOT_PROFILE_BIN_FORMAT_V0 {
-        return Err(BootProfileCodecError::UnsupportedFormatVersion(
-            format_version,
-        ));
-    }
-
-    let payload = &bytes[BOOT_PROFILE_BIN_V0_HEADER_LEN..];
+    let payload = boot_profile_bin_payload(bytes)?;
     let profile: BootProfileBin = postcard::from_bytes(payload)?;
     Ok(BootProfile::from(profile))
 }
@@ -62,18 +56,9 @@ pub fn decode_boot_profile(bytes: &[u8]) -> Result<BootProfile, BootProfileCodec
 pub fn decode_boot_profile_prefix(
     bytes: &[u8],
 ) -> Result<(BootProfile, usize), BootProfileCodecError> {
-    let Some(format_version) = boot_profile_bin_header_version(bytes) else {
-        return Err(BootProfileCodecError::InvalidMagic);
-    };
-    if format_version != BOOT_PROFILE_BIN_FORMAT_V0 {
-        return Err(BootProfileCodecError::UnsupportedFormatVersion(
-            format_version,
-        ));
-    }
-
-    let payload = &bytes[BOOT_PROFILE_BIN_V0_HEADER_LEN..];
+    let payload = boot_profile_bin_payload(bytes)?;
     let (profile, remaining): (BootProfileBin, &[u8]) = postcard::take_from_bytes(payload)?;
-    let consumed = BOOT_PROFILE_BIN_V0_HEADER_LEN
+    let consumed = BOOT_PROFILE_BIN_HEADER_LEN
         .checked_add(payload.len() - remaining.len())
         .expect("boot profile consumed length overflow");
     Ok((BootProfile::from(profile), consumed))
@@ -81,24 +66,44 @@ pub fn decode_boot_profile_prefix(
 
 pub fn encode_boot_profile(profile: &BootProfile) -> Result<Vec<u8>, postcard::Error> {
     let payload = postcard::to_allocvec(&BootProfileBin::from(profile.clone()))?;
-    let mut out = Vec::with_capacity(BOOT_PROFILE_BIN_V0_HEADER_LEN + payload.len());
-    out.extend_from_slice(&BOOT_PROFILE_BIN_V0_MAGIC);
-    out.extend_from_slice(&BOOT_PROFILE_BIN_FORMAT_V0.to_le_bytes());
+    let mut out = Vec::with_capacity(BOOT_PROFILE_BIN_HEADER_LEN + payload.len());
+    out.extend_from_slice(&BOOT_PROFILE_BIN_MAGIC);
+    out.extend_from_slice(&BOOT_PROFILE_BIN_FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&payload);
     Ok(out)
 }
 
+/// Returns the header format version when `bytes` starts with a boot profile
+/// record, whatever that version is. Decoding rejects every version other
+/// than [`BOOT_PROFILE_BIN_FORMAT_VERSION`].
 pub fn boot_profile_bin_header_version(bytes: &[u8]) -> Option<u16> {
-    if bytes.len() < BOOT_PROFILE_BIN_V0_HEADER_LEN {
+    if bytes.len() < BOOT_PROFILE_BIN_HEADER_LEN {
         return None;
     }
-    if bytes[..BOOT_PROFILE_BIN_V0_MAGIC.len()] != BOOT_PROFILE_BIN_V0_MAGIC {
+    if bytes[..BOOT_PROFILE_BIN_MAGIC.len()] != BOOT_PROFILE_BIN_MAGIC {
         return None;
     }
     Some(u16::from_le_bytes([
-        bytes[BOOT_PROFILE_BIN_V0_MAGIC.len()],
-        bytes[BOOT_PROFILE_BIN_V0_MAGIC.len() + 1],
+        bytes[BOOT_PROFILE_BIN_MAGIC.len()],
+        bytes[BOOT_PROFILE_BIN_MAGIC.len() + 1],
     ]))
+}
+
+/// Checks a boot profile record header without decoding its payload.
+pub fn check_boot_profile_bin_header(bytes: &[u8]) -> Result<(), BootProfileCodecError> {
+    boot_profile_bin_payload(bytes).map(|_| ())
+}
+
+fn boot_profile_bin_payload(bytes: &[u8]) -> Result<&[u8], BootProfileCodecError> {
+    let Some(format_version) = boot_profile_bin_header_version(bytes) else {
+        return Err(BootProfileCodecError::InvalidMagic);
+    };
+    if format_version != BOOT_PROFILE_BIN_FORMAT_VERSION {
+        return Err(BootProfileCodecError::UnsupportedFormatVersion(
+            format_version,
+        ));
+    }
+    Ok(&bytes[BOOT_PROFILE_BIN_HEADER_LEN..])
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

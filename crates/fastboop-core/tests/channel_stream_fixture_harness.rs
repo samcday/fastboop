@@ -17,7 +17,7 @@ fn generated_fixtures_match_expected_stream_kinds() {
     }
 
     let cases = [
-        ("profile-bundle-v1.bin", ChannelStreamKind::ProfileBundleV1),
+        ("profile-bundle.bin", ChannelStreamKind::ProfileBundle),
         ("android-sparse.img", ChannelStreamKind::AndroidSparse),
         ("gpt.img", ChannelStreamKind::Gpt),
         ("mbr.img", ChannelStreamKind::Mbr),

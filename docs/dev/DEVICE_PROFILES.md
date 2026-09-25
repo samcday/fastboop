@@ -129,6 +129,15 @@ fastboop stage0 --device-profile your-device profile.fbp
 fastboop boot profile.fbp --device-profile your-device --output /tmp/boot.img
 ```
 
+## Compiled form
+
+`fastboop devprofile create` compiles a profile into a binary `FBOODEVP` record
+for embedding in channels. Its layout follows the schema, so schema changes
+bump its format version: version 1 added `ramdisk_offset`, `second_offset` and
+`tags_offset` after v0.0.1-rc.21. Records compiled by another fastboop version
+are rejected; recompile them with the matching version. See
+[Binary record formats](BOOT_PROFILES.md#binary-record-formats).
+
 ## Source of Truth
 
 - Schema types: [`crates/fastboop-schema/src/lib.rs`](https://github.com/samcday/fastboop/blob/main/crates/fastboop-schema/src/lib.rs)

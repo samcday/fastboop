@@ -307,7 +307,7 @@ async fn unwrap_channel_reader(
     for _depth in 0..CHANNEL_UNWRAP_MAX_DEPTH {
         let kind = classify_channel_reader(reader.as_ref()).await?;
         match kind {
-            ChannelStreamKind::ProfileBundleV1 => {
+            ChannelStreamKind::ProfileBundle => {
                 bail!(
                     "channel is a profile bundle; boot/stage0 commands require an artifact channel"
                 )
@@ -1293,6 +1293,69 @@ rootfs:
             err.is_err(),
             "expected channel stream parse error for truncated first record"
         );
+    }
+
+    #[tokio::test]
+    async fn channel_stream_head_rejects_previous_format_version_record() {
+        let device = compile_device_profile(
+            r#"
+id: dev-one
+devicetree_name: test-device-tree
+match:
+  - fastboot:
+      vid: 0x1234
+      pid: 0x5678
+probe: []
+boot:
+  fastboot_boot:
+    android_bootimg:
+      header_version: 2
+      page_size: 4096
+      kernel:
+        encoding: image
+"#,
+        );
+        let boot = compile_boot_profile(
+            r#"
+id: stale
+rootfs:
+  erofs:
+    file: ./rootfs.ero
+"#,
+        );
+
+        let device_encoded = encode_dev_profile(&device).unwrap();
+        // v0.0.1-rc.21 wrote format version 0; the payload is never decoded.
+        let mut stale_boot = encode_boot_profile(&boot).unwrap();
+        stale_boot[8..10].copy_from_slice(&0u16.to_le_bytes());
+
+        // Larger than the 4 MiB head scan window, like a channel with a rootfs.
+        let mut stream = device_encoded.clone();
+        stream.extend_from_slice(stale_boot.as_slice());
+        stream.resize(stream.len() + 5 * 1024 * 1024, 0);
+        let stream_len = stream.len() as u64;
+
+        let source: Arc<dyn BlockReader> = Arc::new(TestBytesBlockReader::new(stream, 512));
+        let err = read_channel_stream_head_from_reader(source.as_ref(), stream_len)
+            .await
+            .expect_err("stale boot profile record must fail the head read");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains(&format!(
+                "decode boot profile stream at offset {}",
+                device_encoded.len()
+            )),
+            "{message}"
+        );
+        assert!(
+            message.contains("unsupported boot profile format version 0"),
+            "{message}"
+        );
+        assert!(
+            message.contains("recompile the boot profile with this fastboop version"),
+            "{message}"
+        );
+        assert!(!message.contains("stream head exceeds"), "{message}");
     }
 
     fn compile_boot_profile(yaml: &str) -> BootProfile {

@@ -21,8 +21,8 @@ use crate::channel_pipeline_hints::{
 };
 use crate::{
     BootProfile, BootProfileArtifactSource, DeviceProfile, boot_profile_bin_header_version,
-    decode_boot_profile_prefix, decode_dev_profile_prefix, dev_profile_bin_header_version,
-    validate_boot_profile,
+    check_boot_profile_bin_header, check_dev_profile_bin_header, decode_boot_profile_prefix,
+    decode_dev_profile_prefix, dev_profile_bin_header_version, validate_boot_profile,
 };
 
 pub const CHANNEL_BOOT_PROFILE_STREAM_SCAN_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -277,6 +277,12 @@ pub fn read_boot_profile_stream_head(
         if boot_profile_bin_header_version(remaining).is_none() {
             break;
         }
+        check_profile_record_version(remaining, cursor as u64).map_err(|err| {
+            BootProfileStreamHeadError::DecodeFailure {
+                offset: cursor as u64,
+                cause: err.to_string(),
+            }
+        })?;
 
         let (profile, consumed) = match decode_boot_profile_prefix(remaining) {
             Ok(decoded) => decoded,
@@ -333,6 +339,35 @@ pub fn read_channel_stream_head(
     read_sequential_channel_stream_head(bytes, exact_total_bytes)
 }
 
+/// Fails when `bytes` starts with a boot or device profile record written for
+/// an unsupported format version, typically by another fastboop version.
+///
+/// Sequential readers call this before decoding so such a record fails the
+/// whole head read. Otherwise a stale record after valid ones would end the
+/// head as a mere warning, and the reader path would retry the decode with
+/// windows of up to 4 MiB and could report a truncated head instead.
+fn check_profile_record_version(bytes: &[u8], offset: u64) -> Result<(), ChannelStreamHeadError> {
+    if boot_profile_bin_header_version(bytes).is_some() {
+        check_boot_profile_bin_header(bytes).map_err(|err| {
+            ChannelStreamHeadError::DecodeFailure {
+                record_type: "boot profile",
+                offset,
+                cause: err.to_string(),
+            }
+        })?;
+    }
+    if dev_profile_bin_header_version(bytes).is_some() {
+        check_dev_profile_bin_header(bytes).map_err(|err| {
+            ChannelStreamHeadError::DecodeFailure {
+                record_type: "dev profile",
+                offset,
+                cause: err.to_string(),
+            }
+        })?;
+    }
+    Ok(())
+}
+
 fn read_sequential_channel_stream_head(
     bytes: &[u8],
     exact_total_bytes: u64,
@@ -356,6 +391,7 @@ fn read_sequential_channel_stream_head(
         }
 
         let remaining = &bytes[cursor..scan_len];
+        check_profile_record_version(remaining, cursor as u64)?;
 
         if boot_profile_bin_header_version(remaining).is_some() {
             match decode_boot_profile_prefix(remaining) {
@@ -596,6 +632,7 @@ pub fn scan_channel_head_record_locations(
         }
 
         let remaining = &bytes[cursor..scan_len];
+        check_profile_record_version(remaining, cursor as u64)?;
 
         if boot_profile_bin_header_version(remaining).is_some() {
             let (profile, consumed) = decode_boot_profile_prefix(remaining).map_err(|err| {
@@ -763,6 +800,8 @@ async fn read_sequential_channel_stream_head_from_reader<R: BlockReader + ?Sized
             exact_total_bytes - cursor,
         ) as usize;
         let probe = read_channel_reader_bytes(reader, block_size, cursor, probe_len).await?;
+        check_profile_record_version(probe.as_slice(), cursor)
+            .map_err(ChannelStreamHeadReadError::Decode)?;
 
         if boot_profile_bin_header_version(probe.as_slice()).is_some() {
             let (profile, consumed) = decode_prefixed_record_from_reader(
@@ -2114,6 +2153,126 @@ mod tests {
             } => {
                 assert_eq!(record_type, "channel index");
                 assert!(cause.contains("already begins"));
+            }
+            other => panic!("expected DecodeFailure, got {other:?}"),
+        }
+    }
+
+    fn current_dev_profile_record() -> Vec<u8> {
+        let profile = crate::builtin::builtin_profiles()
+            .expect("builtin profiles")
+            .into_iter()
+            .next()
+            .expect("at least one builtin profile");
+        crate::encode_dev_profile(&profile).expect("encode dev profile")
+    }
+
+    /// A record with the header version v0.0.1-rc.21 wrote (0). The payload
+    /// is never decoded, so a current payload stands in for the old layout.
+    fn with_previous_format_version(mut record: Vec<u8>) -> Vec<u8> {
+        record[8..10].copy_from_slice(&0u16.to_le_bytes());
+        record
+    }
+
+    fn stale_boot_profile_record() -> Vec<u8> {
+        let rootfs = crate::BootProfileRootfs::Erofs(crate::BootProfileRootfsErofsSource {
+            erofs: crate::BootProfileArtifactSource::File(
+                crate::BootProfileArtifactSourceFileSource {
+                    file: String::from("./rootfs.ero"),
+                    content: None,
+                },
+            ),
+        });
+        let profile = crate::BootProfile {
+            id: String::from("stale"),
+            display_name: None,
+            rootfs,
+            kernel: None,
+            initrd: None,
+            boot: crate::BootStrategy::Stage0,
+            dtbs: None,
+            dt_overlays: Vec::new(),
+            extra_cmdline: None,
+            stage0: crate::BootProfileStage0::default(),
+        };
+        with_previous_format_version(
+            crate::encode_boot_profile(&profile).expect("encode boot profile"),
+        )
+    }
+
+    fn assert_stale_record_error(
+        err: ChannelStreamHeadError,
+        expected_record_type: &str,
+        expected_offset: u64,
+        expected_hint: &str,
+    ) {
+        match err {
+            ChannelStreamHeadError::DecodeFailure {
+                record_type,
+                offset,
+                cause,
+            } => {
+                assert_eq!(record_type, expected_record_type);
+                assert_eq!(offset, expected_offset);
+                assert!(cause.contains("format version 0"), "{cause}");
+                assert!(cause.contains("this fastboop supports version"), "{cause}");
+                assert!(cause.contains(expected_hint), "{cause}");
+            }
+            other => panic!("expected DecodeFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sequential_head_rejects_stale_record_after_valid_records() {
+        // Earlier records must not turn a stale record into a warning that
+        // leaves it to be treated as the start of the channel tail.
+        let dev = current_dev_profile_record();
+        let mut stream = dev.clone();
+        stream.extend(stale_boot_profile_record());
+        stream.extend([0u8; 4096]);
+
+        let err = read_channel_stream_head(&stream, stream.len() as u64)
+            .expect_err("stale boot profile record must fail the head read");
+        assert_stale_record_error(
+            err,
+            "boot profile",
+            dev.len() as u64,
+            "recompile the boot profile",
+        );
+    }
+
+    #[test]
+    fn sequential_head_rejects_stale_dev_profile_record() {
+        let mut stream = with_previous_format_version(current_dev_profile_record());
+        stream.extend([0u8; 4096]);
+
+        let err = read_channel_stream_head(&stream, stream.len() as u64)
+            .expect_err("stale dev profile record must fail the head read");
+        assert_stale_record_error(err, "dev profile", 0, "recompile the device profile");
+
+        let err = scan_channel_head_record_locations(&stream, stream.len() as u64)
+            .expect_err("stale dev profile record must fail the head scan");
+        assert_stale_record_error(err, "dev profile", 0, "recompile the device profile");
+    }
+
+    #[test]
+    fn sequential_head_reports_stale_record_in_large_channel_as_version_error() {
+        // A channel larger than the scan window must not report a stale record
+        // as a truncated stream head.
+        let stream = stale_boot_profile_record();
+        let exact_total_bytes = 64 * 1024 * 1024;
+
+        let err = read_channel_stream_head(&stream, exact_total_bytes)
+            .expect_err("stale boot profile record must fail the head read");
+        assert_stale_record_error(err, "boot profile", 0, "recompile the boot profile");
+
+        let err = super::read_boot_profile_stream_head(&stream, exact_total_bytes)
+            .expect_err("stale boot profile record must fail the boot profile head read");
+        match err {
+            super::BootProfileStreamHeadError::DecodeFailure { offset, cause } => {
+                assert_eq!(offset, 0);
+                assert!(cause.contains("format version 0"), "{cause}");
+                assert!(!cause.contains("stream head exceeds"), "{cause}");
             }
             other => panic!("expected DecodeFailure, got {other:?}"),
         }

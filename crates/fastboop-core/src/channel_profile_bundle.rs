@@ -6,7 +6,7 @@ use fastboop_schema::bin::{BootProfileBin, DeviceProfileBin};
 use fastboop_schema::{BootProfile, DeviceProfile};
 use serde::{Deserialize, Serialize};
 
-use crate::channel_stream::{CHANNEL_PROFILE_BUNDLE_FORMAT_V1, CHANNEL_PROFILE_BUNDLE_MAGIC};
+use crate::channel_stream::{CHANNEL_PROFILE_BUNDLE_FORMAT_VERSION, CHANNEL_PROFILE_BUNDLE_MAGIC};
 
 pub const CHANNEL_PROFILE_BUNDLE_HEADER_LEN: usize = 6;
 
@@ -20,6 +20,9 @@ pub struct ChannelProfileBundle {
 pub enum ChannelProfileBundleCodecError {
     Decode(postcard::Error),
     InvalidMagic,
+    /// The bundle was written for a format version other than
+    /// [`CHANNEL_PROFILE_BUNDLE_FORMAT_VERSION`], typically by another
+    /// fastboop version. Carries the version found in the bundle header.
     UnsupportedFormatVersion(u16),
 }
 
@@ -32,7 +35,7 @@ impl core::fmt::Display for ChannelProfileBundleCodecError {
             }
             Self::UnsupportedFormatVersion(version) => write!(
                 f,
-                "unsupported channel profile bundle format version {version} (expected {CHANNEL_PROFILE_BUNDLE_FORMAT_V1})"
+                "unsupported channel profile bundle format version {version} (this fastboop supports version {CHANNEL_PROFILE_BUNDLE_FORMAT_VERSION}); rebuild the profile bundle with this fastboop version"
             ),
         }
     }
@@ -45,7 +48,7 @@ impl From<postcard::Error> for ChannelProfileBundleCodecError {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct ChannelProfileBundleV1Bin {
+struct ChannelProfileBundleBin {
     devprofiles: Vec<DeviceProfileBin>,
     bootprofiles: Vec<BootProfileBin>,
 }
@@ -56,14 +59,14 @@ pub fn decode_channel_profile_bundle(
     let Some(format_version) = channel_profile_bundle_header_version(bytes) else {
         return Err(ChannelProfileBundleCodecError::InvalidMagic);
     };
-    if format_version != CHANNEL_PROFILE_BUNDLE_FORMAT_V1 {
+    if format_version != CHANNEL_PROFILE_BUNDLE_FORMAT_VERSION {
         return Err(ChannelProfileBundleCodecError::UnsupportedFormatVersion(
             format_version,
         ));
     }
 
     let payload = &bytes[CHANNEL_PROFILE_BUNDLE_HEADER_LEN..];
-    let payload: ChannelProfileBundleV1Bin = postcard::from_bytes(payload)?;
+    let payload: ChannelProfileBundleBin = postcard::from_bytes(payload)?;
     Ok(ChannelProfileBundle {
         devprofiles: payload.devprofiles.into_iter().map(Into::into).collect(),
         bootprofiles: payload.bootprofiles.into_iter().map(Into::into).collect(),
@@ -73,7 +76,7 @@ pub fn decode_channel_profile_bundle(
 pub fn encode_channel_profile_bundle(
     bundle: &ChannelProfileBundle,
 ) -> Result<Vec<u8>, postcard::Error> {
-    let payload = postcard::to_allocvec(&ChannelProfileBundleV1Bin {
+    let payload = postcard::to_allocvec(&ChannelProfileBundleBin {
         devprofiles: bundle.devprofiles.iter().cloned().map(Into::into).collect(),
         bootprofiles: bundle
             .bootprofiles
@@ -84,7 +87,7 @@ pub fn encode_channel_profile_bundle(
     })?;
     let mut out = Vec::with_capacity(CHANNEL_PROFILE_BUNDLE_HEADER_LEN + payload.len());
     out.extend_from_slice(&CHANNEL_PROFILE_BUNDLE_MAGIC);
-    out.extend_from_slice(&CHANNEL_PROFILE_BUNDLE_FORMAT_V1.to_le_bytes());
+    out.extend_from_slice(&CHANNEL_PROFILE_BUNDLE_FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&payload);
     Ok(out)
 }
@@ -198,5 +201,31 @@ mod tests {
     fn rejects_invalid_magic() {
         let err = decode_channel_profile_bundle(b"xxxx\x01\x00payload").unwrap_err();
         assert!(matches!(err, ChannelProfileBundleCodecError::InvalidMagic));
+    }
+
+    #[test]
+    fn rejects_previous_format_version() {
+        // v0.0.1-rc.21 wrote version 1 bundles with a different payload layout.
+        let mut encoded = encode_channel_profile_bundle(&ChannelProfileBundle {
+            devprofiles: crate::builtin::builtin_profiles().unwrap(),
+            bootprofiles: alloc::vec![boot_profile()],
+        })
+        .unwrap();
+        encoded[4..6].copy_from_slice(&1u16.to_le_bytes());
+
+        let err = decode_channel_profile_bundle(&encoded).unwrap_err();
+        assert!(matches!(
+            err,
+            ChannelProfileBundleCodecError::UnsupportedFormatVersion(1)
+        ));
+        let message = alloc::string::ToString::to_string(&err);
+        assert!(message.contains("format version 1"), "{message}");
+        assert!(
+            message.contains(&format!(
+                "supports version {CHANNEL_PROFILE_BUNDLE_FORMAT_VERSION}"
+            )),
+            "{message}"
+        );
+        assert!(message.contains("rebuild the profile bundle"), "{message}");
     }
 }

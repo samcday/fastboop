@@ -1,6 +1,10 @@
+use crate::channel_index::CHANNEL_INDEX_RECORD_MAGIC;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelStreamKind {
-    ProfileBundleV1,
+    /// `FBCH` profile bundle of any format version; the bundle codec rejects
+    /// versions other than [`CHANNEL_PROFILE_BUNDLE_FORMAT_VERSION`].
+    ProfileBundle,
     Xz,
     Zip,
     AndroidSparse,
@@ -14,14 +18,17 @@ pub enum ChannelStreamKind {
 }
 
 pub const CHANNEL_PROFILE_BUNDLE_MAGIC: [u8; 4] = *b"FBCH";
-pub const CHANNEL_PROFILE_BUNDLE_FORMAT_V1: u16 = 1;
+/// Version 2: the payload switched to the binary-safe `DeviceProfileBin` /
+/// `BootProfileBin` representations (v0.0.1-rc.22). Bump it whenever the
+/// payload layout changes, including through those profile types.
+pub const CHANNEL_PROFILE_BUNDLE_FORMAT_VERSION: u16 = 2;
 
 // 64 KiB covers current known signatures, including ISO9660 (offset 0x8001).
 pub const CHANNEL_SNIFF_PREFIX_LEN: usize = 64 * 1024;
 
 pub fn classify_channel_prefix(prefix: &[u8]) -> ChannelStreamKind {
-    if is_profile_bundle_v1(prefix) {
-        return ChannelStreamKind::ProfileBundleV1;
+    if is_profile_bundle(prefix) {
+        return ChannelStreamKind::ProfileBundle;
     }
     if is_xz(prefix) {
         return ChannelStreamKind::Xz;
@@ -53,9 +60,13 @@ pub fn classify_channel_prefix(prefix: &[u8]) -> ChannelStreamKind {
     ChannelStreamKind::Unknown
 }
 
-fn is_profile_bundle_v1(prefix: &[u8]) -> bool {
-    has_at(prefix, 0, &CHANNEL_PROFILE_BUNDLE_MAGIC)
-        && has_u16_le(prefix, 4, CHANNEL_PROFILE_BUNDLE_FORMAT_V1)
+fn is_profile_bundle(prefix: &[u8]) -> bool {
+    // Any version matches, so a bundle from another fastboop version is
+    // reported as a bundle rather than as an unrecognized format. Channel
+    // index records share the `FBCH` prefix but are not bundles.
+    prefix.len() >= CHANNEL_PROFILE_BUNDLE_MAGIC.len() + 2
+        && has_at(prefix, 0, &CHANNEL_PROFILE_BUNDLE_MAGIC)
+        && !has_at(prefix, 0, &CHANNEL_INDEX_RECORD_MAGIC)
 }
 
 fn is_xz(prefix: &[u8]) -> bool {
@@ -144,11 +155,29 @@ mod tests {
     fn detects_profile_bundle_before_other_formats() {
         let mut buf = [0u8; 8];
         buf[..4].copy_from_slice(&CHANNEL_PROFILE_BUNDLE_MAGIC);
-        buf[4..6].copy_from_slice(&CHANNEL_PROFILE_BUNDLE_FORMAT_V1.to_le_bytes());
+        buf[4..6].copy_from_slice(&CHANNEL_PROFILE_BUNDLE_FORMAT_VERSION.to_le_bytes());
         assert_eq!(
             classify_channel_prefix(&buf),
-            ChannelStreamKind::ProfileBundleV1
+            ChannelStreamKind::ProfileBundle
         );
+    }
+
+    #[test]
+    fn detects_profile_bundle_with_unsupported_version() {
+        let mut buf = [0u8; 8];
+        buf[..4].copy_from_slice(&CHANNEL_PROFILE_BUNDLE_MAGIC);
+        buf[4..6].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(
+            classify_channel_prefix(&buf),
+            ChannelStreamKind::ProfileBundle
+        );
+    }
+
+    #[test]
+    fn channel_index_record_is_not_a_profile_bundle() {
+        let mut buf = [0u8; 16];
+        buf[..8].copy_from_slice(&CHANNEL_INDEX_RECORD_MAGIC);
+        assert_eq!(classify_channel_prefix(&buf), ChannelStreamKind::Unknown);
     }
 
     #[test]

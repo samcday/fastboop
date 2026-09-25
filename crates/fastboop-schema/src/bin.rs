@@ -15,15 +15,22 @@ use crate::{
     FastbootGetvarStartsWith, InjectMac, MatchRule, NotExistsFlag, ProbeStep,
 };
 
-// v0 wire formats are intentionally unstable while fastboop is unreleased.
-pub const BOOT_PROFILE_BIN_FORMAT_V0: u16 = 0;
-pub const BOOT_PROFILE_BIN_V0_MAGIC: [u8; 8] = *b"FBOOPROF";
-pub const BOOT_PROFILE_BIN_V0_HEADER_LEN: usize = 10;
+// Binary profile records are `magic | u16 LE format version | postcard payload`.
+// Postcard is positional, so bump the format version whenever the payload
+// layout changes, including fields added to nested schema types. Decoders
+// reject every other version instead of mis-decoding shifted fields. These
+// formats stay intentionally unstable while fastboop is unreleased.
 
-// v0 wire formats are intentionally unstable while fastboop is unreleased.
-pub const DEV_PROFILE_BIN_FORMAT_V0: u16 = 0;
-pub const DEV_PROFILE_BIN_V0_MAGIC: [u8; 8] = *b"FBOODEVP";
-pub const DEV_PROFILE_BIN_V0_HEADER_LEN: usize = 10;
+/// Version 1: `BootProfileBin` gained `initrd` and `boot` (v0.0.1-rc.22).
+pub const BOOT_PROFILE_BIN_FORMAT_VERSION: u16 = 1;
+pub const BOOT_PROFILE_BIN_MAGIC: [u8; 8] = *b"FBOOPROF";
+pub const BOOT_PROFILE_BIN_HEADER_LEN: usize = 10;
+
+/// Version 1: `AndroidBootImage` gained `ramdisk_offset`, `second_offset` and
+/// `tags_offset` (v0.0.1-rc.22).
+pub const DEV_PROFILE_BIN_FORMAT_VERSION: u16 = 1;
+pub const DEV_PROFILE_BIN_MAGIC: [u8; 8] = *b"FBOODEVP";
+pub const DEV_PROFILE_BIN_HEADER_LEN: usize = 10;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BootProfileBin {
