@@ -29,6 +29,8 @@ use crate::native_smoo::{SmooHostEvent, SmooHostOptions, run_native_smoo_host};
 use crate::stage0_binary::load_stage0_binary_for_initrd;
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SERIAL_READ_ATTEMPTS: u32 = 3;
+const SERIAL_READ_RETRY: Duration = Duration::from_millis(100);
 const DEFAULT_SMOO_MAX_IO_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug)]
@@ -1133,6 +1135,40 @@ async fn wait_for_fastboot_device_auto(
     }
 }
 
+/// Read the USB serial through the claimed fastboot handle: opening it already
+/// proved access, so a node still awaiting udev permissions is never mistaken
+/// for a device without a serial. Transient control-transfer failures retry
+/// briefly; a missing serial later fails boots that need it as runtime identity.
+async fn read_fastboot_usb_serial(fastboot: &FastbootRusb, vid: u16, pid: u16) -> Option<String> {
+    let mut attempt = 1;
+    loop {
+        match fastboot.usb_serial_number() {
+            Ok(serial) => return serial,
+            Err(
+                err @ (rusb::Error::Busy
+                | rusb::Error::Io
+                | rusb::Error::Interrupted
+                | rusb::Error::Overflow
+                | rusb::Error::Pipe
+                | rusb::Error::Timeout),
+            ) if attempt < SERIAL_READ_ATTEMPTS => {
+                debug!(%err, attempt, "retrying fastboot USB serial read");
+                attempt += 1;
+                tokio::time::sleep(SERIAL_READ_RETRY).await;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    vid = %format!("{vid:04x}"),
+                    pid = %format!("{pid:04x}"),
+                    "cannot read fastboot USB serial"
+                );
+                return None;
+            }
+        }
+    }
+}
+
 async fn probe_arrived_device(
     profile: &DeviceProfile,
     device: RusbDeviceHandle,
@@ -1142,8 +1178,6 @@ async fn probe_arrived_device(
     if !profile_matches_vid_pid(profile, vid, pid) {
         return Ok(None);
     }
-    let serial = device.usb_serial_number();
-
     let mut fastboot = match device.open_fastboot().await {
         Ok(fastboot) => fastboot,
         Err(err) => {
@@ -1156,6 +1190,7 @@ async fn probe_arrived_device(
             return Ok(None);
         }
     };
+    let serial = read_fastboot_usb_serial(&fastboot, vid, pid).await;
 
     let mut session = FastbootSession::new(&mut fastboot);
     match session.probe_profile(profile).await {
@@ -1193,7 +1228,6 @@ async fn probe_arrived_device_auto(
         return Ok(None);
     }
 
-    let serial = device.usb_serial_number();
     let mut fastboot = match device.open_fastboot().await {
         Ok(fastboot) => fastboot,
         Err(err) => {
@@ -1206,6 +1240,7 @@ async fn probe_arrived_device_auto(
             return Ok(None);
         }
     };
+    let serial = read_fastboot_usb_serial(&fastboot, vid, pid).await;
 
     let mut session = FastbootSession::new(&mut fastboot);
     let mut matched_profiles = Vec::new();

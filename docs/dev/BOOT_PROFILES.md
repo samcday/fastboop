@@ -253,11 +253,20 @@ It retains and claims the inspected USB handle without enumerating again. If
 that device disconnects before claiming, discovery retries with the same serial;
 the claim cannot substitute a newly arrived device.
 The serial must be nonempty ASCII without surrounding whitespace or control
-characters, and must remain stable across gadget restarts. Transient USB I/O,
-timeout, busy, and disconnect errors discard the entire scan and retry after a
-cancellable delay. An incomplete scan never claims a device. Duplicate serials,
-invalid selectors, and permanent errors such as access denial or malformed
-descriptors still stop serving. Native library consumers must retain `NativeBootEnvironment::smoo_host_options()`
+characters, and must remain stable across gadget restarts. Discovery ignores
+disconnected and unconfigured devices. It skips any other device it cannot
+inspect, such as a new node that udev has not yet made accessible, and still
+inspects the rest of the scan. While a device that exposes a smoo interface
+cannot be opened or its serial cannot be read, discovery claims no device,
+because the skipped device may carry the same serial; it retries after a
+cancellable delay, with no timeout, until that device is readable or removed.
+A device whose descriptors cannot be read is skipped without holding back the
+claim. A device that keeps failing inspection for about two seconds is reported
+once per bus/address with a warning that says whether it blocks the claim, with
+a udev/uaccess hint for access denial.
+Duplicate serials and invalid selectors still stop serving. Failures to create
+the USB context or enumerate devices retry when transient (I/O, timeout, busy,
+disconnect) and otherwise stop serving. Native library consumers must retain `NativeBootEnvironment::smoo_host_options()`
 when handing a prepared boot to a background host task; low-level host options
 also require a nonempty serial. The desktop retains these options for generated
 stage0 boots. Supplied-initrd boots requiring an explicit serial currently use
